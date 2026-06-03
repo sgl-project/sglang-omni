@@ -7,6 +7,7 @@ import base64
 import binascii
 import importlib.util
 import shutil
+from functools import cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -33,6 +34,9 @@ _TASK_TYPE_CANONICAL = {
     task_type.replace("_", "").replace("-", "").lower(): task_type
     for task_type in SUPPORTED_TTS_TASK_TYPES
 }
+MAX_SPEECH_INPUT_CHARS = 4096
+MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
+_REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 
 
 class SpeechService:
@@ -71,21 +75,26 @@ class SpeechService:
         input_text = request.input
         if not isinstance(input_text, str) or not input_text.strip():
             raise bad_request("input must be a non-empty string", param="input")
+        if len(input_text) > MAX_SPEECH_INPUT_CHARS:
+            raise bad_request(
+                f"input must be at most {MAX_SPEECH_INPUT_CHARS} characters",
+                param="input",
+            )
 
         response_format = _normalize_response_format(request.response_format)
-        _validate_encoder_dependency(response_format)
+        if request.stream and response_format != "pcm":
+            raise bad_request(
+                "stream=true requires response_format='pcm'",
+                param="response_format",
+            )
+        if not request.stream:
+            _validate_encoder_dependency(response_format)
         updates["response_format"] = response_format
 
         if not TTS_SPEED_MIN <= float(request.speed) <= TTS_SPEED_MAX:
             raise bad_request(
                 f"speed must be between {TTS_SPEED_MIN} and {TTS_SPEED_MAX}",
                 param="speed",
-            )
-
-        if request.stream and response_format != "pcm":
-            raise bad_request(
-                "stream=true requires response_format='pcm'",
-                param="response_format",
             )
 
         if request.task_type is not None:
@@ -193,7 +202,7 @@ class SpeechService:
                 for reference in request.references
             )
         if request.ref_audio is not None:
-            ref: dict[str, Any] = {"audio_path": request.ref_audio}
+            ref = _reference_dict_from_media_reference(request.ref_audio)
             if request.ref_text is not None:
                 ref["text"] = request.ref_text
             references.append(ref)
@@ -272,27 +281,44 @@ class SpeechService:
     def _normalize_speech_reference(
         self, reference: SpeechReference
     ) -> SpeechReference:
-        updates: dict[str, Any] = {}
-        for field_name in ("audio_path", "ref_audio", "audio"):
+        updates: dict[str, Any] = {
+            field_name: None for field_name in _REFERENCE_AUDIO_FIELDS
+        }
+        if reference.data is not None:
+            _validate_base64_media_data(
+                reference.data,
+                media_type=reference.media_type or "audio/wav",
+                param="references.data",
+            )
+            updates["data"] = reference.data
+            updates["media_type"] = reference.media_type or "audio/wav"
+            return reference.model_copy(update=updates)
+
+        for field_name in _REFERENCE_AUDIO_FIELDS:
             value = getattr(reference, field_name)
-            if isinstance(value, str):
-                updates[field_name] = self._normalize_media_reference(
-                    value, param=f"references.{field_name}"
-                )
+            if not isinstance(value, str):
+                continue
+            normalized = self._normalize_media_reference(
+                value, param=f"references.{field_name}"
+            )
+            updates.update(_reference_dict_from_media_reference(normalized))
+            break
         return reference.model_copy(update=updates)
 
     def _normalize_media_reference(self, value: str, *, param: str) -> str:
         url = urlparse(value)
         if url.scheme in {"http", "https"}:
-            return value
+            raise bad_request(
+                "remote reference audio URLs are not supported by this endpoint",
+                param=param,
+            )
         if url.scheme == "data":
             _validate_data_url(value, param=param)
             return value
         if url.scheme != "file":
-            raise bad_request(
-                "ref_audio must be an http, https, data, or file:// URL",
-                param=param,
-            )
+            if Path(value).is_absolute():
+                return self._normalize_local_media_path(value, param=param)
+            raise bad_request("ref_audio must be a data or file:// URL", param=param)
         if not self.allowed_local_media_paths:
             raise bad_request(
                 "file:// ref_audio requires --allowed-local-media-path",
@@ -304,7 +330,15 @@ class SpeechService:
                 f"file:// ref_audio netloc is not supported: {netloc}",
                 param=param,
             )
-        file_path = Path(url2pathname(url.path)).expanduser().resolve()
+        return self._normalize_local_media_path(url2pathname(url.path), param=param)
+
+    def _normalize_local_media_path(self, value: str, *, param: str) -> str:
+        if not self.allowed_local_media_paths:
+            raise bad_request(
+                "file:// ref_audio requires --allowed-local-media-path",
+                param=param,
+            )
+        file_path = Path(value).expanduser().resolve()
         for allowed_path in self.allowed_local_media_paths:
             if _is_relative_to(file_path, allowed_path):
                 if not file_path.exists():
@@ -317,11 +351,19 @@ class SpeechService:
                         f"file:// ref_audio path must be a file: {file_path}",
                         param=param,
                     )
+                _validate_reference_size(file_path.stat().st_size, param=param)
                 return str(file_path)
         raise bad_request(
             f"file:// ref_audio path is outside allowed local media paths: {file_path}",
             param=param,
         )
+
+
+def _reference_dict_from_media_reference(value: str) -> dict[str, Any]:
+    if value.startswith("data:"):
+        media_type, encoded = _parse_data_url(value, param="ref_audio")
+        return {"data": encoded, "media_type": media_type}
+    return {"audio_path": value}
 
 
 def _normalize_response_format(value: str) -> str:
@@ -346,12 +388,27 @@ def _validate_non_negative_int(value: int | None, *, param: str) -> None:
 
 
 def _validate_data_url(value: str, *, param: str) -> None:
+    _parse_data_url(value, param=param)
+
+
+def _parse_data_url(value: str, *, param: str) -> tuple[str, str]:
     header, separator, encoded = value.partition(",")
     if not separator or ";base64" not in header.lower() or not encoded:
         raise bad_request(
             "ref_audio data URL must include base64 media data",
             param=param,
         )
+    media_type = header.removeprefix("data:").split(";", 1)[0] or "audio/wav"
+    _validate_base64_media_data(encoded, media_type=media_type, param=param)
+    return media_type, encoded
+
+
+def _validate_base64_media_data(encoded: str, *, media_type: str, param: str) -> None:
+    if not media_type.startswith("audio/"):
+        raise bad_request(
+            "ref_audio data URL must use an audio media type", param=param
+        )
+    _validate_reference_size(_estimated_base64_decoded_size(encoded), param=param)
     try:
         base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -361,6 +418,19 @@ def _validate_data_url(value: str, *, param: str) -> None:
         ) from exc
 
 
+def _estimated_base64_decoded_size(encoded: str) -> int:
+    return (len(encoded.rstrip("=")) * 3) // 4
+
+
+def _validate_reference_size(size_bytes: int, *, param: str) -> None:
+    if size_bytes > MAX_REFERENCE_AUDIO_BYTES:
+        raise bad_request(
+            f"ref_audio must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
+            param=param,
+        )
+
+
+@cache
 def _validate_encoder_dependency(response_format: str) -> None:
     if response_format == "flac":
         _require_module("soundfile", "soundfile is required for response_format='flac'")
@@ -419,12 +489,3 @@ def _resolve_allowed_local_media_path(path: str | Path) -> Path:
     if not resolved.exists() or not resolved.is_dir():
         raise ValueError(f"allowed local media path must be a directory: {path}")
     return resolved
-
-
-def build_speech_generate_request(
-    req: CreateSpeechRequest,
-    default_model: str,
-) -> GenerateRequest:
-    """Compatibility wrapper for existing callers."""
-
-    return SpeechService(default_model=default_model).build_generate_request(req)

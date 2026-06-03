@@ -64,10 +64,7 @@ from sglang_omni.serve.speech_errors import (
     internal_error,
     speech_error_response,
 )
-from sglang_omni.serve.speech_service import (
-    SpeechService,
-    build_speech_generate_request,
-)
+from sglang_omni.serve.speech_service import SpeechService
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
@@ -545,8 +542,12 @@ def _register_speech(app: FastAPI) -> None:
             try:
                 first_event = await anext(speech_events)
             except ClientError as exc:
+                with suppress(Exception):
+                    await speech_events.aclose()
                 return speech_error_response(internal_error(str(exc)))
             except Exception as exc:
+                with suppress(Exception):
+                    await speech_events.aclose()
                 logger.exception(
                     "Error opening speech stream for request %s", request_id
                 )
@@ -633,7 +634,7 @@ async def _speech_stream(
                 continue
             actual_format = MIME_TO_FORMAT.get(mime_type, response_format)
             payload = {
-                "id": f"speech-{request_id}",
+                "id": request_id,
                 "object": "audio.speech.chunk",
                 "index": chunk_index,
                 "audio": {
@@ -655,7 +656,7 @@ async def _speech_stream(
             await client.abort(request_id)
 
     final_payload = {
-        "id": f"speech-{request_id}",
+        "id": request_id,
         "object": "audio.speech.chunk",
         "index": chunk_index,
         "audio": None,
@@ -692,32 +693,22 @@ async def _await_speech_response(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if speech_task in done:
-            disconnect_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await disconnect_task
             return speech_task.result()
 
         await client.abort(request_id)
         aborted = True
         speech_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await speech_task
         raise asyncio.CancelledError
     except asyncio.CancelledError:
         if not aborted:
             await client.abort(request_id)
-        speech_task.cancel()
-        disconnect_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await speech_task
-        with suppress(asyncio.CancelledError):
-            await disconnect_task
         raise
     finally:
+        if not speech_task.done():
+            speech_task.cancel()
         if not disconnect_task.done():
             disconnect_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await disconnect_task
+        await asyncio.gather(speech_task, disconnect_task, return_exceptions=True)
 
 
 async def _wait_for_request_disconnect(request: Request) -> None:
@@ -729,9 +720,14 @@ async def _prepend_speech_stream_event(
     first_event: str,
     stream: AsyncIterator[str],
 ) -> AsyncIterator[str]:
-    yield first_event
-    async for event in stream:
-        yield event
+    try:
+        yield first_event
+        async for event in stream:
+            yield event
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def _select_speech_audio_delta(
@@ -755,9 +751,6 @@ def _select_speech_audio_delta(
     if total_samples <= emitted_samples:
         return None, emitted_samples
     return audio[emitted_samples:], total_samples
-
-
-_build_speech_generate_request = build_speech_generate_request
 
 
 def _register_transcriptions(app: FastAPI) -> None:

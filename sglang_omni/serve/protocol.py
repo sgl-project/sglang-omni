@@ -186,6 +186,8 @@ class SpeechReference(BaseModel):
     audio_path: str | None = None
     ref_audio: str | None = None
     audio: str | None = None
+    data: str | None = None
+    media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
 

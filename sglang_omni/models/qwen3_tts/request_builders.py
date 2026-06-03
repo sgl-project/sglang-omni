@@ -299,6 +299,7 @@ def resolve_voice_clone_reference(
         reference.get("audio_path")
         or reference.get("ref_audio")
         or reference.get("audio")
+        or _reference_data_uri(reference)
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")
@@ -325,12 +326,20 @@ def references_contain_audio(references: list[dict[str, Any]]) -> bool:
     return any(
         reference.get(key) is not None
         for reference in references
-        for key in ("audio_path", "ref_audio", "audio")
+        for key in ("audio_path", "ref_audio", "audio", "data")
     )
 
 
 def references_contain_text(references: list[dict[str, Any]]) -> bool:
     return any(reference.get("text") is not None for reference in references)
+
+
+def _reference_data_uri(reference: dict[str, Any]) -> str | None:
+    data = reference.get("data")
+    if data is None:
+        return None
+    media_type = reference.get("media_type") or "audio/wav"
+    return f"data:{media_type};base64,{data}"
 
 
 def normalize_qwen3_tts_task_type(

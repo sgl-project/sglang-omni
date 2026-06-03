@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechService
@@ -32,6 +33,19 @@ def test_speech_service_requires_pcm_for_http_streaming() -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
+
+
+def test_speech_service_validates_stream_format_before_encoder_dependency() -> None:
+    service = SpeechService(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "stream": True, "response_format": "mp3"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "response_format"
+    assert "stream=true" in exc_info.value.message
 
 
 def test_speech_service_rejects_boolean_seed() -> None:
@@ -149,6 +163,7 @@ def test_file_reference_requires_allowlist() -> None:
         ("data:audio/wav;base64", "ref_audio"),
         ("data:audio/wav,AAAA", "ref_audio"),
         ("data:audio/wav;base64,not@@base64", "ref_audio"),
+        ("https://example.com/reference.wav", "ref_audio"),
     ],
 )
 def test_reference_audio_rejects_unsupported_sources(
@@ -170,8 +185,42 @@ def test_reference_audio_accepts_valid_base64_data_url() -> None:
     request = service.parse_request(
         {"input": "hello", "ref_audio": f"data:audio/wav;base64,{encoded}"}
     )
+    gen_req = service.build_generate_request(request, validate=False)
 
     assert request.ref_audio == f"data:audio/wav;base64,{encoded}"
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [{"data": encoded, "media_type": "audio/wav"}],
+    }
+
+
+def test_reference_audio_rejects_oversized_data_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechService(default_model="tts")
+    monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
+    encoded = base64.b64encode(b"RIFF").decode("ascii")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": f"data:audio/wav;base64,{encoded}"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_speech_service_rejects_oversized_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechService(default_model="tts")
+    monkeypatch.setattr(speech_service, "MAX_SPEECH_INPUT_CHARS", 5)
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello world"})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "input"
 
 
 def test_reference_list_rejects_raw_local_path() -> None:
@@ -204,6 +253,56 @@ def test_reference_list_rejects_invalid_base64_data_url() -> None:
     assert exc_info.value.param == "references.audio_path"
 
 
+@pytest.mark.parametrize("field_name", ["audio_path", "ref_audio", "audio"])
+def test_reference_list_canonicalizes_audio_aliases(
+    tmp_path: Path, field_name: str
+) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    service = SpeechService(
+        default_model="tts",
+        allowed_local_media_paths=[tmp_path],
+    )
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "references": [{field_name: audio_path.as_uri(), "text": "reference"}],
+        }
+    )
+    gen_req = service.build_generate_request(request, validate=False)
+
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [{"audio_path": str(audio_path.resolve()), "text": "reference"}],
+    }
+
+
+def test_reference_list_canonicalizes_data_url() -> None:
+    service = SpeechService(default_model="tts")
+    encoded = base64.b64encode(b"RIFF").decode("ascii")
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "references": [
+                {
+                    "audio": f"data:audio/wav;base64,{encoded}",
+                    "text": "reference",
+                }
+            ],
+        }
+    )
+    gen_req = service.build_generate_request(request, validate=False)
+
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [
+            {"data": encoded, "media_type": "audio/wav", "text": "reference"}
+        ],
+    }
+
+
 def test_allowed_local_media_path_must_be_directory(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
 
@@ -231,6 +330,27 @@ def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
         "text": "hello",
         "references": [{"audio_path": str(audio_path.resolve())}],
     }
+
+    prepared_again = service.prepare_request(request)
+    assert prepared_again.ref_audio == str(audio_path.resolve())
+
+
+def test_file_reference_rejects_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
+    service = SpeechService(
+        default_model="tts",
+        allowed_local_media_paths=[tmp_path],
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": audio_path.as_uri()})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
 
 
 def test_file_reference_rejects_missing_file_inside_allowlist(tmp_path: Path) -> None:

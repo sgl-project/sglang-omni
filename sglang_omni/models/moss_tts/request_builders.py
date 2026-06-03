@@ -201,10 +201,19 @@ def resolve_moss_reference(
         reference.get("audio_path")
         or reference.get("ref_audio")
         or reference.get("audio")
+        or _reference_data_uri(reference)
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")
     return ref_audio, str(ref_text) if ref_text is not None else None
+
+
+def _reference_data_uri(reference: dict[str, Any]) -> str | None:
+    data = reference.get("data")
+    if data is None:
+        return None
+    media_type = reference.get("media_type") or "audio/wav"
+    return f"data:{media_type};base64,{data}"
 
 
 def _resolve_optional_text(value: Any) -> str | None:

@@ -17,11 +17,12 @@ from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _await_speech_response,
     _chat_stream,
+    _prepend_speech_stream_event,
     _speech_stream,
-    build_speech_generate_request,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
+from sglang_omni.serve.speech_service import SpeechService
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -346,7 +347,10 @@ def test_speech_stream_success_emits_done_sentinel() -> None:
     chunks = asyncio.run(_collect_speech_stream(SuccessfulSpeechClient()))
 
     assert chunks[-1] == "data: [DONE]\n\n"
+    first_payload = json.loads(chunks[0][len("data: ") :])
+    assert first_payload["id"] == "req-1"
     payload = json.loads(chunks[-2][len("data: ") :])
+    assert payload["id"] == "req-1"
     assert payload["audio"] is None
     assert payload["finish_reason"] == "stop"
 
@@ -431,6 +435,27 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
     asyncio.run(_drive())
 
 
+def test_speech_stream_prefetch_wrapper_closes_inner_generator() -> None:
+    closed = False
+
+    async def _inner_stream():
+        nonlocal closed
+        try:
+            yield "data: next\n\n"
+            await asyncio.Future()
+        finally:
+            closed = True
+
+    async def _drive() -> None:
+        stream = _prepend_speech_stream_event("data: first\n\n", _inner_stream())
+        assert await anext(stream) == "data: first\n\n"
+        assert await anext(stream) == "data: next\n\n"
+        await stream.aclose()
+
+    asyncio.run(_drive())
+    assert closed is True
+
+
 def test_speech_request_records_explicit_generation_params() -> None:
     req = CreateSpeechRequest(
         input="hello",
@@ -439,7 +464,7 @@ def test_speech_request_records_explicit_generation_params() -> None:
         seed=123,
     )
 
-    gen_req = build_speech_generate_request(req, "qwen3-tts")
+    gen_req = SpeechService(default_model="qwen3-tts").build_generate_request(req)
 
     assert gen_req.sampling.temperature == 0.8
     assert gen_req.sampling.top_k == 30
@@ -460,7 +485,7 @@ def test_speech_request_passes_streaming_control_fields() -> None:
         stream=True,
     )
 
-    gen_req = build_speech_generate_request(req, "qwen3-tts")
+    gen_req = SpeechService(default_model="qwen3-tts").build_generate_request(req)
     tts_params = gen_req.metadata["tts_params"]
 
     assert tts_params["initial_codec_chunk_frames"] == 8
@@ -516,6 +541,6 @@ def test_transcription_endpoint_returns_text_json() -> None:
 def test_speech_request_passes_moss_token_count() -> None:
     req = CreateSpeechRequest(input="hello", token_count=180)
 
-    gen_req = build_speech_generate_request(req, "moss-tts")
+    gen_req = SpeechService(default_model="moss-tts").build_generate_request(req)
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180

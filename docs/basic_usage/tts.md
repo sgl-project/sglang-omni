@@ -109,13 +109,15 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 Qwen3-TTS Base requires reference audio:
 
 ```bash
+REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
+
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his."
-  }' \
+  -d "{
+    \"input\": \"This is a local reference audio test.\",
+    \"ref_audio\": \"${REF_URI}\",
+    \"ref_text\": \"Reference transcript for the local audio clip.\"
+  }" \
   --output output.wav
 ```
 
@@ -136,20 +138,24 @@ For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a refere
 
 ### Voice Cloning
 
-The examples below use a sample clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). The `references` field accepts `audio_path` (remote URL, data URL, or allowed `file://` URI) and `text` (transcript of that audio).
+The examples below use an allowed local audio clip. The `references` field
+accepts `audio_path` as a data URL or an allowed `file://` URI, plus `text`
+(transcript of that audio).
 
 1. Non-streaming request
 
 ```bash
+REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
+
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+  -d "{
+    \"input\": \"This is a local reference audio test.\",
+    \"references\": [{
+      \"audio_path\": \"${REF_URI}\",
+      \"text\": \"Reference transcript for the local audio clip.\"
     }]
-  }' \
+  }" \
   --output output.wav
 ```
 
@@ -160,17 +166,19 @@ Enable streaming to receive audio chunks in real time via Server-Sent Events
 `"response_format": "pcm"`:
 
 ```bash
+REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
+
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+  -d "{
+    \"input\": \"This is a local reference audio streaming test.\",
+    \"references\": [{
+      \"audio_path\": \"${REF_URI}\",
+      \"text\": \"Reference transcript for the local audio clip.\"
     }],
-    "stream": true,
-    "response_format": "pcm"
-  }'
+    \"stream\": true,
+    \"response_format\": \"pcm\"
+  }"
 ```
 
 The server returns a stream of SSE events. Each event contains an
@@ -220,9 +228,11 @@ response.stream_to_file("output.wav")
 ### Voice Cloning
 
 ```python
-REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
-SPEECH_INPUT = "Get the trust fund to the bank early."
+from pathlib import Path
+
+REFERENCE_AUDIO = Path("docs/_static/audio/gaokao-listening.wav").resolve().as_uri()
+REFERENCE_TEXT = "Reference transcript for the local audio clip."
+SPEECH_INPUT = "This is a local reference audio test."
 ```
 
 1. Non-streaming Request
@@ -257,6 +267,7 @@ payload = {
 }
 
 chunks = []
+sample_rate = None
 with requests.post(
     "http://localhost:8000/v1/audio/speech",
     json=payload,
@@ -270,15 +281,17 @@ with requests.post(
         data = line[len("data:"):].lstrip()
         if data == "[DONE]":
             break
-        b64 = (json.loads(data).get("audio") or {}).get("data")
+        audio = json.loads(data).get("audio") or {}
+        b64 = audio.get("data")
         if not b64:
             continue
+        sample_rate = sample_rate or audio.get("sample_rate")
         chunks.append(base64.b64decode(b64))
 
 with wave.open("output_stream.wav", "wb") as w:
     w.setnchannels(1)
     w.setsampwidth(2)
-    w.setframerate(24000)
+    w.setframerate(sample_rate or 24000)
     w.writeframes(b"".join(chunks))
 ```
 
@@ -293,8 +306,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (remote URL, data URL, or allowed `file://` URI) and `text` |
-| `ref_audio` | string | `null` | Reference audio URL, allowed `file://` URI, or base64 data URL; equivalent to `references[0].audio_path` |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (data URL or allowed `file://` URI) and `text` |
+| `ref_audio` | string | `null` | Reference audio as an allowed `file://` URI or base64 data URL; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
 | `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
