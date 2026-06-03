@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -29,12 +30,28 @@ class MossTTSModelRunner(ModelRunner):
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
-    ) -> None:
+    ) -> Any:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
+
+        attn_backend = self.tp_worker.model_runner.attn_backend
+        attn_backend.init_forward_metadata(forward_batch)
+
+        kwargs: dict[str, Any] = {
+            "input_ids": forward_batch.input_ids,
+            "positions": forward_batch.positions,
+            "input_embeds": input_embeds,
+        }
+        if forward_batch.mrope_positions is not None:
+            kwargs["mrope_positions"] = forward_batch.mrope_positions
+
+        model_output = self.model(**kwargs)
+
+        return SimpleNamespace(
+            logits_output=model_output,
+            next_token_ids=None,
+            can_run_cuda_graph=False,
         )
-        return None
 
     def before_decode(
         self,
