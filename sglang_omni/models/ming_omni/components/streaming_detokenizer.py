@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
+# The Stage runtime delivers abort(request_id) whenever a request fails or is
+# cancelled, which calls our abort() and removes the entry from _state. This
+# cap is a safety net against orphan entries if abort is ever lost (e.g. a
+# stream_chunk arrived before new_request, and the request was aborted before
+# new_request was delivered to the decode stage).
+_STATE_MAX = 10000
+_STATE_EVICT_TO = 5000
+
 
 @dataclass
 class _RequestState:
@@ -99,6 +107,17 @@ class MingStreamingDetokenizeScheduler:
         if s is None:
             s = _RequestState()
             self._state[request_id] = s
+            if len(self._state) > _STATE_MAX:
+                # Evict oldest orphan entries: those that received stream_chunk
+                # but never received new_request (payload is None). Active
+                # requests with a payload are kept.
+                to_evict = len(self._state) - _STATE_EVICT_TO
+                orphans = [
+                    rid for rid, st in self._state.items()
+                    if st.payload is None and rid != request_id
+                ]
+                for rid in orphans[:to_evict]:
+                    self._state.pop(rid, None)
         return s
 
     def _on_stream_chunk(self, request_id: str, item: Any) -> None:

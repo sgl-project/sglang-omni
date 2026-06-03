@@ -255,8 +255,9 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     """Per-token stream callback for text-only pipelines.
 
     Sends the raw token_id to the decode stage on every thinker step when
-    stream=true. The decode stage (MingStreamingDetokenizeScheduler) does
-    incremental detokenization and emits text deltas to the Coordinator.
+    stream=true AND text output is requested. The decode stage
+    (MingStreamingDetokenizeScheduler) does incremental detokenization and
+    emits text deltas to the Coordinator.
     """
     import torch
 
@@ -274,11 +275,18 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
             return []
 
         stage_payload = getattr(req_data, "stage_payload", None)
+        if stage_payload is None:
+            return []
+
         is_streaming = bool(
-            stage_payload is not None
-            and (stage_payload.request.params or {}).get("stream", False)
+            (stage_payload.request.params or {}).get("stream", False)
         )
         if not is_streaming:
+            return []
+
+        # Only emit text deltas when text output is actually requested.
+        # Mirrors the output_modalities check in talker_executor.py.
+        if not _text_output_requested(stage_payload.request):
             return []
 
         return [
@@ -292,6 +300,25 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         ]
 
     return _build_stream_output
+
+
+def _text_output_requested(request: Any) -> bool:
+    """Return True if text is among the requested output modalities.
+
+    Reads ``request.metadata["output_modalities"]``; defaults to True when
+    the field is absent (text is always produced unless explicitly excluded).
+    """
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+    modalities = metadata.get("output_modalities")
+    if modalities is None:
+        return True
+    if isinstance(modalities, str):
+        return modalities.lower() == "text"
+    if isinstance(modalities, (list, tuple, set)):
+        return any(str(m).lower() == "text" for m in modalities)
+    return True
 
 
 def make_thinker_stream_output_builder(

@@ -236,3 +236,82 @@ def test_text_stream_builder_silent_during_chunked_prefill():
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     msgs = builder("req-1", rd, _make_req_output(42))
     assert msgs == []
+
+
+def test_text_stream_builder_silent_when_audio_only_modality():
+    """No text chunks when output_modalities=["audio"] (e.g. TTS-only request)."""
+    builder = make_text_stream_output_builder()
+    payload = OmniRequest(
+        inputs={"text": "hi"},
+        params={"stream": True},
+        metadata={"output_modalities": ["audio"]},
+    )
+    stage_payload = StagePayload(request_id="r", request=payload, data={})
+    req = SimpleNamespace(is_chunked=0)
+    rd = SimpleNamespace(req=req, stage_payload=stage_payload)
+    msgs = builder("req-1", rd, _make_req_output(42))
+    assert msgs == [], "Should not emit text chunks when only audio is requested"
+
+
+def test_text_stream_builder_emits_when_text_in_modalities():
+    """Text chunks emitted when output_modalities includes text."""
+    builder = make_text_stream_output_builder()
+    payload = OmniRequest(
+        inputs={"text": "hi"},
+        params={"stream": True},
+        metadata={"output_modalities": ["text", "audio"]},
+    )
+    stage_payload = StagePayload(request_id="r", request=payload, data={})
+    req = SimpleNamespace(is_chunked=0)
+    rd = SimpleNamespace(req=req, stage_payload=stage_payload)
+    msgs = builder("req-1", rd, _make_req_output(42))
+    assert len(msgs) == 1
+    assert int(msgs[0].data.item()) == 42
+
+
+def test_failure_isolation():
+    """A malformed request must not prevent subsequent valid requests."""
+    import time
+
+    call_count = 0
+
+    class _ErrorOnFirst:
+        def decode(self, ids, skip_special_tokens=False):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("simulated tokenizer error")
+            return "ok"
+
+    sched = MingStreamingDetokenizeScheduler(_ErrorOnFirst(), eos_token_id=None)
+    t = _run_scheduler(sched)
+
+    # Bad request: tokenizer raises on first call
+    rid_bad = "req-bad"
+    _send(sched, IncomingMessage(
+        request_id=rid_bad,
+        type="stream_chunk",
+        data=SimpleNamespace(data=torch.tensor([1], dtype=torch.long)),
+    ))
+
+    time.sleep(0.15)
+
+    # Good request: should still be processed after the bad one
+    rid_good = "req-good"
+    _send(sched, IncomingMessage(request_id=rid_good, type="stream_done", data=None))
+    _send(sched, IncomingMessage(
+        request_id=rid_good,
+        type="new_request",
+        data=_make_payload(rid_good, stream=False, output_ids=[2]),
+    ))
+
+    time.sleep(0.3)
+    sched.stop()
+    t.join(timeout=1)
+
+    msgs = _drain_outbox(sched)
+    error_msgs = [m for m in msgs if m.request_id == rid_bad and m.type == "error"]
+    result_msgs = [m for m in msgs if m.request_id == rid_good and m.type == "result"]
+
+    assert len(error_msgs) == 1, "Malformed request should emit error message"
+    assert len(result_msgs) == 1, "Valid request after failure should still succeed"
