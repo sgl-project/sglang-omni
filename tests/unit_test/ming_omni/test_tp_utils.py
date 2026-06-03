@@ -62,6 +62,10 @@ def test_validate_stage_tp_support_allows_thinker_tp():
     validate_stage_tp_support(stage_name="thinker", tp_size=4)
 
 
-def test_validate_stage_tp_support_rejects_non_ar_tp():
-    with pytest.raises(ValueError, match="Stage 'image_encoder'.*does not support TP"):
-        validate_stage_tp_support(stage_name="image_encoder", tp_size=2)
+def test_validate_stage_tp_support_allows_image_encoder_tp():
+    validate_stage_tp_support(stage_name="image_encoder", tp_size=2)
+
+
+def test_validate_stage_tp_support_rejects_unsupported_stage_tp():
+    with pytest.raises(ValueError, match="Stage 'audio_encoder'.*does not support TP"):
+        validate_stage_tp_support(stage_name="audio_encoder", tp_size=2)
