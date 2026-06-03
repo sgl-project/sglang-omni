@@ -27,10 +27,10 @@ from sglang_omni.serve.protocol import (
 )
 from sglang_omni.serve.speech_errors import bad_request, service_unavailable
 
-_LANGUAGE_CANONICAL = {
+_TTS_LANGUAGE_ALIASES = {
     language.lower(): language for language in SUPPORTED_TTS_LANGUAGES
 }
-_TASK_TYPE_CANONICAL = {
+_TTS_TASK_TYPE_ALIASES = {
     task_type.replace("_", "").replace("-", "").lower(): task_type
     for task_type in SUPPORTED_TTS_TASK_TYPES
 }
@@ -450,7 +450,7 @@ def _build_encoder_dependency_errors() -> dict[str, str]:
 
 
 def _normalize_language(value: str) -> str:
-    normalized = _LANGUAGE_CANONICAL.get(value.strip().lower())
+    normalized = _TTS_LANGUAGE_ALIASES.get(value.strip().lower())
     if normalized is None:
         supported = ", ".join(sorted(SUPPORTED_TTS_LANGUAGES))
         raise bad_request(f"language must be one of: {supported}", param="language")
@@ -458,7 +458,7 @@ def _normalize_language(value: str) -> str:
 
 
 def _normalize_task_type(value: str) -> str:
-    normalized = _TASK_TYPE_CANONICAL.get(
+    normalized = _TTS_TASK_TYPE_ALIASES.get(
         value.strip().replace("_", "").replace("-", "").lower()
     )
     if normalized is None:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared helpers for final audio waveform payloads."""
+"""Shared helpers for audio payloads."""
 
 from __future__ import annotations
 
@@ -7,6 +7,14 @@ from typing import Any
 
 import numpy as np
 import torch
+
+
+def audio_data_uri_from_reference(reference: dict[str, Any]) -> str | None:
+    data = reference.get("data")
+    if data is None:
+        return None
+    media_type = reference.get("media_type") or "audio/wav"
+    return f"data:{media_type};base64,{data}"
 
 
 def audio_waveform_payload(

@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OpenAI-compatible error helpers.
-
-The speech endpoint currently owns these helpers. Keep the module small until
-ASR or chat routes adopt the same structured error envelope.
-"""
+"""OpenAI-compatible error helpers for TTS serving."""
 
 from __future__ import annotations
 
