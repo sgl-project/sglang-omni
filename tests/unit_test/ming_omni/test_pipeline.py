@@ -68,8 +68,9 @@ def test_ming_speech_config_routes_decode_and_talker() -> None:
         == "sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker"
     )
     assert stages["thinker"].next == ["decode", "talker"]
-    assert stages["thinker"].stream_to == []
+    assert stages["thinker"].stream_to == ["decode"]
     assert stages["decode"].terminal is True
+    assert stages["decode"].can_accept_stream_before_payload is True
     assert stages["talker"].terminal is True
     assert config.terminal_stages == ["decode", "talker"]
 
