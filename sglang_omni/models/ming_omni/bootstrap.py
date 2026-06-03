@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 
 logger = logging.getLogger(__name__)
+
+StreamOutputBuilder = Callable[[str, Any, Any], list[Any]]
 
 
 def create_thinker_scheduler(
@@ -84,13 +86,14 @@ def create_thinker_scheduler(
 
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if enable_streaming_tts:
-        stream_output_builder = make_thinker_stream_output_builder(
-            tokenizer=tokenizer,
-            eos_token_id=eos_token_id,
+        stream_output_builder = make_combined_stream_output_builder(
+            make_text_stream_output_builder(),
+            make_thinker_stream_output_builder(
+                tokenizer=tokenizer,
+                eos_token_id=eos_token_id,
+            ),
         )
     else:
-        # Text-only pipeline: emit per-token deltas to the decode stage so
-        # stream=true requests receive incremental delta.content chunks.
         stream_output_builder = make_text_stream_output_builder()
 
     return OmniScheduler(
@@ -249,6 +252,20 @@ def make_thinker_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
+
+def make_combined_stream_output_builder(
+    *builders: StreamOutputBuilder,
+) -> StreamOutputBuilder:
+    """Run multiple per-token stream builders for the same thinker token."""
+
+    def _build_stream_output(request_id, req_data, req_output):
+        messages: list[Any] = []
+        for builder in builders:
+            messages.extend(builder(request_id, req_data, req_output))
+        return messages
+
+    return _build_stream_output
 
 
 def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
