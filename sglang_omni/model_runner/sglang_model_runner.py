@@ -80,52 +80,41 @@ class SGLModelRunner(ModelRunner):
 
     def _register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
+        import importlib
+
         from sglang.srt.models.registry import ModelRegistry
 
-        from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
-            S2ProSGLangTextModel,
-        )
-        from sglang_omni.models.higgs_tts.model import HiggsTTSModel
-        from sglang_omni.models.llada2_uni.components.thinker import LLaDA2MoeModelLM
-        from sglang_omni.models.ming_omni.registration import (
-            register_ming_hf_config,
-            register_ming_model_registry,
-        )
-        from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
-        from sglang_omni.models.qwen3_asr.sglang_model import (
-            Qwen3ASRForConditionalGeneration,
-        )
-        from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
-            Qwen3OmniThinkerForCausalLM,
-        )
-        from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
-        from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
-        from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
-        from sglang_omni.models.whisper_asr.sglang_model import (
-            WhisperForConditionalGeneration,
-        )
+        sglang_omni_models = {
+            "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
+            "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
+            "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
+            "HiggsMultimodalQwen3ForConditionalGeneration": "sglang_omni.models.higgs_tts.model:HiggsTTSModel",
+            "Qwen3TTSTalker": "sglang_omni.models.qwen3_tts.sglang_model:Qwen3TTSTalker",
+            "MossTTSDelaySGLangModel": "sglang_omni.models.moss_tts.sglang_model:MossTTSDelaySGLangModel",
+            "VoxtralSGLangTTSModel": "sglang_omni.models.voxtral_tts.sglang_model:VoxtralSGLangTTSModel",
+            "LLaDA2MoeModelLM": "sglang_omni.models.llada2_uni.components.thinker:LLaDA2MoeModelLM",
+            "WhisperForConditionalGeneration": "sglang_omni.models.whisper_asr.sglang_model:WhisperForConditionalGeneration",
+            "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
+        }
+        for arch, path in sglang_omni_models.items():
+            module_path, _, attr = path.partition(":")
+            try:
+                ModelRegistry.models[arch] = getattr(
+                    importlib.import_module(module_path), attr
+                )
+            except Exception as exc:
+                logger.warning("sglang-omni: skipping model %s (%s)", arch, exc)
 
-        register_ming_hf_config()
-        register_ming_model_registry()
+        try:
+            from sglang_omni.models.ming_omni.registration import (
+                register_ming_hf_config,
+                register_ming_model_registry,
+            )
 
-        ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
-        ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
-        ModelRegistry.models["Qwen3OmniThinkerForCausalLM"] = (
-            Qwen3OmniThinkerForCausalLM
-        )
-        ModelRegistry.models["HiggsMultimodalQwen3ForConditionalGeneration"] = (
-            HiggsTTSModel
-        )
-        ModelRegistry.models["Qwen3TTSTalker"] = Qwen3TTSTalker
-        ModelRegistry.models["MossTTSDelaySGLangModel"] = MossTTSDelaySGLangModel
-        ModelRegistry.models["VoxtralSGLangTTSModel"] = VoxtralSGLangTTSModel
-        ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
-        ModelRegistry.models["WhisperForConditionalGeneration"] = (
-            WhisperForConditionalGeneration
-        )
-        ModelRegistry.models["Qwen3ASRForConditionalGeneration"] = (
-            Qwen3ASRForConditionalGeneration
-        )
+            register_ming_hf_config()
+            register_ming_model_registry()
+        except Exception as exc:
+            logger.warning("sglang-omni: skipping Ming-Omni registration (%s)", exc)
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
