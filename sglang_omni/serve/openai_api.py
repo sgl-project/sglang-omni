@@ -721,16 +721,8 @@ async def _await_speech_response(
 
 
 async def _wait_for_request_disconnect(request: Request) -> None:
-    while True:
-        try:
-            disconnected = await asyncio.wait_for(
-                request.is_disconnected(),
-                timeout=HTTP_DISCONNECT_POLL_INTERVAL_S,
-            )
-        except asyncio.TimeoutError:
-            disconnected = False
-        if disconnected:
-            return
+    while not await request.is_disconnected():
+        await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
 
 
 async def _prepend_speech_stream_event(
