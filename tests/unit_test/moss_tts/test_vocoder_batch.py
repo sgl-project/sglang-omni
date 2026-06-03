@@ -27,8 +27,19 @@ def make_mock_processor(waveforms: list[torch.Tensor]) -> MagicMock:
     processor = MagicMock()
     processor.model_config.audio_pad_code = 1024
     processor.model_config.sampling_rate = 24000
-    processor.audio_tokenizer = None
-    processor.decode_audio_codes.return_value = waveforms
+
+    mock_audio_tokenizer = MagicMock()
+    mock_audio_tokenizer.parameters.return_value = iter([torch.zeros(1)])
+    
+    mock_dec = MagicMock()
+    mock_dec.audio_lengths = torch.tensor([w.shape[0] for w in waveforms])
+    mock_dec.audio = torch.stack([
+        torch.nn.functional.pad(w, (0, max(w.shape[0] for w in waveforms) - w.shape[0])).unsqueeze(0)
+        for w in waveforms
+    ]).unsqueeze(1) 
+    mock_audio_tokenizer.decode.return_value = mock_dec
+    
+    processor.audio_tokenizer = mock_audio_tokenizer
     return processor
 
 
@@ -57,7 +68,7 @@ def test_vocode_batch_calls_decode_once():
         scheduler = create_vocoder_executor("fake/model", device="cpu")
         results = scheduler._batch_fn([payload1, payload2])
 
-    assert mock_processor.decode_audio_codes.call_count == 1
+    assert mock_processor.audio_tokenizer.decode.call_count == 1
     assert len(results) == 2
 
 
@@ -113,5 +124,5 @@ def test_vocode_batch_single_payload():
         scheduler = create_vocoder_executor("fake/model", device="cpu")
         results = scheduler._batch_fn([payload])
 
-    assert mock_processor.decode_audio_codes.call_count == 1
+    assert mock_processor.audio_tokenizer.decode.call_count == 1
     assert len(results) == 1
