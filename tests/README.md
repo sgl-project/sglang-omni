@@ -66,6 +66,8 @@ tests/
     │   ├── test_cli_async_decode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── moss_tts/
+    │   └── test_pipeline.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -303,6 +305,13 @@ that happened to contain an older version of the test.
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
   - async-decode default-on config + `--async-decode` tri-state CLI override.
+
+- `unit_test/moss_tts/`: MOSS-TTS unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR/vocoder stage factory wiring
+  - request mapping for `ref_audio`, `references`, and `token_count`
+  - preprocessing handoff and abort cleanup behavior
+  - delay-pattern runner, codec splitting, and seeded sampling contracts.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
