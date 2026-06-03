@@ -545,6 +545,8 @@ Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40
 
 ## Evaluation Benchmarks
 
+[TODO: Run the evaluation with SGLang inference.]
+
 We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on three zero-shot voice-cloning benchmarks.
 
 ### Seed-TTS
