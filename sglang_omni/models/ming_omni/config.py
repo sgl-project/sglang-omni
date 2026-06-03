@@ -110,7 +110,7 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_args={"thinker_max_seq_len": 8192},
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
-        stream_to=None if speech_enabled else [DECODE_STAGE],
+        stream_to=[] if speech_enabled else [DECODE_STAGE],
     )
 
 
