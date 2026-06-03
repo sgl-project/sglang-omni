@@ -19,6 +19,7 @@ from sglang_omni.serve.openai_api import (
     _await_speech_response,
     _chat_stream,
     _prepend_speech_stream_event,
+    _speech_audio_response,
     _speech_stream,
     build_transcription_generate_request,
 )
@@ -478,6 +479,23 @@ def test_speech_stream_audio_format_headers_use_chunk_sample_rate() -> None:
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
     assert response.content == expected
+
+
+def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
+    async def _drive() -> None:
+        client = PrefetchedBlockingStreamingSpeechClient()
+        response = await _speech_audio_response(
+            client=client,
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
+            request_id="req-1",
+            speed=1.0,
+        )
+        body = response.body_iterator
+        assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
+        await body.aclose()
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(_drive())
 
 
 def test_speech_stream_audio_format_rejects_non_pcm_response_format() -> None:

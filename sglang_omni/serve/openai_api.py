@@ -725,45 +725,66 @@ async def _speech_audio_response(
     chunk_stream = client.generate(gen_req, request_id=request_id)
     first_audio_bytes: bytes | None = None
     stream_sample_rate: int | None = None
+    stream_completed = False
 
-    async for chunk in chunk_stream:
-        if chunk.audio_data is None:
-            continue
-
-        first_audio_bytes, emitted_samples, stream_sample_rate = (
-            _speech_pcm_chunk_bytes(
-                chunk,
-                emitted_samples=emitted_samples,
-                speed=speed,
-            )
-        )
-        if first_audio_bytes is not None:
-            break
-
-    if first_audio_bytes is None or stream_sample_rate is None:
-        raise RuntimeError("No audio chunks received from raw PCM speech stream")
-
-    async def _body():
-        nonlocal emitted_samples
-        yield first_audio_bytes
-
+    try:
         async for chunk in chunk_stream:
             if chunk.audio_data is None:
                 continue
 
-            audio_bytes, emitted_samples, sample_rate = _speech_pcm_chunk_bytes(
-                chunk,
-                emitted_samples=emitted_samples,
-                speed=speed,
-            )
-            if audio_bytes is None:
-                continue
-            if sample_rate != stream_sample_rate:
-                raise RuntimeError(
-                    "Raw PCM speech stream sample rate changed from "
-                    f"{stream_sample_rate} to {sample_rate}"
+            first_audio_bytes, emitted_samples, stream_sample_rate = (
+                _speech_pcm_chunk_bytes(
+                    chunk,
+                    emitted_samples=emitted_samples,
+                    speed=speed,
                 )
-            yield audio_bytes
+            )
+            if first_audio_bytes is not None:
+                break
+        else:
+            stream_completed = True
+
+        if first_audio_bytes is None or stream_sample_rate is None:
+            raise RuntimeError("No audio chunks received from raw PCM speech stream")
+    except asyncio.CancelledError:
+        await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+        raise
+    except Exception:
+        if not stream_completed:
+            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+        else:
+            await _close_async_iterator_if_supported(chunk_stream)
+        raise
+
+    async def _body():
+        nonlocal emitted_samples
+        active_request = True
+        try:
+            yield first_audio_bytes
+
+            async for chunk in chunk_stream:
+                if chunk.audio_data is None:
+                    continue
+
+                audio_bytes, emitted_samples, sample_rate = _speech_pcm_chunk_bytes(
+                    chunk,
+                    emitted_samples=emitted_samples,
+                    speed=speed,
+                )
+                if audio_bytes is None:
+                    continue
+                if sample_rate != stream_sample_rate:
+                    raise RuntimeError(
+                        "Raw PCM speech stream sample rate changed from "
+                        f"{stream_sample_rate} to {sample_rate}"
+                    )
+                yield audio_bytes
+            active_request = False
+        finally:
+            if active_request:
+                await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            else:
+                await _close_async_iterator_if_supported(chunk_stream)
 
     return StreamingResponse(
         _body(),
@@ -825,6 +846,23 @@ async def _wait_for_request_disconnect(request: Request) -> None:
         await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
 
 
+async def _close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None:
+    close = getattr(stream, "aclose", None)
+    if close is not None:
+        await close()
+
+
+async def _abort_and_close_speech_stream(
+    client: Client,
+    request_id: str,
+    stream: AsyncIterator[Any],
+) -> None:
+    try:
+        await client.abort(request_id)
+    finally:
+        await _close_async_iterator_if_supported(stream)
+
+
 async def _prepend_speech_stream_event(
     first_event: str,
     stream: AsyncIterator[str],
@@ -834,9 +872,7 @@ async def _prepend_speech_stream_event(
         async for event in stream:
             yield event
     finally:
-        close = getattr(stream, "aclose", None)
-        if close is not None:
-            await close()
+        await _close_async_iterator_if_supported(stream)
 
 
 def _select_speech_audio_delta(

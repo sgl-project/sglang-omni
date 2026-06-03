@@ -195,93 +195,18 @@ class SpeechRequestValidator:
             prepared = self.prepare_generation_request(request)
             request = prepared.request
             reference_descriptors = prepared.reference_descriptors
-        explicit_generation_params = sorted(
-            field
-            for field in (
-                "max_new_tokens",
-                "temperature",
-                "top_p",
-                "top_k",
-                "repetition_penalty",
-                "seed",
-            )
-            if field in request.model_fields_set
-        )
-
-        tts_params: dict[str, Any] = {
-            "voice": request.voice,
-            "response_format": request.response_format,
-            "speed": request.speed,
-        }
-        if explicit_generation_params:
-            tts_params["explicit_generation_params"] = explicit_generation_params
-        if request.task_type is not None:
-            tts_params["task_type"] = request.task_type
-        if request.language is not None:
-            tts_params["language"] = request.language
-        if request.instructions is not None:
-            tts_params["instructions"] = request.instructions
-        if request.ref_audio is not None:
-            tts_params["ref_audio"] = request.ref_audio
-        if request.ref_text is not None:
-            tts_params["ref_text"] = request.ref_text
-        if request.x_vector_only_mode is not None:
-            tts_params["x_vector_only_mode"] = request.x_vector_only_mode
-        if request.initial_codec_chunk_frames is not None:
-            tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
-                request.initial_codec_chunk_frames
-            )
-        if request.token_count is not None:
-            tts_params["token_count"] = request.token_count
-        if request.duration_tokens is not None:
-            tts_params["duration_tokens"] = request.duration_tokens
-        if request.seed is not None:
-            tts_params["seed"] = request.seed
-
-        sampling = SamplingParams(
-            temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
-        )
-        if request.max_new_tokens is not None:
-            sampling.max_new_tokens = request.max_new_tokens
-        if request.temperature is not None:
-            sampling.temperature = request.temperature
-        if request.top_p is not None:
-            sampling.top_p = request.top_p
-        if request.top_k is not None:
-            sampling.top_k = request.top_k
-        if request.repetition_penalty is not None:
-            sampling.repetition_penalty = request.repetition_penalty
-        if request.seed is not None:
-            sampling.seed = request.seed
-
-        prompt: Any = request.input
-        if reference_descriptors is None:
-            reference_descriptors = _reference_descriptors_from_request(request)
-        if reference_descriptors:
-            prompt = {"text": request.input, "references": reference_descriptors}
-
-        extra_params: dict[str, Any] = {}
-        initial_codec_chunk_frames = request.initial_codec_chunk_frames
-        if (
-            initial_codec_chunk_frames is None
-            and request.stream
-            and request.stream_format == "audio"
-        ):
-            initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
-        if initial_codec_chunk_frames is not None:
-            extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
 
         return GenerateRequest(
             model=request.model or self.default_model,
-            prompt=prompt,
-            sampling=sampling,
+            prompt=_build_speech_prompt(request, reference_descriptors),
+            sampling=_build_sampling_params(request),
             stage_params=request.stage_params,
-            extra_params=extra_params,
+            extra_params=_build_extra_params(request),
             stream=request.stream,
             output_modalities=["audio"],
             metadata={
                 "task": "tts",
-                "tts_params": tts_params,
+                "tts_params": _build_tts_params(request),
             },
         )
 
@@ -385,6 +310,99 @@ class SpeechRequestValidator:
         message = self.encoder_dependency_errors.get(response_format)
         if message is not None:
             raise service_unavailable(message, param="response_format")
+
+
+def _explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
+    return sorted(
+        field
+        for field in (
+            "max_new_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+            "seed",
+        )
+        if field in request.model_fields_set
+    )
+
+
+def _build_tts_params(request: CreateSpeechRequest) -> dict[str, Any]:
+    tts_params: dict[str, Any] = {
+        "voice": request.voice,
+        "response_format": request.response_format,
+        "speed": request.speed,
+    }
+    explicit_generation_params = _explicit_generation_params(request)
+    if explicit_generation_params:
+        tts_params["explicit_generation_params"] = explicit_generation_params
+    if request.task_type is not None:
+        tts_params["task_type"] = request.task_type
+    if request.language is not None:
+        tts_params["language"] = request.language
+    if request.instructions is not None:
+        tts_params["instructions"] = request.instructions
+    if request.ref_audio is not None:
+        tts_params["ref_audio"] = request.ref_audio
+    if request.ref_text is not None:
+        tts_params["ref_text"] = request.ref_text
+    if request.x_vector_only_mode is not None:
+        tts_params["x_vector_only_mode"] = request.x_vector_only_mode
+    if request.initial_codec_chunk_frames is not None:
+        tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
+            request.initial_codec_chunk_frames
+        )
+    if request.token_count is not None:
+        tts_params["token_count"] = request.token_count
+    if request.duration_tokens is not None:
+        tts_params["duration_tokens"] = request.duration_tokens
+    if request.seed is not None:
+        tts_params["seed"] = request.seed
+    return tts_params
+
+
+def _build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
+    sampling = SamplingParams(
+        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    )
+    if request.max_new_tokens is not None:
+        sampling.max_new_tokens = request.max_new_tokens
+    if request.temperature is not None:
+        sampling.temperature = request.temperature
+    if request.top_p is not None:
+        sampling.top_p = request.top_p
+    if request.top_k is not None:
+        sampling.top_k = request.top_k
+    if request.repetition_penalty is not None:
+        sampling.repetition_penalty = request.repetition_penalty
+    if request.seed is not None:
+        sampling.seed = request.seed
+    return sampling
+
+
+def _build_speech_prompt(
+    request: CreateSpeechRequest,
+    reference_descriptors: list[dict[str, Any]] | None,
+) -> Any:
+    if reference_descriptors is None:
+        reference_descriptors = _reference_descriptors_from_request(request)
+    if reference_descriptors:
+        return {"text": request.input, "references": reference_descriptors}
+    return request.input
+
+
+def _build_extra_params(request: CreateSpeechRequest) -> dict[str, Any]:
+    extra_params: dict[str, Any] = {}
+    initial_codec_chunk_frames = request.initial_codec_chunk_frames
+    if (
+        initial_codec_chunk_frames is None
+        and request.stream
+        and request.stream_format == "audio"
+    ):
+        initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
+    if initial_codec_chunk_frames is not None:
+        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
+    return extra_params
 
 
 class _SpeechReferenceMediaIO(MediaIO[dict[str, str]]):

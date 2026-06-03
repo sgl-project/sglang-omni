@@ -50,7 +50,8 @@ sgl-omni serve \
 ```
 
 Remote HTTP(S) reference audio is allowed by default. Operators can restrict
-remote references to specific domains with `--allowed-media-domain`.
+remote references to specific domains with `--allowed-media-domain`. Set this
+allowlist when reference-audio fetches should be limited to trusted media hosts.
 
 For Voxtral:
 
