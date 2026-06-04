@@ -68,7 +68,7 @@ This smoke command launches the default speech-capable Ming pipeline. Add `--tex
 
 ### Vision Encoder Tensor Parallelism
 
-The Ming image (vision) encoder is stage index `2` in all three Ming pipelines (`preprocessing=0`, `audio_encoder=1`, `image_encoder=2`) and is configured through generic dotted stage overrides rather than a dedicated flag. The encoder has 16 attention heads, so TP=2 and TP=4 both shard evenly. `--stages.2.tp_size` sets the TP degree and `--stages.2.gpu` lists one GPU id per TP rank; the selector above fills these in when you raise **Vision TP**. TP=1 (single GPU) is the default — sharding helps only when the vision encoder is a throughput bottleneck for image/video workloads.
+The Ming image (vision) encoder can be sharded across GPUs with the dedicated `--image-encoder-tp-size` and `--image-encoder-gpus` flags, which mirror `--thinker-tp-size` / `--thinker-gpus`. `--image-encoder-gpus` takes one GPU id per TP rank as a comma list (`4,5`) or a JSON list (`[4, 5]`); the count must equal `--image-encoder-tp-size`. The encoder has 16 attention heads, so TP=2 and TP=4 both shard evenly. The selector above fills these in when you raise **Vision TP**. TP=1 (single GPU) is the default — sharding helps only when the vision encoder is a throughput bottleneck for image/video workloads.
 
 By default the encoder runs on GPU 0 alongside the thinker, so its TP ranks can reuse the thinker GPUs (**Vision GPUs: With thinker**) with no extra hardware, valid when Vision TP ≤ Thinker TP. Choose **Dedicated** to place the ranks on their own GPUs when the thinker GPUs are memory-bound.
 
@@ -82,7 +82,7 @@ The streaming pipeline is for audio chunks. The text-only `stream=true` path cur
 
 ### Placement and Memory Notes
 
-Use `--thinker-tp-size` to set thinker tensor parallelism and `--thinker-gpus` to choose the logical GPU ids. `--cpu-offload-gb`, `--quantization`, and `--mem-fraction-static` are forwarded to the thinker server. Use `--talker-gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--stages.2.tp_size` / `--stages.2.gpu` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
+Use `--thinker-tp-size` to set thinker tensor parallelism and `--thinker-gpus` to choose the logical GPU ids. `--cpu-offload-gb`, `--quantization`, and `--mem-fraction-static` are forwarded to the thinker server. Use `--talker-gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--image-encoder-tp-size` / `--image-encoder-gpus` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
 
 ## Input and Output Examples
 

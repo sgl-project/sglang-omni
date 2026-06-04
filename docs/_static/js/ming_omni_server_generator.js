@@ -81,8 +81,8 @@
     parts.push('--thinker-gpus ' + p.thinkerGpus.join(','));
     if (p.talkerGpu !== null) parts.push('--talker-gpu ' + p.talkerGpu);
     if (p.visionGpus) {
-      parts.push('--stages.2.tp_size ' + p.vT);
-      parts.push("--stages.2.gpu '[" + p.visionGpus.join(',') + "]'");
+      parts.push('--image-encoder-tp-size ' + p.vT);
+      parts.push('--image-encoder-gpus ' + p.visionGpus.join(','));
     }
     parts.push('--cpu-offload-gb 0');
     parts.push('--mem-fraction-static ' + HARDWARE[ctx.hw].mem);
@@ -106,8 +106,8 @@
       items.push({ flag: '--talker-gpu ' + p.talkerGpu, desc: 'Dedicated talker GPU for speech output (must not overlap the thinker)' });
     }
     if (p.visionGpus) {
-      items.push({ flag: '--stages.2.tp_size ' + p.vT, desc: 'Tensor-parallel the image (vision) encoder, stage index 2, across ' + p.vT + ' ranks' });
-      items.push({ flag: "--stages.2.gpu '[" + p.visionGpus.join(',') + "]'",
+      items.push({ flag: '--image-encoder-tp-size ' + p.vT, desc: 'Tensor-parallel the image (vision) encoder across ' + p.vT + ' ranks' });
+      items.push({ flag: '--image-encoder-gpus ' + p.visionGpus.join(','),
                    desc: p.colo
                      ? 'Vision-encoder ranks colocated on thinker GPUs ' + p.visionGpus.join(', ')
                      : 'Vision-encoder ranks on dedicated GPUs ' + p.visionGpus.join(', ') });
