@@ -38,4 +38,4 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not docs" -x
+            pytest tests/ -v -m "not benchmark" -x
