@@ -1,19 +1,7 @@
 # Higgs TTS
 
 [Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
-is a text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
-24 kHz speech through 8 discrete codebooks and supports 100 languages, voice cloning from a
-reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.
-
-## Highlights
-
-- **Multilingual** — 100 languages with single-digit WER/CER
-- **Voice clone accuracy** — high-fidelity zero-shot speaker cloning from reference clips
-- **Inline control** via `<|emotion:…|>`, `<|style:…|>`, `<|sfx:…|>`, `<|prosody:…|>` tags
-
-The **100-language single-digit WER/CER** claim comes from our internal **Higgs-Multilingual** benchmark — an extension of FLEURS-102 covering 111 languages and dialects, of which Higgs Audio v3 TTS reaches single-digit WER/CER on 100.
-
-## Architecture
+is a text-to-speech model from Boson AI. It generates **24 kHz speech** and supports **100 languages**, voice cloning from a reference clip, and fine-grained **inline control** over emotion, style, sound effects, and prosody.
 
 ![Higgs Audio v3 Generation Architecture](../_static/image/higgs-architecture.png)
 
@@ -22,9 +10,62 @@ Higgs autoregressive decoder consumes interleaved text and audio tokens. Audio i
 | Component | Spec |
 |---|---|
 | Backbone | ~4B autoregressive decoder (36 L, hidden=2560, GQA 32/8) |
-| Audio tokens | 8 codebooks × 1026 vocab, delay pattern |
 | Multi-codebook embedding / head | Fused single-tensor, tied with text embedding |
 | Context length | 8,192 tokens (training sequence length) |
+| Audio tokens | 8 codebooks × 1026 vocab, delay pattern |
+| Sample rate | 24 kHz |
+| Frame rate | 25 fps (40 ms / frame) |
+
+## Supported Languages
+
+The model reaches **single-digit WER/CER on 100 languages**, which split into two tiers.
+
+### WER/CER under 5 — polished, production-quality (82)
+
+🇿🇦 Afrikaans · 🇸🇦🇪🇬 Arabic · 🇦🇲 Armenian · 🇮🇳 Assamese · 🇪🇸 Asturian · 🇦🇿 Azerbaijani · 🇷🇺 Bashkir · 🇪🇸 Basque · 🇧🇾 Belarusian · 🇧🇩🇮🇳 Bengali · 🇧🇦 Bosnian · 🇧🇬 Bulgarian · 🇪🇸 Catalan · 🇵🇭 Cebuano · 🇮🇶 Central Kurdish · 🇨🇳 Chinese · 🇭🇷 Croatian · 🇨🇿 Czech · 🇩🇰 Danish · 🇳🇱🇧🇪 Dutch · 🇷🇺 Eastern Mari · 🇺🇸🇬🇧🇦🇺 English · 🌐 Esperanto · 🇪🇪 Estonian · 🇫🇮 Finnish · 🇫🇷🇨🇦 French · 🇪🇸 Galician · 🇬🇪 Georgian · 🇩🇪🇦🇹 German · 🇬🇷 Greek · 🇮🇳 Gujarati · 🇭🇹 Haitian Creole · 🇳🇬 Hausa · 🇮🇱 Hebrew · 🇮🇳 Hindi · 🇭🇺 Hungarian · 🇮🇩 Indonesian · 🇮🇹 Italian · 🇮🇩 Javanese · 🇮🇳 Kannada · 🇰🇿 Kazakh · 🇷🇼 Kinyarwanda · 🇰🇬 Kyrgyz · 🇱🇻 Latvian · 🇨🇩 Lingala · 🇱🇹 Lithuanian · 🇰🇪 Luo · 🇲🇰 Macedonian · 🇲🇾🇮🇩 Malay · 🇮🇳 Malayalam · 🇲🇹 Maltese · 🇳🇿 Māori · 🇮🇳 Marathi · 🇲🇳 Mongolian · 🇳🇵 Nepali · 🇳🇴 Norwegian · 🇫🇷 Occitan · 🇮🇷🇦🇫 Persian · 🇵🇱 Polish · 🇵🇹🇧🇷 Portuguese · 🇷🇴 Romanian · 🇷🇺 Russian · 🇿🇦 Sepedi · 🇷🇸 Serbian · 🇿🇼 Shona · 🇸🇰 Slovak · 🇸🇮 Slovene · 🇪🇸🇲🇽 Spanish · 🇹🇿🇰🇪 Swahili · 🇸🇪 Swedish · 🇵🇭 Tagalog · 🇹🇯 Tajik · 🇮🇳🇱🇰 Tamil · 🇮🇳 Telugu · 🇹🇷 Turkish · 🇺🇦 Ukrainian · 🇵🇰🇮🇳 Urdu · 🇨🇳 Uyghur · 🇺🇿 Uzbek · 🇻🇳 Vietnamese · 🇿🇦 Xhosa · 🇿🇦 Zulu · 🇰🇷 Korean
+
+### WER/CER between 5 and 10 — usable, but less polished (18)
+
+🇦🇱 Albanian · 🇲🇼🇿🇲 Chichewa/Nyanja · 🇮🇳🇵🇰 Eastern Punjabi · 🇺🇬 Ganda · 🇮🇸 Icelandic · 🇮🇪 Irish · 🇩🇿 Kabyle · 🇨🇻 Kabuverdianu · 🇰🇪 Kamba · 🇻🇦 Latin · 🇱🇺 Luxembourgish · 🇪🇹🇰🇪 Oromo · 🇦🇫🇵🇰 Pashto · 🇵🇰🇮🇳 Sindhi · 🇸🇴 Somali · 🇦🇴 Umbundu · 🇬🇧 Welsh
+
+## Control Tokens
+
+All tags follow `<|category:value|>` syntax and can be inserted mid-utterance.
+
+- **Emotion** — `elation`, `amusement`, `enthusiasm`, `determination`, `pride`, `contentment`, `affection`, `relief`, `contemplation`, `confusion`, `surprise`, `awe`, `longing`, `arousal`, `anger`, `fear`, `disgust`, `bitterness`, `sadness`, `shame`, `helplessness`
+- **Style** — `singing`, `shouting`, `whispering`
+- **Sound effects** — `cough`, `laughter`, `crying`, `screaming`, `burping`, `humming`, `sigh`, `sniff`, `sneeze`
+- **Prosody**
+  - Speed — `speed_very_slow` (&approx;0.65×), `speed_slow` (&approx;0.85×), `speed_fast` (&approx;1.2×), `speed_very_fast` (&approx;1.4×)
+  - Pauses — `pause` (&approx;400–700 ms), `long_pause` (&approx;700–1500 ms)
+  - Pitch — `pitch_low` (&approx;−3 st), `pitch_high` (&approx;+2.5 st)
+  - Delivery — `expressive_high`, `expressive_low`
+
+## Evaluation Benchmarks
+
+### Multilingual Voice Clone
+
+We evaluate Higgs Audio v3 TTS on public multilingual TTS suites and our internal 111-language Higgs-Multilingual set, covering both common and lower-resource languages.
+
+WER / CER (↓, ×100) macro-averaged across each benchmark's language set. Lower is better; **bold** marks the best per row. All numbers are reproducible end-to-end with original metrics and normalization.
+
+| Benchmark | Higgs Audio v2 | Higgs Audio v3 | Fish Audio S2 Pro | Qwen3-TTS-1.7B | VibeVoice-7B | IndexTTS-2 | MiMo-Audio-7B-Instruct | MOSS-TTS-v1.5 | OmniVoice | ChatterBox | FireRedTTS-2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SeedTTS | 2.10 | **1.11** | 1.31 | 1.30 | 3.59 | 1.63 | 3.70 | 1.73 | 1.21 | 17.00 | 1.72 |
+| CV3 | 21.19 | **4.41** | 4.60 | 7.73 | 11.66 | 129.26 | 71.55 | 6.11 | 4.92 | 32.62 | 19.20 |
+| MiniMax-Multilingual | 49.86 | **2.74** | 5.15 | 27.41 | 8.21 | 112.91 | 85.67 | 3.78 | 2.98 | 49.30 | 12.52 |
+| Higgs-Multilingual | 52.24 | **3.61** | 8.68 | 97.09 | 13.74 | 57.71 | 59.61 | 21.28 | 3.63 | 57.52 | 33.69 |
+
+### Emergent TTS
+
+Win-rate (↑) per category — judge preference vs the BASELINE row; **bold** marks the highest win-rate per column. For a fair comparison, every model shares the same reference audio per prompt, and we run the benchmark text verbatim — no inline control tags inserted.
+
+| Model | Overall ↑ | Emotions ↑ | Foreign Words ↑ | Paralinguistics ↑ | Complex Pronunciation ↑ | Questions ↑ | Syntactic Complexity ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Higgs Audio v3 | **53.65%** | 53.75% | **48.75%** | **68.57%** | 25.10% | **61.43%** | **60.71%** |
+| Fish Audio S2 Pro | 43.80% | 53.04% | 33.93% | 53.75% | 18.16% | 55.00% | 45.71% |
+| Qwen3-TTS-1.7B | 38.84% | 45.54% | 24.64% | 44.29% | **30.00%** | 53.39% | 34.11% |
+| OmniVoice | 40.82% | **61.07%** | 28.75% | 52.68% | 13.67% | 45.00% | 40.36% |
 
 ## Prerequisites
 
@@ -554,26 +595,12 @@ resp = requests.post(
 
 ### Throughput
 
-[TODO (yichi, Huapeng): This should be updated in the last minute.]
-
-Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40GB, bf16):
+Throughput on Seed-TTS EN (full set, 1088 samples). Each row is the mean of 3 complete runs (1088/1088 succeeded). Hardware: 1× H100.
 
 | Concurrency | Mean latency | RTF (per-req) | audio_s/s |
 |---:|---:|---:|---:|
-| 1 | [—] | [—] | [—] |
-| 16 | [—] | [—] | [—] |
-| 32 | [—] | [—] | [—] |
-
-## Evaluation Benchmarks
-
-We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on the Seed-TTS zero-shot voice-cloning benchmark.
-
-### Seed-TTS
-
-| Lang | WER ↓ | SIM ↑ |
-|---|---|---|
-| en | [0.80] | [73.00] |
-| zh | [1.46] | [67.26] |
-| **macro** | **[1.13]** | **[70.13]** |
-
-Results are generated with SGLang Omni. WER/CER and speaker similarity follow the original text normalization and metric implementation from [seed-tts-eval](https://github.com/BytedanceSpeech/seed-tts-eval).
+| 1 | 617 ms | 0.147 | 6.89 |
+| 2 | 742 ms | 0.180 | 11.37 |
+| 4 | 733 ms | 0.177 | 22.84 |
+| 8 | 898 ms | 0.217 | 37.38 |
+| 16 | 1079 ms | 0.262 | 61.84 |
