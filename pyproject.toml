@@ -86,7 +86,6 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
-    "docs: static documentation contract checks (no model launch)",
 ]
 
 [tool.setuptools.packages.find]
