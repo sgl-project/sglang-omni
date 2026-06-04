@@ -279,13 +279,12 @@ class SpeechRequestValidator:
     ) -> dict[str, str]:
         url = urlparse(value)
         if url.scheme not in {"http", "https", "data", "file"}:
-            if Path(value).is_absolute():
-                value = Path(value).expanduser().resolve().as_uri()
-            else:
+            if url.scheme:
                 raise bad_request(
-                    f"{param} must be an http, https, data, or file:// URL",
+                    f"{param} must be an http, https, data, file:// URL, or local path",
                     param=param,
                 )
+            value = Path(value).expanduser().resolve().as_uri()
         try:
             return self.reference_connector.load_resource(
                 value,

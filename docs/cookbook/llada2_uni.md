@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multi-modal model that accepts text, and image input and can produce text-only or image-only or text + image output.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
 
 ## Highlights
 
@@ -20,7 +20,9 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline (`preprocessing → image_encoder → thinker → decode`) on a single GPU.
+LLaDA2.0-Uni runs a 4-stage pipeline
+(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
+thinker disables CUDA graph by default for this experimental DLLM path.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
@@ -142,3 +144,9 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 - Text-to-image generation
 - Text-to-Image Generation with Thinking
 - Interleaved Generation
+
+## Known Limitations
+
+- Text output is supported for text and image input. Image generation and
+  interleaved generation are not wired to the OpenAI-compatible response path
+  yet.

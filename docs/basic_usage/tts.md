@@ -22,11 +22,11 @@ uv pip install --no-deps qwen-tts==0.1.1
 
 | Model family | Example config | Request notes |
 |---|---|---|
-| Fish Speech S2-Pro | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
+| [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`; use `--no-ref-audio` for SeedTTS benchmarking |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`; `language` defaults to `auto` |
-| Qwen3-TTS CustomVoice | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
-| Qwen3-TTS VoiceDesign | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
+| [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
 
 ## Launch the Server
@@ -38,8 +38,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-Local `file://` reference audio is disabled by default. To allow local
-reference files, launch with an explicit directory:
+Local reference audio is disabled by default. To allow local paths or
+`file://` reference files, launch with an explicit directory:
 
 ```bash
 sgl-omni serve \
@@ -139,11 +139,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a reference audio clip.
 
-### Voice Cloning
+### Fish Speech Voice Cloning
 
 The examples below use an allowed local audio clip. The `references` field
-accepts `audio_path` as a data URL or an allowed `file://` URI, plus `text`
-(transcript of that audio).
+accepts `audio_path` as allowed HTTP(S), data URL, allowed local path, or an
+allowed `file://` URI, plus `text` (transcript of that audio).
 
 1. Non-streaming request
 
@@ -327,8 +327,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |
 | `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes; the response headers declare the stream sample rate, channel count, and bit depth |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first; raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed HTTP(S), data URL, or allowed `file://` URI) and `text` |
-| `ref_audio` | string | `null` | Reference audio as allowed HTTP(S), data URL, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed HTTP(S), data URL, allowed local path, or allowed `file://` URI) and `text` |
+| `ref_audio` | string | `null` | Reference audio as allowed HTTP(S), data URL, allowed local path, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
 | `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |

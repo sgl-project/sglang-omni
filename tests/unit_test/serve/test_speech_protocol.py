@@ -527,6 +527,22 @@ def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
     assert prepared_again.ref_audio == str(audio_path.resolve())
 
 
+def test_relative_file_reference_resolves_inside_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    monkeypatch.chdir(tmp_path)
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=tmp_path,
+    )
+
+    request = service.parse_request({"input": "hello", "ref_audio": "reference.wav"})
+
+    assert request.ref_audio == str(audio_path.resolve())
+
+
 def test_file_reference_accepts_localhost_file_url(tmp_path: Path) -> None:
     audio_path = tmp_path / "reference.wav"
     audio_path.write_bytes(b"RIFF")

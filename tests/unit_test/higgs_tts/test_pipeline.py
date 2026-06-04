@@ -102,7 +102,10 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     assert captured["context_length"] == 4096
     assert captured["gpu_id"] == 0
     assert captured["overrides"]["disable_cuda_graph"] is False
-    assert captured["overrides"]["cuda_graph_max_bs"] == 32
+    assert captured["overrides"]["cuda_graph_max_bs"] == stages.DEFAULT_MAX_CONCURRENCY
+    assert (
+        captured["overrides"]["max_running_requests"] == stages.DEFAULT_MAX_CONCURRENCY
+    )
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["adapter_kwargs"] == {"max_new_tokens_cap": 2048}
     assert (
