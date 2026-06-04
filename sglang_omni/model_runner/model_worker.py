@@ -375,7 +375,6 @@ def _get_config_value(config: object, key: str) -> object | None:
 
 
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror pinned SGLang 0.5.8 FP8 CUTLASS MoE assertions."""
     try:
         from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
         from sglang.srt.utils import is_sm90_supported, is_sm100_supported

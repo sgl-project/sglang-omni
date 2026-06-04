@@ -15,7 +15,7 @@ Run:
     pytest -v -m benchmark tests/test_model/test_v1_encoder_qwen3_vl_hf_parity.py
 
 Requires:
-    - 1× H100 (or equivalent ≥ 80GB GPU) with sglang==0.5.8 and transformers
+    - 1× H100 (or equivalent ≥ 80GB GPU) with sglang==0.5.12 and transformers
     - HF cache populated for ``Qwen/Qwen3-Omni-30B-A3B-Instruct``
 """
 from __future__ import annotations

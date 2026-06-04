@@ -185,9 +185,8 @@ def make_qwen3_asr_scheduler_adapters(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
         # Keep the full padded mel; the model's get_audio_feature uses the mask
-        # to select valid frames. (Its no-mask branch transposes wrong, so the
-        # mask path must be taken — we hand the mask over via model_specific_data
-        # since sglang 0.5.8's MultimodalDataItem has no such field.)
+        # to select valid frames. Its no-mask branch transposes wrong, so the
+        # mask path must be taken.
         num_mel_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = int(qwen3_asr_num_audio_tokens(num_mel_frames))
         logger.debug(
@@ -205,10 +204,10 @@ def make_qwen3_asr_scheduler_adapters(
             modality=Modality.AUDIO,
             hash=_audio_fingerprint_int(fingerprint),
             feature=features,
+            model_specific_data={
+                "feature_attention_mask": feature_attention_mask,
+            },
         )
-        # get_audio_feature reads item.feature_attention_mask via __getattr__;
-        # stash it in model_specific_data (not a real dataclass field in 0.5.8).
-        audio_item.set("feature_attention_mask", feature_attention_mask)
         # general_mm_embed_routine locates audio positions by matching each
         # item's pad_value against input_ids. The omni scheduler does not run
         # pad_input_ids for us, so compute the pad_value, replace the

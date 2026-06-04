@@ -111,6 +111,7 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
 
     audio_item = data.req.multimodal_inputs.mm_items[0]
     start, end = audio_item.offsets[0]
+    assert audio_item.feature_attention_mask.shape == (1, num_mel_frames)
     assert end - start + 1 == num_audio_tokens
     assert data.prompt_token_ids[start : end + 1] == (
         [audio_item.pad_value] * num_audio_tokens
