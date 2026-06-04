@@ -62,8 +62,8 @@ def test_ming_cookbook_uses_generic_serve() -> None:
         "--talker-gpu",
         "--cpu-offload-gb",
         "--mem-fraction-static",
-        "--stages.2.tp_size",
-        "--stages.2.gpu",
+        "--image-encoder-tp-size",
+        "--image-encoder-gpus",
     ]:
         assert snippet in doc
     assert "examples/run_ming_omni_server.py" not in doc
