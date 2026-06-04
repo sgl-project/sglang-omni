@@ -1,6 +1,6 @@
 # Ming-Omni
 
-[Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into 44.1 kHz speech.
+[Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into speech. The talker runs a 44.1 kHz VAE internally, but the `/v1/chat/completions` speech path currently delivers the WAV at 24 kHz (see [Known Limitations](#known-limitations)).
 
 Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Qwen3-Omni](./qwen3_omni.md).
 
@@ -23,6 +23,21 @@ hf download inclusionAI/Ming-flash-omni-Preview tokenizer.json tokenizer_config.
 Ming-flash-omni-2.0 is a large MoE model. For practical serving, use tensor parallelism for the thinker. The examples below use logical GPU ids inside `CUDA_VISIBLE_DEVICES`; with `CUDA_VISIBLE_DEVICES=0,1,2,3,4`, `--thinker-gpus 0,1,2,3` means the thinker uses the first four visible GPUs and `--talker-gpu 4` uses the fifth visible GPU.
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    IN["Inputs<br/>text · image · audio · video"] --> PRE["preprocessing"]
+    PRE --> AE["audio_encoder"]
+    PRE --> IE["image_encoder"]
+    AE --> AGG["mm_aggregate"]
+    IE --> AGG
+    AGG --> THK["thinker<br/>text generation (TP)"]
+    THK -->|text| DEC["decode → text"]
+    THK -->|speech| TLK["talker → speech"]
+    THK -->|streaming speech| SEG["segmenter → talker_stream<br/>chunked audio over SSE"]
+```
+
+Media preprocessing and the audio/image encoders prepare multimodal embeddings, `mm_aggregate` fuses them, the thinker generates response text, and the terminal stage decides the output: `decode` for text, `talker` for full-utterance speech, or `segmenter -> talker_stream` for chunked streaming audio.
 
 Ming has three serving variants:
 
@@ -119,6 +134,12 @@ resp.raise_for_status()
 print(resp.json()["choices"][0]["message"]["content"])
 ```
 
+Output (text-only TP4 server, `temperature: 0.0`):
+
+```text
+你好，我是通义千问，一个由阿里云开发的超大规模语言模型，可以回答各种问题、提供帮助和进行对话。
+```
+
 ### Image and Text Input
 
 Top-level `images` are supported. The preprocessor injects them into the first user message and keeps media cache keys separate so multimodal placeholders do not alias in the prefix cache.
@@ -134,6 +155,32 @@ curl -X POST http://localhost:8000/v1/chat/completions \
     "max_tokens": 64,
     "temperature": 0.0
   }'
+```
+
+Python:
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "ming-omni",
+        "messages": [{"role": "user", "content": "How many cars are in this image?"}],
+        "images": ["/path/to/cars.jpg"],
+        "modalities": ["text"],
+        "max_tokens": 64,
+        "temperature": 0.0,
+    },
+)
+resp.raise_for_status()
+print(resp.json()["choices"][0]["message"]["content"])
+```
+
+Output (image of four parked cars, `temperature: 0.0`):
+
+```text
+4
 ```
 
 ### Audio and Image Input
@@ -154,6 +201,36 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
+Python:
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "ming-omni",
+        "messages": [{"role": "user", "content": ""}],
+        "images": ["/path/to/cars.jpg"],
+        "audios": ["/path/to/question.wav"],
+        "modalities": ["text"],
+        "max_tokens": 64,
+        "temperature": 0.0,
+    },
+)
+resp.raise_for_status()
+print(resp.json()["choices"][0]["message"]["content"])
+```
+
+Output (spoken question "how many cars" over the same image; truncated at `max_tokens: 64`):
+
+```text
+To determine the number of cars in the picture, we analyze each section of the image:
+
+1. **Top - left section**: Contains 1 car (a white Rolls - Royce).
+2. **Top - right section**: Contains 1 car (a gray Mercedes - Benz SUV).
+```
+
 ### Video Input
 
 Video files use the same top-level request style. Limit frame count or pixel budget for predictable latency:
@@ -172,9 +249,52 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
+Python:
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "ming-omni",
+        "messages": [{"role": "user", "content": "Describe the action in this video."}],
+        "videos": ["/path/to/demo.mp4"],
+        "video_max_frames": 16,
+        "modalities": ["text"],
+        "max_tokens": 96,
+        "temperature": 0.0,
+    },
+)
+resp.raise_for_status()
+print(resp.json()["choices"][0]["message"]["content"])
+```
+
+Output (short clip of someone drawing on a tablet, `temperature: 0.0`):
+
+```text
+In the video, a person is seen using a stylus to draw a guitar on a tablet. The individual's left hand is holding the tablet steady while the right hand, holding the stylus, is actively sketching the guitar. The drawing process appears to be in progress, with the guitar taking shape on the tablet's screen.
+```
+
 ### Text Input, Text + Audio Output
 
-Launch the speech server first, then request audio with `modalities: ["text", "audio"]`:
+Launch the speech server first (the `Text + Audio Output` command above), then request audio with `modalities: ["text", "audio"]`. The speech reply comes back in `choices[0].message.audio.data` as base64 WAV.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ming-omni",
+    "messages": [{"role": "user", "content": "Say a short hello in English."}],
+    "modalities": ["text", "audio"],
+    "audio": {"format": "wav"},
+    "max_tokens": 64,
+    "temperature": 0.0
+  }' \
+  | python3 -c 'import sys, json, base64; m = json.load(sys.stdin)["choices"][0]["message"]; print(m.get("content", "")); open("ming_output.wav", "wb").write(base64.b64decode(m["audio"]["data"]))'
+```
+
+Python:
 
 ```python
 import base64
@@ -200,9 +320,33 @@ with open("ming_output.wav", "wb") as f:
     f.write(audio)
 ```
 
+Output (speech server, `temperature: 0.0`):
+
+```text
+Hello! How can I assist you today?
+```
+
+`ming_output.wav` is a mono WAV. The header sample rate is currently **24 kHz** (≈4.8 s, ~224 KB for this reply) — see [Known Limitations](#known-limitations) for the 44.1 kHz/24 kHz note.
+
 ### Streaming Speech
 
-With a streaming speech server, set `"stream": true` and consume Server-Sent Events. Audio chunks arrive in `choices[0].delta.audio.data`.
+With a streaming speech server, set `"stream": true` and consume Server-Sent Events. Audio chunks arrive in `choices[0].delta.audio.data`. To inspect the raw SSE stream with curl (use `-N` to disable buffering):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ming-omni",
+    "messages": [{"role": "user", "content": "Say one friendly sentence."}],
+    "modalities": ["text", "audio"],
+    "audio": {"format": "wav"},
+    "stream": true,
+    "max_tokens": 64,
+    "temperature": 0.0
+  }'
+```
+
+Python (decodes and writes each audio chunk):
 
 ```python
 import base64
@@ -247,6 +391,14 @@ with requests.post(
 ```
 
 The example writes each audio chunk as a separate WAV file. If you want one playback file, parse each WAV chunk and concatenate PCM frames with a standard audio library.
+
+Output: with the streaming speech pipeline the audio arrives as multiple `delta.audio.data` chunks. Against the **non-streaming** speech server (the `Text + Audio Output` command), `stream: true` still returns valid SSE but the audio comes back as a single aggregate chunk after generation — for example three SSE events carrying the text `Hello! How can I assist you today?` and one ~241 KB WAV chunk:
+
+```text
+Hello! How can I assist you today?
+```
+
+The streamed WAV chunks carry the same 24 kHz header as the non-streaming speech reply.
 
 ## Request Parameters
 
@@ -307,7 +459,7 @@ Throughput scales ~6.9× from c=1 to c=16; accuracy stays within MMMU sample noi
 
 ### Non-Streaming Talker
 
-Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU. Measured against the 7-stage non-streaming `MingOmniSpeechPipelineConfig` with `stream=false` (not the streaming pipeline); every request returned real 44.1 kHz audio (`n_fail=0`, mean ~6.3 s/clip).
+Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU. Measured against the 7-stage non-streaming `MingOmniSpeechPipelineConfig` with `stream=false` (not the streaming pipeline); every request returned real 24 kHz audio (`n_fail=0`, mean ~6.3 s/clip).
 
 | Concurrency | Throughput | Mean wall | p95 wall |
 |---:|---:|---:|---:|
@@ -345,7 +497,9 @@ Intelligibility is fully preserved; streaming and non-streaming are close but no
 
 ## Known Limitations
 
-- **Ming is large.** Use thinker TP and plan GPU placement deliberately. CPU offload can make the model fit but slows inference.
+- **Ming is large.** Use thinker TP and plan GPU placement deliberately. On 80 GB H100-class GPUs the MoE thinker does not fit on a single GPU, so bare default placement (no `--thinker-tp-size`) out-of-memories during startup — TP=4 is the smallest placement that loads (TP=1 and TP=2 both OOM). CPU offload can make the model fit on fewer GPUs but slows inference.
+- **Speech WAV is delivered at 24 kHz.** The talker VAE runs at 44.1 kHz internally, but the `/v1/chat/completions` speech path encodes the returned WAV header at 24 kHz: `chunk.sample_rate` from the talker does not reach `encode_audio`, so `DEFAULT_SAMPLE_RATE = 24000` (`sglang_omni/client/audio.py`) is used. Audio is intelligible; only the header rate is affected. Forward the talker sample rate through the completion/stream response builders to deliver 44.1 kHz.
+- **Image-encoder TP is set with dedicated flags.** Use `--image-encoder-tp-size` and `--image-encoder-gpus` (see [Vision Encoder Tensor Parallelism](#vision-encoder-tensor-parallelism)). The generic dotted `--stages.<i>.gpu` CLI override only accepts a single integer GPU id, so it cannot express a per-rank GPU list — use the dedicated flags instead.
 - **Speech output uses `/v1/chat/completions`.** Ming's omni speech path is chat-completions text + audio, not the `/v1/audio/speech` TTS endpoint used by S2-Pro, Higgs, Voxtral, and Qwen3-TTS.
 - **Streaming speech launch needs a pipeline config today.** Generic `sgl-omni serve --model-path` exposes default speech and `--text-only` directly. Streaming speech uses `MingOmniStreamingSpeechPipelineConfig`.
 - **Text streaming is not token-by-token today.** In the current Ming path, text-only `stream=true` currently emits an aggregate text chunk. Use streaming speech when you need audio chunks.
