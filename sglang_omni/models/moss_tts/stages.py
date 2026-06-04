@@ -305,7 +305,7 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     dtype: str = "float32",
     max_batch_size: int = 8,
-    max_batch_wait_ms: int = 100,
+    max_batch_wait_ms: int = 50,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
@@ -384,7 +384,6 @@ def create_vocoder_executor(
         return _store_vocoder_result(payload, state, wav, sample_rate)
 
     def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        # print(f"[BATCH] vocoder batch size: {len(payloads)}", flush=True)
         all_segments = []
         payload_segment_ranges = []
         states = []
@@ -423,8 +422,12 @@ def create_vocoder_executor(
             ]
             nq = int(codes_list[0].shape[0])
             max_t = max(int(c.shape[1]) for c in codes_list)
-            audio_codes = torch.zeros(nq, len(codes_list), max_t, device=device, dtype=torch.long)
-            padding_mask = torch.zeros(len(codes_list), max_t, device=device, dtype=torch.bool)
+            audio_codes = torch.zeros(
+                nq, len(codes_list), max_t, device=device, dtype=torch.long
+            )
+            padding_mask = torch.zeros(
+                len(codes_list), max_t, device=device, dtype=torch.bool
+            )
             for i, c in enumerate(codes_list):
                 t = int(c.shape[1])
                 audio_codes[:, i, :t] = c
@@ -451,7 +454,6 @@ def create_vocoder_executor(
             )
             results.append(_store_vocoder_result(payload, state, waveform, sample_rate))
         return results
-
 
     return SimpleScheduler(
         _vocode,

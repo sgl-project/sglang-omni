@@ -30,12 +30,12 @@ def make_mock_processor(waveforms: list[torch.Tensor]) -> MagicMock:
 
     mock_audio_tokenizer = MagicMock()
     mock_audio_tokenizer.parameters.return_value = iter([torch.zeros(1)])
-    
+
     mock_dec = MagicMock()
     mock_dec.audio_lengths = torch.tensor([w.shape[0] for w in waveforms])
     mock_dec.audio = torch.zeros(len(waveforms), 1, max(w.shape[0] for w in waveforms))
     for i, w in enumerate(waveforms):
-        mock_dec.audio[i, 0, :w.shape[0]] = w
+        mock_dec.audio[i, 0, : w.shape[0]] = w
     mock_audio_tokenizer.decode.return_value = mock_dec
     processor.audio_tokenizer = mock_audio_tokenizer
     return processor
@@ -124,3 +124,41 @@ def test_vocode_batch_single_payload():
 
     assert mock_processor.audio_tokenizer.decode.call_count == 1
     assert len(results) == 1
+
+
+def test_vocode_batch_multi_segment_payload():
+    """A payload with two audio segments should cat them into one waveform."""
+    from sglang_omni.models.moss_tts.stages import create_vocoder_executor
+
+    codes = torch.tensor([[1, 1024], [2, 3], [1024, 4], [1024, 1024]], dtype=torch.long)
+    payload = make_payload("req-1", codes)
+
+    seg0_wav = torch.full((100,), 1.0)
+    seg1_wav = torch.full((80,), 2.0)
+    mock_processor = make_mock_processor([seg0_wav, seg1_wav])
+
+    seg0 = torch.zeros(10, 2, dtype=torch.long)
+    seg1 = torch.zeros(8, 2, dtype=torch.long)
+
+    with (
+        patch(
+            "sglang_omni.models.moss_tts.stages._load_moss_processor",
+            return_value=mock_processor,
+        ),
+        patch(
+            "sglang_omni.models.moss_tts.stages.split_moss_audio_segments",
+            return_value=[seg0, seg1],
+        ),
+    ):
+        scheduler = create_vocoder_executor("fake/model", device="cpu")
+        results = scheduler._batch_fn([payload])
+
+    assert mock_processor.audio_tokenizer.decode.call_count == 1
+    call_args = mock_processor.audio_tokenizer.decode.call_args
+    assert call_args[0][0].shape[1] == 2
+
+    audio = torch.from_numpy(
+        np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32).copy()
+    )
+    expected = torch.cat([seg0_wav, seg1_wav])
+    assert torch.allclose(audio, expected)
