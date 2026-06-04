@@ -23,3 +23,5 @@ class RequestResult:
     audio_ttfp_s: float | None = None
     inter_chunk_s: list[float] = field(default_factory=list)
     text_ttft_s: float | None = None
+    audio_chunk_count: int = 0
+    first_audio_payload_bytes: int = 0

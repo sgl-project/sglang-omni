@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/docs/_static/image/sgl-omni-logo.png" alt="logo" width="400"></img>
+<img src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/docs/_static/image/sgl-omni-logo.svg" alt="logo" width="400"></img>
 
 [![license](https://img.shields.io/github/license/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/tree/main/LICENSE)
 [![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
@@ -26,7 +26,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in `/v1/audio/speech` and `/v1/chat/completions` endpoints with real-time streaming support.
-- **Broad Model Support**: Supports a growing set of TTS and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
+- **Broad Model Support**: Supports a growing set of TTS and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, MOSS-TTS, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
 
 ## Supported Models
 
@@ -36,6 +36,7 @@ Core features:
 | [fishaudio/s2-pro](https://huggingface.co/fishaudio/s2-pro) | TTS | Voice cloning, streaming |
 | [mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) | TTS | Named voices, streaming, 9 languages |
 | [Qwen/Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | TTS | Voice cloning, streaming, 10 languages, 0.6B / 1.7B |
+| [OpenMOSS-Team/MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5) | TTS | Voice cloning, streaming, 31 languages |
 | [Qwen/Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) | Omni | Text, image, audio, video → text + audio |
 | [inclusionAI/Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) | Omni | Streaming TTS |
 | [inclusionAI/LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) | Multimodal | Text + image understanding and generation |

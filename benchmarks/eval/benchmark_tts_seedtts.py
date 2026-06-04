@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-License-Identifier: Apache-2.0
 """SeedTTS benchmark for TTS models with performance and WER metrics.
 
 Note (Qiujiang, Chenyang):
@@ -33,7 +31,7 @@ Usage:
 
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
-        --model boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 --port 8000 \
+        --model boson-sglang/higgs-audio-v3-tts-4b --port 8000 \
         --ref-format references \
         --output-dir results/higgs_tts_en \
         --lang en --max-concurrency 16
@@ -124,6 +122,42 @@ Generation speed (generation.speed)
 | Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | MOSS-TTS | EN, stream=False | 3.890       | 4.781         | 0.913    | 4.091          | 54.1                           | PR #609 [H100, full-set, c=16, token-count=auto] |
+
+Higgs TTS concurrency sweep
+
+Full SeedTTS EN set, 1088/1088 successful requests per run, 3 runs per concurrency. Scores are mean over the 3 complete runs.
+
+| concurrency | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | rtf_mean | rtf_median | rtf_p95 | rtf_p99 | audio_duration_mean_s | audio_throughput_s_per_s | output_throughput_tok_s | output_tok_per_req_s | throughput_qps | Source |
+| ----------- | -------------- | ---------------- | ------------- | ------------- | -------- | ---------- | ------- | ------- | --------------------- | ------------------------ | ----------------------- | -------------------- | -------------- | ------ |
+| 1           | 0.617          | 0.595            | 0.882         | 1.010         | 0.1473   | 0.1448     | 0.1665  | 0.1927  | 4.251                 | 6.885                    | 183.5                   | 196.2                | 1.620          | Local H100, full-set, n=3 mean, c=1|
+| 2           | 0.742          | 0.721            | 1.060         | 1.264         | 0.1801   | 0.1710     | 0.2374  | 0.2931  | 4.218                 | 11.368                   | 303.1                   | 183.4                | 2.695          | Local H100, full-set, n=3 mean, c=2|
+| 4           | 0.733          | 0.718            | 1.045         | 1.227         | 0.1774   | 0.1743     | 0.2056  | 0.2436  | 4.189                 | 22.837                   | 609.1                   | 166.0                | 5.452          | Local H100, full-set, n=3 mean, c=4|
+| 8           | 0.898          | 0.880            | 1.289         | 1.513         | 0.2171   | 0.2131     | 0.2557  | 0.3096  | 4.198                 | 37.383                   | 996.9                   | 135.1                | 8.905          | Local H100, full-set, n=3 mean, c=8|
+| 16          | 1.079          | 1.057            | 1.567         | 1.834         | 0.2616   | 0.2527     | 0.3288  | 0.4096  | 4.195                 | 61.842                   | 1649.3                  | 114.5                | 14.742         | Local H100, full-set, n=3 mean, c=16|
+| 32          | 2.106          | 2.085            | 2.675         | 2.966         | 0.5273   | 0.5031     | 0.7190  | 0.9553  | 4.191                 | 63.009                   | 1680.5                  | 56.2                 | 15.034         | Local H100, full-set, n=3 mean, c=32|
+| 64          | 4.236          | 4.261            | 4.959         | 5.361         | 1.0784   | 1.0226     | 1.6119  | 2.1907  | 4.214                 | 62.232                   | 1659.2                  | 28.4                 | 14.765         | Local H100, full-set, n=3 mean, c=64|
+
+| concurrency | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | rtf_mean | rtf_median | rtf_p95 | rtf_p99 | audio_duration_mean_s | audio_throughput_s_per_s | output_throughput_tok_s | output_tok_per_req_s | throughput_qps | Source |
+| ----------- | -------------- | ---------------- | ------------- | ------------- | -------- | ---------- | ------- | ------- | --------------------- | ------------------------ | ----------------------- | -------------------- | -------------- | ------ |
+| 1           | 0.581          | 0.569            | 0.835         | 0.968         | 0.1408   | 0.1379     | 0.1631  | 0.1867  | 4.186                 | 7.200                    | 192.0                   | 208.9                | 1.720          | Local H200, full-set, n=3 mean, c=1|
+| 2           | 0.729          | 0.701            | 1.023         | 1.226         | 0.1749   | 0.1662     | 0.2335  | 0.2923  | 4.287                 | 11.757                   | 313.1                   | 192.4                | 2.743          | Local H200, full-set, n=3 mean, c=2|
+| 4           | 0.734          | 0.715            | 1.037         | 1.203         | 0.1779   | 0.1727     | 0.2178  | 0.2620  | 4.207                 | 22.892                   | 610.4                   | 172.0                | 5.441          | Local H200, full-set, n=3 mean, c=4|
+| 8           | 0.864          | 0.838            | 1.219         | 1.405         | 0.2077   | 0.2032     | 0.2517  | 0.2996  | 4.239                 | 39.198                   | 1044.7                  | 145.8                | 9.248          | Local H200, full-set, n=3 mean, c=8|
+| 16          | 1.165          | 1.124            | 1.762         | 2.144         | 0.2818   | 0.2671     | 0.3779  | 0.4947  | 4.214                 | 57.640                   | 1536.8                  | 108.3                | 13.679         | Local H200, full-set, n=3 mean, c=16|
+| 32          | 2.319          | 2.252            | 3.162         | 3.954         | 0.5806   | 0.5473     | 0.8384  | 1.1300  | 4.189                 | 57.277                   | 1527.7                  | 51.5                 | 13.674         | Local H200, full-set, n=3 mean, c=32|
+| 64          | 4.466          | 4.494            | 5.205         | 5.597         | 1.1363   | 1.0770     | 1.6952  | 2.3054  | 4.238                 | 59.416                   | 1583.6                  | 27.3                 | 14.021         | Local H200, full-set, n=3 mean, c=64|
+
+Higgs TTS H200 concurrency sweep (accuracy.wer)
+
+| concurrency | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source |
+| ----------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------ |
+| 1           | 1.03%      | 1.01%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=1|
+| 2           | 1.11%      | 1.08%               | 0.00%                 | 3.8%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=2|
+| 4           | 1.05%      | 1.00%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=4|
+| 8           | 1.12%      | 1.08%               | 0.00%                 | 4.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=8|
+| 16          | 1.10%      | 1.08%               | 0.00%                 | 4.1%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=16|
+| 32          | 1.07%      | 1.04%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=32|
+| 64          | 1.09%      | 1.07%               | 0.00%                 | 3.8%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=64|
 """
 
 from __future__ import annotations
@@ -186,6 +220,7 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
@@ -199,6 +234,8 @@ class TtsSeedttsBenchmarkConfig:
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
+    stream_format: str = "sse"
+    initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     # Transcribe phase
     lang: str = "en"
@@ -238,6 +275,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -249,6 +287,8 @@ def _build_results_config(
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
     }
 
 
@@ -272,7 +312,10 @@ async def run_tts_seedtts_benchmark(
     send_fn = make_tts_send_fn(
         config.model,
         api_url,
+        response_format=config.response_format,
         stream=config.stream,
+        stream_format=config.stream_format,
+        initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
         voice=config.voice,
@@ -311,7 +354,9 @@ def run_tts_seedtts_transcribe(
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
-    generation_mode = "streaming" if config.stream else "non-streaming"
+    generation_mode = (
+        f"streaming-{config.stream_format}" if config.stream else "non-streaming"
+    )
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -319,6 +364,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -327,6 +373,8 @@ def run_tts_seedtts_transcribe(
         "temperature": config.temperature,
         "max_samples": config.max_samples,
         "stream": config.stream,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
     }
@@ -342,6 +390,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
     # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
+    response_format = (
+        "pcm" if args.stream and args.stream_format == "audio" else args.response_format
+    )
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -353,6 +404,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
@@ -366,6 +418,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         concurrency=args.concurrency,
         request_rate=args.request_rate,
         stream=args.stream,
+        stream_format=args.stream_format,
+        initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
@@ -462,6 +516,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "and similar models. Use 'references' for Higgs TTS."
         ),
     )
+    parser.add_argument(
+        "--response-format",
+        type=str,
+        default="wav",
+        help=(
+            "Requested audio payload format. SSE can use wav or pcm; raw "
+            "audio streaming always sends response_format=pcm."
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
@@ -502,7 +565,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Use streaming SSE for TTS generation.",
+        help="Use streaming for TTS generation.",
+    )
+    parser.add_argument(
+        "--stream-format",
+        choices=["sse", "audio"],
+        default="sse",
+        help=(
+            "Streaming transport. 'sse' reads audio chunks from SSE events; "
+            "'audio' requests raw PCM audio streaming."
+        ),
+    )
+    parser.add_argument(
+        "--initial-codec-chunk-frames",
+        type=int,
+        default=None,
+        help=(
+            "Optional model-specific first codec chunk size. With Higgs TTS "
+            "this controls only the first streaming vocoder chunk."
+        ),
     )
     parser.add_argument(
         "--save-audio",
@@ -553,6 +634,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
+    parser.add_argument(
+        "--skip-gpu-cleanup",
+        action="store_true",
+        help=(
+            "Do not run ensure_gpus_idle after stopping a server. Use when "
+            "running multiple benchmark processes in parallel on different "
+            "GPUs; combine with CUDA_VISIBLE_DEVICES per worker and clean up "
+            "each GPU once after the worker finishes."
+        ),
+    )
+    parser.add_argument(
+        "--use-existing-server",
+        action="store_true",
+        help=(
+            "Do not start or stop a server; send requests to the configured "
+            "--base-url or --host/--port instead."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -580,7 +679,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+    if args.stream_format == "audio" and not args.stream:
+        parser.error("--stream-format audio requires --stream")
+    if (
+        args.initial_codec_chunk_frames is not None
+        and args.initial_codec_chunk_frames < 0
+    ):
+        parser.error("--initial-codec-chunk-frames must be non-negative")
+    if args.use_existing_server and not (args.generate_only or args.transcribe_only):
+        parser.error(
+            "--use-existing-server currently requires --generate-only or "
+            "--transcribe-only"
+        )
     config = _config_from_args(args)
+    wait_for_gpu_release = not args.skip_gpu_cleanup
 
     if args.save_audio:
         logger.info("--save-audio is a no-op: the unified benchmark always saves WAVs.")
@@ -594,24 +706,32 @@ def main() -> None:
         return
 
     if args.transcribe_only:
-        with managed_omni_server(
-            model_path=config.asr_model_path,
-            port=config.port,
-            host=config.host,
-            log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
-            timeout=args.server_timeout,
-        ):
+        if args.use_existing_server:
             run_tts_seedtts_transcribe(config, asr_router_port=config.port)
+        else:
+            with managed_omni_server(
+                model_path=config.asr_model_path,
+                port=config.port,
+                host=config.host,
+                log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+                timeout=args.server_timeout,
+                wait_for_gpu_release=wait_for_gpu_release,
+            ):
+                run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
-    with managed_omni_server(
-        model_path=config.model,
-        port=config.port,
-        host=config.host,
-        log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
-        timeout=args.server_timeout,
-    ):
+    if args.use_existing_server:
         asyncio.run(benchmark(config))
+    else:
+        with managed_omni_server(
+            model_path=config.model,
+            port=config.port,
+            host=config.host,
+            log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
+            timeout=args.server_timeout,
+            wait_for_gpu_release=wait_for_gpu_release,
+        ):
+            asyncio.run(benchmark(config))
 
     if args.generate_only:
         return
@@ -622,6 +742,7 @@ def main() -> None:
         host=config.host,
         log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
         timeout=args.server_timeout,
+        wait_for_gpu_release=wait_for_gpu_release,
     ):
         run_tts_seedtts_transcribe(config, asr_router_port=config.port)
 

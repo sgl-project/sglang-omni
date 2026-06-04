@@ -90,7 +90,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 pygments_style = "sphinx"
 
 html_theme = "sphinx_book_theme"
-html_logo = "_static/image/sgl-omni-logo.png"
+html_logo = "_static/image/sgl-omni-logo.svg"
 html_favicon = "_static/image/logo.ico"
 html_title = project
 html_copy_source = True

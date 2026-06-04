@@ -76,6 +76,9 @@ _REF_PATH_HASH_SENTINEL_BYTES = 8192
 _REF_PATH_HASH_MEMO: OrderedDict[str, tuple[str, str]] = OrderedDict()
 _REF_PATH_HASH_MEMO_LOCK = threading.Lock()
 
+# Saturates near c=16 on H100/H200; higher client concurrency only queues.
+DEFAULT_MAX_CONCURRENCY = 16
+
 
 def _reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
     try:
@@ -180,7 +183,7 @@ def create_preprocessing_executor(
     *,
     num_codebooks: int = 8,
     codebook_size: int = 1026,
-    max_concurrency: int = 8,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
 ):
     """CPU stage: text tokenize + optional ref-audio file IO.
 
@@ -309,7 +312,7 @@ def create_audio_encoder_executor(
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
-    max_batch_size: int = 8,
+    max_batch_size: int = DEFAULT_MAX_CONCURRENCY,
     max_batch_wait_ms: int = 2,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
@@ -396,9 +399,9 @@ def create_sglang_tts_engine_executor(
 
     overrides: dict[str, Any] = {
         "disable_cuda_graph": False,
-        "cuda_graph_max_bs": 32,
+        "cuda_graph_max_bs": DEFAULT_MAX_CONCURRENCY,
         "mem_fraction_static": 0.85,
-        "max_running_requests": 16,
+        "max_running_requests": DEFAULT_MAX_CONCURRENCY,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
         # Radix cache is namespaced per ref-audio via Req.extra_key (set in
@@ -464,7 +467,7 @@ def create_vocoder_executor(
     *,
     device: str = "cuda:0",
     dtype: str = "bfloat16",
-    max_batch_size: int = 4,
+    max_batch_size: int = DEFAULT_MAX_CONCURRENCY,
     max_batch_wait_ms: int = 2,
     stream_stride: int = 75,
     stream_followup_stride: int = 75,
@@ -490,6 +493,7 @@ def create_vocoder_executor(
 
 
 __all__ = [
+    "DEFAULT_MAX_CONCURRENCY",
     "create_audio_encoder_executor",
     "create_preprocessing_executor",
     "create_sglang_tts_engine_executor",

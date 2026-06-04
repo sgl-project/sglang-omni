@@ -26,14 +26,14 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               tests/__init__.py|tests/utils.py) ;;
-              tests/unit_test/*|tests/docs/*|tests/test_model/*) ;;
+              tests/unit_test/*|tests/test_model/*) ;;
               *) invalid_files+=("$path") ;;
             esac
           done < <(find tests -type f -name '*.py' | sort)
 
           if (( ${#invalid_files[@]} )); then
             echo "Python test files must live in an explicit test lane."
-            echo "Use tests/unit_test/, tests/docs/, or tests/test_model/."
+            echo "Use tests/unit_test/ or tests/test_model/."
             echo
             echo "Invalid files:"
             printf '  - %s\n' "${invalid_files[@]}"

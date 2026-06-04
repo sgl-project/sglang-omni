@@ -40,6 +40,14 @@ Metric semantics:
     request. Streaming smoothness metric.
 ``inter_chunk_p95_s`` / ``inter_chunk_p99_s``
     Tail percentiles of inter-chunk latency (streaming jitter).
+``audio_chunks_mean``
+    Mean number of audio chunks observed per successful streaming request.
+    For raw PCM streaming, HTTP chunk boundaries are preserved when available
+    rather than counting arbitrary client read frames.
+``first_audio_payload_bytes_mean``
+    Mean size of the first audio payload. For raw PCM streaming this is the
+    first HTTP body chunk; for SSE this is the first decoded PCM payload
+    extracted from an audio event.
 """
 
 from __future__ import annotations
@@ -117,6 +125,14 @@ def compute_speed_metrics(
     inter_chunk_deltas = [
         d for o in successes for d in getattr(o, "inter_chunk_s", []) or []
     ]
+    audio_chunk_counts = [
+        o.audio_chunk_count for o in successes if getattr(o, "audio_chunk_count", 0) > 0
+    ]
+    first_payload_bytes = [
+        o.first_audio_payload_bytes
+        for o in successes
+        if getattr(o, "first_audio_payload_bytes", 0) > 0
+    ]
 
     if wall_clock_s is not None and wall_clock_s > 0:
         throughput = round(len(successes) / wall_clock_s, 3)
@@ -173,6 +189,20 @@ def compute_speed_metrics(
         metrics_summary["inter_chunk_p99_s"] = round(
             float(np.percentile(inter_chunk_deltas, 99)), 4
         )
+    if audio_chunk_counts:
+        metrics_summary["audio_chunks_mean"] = round(
+            float(np.mean(audio_chunk_counts)), 2
+        )
+        metrics_summary["audio_chunks_p95"] = round(
+            float(np.percentile(audio_chunk_counts, 95)), 2
+        )
+    if first_payload_bytes:
+        metrics_summary["first_audio_payload_bytes_mean"] = round(
+            float(np.mean(first_payload_bytes)), 1
+        )
+        metrics_summary["first_audio_payload_bytes_p95"] = round(
+            float(np.percentile(first_payload_bytes, 95)), 1
+        )
     return metrics_summary
 
 
@@ -218,6 +248,10 @@ def print_speed_summary(
     print_speed_metric_line(lw, "ITL mean (s):", metrics, "inter_chunk_mean_s")
     print_speed_metric_line(lw, "ITL p95 (s):", metrics, "inter_chunk_p95_s")
     print_speed_metric_line(lw, "ITL p99 (s):", metrics, "inter_chunk_p99_s")
+    print_speed_metric_line(lw, "Audio chunks mean:", metrics, "audio_chunks_mean")
+    print_speed_metric_line(
+        lw, "First audio payload bytes:", metrics, "first_audio_payload_bytes_mean"
+    )
     print_speed_metric_line(
         lw, "Output throughput (tok/s):", metrics, "output_throughput"
     )
@@ -322,4 +356,6 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "audio_ttfp_s": round(ttfp, 4) if ttfp is not None else None,
         "text_ttft_s": round(ttft, 4) if ttft is not None else None,
         "inter_chunk_s": [round(d, 4) for d in inter] if inter else None,
+        "audio_chunk_count": output.audio_chunk_count or None,
+        "first_audio_payload_bytes": output.first_audio_payload_bytes or None,
     }
