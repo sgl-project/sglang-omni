@@ -23,6 +23,7 @@ The model repository is public, so no Hugging Face token is required.
 ## Server Configuration
 
 The pipeline is `preprocessing → tts_generation → vocoder`.
+First startup can take several minutes while the `tts_generation` stage captures CUDA graphs.
 
 ```bash
 sgl-omni serve \
@@ -109,7 +110,7 @@ Each event carries a base64-encoded audio chunk; the stream ends with `data: [DO
 | `input` | (required) | Text to synthesize |
 | `voice` | `cheerful_female` | Preset voice name from the checkpoint's `voice_embedding/` directory |
 | `max_new_tokens` | `4096` | Maximum number of generated acoustic tokens |
-| `response_format` | `wav` | Output container |
+| `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream audio chunks over SSE |
 
 > Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so sampling
@@ -135,10 +136,10 @@ Whisper-large-v3. Hardware: 1× H200 SXM.
 | Throughput (req/s) | 5.40 |
 | Completed / failed requests | 1088 / 0 |
 
-Reproduce with the SeedTTS command in our [seedTTS benchmark](../../benchmarks/README.md). The Voxtral
-model card also quotes ~70 ms first-audio latency at concurrency 1; the table above is a
-throughput-oriented run at concurrency 16, so its RTF reflects batched load rather than the
-latency-optimized single-stream figure. Output is 24 kHz.
+Reproduce with the SeedTTS command documented in `benchmarks/README.md`. The Voxtral model card
+also quotes ~70 ms first-audio latency at concurrency 1; the table above is a throughput-oriented
+run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
+single-stream figure. Output is 24 kHz.
 
 ## Known Limitations
 

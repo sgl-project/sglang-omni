@@ -5,8 +5,6 @@ tests/
 ├── __init__.py
 ├── utils.py
 ├── data/
-├── docs/
-│   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
@@ -68,6 +66,8 @@ tests/
     │   ├── test_cli_async_decode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── moss_tts/
+    │   └── test_pipeline.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -108,8 +108,6 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 - `benchmark`: GPU performance / parity tests in `test_model/`. May require a
   populated HF cache and tens of GB of GPU memory; per-test docstrings call
   out hardware needs.
-- `docs`: documented-example tests in `docs/`. Verify documented request
-  shapes and CLI snippets still work.
 - `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
   Combined with `--tts-stage` (see `test_model/conftest.py`).
 
@@ -118,33 +116,13 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 
 - `README.md`: This file. It explains test ownership and where new tests belong.
 - `__init__.py`: Keeps `tests` importable as a package.
-- `utils.py`: Shared helpers used by docs and model CI tests.
+- `utils.py`: Shared helpers used by model CI tests.
 
 ## `data/`
 
 Small static fixtures shared by tests, such as images, audio, and short videos.
 Keep these files small and deterministic. Large model artifacts, generated
 outputs, and benchmark datasets should live outside the unit test tree.
-
-## `docs/`
-
-Documentation/example tests. These verify that documented user-facing examples
-still work.
-
-Use this lane when the test protects:
-
-- install/docs snippets,
-- client examples,
-- documented request/response shapes,
-- examples that may need optional docs dependencies.
-
-These tests are not the default fast unit lane.
-
-Expected command:
-
-```bash
-pytest tests/docs -m docs -v
-```
 
 ## `test_model/`
 
@@ -327,6 +305,13 @@ that happened to contain an older version of the test.
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
   - async-decode default-on config + `--async-decode` tri-state CLI override.
+
+- `unit_test/moss_tts/`: MOSS-TTS unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR/vocoder stage factory wiring
+  - request mapping for `ref_audio`, `references`, and `token_count`
+  - preprocessing handoff and abort cleanup behavior
+  - delay-pattern runner, codec splitting, and seeded sampling contracts.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

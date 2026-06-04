@@ -39,6 +39,11 @@ python -m sglang_omni.cli serve \
     --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
     --port 8000
 
+# MOSS-TTS — for section 2f (voice cloning via references[], duration via token_count)
+python -m sglang_omni.cli serve \
+    --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+    --config examples/configs/moss_tts.yaml --port 8000
+
 # Qwen3-Omni, speech mode — for section 3 (SeedTTS; multi-GPU)
 python -m sglang_omni.cli serve \
     --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --port 8000
@@ -81,6 +86,14 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
     --ref-format references \
     --max-concurrency 16 \
     --output-dir results/higgs_tts_en --lang en --max-samples 50
+
+# 2f. MOSS-TTS — full pipeline with SeedTTS voice-cloning references
+python -m benchmarks.eval.benchmark_tts_seedtts \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
+    --model OpenMOSS-Team/MOSS-TTS-v1.5 --port 8000 \
+    --ref-format references --token-count auto \
+    --max-concurrency 8 \
+    --output-dir results/moss_tts_en --lang en --max-samples 50
 
 # 3a. Qwen3-Omni — full pipeline (generate + transcribe)
 python -m benchmarks.eval.benchmark_omni_seedtts \
@@ -131,6 +144,24 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
     --max-samples 50 --max-concurrency 16 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
     --enable-audio --asr-device cuda:0 --asr-concurrency 32
+
+# 8a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
+# For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
+python -m benchmarks.eval.benchmark_tts_seedtts \
+    --utmos-only --output-dir results/s2pro_en --device cuda:0
+
+# For Qwen3-Omni:
+python -m benchmarks.eval.benchmark_omni_seedtts \
+    --utmos-only --output-dir results/qwen3_omni_en --device cuda:0
+
+# 8b. Offline Speaker Similarity (voice resemblance) scoring on existing output
+# For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
+python -m benchmarks.eval.benchmark_tts_seedtts \
+    --similarity-only --output-dir results/s2pro_en --device cuda:0
+
+# For Qwen3-Omni:
+python -m benchmarks.eval.benchmark_omni_seedtts \
+    --similarity-only --output-dir results/qwen3_omni_en --device cuda:0
 ```
 
 ## Eval Scripts
@@ -143,6 +174,7 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_qwen3_asr_concurrency.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
@@ -152,9 +184,62 @@ an ASR server to avoid GPU contention with the TTS server. Use `--generate-only`
 `--max-concurrency` are equivalent (see `benchmark_tts_seedtts.py`).
 `benchmark_tts_seedtts.py` also handles model-specific voice-cloning reference
 payloads: the default `--ref-format flat` sends `ref_audio`/`ref_text`, while
-`--ref-format references` sends `references=[{audio_path, text}]` for Higgs TTS.
+`--ref-format references` sends `references=[{audio_path, text}]` for Higgs TTS
+and MOSS-TTS. MOSS-TTS additionally supports duration control through
+`--token-count`.
+
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
+
+`benchmark_qwen3_asr_concurrency.py` is a standalone ASR fan-out sweep (issue
+#646): it transcribes the SeedTTS *reference* clips directly against a running
+Qwen3-ASR router and reports WER + speed + per-worker routing balance per
+concurrency level. Use it to measure how ASR concurrency affects throughput,
+latency, and WER for a given workload.
+
+Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
+
+## TTS Quality Evaluation
+
+To evaluate the overall quality and vocal resemblance of synthesized speech, the benchmark suite supports offline evaluation using UTMOS (naturalness MOS prediction) and Speaker Similarity (vocal fidelity).
+
+### UTMOS (Naturalness)
+
+UTMOS (UTokyo-Saru Lab MOS Prediction) is a Mean Opinion Score (MOS) predictor model used to evaluate the naturalness and overall quality of synthesized speech. SGLang Omni provides an offline UTMOS evaluator backed by the `balacoon/utmos` JIT model on Hugging Face.
+
+- **Model Weights Cache**: By default, weights (`utmos.jit`) are downloaded from Hugging Face on the first run and cached at `~/.cache/sglang-omni/utmos` (override via `UTMOS_CACHE_DIR` environment variable).
+- **Warm the Cache (Optional)**:
+  ```bash
+  python -m benchmarks.metrics.utmos --warm-cache
+  ```
+- **Outputs (`utmos_results.json`)**:
+  - `summary`: section for summary metrics
+    - `utmos_mean`: Mean predicted MOS score in `[1, 5]` (higher is better).
+    - `utmos_median`: Median predicted MOS score.
+    - `utmos_p5` / `utmos_p95`: 5th and 95th percentile scores to identify worst-case outliers or top-performing samples.
+    - `total_samples`: total number of samples in the dataset.
+    - `evaluated`: number of samples that were evaluated.
+    - `skipped`: number of samples that were skipped.
+  - `config`: evaluation configuration parameters.
+  - `per_sample`: list of individual score results for each evaluated sample.
+
+### Speaker Similarity (Vocal Fidelity)
+
+Speaker Similarity evaluates how closely the voice of synthesized speech matches the reference prompt audio.
+
+- **Model Weights Cache**: By default, model weights (`wavlm_large.pt` and `wavlm_large_finetune.pth`) are downloaded from Hugging Face and cached at `~/.cache/sglang-omni/speaker_sim` (override via `SEEDTTS_SIM_CACHE_DIR` environment variable).
+- **Warm the Cache (Optional)**:
+  ```bash
+  python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+  ```
+- **Outputs (`similarity_results.json`)**:
+  - `summary`: section for summary metrics
+    - `speaker_similarity_mean`: Mean cosine similarity score scaled by 100.0 (higher is better).
+    - `total_samples`: total number of samples in the dataset.
+    - `evaluated`: number of samples that were evaluated.
+    - `skipped`: number of samples that were skipped.
+  - `config`: evaluation configuration parameters.
+  - `per_sample`: list of individual score results for each evaluated sample.
 
 ## Adding a New Model or Task
 

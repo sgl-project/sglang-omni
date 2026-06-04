@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.utils import reverse_delay_pattern
+from sglang_omni.models.tts_streaming import (
+    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+    resolve_initial_codec_chunk_frames,
+)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
@@ -26,6 +30,7 @@ class _HiggsStreamState:
     has_emitted: bool = False
     num_codebooks: int | None = None
     codebook_size: int | None = None
+    initial_codec_chunk_frames: int = 0
 
 
 class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
@@ -91,6 +96,15 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
                 codebook_size=payload.data["codebook_size"],
                 source="payload",
             )
+            self._latch_initial_codec_chunk_frames_from_mapping(
+                payload.request_id,
+                stream_state,
+                (
+                    payload.request.params
+                    if isinstance(payload.request.params, dict)
+                    else None
+                ),
+            )
             return
         if (
             stream_state.num_codebooks is not None
@@ -106,6 +120,15 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
                     "codebook_size", stream_state.codebook_size
                 ),
                 source="payload",
+            )
+            self._latch_initial_codec_chunk_frames_from_mapping(
+                payload.request_id,
+                stream_state,
+                (
+                    payload.request.params
+                    if isinstance(payload.request.params, dict)
+                    else None
+                ),
             )
             return
         raise RuntimeError(
@@ -231,6 +254,12 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
                 codebook_size=metadata["codebook_size"],
                 source="stream metadata",
             )
+        if INITIAL_CODEC_CHUNK_FRAMES_PARAM in metadata:
+            self._latch_initial_codec_chunk_frames_from_mapping(
+                request_id,
+                state,
+                metadata,
+            )
 
     @staticmethod
     def _latch_stream_contract(
@@ -267,6 +296,19 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         state.num_codebooks = num_codebooks_i
         state.codebook_size = codebook_size_i
 
+    def _latch_initial_codec_chunk_frames_from_mapping(
+        self,
+        request_id: str,
+        state: _HiggsStreamState,
+        params: Mapping[str, Any] | None,
+    ) -> None:
+        num_codebooks, _ = self._require_stream_contract(state, request_id)
+        steady_codec_frames = max(1, self._stream_stride - num_codebooks + 1)
+        state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
+            params,
+            steady_chunk_frames=steady_codec_frames,
+        )
+
     @staticmethod
     def _require_stream_contract(
         state: _HiggsStreamState,
@@ -290,15 +332,29 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             return None
         raw_total = delayed_count - num_codebooks + 1
 
-        next_decode_rows = state.next_decode_rows or max(
-            num_codebooks, self._stream_stride
+        steady_codec_frames = max(1, self._stream_stride - num_codebooks + 1)
+        use_initial_chunk = (
+            state.initial_codec_chunk_frames > 0
+            and state.initial_codec_chunk_frames < steady_codec_frames
+            and not state.has_emitted
+        )
+        first_decode_rows = max(
+            num_codebooks,
+            state.initial_codec_chunk_frames + num_codebooks - 1,
+        )
+        next_decode_rows = state.next_decode_rows or (
+            first_decode_rows
+            if use_initial_chunk and not is_final
+            else max(num_codebooks, self._stream_stride)
         )
         if not is_final and delayed_count < next_decode_rows:
             state.next_decode_rows = next_decode_rows
             return None
 
         emit_until_raw = raw_total
-        if not is_final and self._stream_holdback_tokens:
+        if use_initial_chunk and not is_final:
+            emit_until_raw = min(raw_total, state.initial_codec_chunk_frames)
+        elif not is_final and self._stream_holdback_tokens:
             emit_until_raw = max(0, raw_total - self._stream_holdback_tokens)
         can_flush_codec_tail = is_final and self._samples_per_frame is not None
         if emit_until_raw < state.emitted_raw_frames or (
@@ -335,7 +391,11 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             return None
 
         state.emitted_raw_frames = emit_until_raw
-        state.next_decode_rows = delayed_count + self._stream_followup_stride
+        state.next_decode_rows = self._next_decode_rows_after_emit(
+            delayed_count,
+            num_codebooks=num_codebooks,
+            emitted_initial_chunk=use_initial_chunk and not is_final,
+        )
         state.has_emitted = True
         return audio_waveform_payload(
             delta,
@@ -343,6 +403,19 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             modality="audio",
             source_hint="Higgs TTS streaming",
         )
+
+    def _next_decode_rows_after_emit(
+        self,
+        delayed_count: int,
+        *,
+        num_codebooks: int,
+        emitted_initial_chunk: bool,
+    ) -> int:
+        if emitted_initial_chunk:
+            return (
+                max(num_codebooks, self._stream_stride) + self._stream_followup_stride
+            )
+        return delayed_count + self._stream_followup_stride
 
     def _audio_payload_from_stage_payload(
         self, payload: StagePayload
