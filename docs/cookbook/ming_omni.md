@@ -1,6 +1,6 @@
 # Ming-Omni
 
-[Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into speech. The talker runs a 44.1 kHz VAE internally, but the `/v1/chat/completions` speech path currently delivers the WAV at 24 kHz (see [Known Limitations](#known-limitations)).
+[Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into 44.1 kHz speech.
 
 Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Qwen3-Omni](./qwen3_omni.md).
 
@@ -326,7 +326,7 @@ Output (speech server, `temperature: 0.0`):
 Hello! How can I assist you today?
 ```
 
-`ming_output.wav` is a mono WAV. The header sample rate is currently **24 kHz** (≈4.8 s, ~224 KB for this reply) — see [Known Limitations](#known-limitations) for the 44.1 kHz/24 kHz note.
+`ming_output.wav` is a mono WAV carrying the talker's 44.1 kHz speech (~224 KB for this reply).
 
 ### Streaming Speech
 
@@ -398,7 +398,7 @@ Output: with the streaming speech pipeline the audio arrives as multiple `delta.
 Hello! How can I assist you today?
 ```
 
-The streamed WAV chunks carry the same 24 kHz header as the non-streaming speech reply.
+The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming reply.
 
 ## Request Parameters
 
@@ -459,7 +459,7 @@ Throughput scales ~6.9× from c=1 to c=16; accuracy stays within MMMU sample noi
 
 ### Non-Streaming Talker
 
-Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU. Measured against the 7-stage non-streaming `MingOmniSpeechPipelineConfig` with `stream=false` (not the streaming pipeline); every request returned real 24 kHz audio (`n_fail=0`, mean ~6.3 s/clip).
+Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU. Measured against the 7-stage non-streaming `MingOmniSpeechPipelineConfig` with `stream=false` (not the streaming pipeline); every request returned real 44.1 kHz audio (`n_fail=0`, mean ~6.3 s/clip).
 
 | Concurrency | Throughput | Mean wall | p95 wall |
 |---:|---:|---:|---:|
@@ -498,7 +498,7 @@ Intelligibility is fully preserved; streaming and non-streaming are close but no
 ## Known Limitations
 
 - **Ming is large.** Use thinker TP and plan GPU placement deliberately. On 80 GB H100-class GPUs the MoE thinker does not fit on a single GPU, so bare default placement (no `--thinker-tp-size`) out-of-memories during startup — TP=4 is the smallest placement that loads (TP=1 and TP=2 both OOM). CPU offload can make the model fit on fewer GPUs but slows inference.
-- **Speech WAV is delivered at 24 kHz.** The talker VAE runs at 44.1 kHz internally, but the `/v1/chat/completions` speech path encodes the returned WAV header at 24 kHz: `chunk.sample_rate` from the talker does not reach `encode_audio`, so `DEFAULT_SAMPLE_RATE = 24000` (`sglang_omni/client/audio.py`) is used. Audio is intelligible; only the header rate is affected. Forward the talker sample rate through the completion/stream response builders to deliver 44.1 kHz.
+- **Speech is 44.1 kHz; the chat-completions WAV header is currently mislabeled.** The talker produces 44.1 kHz audio, but the non-streaming and streaming completion paths stamp the returned WAV header at 24000 Hz — `completion()` / `completion_stream()` do not forward `chunk.sample_rate`, so `encode_audio` falls back to `DEFAULT_SAMPLE_RATE = 24000` (`sglang_omni/client/audio.py`). The samples are not resampled, so the audio is genuine 44.1 kHz — set the WAV header to `44100` when saving if your player honors it. The `/v1/audio/speech` path already forwards the rate.
 - **Image-encoder TP is set with dedicated flags.** Use `--image-encoder-tp-size` and `--image-encoder-gpus` (see [Vision Encoder Tensor Parallelism](#vision-encoder-tensor-parallelism)). The generic dotted `--stages.<i>.gpu` CLI override only accepts a single integer GPU id, so it cannot express a per-rank GPU list — use the dedicated flags instead.
 - **Speech output uses `/v1/chat/completions`.** Ming's omni speech path is chat-completions text + audio, not the `/v1/audio/speech` TTS endpoint used by S2-Pro, Higgs, Voxtral, and Qwen3-TTS.
 - **Streaming speech launch needs a pipeline config today.** Generic `sgl-omni serve --model-path` exposes default speech and `--text-only` directly. Streaming speech uses `MingOmniStreamingSpeechPipelineConfig`.
