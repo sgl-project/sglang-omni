@@ -1668,3 +1668,194 @@ def test_payload_without_content_length_is_rejected_while_streaming_body() -> No
 
     assert response.status_code == 413
     assert seen_paths == []
+
+
+# ---------------------------------------------------------------------------
+# Admin auth tests — router
+# ---------------------------------------------------------------------------
+
+_ROUTER_ADMIN_PATHS = [
+    ("GET", "/model_info"),
+    ("POST", "/model_info"),
+    ("POST", "/pause_generation"),
+    ("POST", "/continue_generation"),
+    ("POST", "/update_weights_from_disk"),
+    ("POST", "/update_weights_from_tensor"),
+    ("POST", "/update_weights_from_distributed"),
+    ("GET", "/weights_checker"),
+    ("POST", "/weights_checker"),
+]
+
+
+def _admin_router_app(admin_api_key: str | None = None) -> "FastAPI":
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path in ("/model_info", "/weights_checker"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "message": "ok",
+                    "results": [],
+                    "weight_version": "v1",
+                    "model_path": "/tmp/m",
+                    "load_format": "safetensors",
+                },
+                request=request,
+            )
+        return httpx.Response(200, json={"success": True, "message": "ok", "results": []}, request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return create_app(
+        _router_config(),
+        client=async_client,
+        admin_api_key=admin_api_key,
+    )
+
+
+def test_router_admin_routes_open_without_key() -> None:
+    """Admin routes are accessible with no auth header when no key is configured."""
+    app = _admin_router_app(admin_api_key=None)
+    with TestClient(app) as client:
+        resp = client.get("/model_info")
+        assert resp.status_code == 200
+
+
+def test_router_admin_routes_require_bearer_when_key_set() -> None:
+    app = _admin_router_app(admin_api_key="router-secret")
+    with TestClient(app) as client:
+        for method, path in _ROUTER_ADMIN_PATHS:
+            resp = client.request(method, path, json={})
+            assert resp.status_code == 401, (
+                f"{method} {path} expected 401, got {resp.status_code}"
+            )
+            assert "WWW-Authenticate" in resp.headers
+
+
+def test_router_admin_routes_reject_wrong_token() -> None:
+    app = _admin_router_app(admin_api_key="router-secret")
+    with TestClient(app) as client:
+        resp = client.get(
+            "/model_info", headers={"Authorization": "Bearer wrong"}
+        )
+        assert resp.status_code == 403
+
+
+def test_router_admin_routes_accept_correct_token() -> None:
+    app = _admin_router_app(admin_api_key="router-secret")
+    with TestClient(app) as client:
+        resp = client.get(
+            "/model_info", headers={"Authorization": "Bearer router-secret"}
+        )
+        assert resp.status_code == 200
+
+
+def test_router_admin_env_key(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-router-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        return httpx.Response(
+            200,
+            json={"success": True, "message": "ok", "results": [], "weight_version": None, "model_path": None, "load_format": None},
+            request=request,
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        assert client.get("/model_info").status_code == 401
+        resp = client.get(
+            "/model_info", headers={"Authorization": "Bearer env-router-key"}
+        )
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Router stub endpoint 501 tests
+# ---------------------------------------------------------------------------
+
+
+def test_router_update_weights_from_tensor_returns_501() -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+
+
+def test_router_update_weights_from_distributed_returns_501() -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post(
+            "/update_weights_from_distributed",
+            json={"names": [], "dtypes": [], "shapes": []},
+        )
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+
+
+# ---------------------------------------------------------------------------
+# Router admin_update_lock timeout test
+# ---------------------------------------------------------------------------
+
+
+def test_router_admin_update_lock_timeout_returns_503() -> None:
+    """If the lock is held beyond timeout, the request returns 503."""
+    import asyncio as _asyncio
+
+    from sglang_omni_router.app import _ADMIN_UPDATE_LOCK_TIMEOUT_S, _broadcast_admin_request
+
+    async def _run():
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "healthy"}, request=request)
+            return httpx.Response(200, json={"success": True, "message": "ok", "results": []}, request=request)
+
+        async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app = create_app(_router_config(), client=async_client)
+
+        # Simulate a held lock by acquiring it before the request
+        async with app.router.lifespan_context(app):
+            lock = app.state.admin_update_lock
+            await lock.acquire()  # hold it — simulate a stuck update
+
+            # Temporarily shrink timeout so the test runs fast
+            import sglang_omni_router.app as _app_mod
+            original = _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S
+            _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S = 0.05
+            try:
+                from starlette.testclient import TestClient as _TC
+                from fastapi import Request as _Req
+                import io
+
+                scope = {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/update_weights_from_disk",
+                    "headers": [(b"content-type", b"application/json")],
+                    "query_string": b"",
+                    "scheme": "http",
+                    "server": ("testserver", 80),
+                    "client": ("testclient", 50000),
+                }
+
+                async def receive():
+                    return {"type": "http.request", "body": b"{}", "more_body": False}
+
+                fake_request = _Req(scope, receive)
+                result = await _broadcast_admin_request(
+                    app, fake_request, "/update_weights_from_disk"
+                )
+                return result
+            finally:
+                _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S = original
+                lock.release()
+
+    result = asyncio.run(_run())
+    assert result.status_code == 503
+    body = json.loads(result.body)
+    assert "lock" in body["error"]["message"].lower()

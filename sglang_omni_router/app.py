@@ -6,12 +6,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import unquote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
@@ -33,9 +34,39 @@ logger = logging.getLogger(__name__)
 _ADMIN_UPDATE_PATHS = {
     "/pause_generation",
     "/update_weights_from_disk",
+}
+# Seconds to wait for the admin_update_lock before giving up; prevents a hung
+# weight-update from blocking all subsequent admin requests indefinitely.
+_ADMIN_UPDATE_LOCK_TIMEOUT_S = 300.0
+
+_ADMIN_UNIMPLEMENTED_PATHS = {
     "/update_weights_from_tensor",
     "/update_weights_from_distributed",
 }
+
+
+def _make_admin_auth_dep(admin_api_key: str | None):
+    """Return a FastAPI dependency that enforces Bearer token auth when a key is set."""
+    if not admin_api_key:
+
+        async def _no_auth() -> None:
+            return
+
+        return _no_auth
+
+    async def _check_admin_key(
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(
+                status_code=401,
+                detail="Admin API key required: Authorization: Bearer <key>",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if authorization[7:] != admin_api_key:
+            raise HTTPException(status_code=403, detail="Invalid admin API key")
+
+    return _check_admin_key
 
 
 def create_app(
@@ -43,6 +74,7 @@ def create_app(
     *,
     client: httpx.AsyncClient | None = None,
     health_client: httpx.AsyncClient | None = None,
+    admin_api_key: str | None = None,
 ) -> FastAPI:
     workers = build_workers(config.workers)
     timeout = httpx.Timeout(config.request_timeout_secs)
@@ -95,6 +127,8 @@ def create_app(
             if owns_client:
                 await client.aclose()
 
+    resolved_key = admin_api_key or os.environ.get("SGLANG_OMNI_ADMIN_KEY") or None
+
     app = FastAPI(title="sglang-omni-router", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -104,7 +138,7 @@ def create_app(
         allow_headers=["*"],
     )
 
-    register_routes(app, workers, proxy, config)
+    register_routes(app, workers, proxy, config, admin_api_key=resolved_key)
     register_favicon(app)
     return app
 
@@ -114,7 +148,22 @@ def register_routes(
     workers: list[Worker],
     proxy: ProxyHandler,
     config: RouterConfig,
+    *,
+    admin_api_key: str | None = None,
 ) -> None:
+    _auth = _make_admin_auth_dep(admin_api_key)
+    _not_implemented_response = JSONResponse(
+        status_code=501,
+        content={
+            "error": {
+                "message": (
+                    "This weight update path is not yet implemented. "
+                    "Use /update_weights_from_disk for the disk-based update path."
+                ),
+                "code": "not_implemented",
+            }
+        },
+    )
     @app.get("/live")
     async def live() -> JSONResponse:
         return JSONResponse({"status": "alive"})
@@ -282,23 +331,23 @@ def register_routes(
             timeout_secs=config.health_check_timeout_secs,
         )
 
-    @app.get("/model_info")
+    @app.get("/model_info", dependencies=[Depends(_auth)])
     async def model_info(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/model_info")
 
-    @app.post("/model_info")
+    @app.post("/model_info", dependencies=[Depends(_auth)])
     async def model_info_post(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/model_info")
 
-    @app.post("/pause_generation")
+    @app.post("/pause_generation", dependencies=[Depends(_auth)])
     async def pause_generation(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/pause_generation")
 
-    @app.post("/continue_generation")
+    @app.post("/continue_generation", dependencies=[Depends(_auth)])
     async def continue_generation(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/continue_generation")
 
-    @app.post("/update_weights_from_disk")
+    @app.post("/update_weights_from_disk", dependencies=[Depends(_auth)])
     async def update_weights_from_disk(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(
             app,
@@ -306,23 +355,15 @@ def register_routes(
             "/update_weights_from_disk",
         )
 
-    @app.post("/update_weights_from_tensor")
+    @app.post("/update_weights_from_tensor", dependencies=[Depends(_auth)])
     async def update_weights_from_tensor(request: Request) -> JSONResponse:
-        return await _broadcast_admin_request(
-            app,
-            request,
-            "/update_weights_from_tensor",
-        )
+        return _not_implemented_response
 
-    @app.post("/update_weights_from_distributed")
+    @app.post("/update_weights_from_distributed", dependencies=[Depends(_auth)])
     async def update_weights_from_distributed(request: Request) -> JSONResponse:
-        return await _broadcast_admin_request(
-            app,
-            request,
-            "/update_weights_from_distributed",
-        )
+        return _not_implemented_response
 
-    @app.api_route("/weights_checker", methods=["GET", "POST"])
+    @app.api_route("/weights_checker", methods=["GET", "POST"], dependencies=[Depends(_auth)])
     async def weights_checker(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/weights_checker")
 
@@ -392,7 +433,18 @@ async def _broadcast_admin_request(
         return _error_response(503, "no live upstream workers")
 
     if path in _ADMIN_UPDATE_PATHS:
-        async with app.state.admin_update_lock:
+        try:
+            await asyncio.wait_for(
+                app.state.admin_update_lock.acquire(),
+                timeout=_ADMIN_UPDATE_LOCK_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            return _error_response(
+                503,
+                f"admin update lock not acquired within {_ADMIN_UPDATE_LOCK_TIMEOUT_S:.0f}s; "
+                "another update operation may be in progress",
+            )
+        try:
             return await _broadcast_admin_request_locked(
                 app,
                 request,
@@ -400,6 +452,9 @@ async def _broadcast_admin_request(
                 target_workers,
                 disable_targets=True,
             )
+        finally:
+            app.state.admin_update_lock.release()
+
     return await _broadcast_admin_request_locked(
         app,
         request,

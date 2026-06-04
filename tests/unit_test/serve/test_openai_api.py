@@ -585,3 +585,128 @@ def test_speech_request_passes_moss_token_count() -> None:
     gen_req = build_speech_generate_request(req, "moss-tts")
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
+
+
+# ---------------------------------------------------------------------------
+# Admin auth tests
+# ---------------------------------------------------------------------------
+
+_ADMIN_PATHS_THAT_NEED_AUTH = [
+    ("GET", "/model_info"),
+    ("POST", "/model_info"),
+    ("POST", "/pause_generation"),
+    ("POST", "/continue_generation"),
+    ("POST", "/update_weights_from_disk"),
+    ("POST", "/update_weights_from_tensor"),
+    ("POST", "/update_weights_from_distributed"),
+    ("GET", "/weights_checker"),
+    ("POST", "/weights_checker"),
+]
+
+
+def test_admin_routes_open_when_no_key_configured() -> None:
+    """Without a key, all admin routes are accessible with no auth header."""
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 200
+
+    resp = client.post("/pause_generation", json={})
+    assert resp.status_code == 200
+
+
+def test_admin_routes_require_bearer_token_when_key_configured() -> None:
+    """When admin_api_key is set, requests without the header are rejected."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(method, path, json={})
+        assert resp.status_code == 401, f"{method} {path} should be 401, got {resp.status_code}"
+        assert "WWW-Authenticate" in resp.headers
+
+
+def test_admin_routes_reject_wrong_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(
+            method, path, json={}, headers={"Authorization": "Bearer wrong-key"}
+        )
+        assert resp.status_code == 403, f"{method} {path} should be 403, got {resp.status_code}"
+
+
+def test_admin_routes_accept_correct_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+    )
+
+    resp = client.get("/model_info", headers={"Authorization": "Bearer secret-key"})
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/pause_generation",
+        json={},
+        headers={"Authorization": "Bearer secret-key"},
+    )
+    assert resp.status_code == 200
+
+
+def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-key")
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 401
+
+    resp = client.get("/model_info", headers={"Authorization": "Bearer env-key"})
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Stub endpoint 501 tests
+# ---------------------------------------------------------------------------
+
+
+def test_update_weights_from_tensor_returns_501() -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+    assert "update_weights_from_disk" in resp.json()["error"]["message"]
+
+
+def test_update_weights_from_distributed_returns_501() -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.post(
+        "/update_weights_from_distributed",
+        json={"names": [], "dtypes": [], "shapes": []},
+    )
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+
+
+def test_stub_endpoints_also_check_auth_before_501() -> None:
+    """Auth check fires before the 501 body — ensure 401 takes precedence."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+    )
+
+    resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 401
+
+    resp = client.post("/update_weights_from_distributed", json={})
+    assert resp.status_code == 401

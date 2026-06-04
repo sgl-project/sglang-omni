@@ -16,11 +16,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     JSONResponse,
@@ -84,11 +85,36 @@ def _is_bad_request_error(exc: Exception) -> bool:
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 
 
+def _make_admin_auth_dep(admin_api_key: str | None):
+    """Return a FastAPI dependency that enforces Bearer token auth when a key is configured."""
+    if not admin_api_key:
+
+        async def _no_auth() -> None:
+            return
+
+        return _no_auth
+
+    async def _check_admin_key(
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(
+                status_code=401,
+                detail="Admin API key required: Authorization: Bearer <key>",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if authorization[7:] != admin_api_key:
+            raise HTTPException(status_code=403, detail="Invalid admin API key")
+
+    return _check_admin_key
+
+
 def create_app(
     client: Client,
     *,
     model_name: str | None = None,
     enable_realtime: bool = False,
+    admin_api_key: str | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -116,11 +142,13 @@ def create_app(
     app.state.model_name = model_name or "sglang-omni"
     app.state.realtime_enabled = enable_realtime
 
+    resolved_key = admin_api_key or os.environ.get("SGLANG_OMNI_ADMIN_KEY") or None
+
     # Register all routes
     register_favicon(app)
     _register_health(app)
     _register_models(app)
-    _register_admin(app)
+    _register_admin(app, resolved_key)
     _register_chat_completions(app)
     _register_speech(app)
     _register_transcriptions(app)
@@ -164,13 +192,15 @@ def _register_models(app: FastAPI) -> None:
         return JSONResponse(content=model_list.model_dump())
 
 
-def _register_admin(app: FastAPI) -> None:
-    @app.get("/model_info")
+def _register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
+    _auth = _make_admin_auth_dep(admin_api_key)
+
+    @app.get("/model_info", dependencies=[Depends(_auth)])
     async def model_info_get() -> JSONResponse:
         client: Client = app.state.client
         return _model_info_response(await client.model_info())
 
-    @app.post("/model_info")
+    @app.post("/model_info", dependencies=[Depends(_auth)])
     async def model_info_post(req: AdminRequestBase) -> JSONResponse:
         client: Client = app.state.client
         return _model_info_response(
@@ -180,7 +210,7 @@ def _register_admin(app: FastAPI) -> None:
             )
         )
 
-    @app.post("/pause_generation")
+    @app.post("/pause_generation", dependencies=[Depends(_auth)])
     async def pause_generation(req: PauseGenerationRequest) -> JSONResponse:
         client: Client = app.state.client
         payload = _request_payload(req)
@@ -192,7 +222,7 @@ def _register_admin(app: FastAPI) -> None:
             )
         )
 
-    @app.post("/continue_generation")
+    @app.post("/continue_generation", dependencies=[Depends(_auth)])
     async def continue_generation(req: ContinueGenerationRequest) -> JSONResponse:
         client: Client = app.state.client
         payload = _request_payload(req)
@@ -204,7 +234,7 @@ def _register_admin(app: FastAPI) -> None:
             )
         )
 
-    @app.post("/update_weights_from_disk")
+    @app.post("/update_weights_from_disk", dependencies=[Depends(_auth)])
     async def update_weights_from_disk(
         req: UpdateWeightFromDiskRequest,
     ) -> JSONResponse:
@@ -218,42 +248,48 @@ def _register_admin(app: FastAPI) -> None:
             )
         )
 
-    @app.post("/update_weights_from_tensor")
+    @app.post("/update_weights_from_tensor", dependencies=[Depends(_auth)])
     async def update_weights_from_tensor(
         req: UpdateWeightsFromTensorRequest,
     ) -> JSONResponse:
-        client: Client = app.state.client
-        payload = _request_payload(req)
-        return _admin_response(
-            await client.admin(
-                "update_weights_from_tensor",
-                payload,
-                stages=req.stages,
-                timeout_s=req.timeout_s or 120.0,
-            )
+        # Tensor data plane not yet implemented; only metadata/control hooks are wired.
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": {
+                    "message": (
+                        "update_weights_from_tensor is not yet implemented. "
+                        "Use update_weights_from_disk for the disk-based weight update path."
+                    ),
+                    "code": "not_implemented",
+                }
+            },
         )
 
-    @app.post("/update_weights_from_distributed")
+    @app.post("/update_weights_from_distributed", dependencies=[Depends(_auth)])
     async def update_weights_from_distributed(
         req: UpdateWeightsFromDistributedRequest,
     ) -> JSONResponse:
-        client: Client = app.state.client
-        payload = _request_payload(req)
-        return _admin_response(
-            await client.admin(
-                "update_weights_from_distributed",
-                payload,
-                stages=req.stages,
-                timeout_s=req.timeout_s or 120.0,
-            )
+        # Distributed data plane not yet implemented; only metadata/control hooks are wired.
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": {
+                    "message": (
+                        "update_weights_from_distributed is not yet implemented. "
+                        "Use update_weights_from_disk for the disk-based weight update path."
+                    ),
+                    "code": "not_implemented",
+                }
+            },
         )
 
-    @app.get("/weights_checker")
+    @app.get("/weights_checker", dependencies=[Depends(_auth)])
     async def weights_checker_get(action: str = "checksum") -> JSONResponse:
         client: Client = app.state.client
         return _admin_response(await client.weights_checker({"action": action}))
 
-    @app.post("/weights_checker")
+    @app.post("/weights_checker", dependencies=[Depends(_auth)])
     async def weights_checker_post(req: WeightsCheckerRequest) -> JSONResponse:
         client: Client = app.state.client
         payload = _request_payload(req)
