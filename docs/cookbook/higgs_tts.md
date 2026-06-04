@@ -40,9 +40,25 @@ hf download bosonai/higgs-audio-v2-tokenizer
 
 The pipeline is `preprocessing → audio_encoder → tts_engine → vocoder`.
 
+For the remote Hugging Face reference clips used in this cookbook, allowlist
+both the source host and the current redirect/download host:
+
 ```bash
 sgl-omni serve \
   --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --port 8000
+```
+
+For local or data-URL references, remote-domain allowlisting is not needed. To
+serve local `file://` reference audio, allow the directory that contains those
+clips:
+
+```bash
+sgl-omni serve \
+  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --allowed-local-media-path /path/to/reference-audio \
   --port 8000
 ```
 
