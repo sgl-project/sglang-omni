@@ -105,7 +105,12 @@ class HiggsTTSModelRunner(ModelRunner):
         if len(requests) == 0:
             return
         n_real = len(requests)
-        self._decode_collect_host(host_buf[:n_real], result, requests)
+        self._decode_collect_host(
+            host_buf[:n_real],
+            result,
+            requests,
+            next_token_device=None,
+        )
 
     def _populate_cg_buffers(
         self, forward_batch, requests, *, is_lookahead: bool = False
@@ -222,7 +227,12 @@ class HiggsTTSModelRunner(ModelRunner):
             )
         staging = self._decode_pack_gpu(n_real)
         combined_cpu = staging[:n_real].cpu()  # one blocking D2H (sync path)
-        self._decode_collect_host(combined_cpu, result, requests)
+        self._decode_collect_host(
+            combined_cpu,
+            result,
+            requests,
+            next_token_device=result.logits_output.next_token_logits.device,
+        )
 
     def _decode_pack_gpu(self, n_real: int) -> torch.Tensor:
         """Scatter shadow sampler state back into the pool and pack the three
@@ -246,12 +256,22 @@ class HiggsTTSModelRunner(ModelRunner):
         return staging
 
     def _decode_collect_host(
-        self, combined_cpu: torch.Tensor, result: Any, requests: list
+        self,
+        combined_cpu: torch.Tensor,
+        result: Any,
+        requests: list,
+        *,
+        next_token_device: torch.device | None,
     ) -> None:
         """Host-side collect loop over an already-D2H'd staging snapshot:
         append per-request codes, mark finishes, build ``result.next_token_ids``.
         Skips chunked and already-done rows (the latter is what makes the
         one-step-lookahead overrun harmless — see r1_idempotency_check.md).
+
+        ``next_token_device`` is set for synchronous decode because those ids
+        feed the next step. Async resolve passes ``None``: launch already
+        published GPU codebook-0, and resolve only needs a CPU tensor for
+        output processing.
         """
         model = self.model
         num_codebooks = model._cg_codes_BN.shape[1]
@@ -284,11 +304,14 @@ class HiggsTTSModelRunner(ModelRunner):
             self._mark_sampler_finished(req, data.generation_done)
             cb0_per_row.append(int(codes_N[0].item()))
 
-        result.next_token_ids = torch.tensor(
-            cb0_per_row,
-            dtype=torch.long,
-            device=result.logits_output.next_token_logits.device,
-        )
+        if next_token_device is None:
+            result.next_token_ids = torch.tensor(cb0_per_row, dtype=torch.long)
+        else:
+            result.next_token_ids = torch.tensor(
+                cb0_per_row,
+                dtype=torch.long,
+                device=next_token_device,
+            )
 
     def _build_prefill_input_embeds(
         self,
