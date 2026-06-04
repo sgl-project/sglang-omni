@@ -11,7 +11,7 @@ reference clip, and fine-grained inline control over emotion, style, sound effec
 - **Voice clone accuracy** — high-fidelity zero-shot speaker cloning from reference clips
 - **Inline control** via `<|emotion:…|>`, `<|style:…|>`, `<|sfx:…|>`, `<|prosody:…|>` tags
 
-The **100-language single-digit WER/CER** claim comes from our internal **Higgs-Multilingual** benchmark, an extension of the FLEURS-102 benchmark.
+The **100-language single-digit WER/CER** claim comes from our internal **Higgs-Multilingual** benchmark — an extension of FLEURS-102 covering 111 languages and dialects, of which Higgs Audio v3 TTS reaches single-digit WER/CER on 100.
 
 ## Architecture
 
@@ -545,7 +545,7 @@ Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40
 
 ## Evaluation Benchmarks
 
-We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on three zero-shot voice-cloning benchmarks.
+We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on the Seed-TTS zero-shot voice-cloning benchmark.
 
 ### Seed-TTS
 
