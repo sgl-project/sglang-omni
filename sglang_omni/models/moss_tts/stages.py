@@ -390,15 +390,6 @@ def create_vocoder_executor(
         audio_pad_code = int(
             getattr(getattr(processor, "model_config", None), "audio_pad_code", 1024)
         )
-        sample_rate = int(
-            getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
-            or getattr(
-                getattr(getattr(processor, "audio_tokenizer", None), "config", None),
-                "sampling_rate",
-                0,
-            )
-            or 24000
-        )
         device = next(processor.audio_tokenizer.parameters()).device
 
         for payload in payloads:
@@ -412,6 +403,17 @@ def create_vocoder_executor(
             all_segments.extend(segments)
             payload_segment_ranges.append((start, len(all_segments)))
             states.append(state)
+
+        sample_rate = int(
+            getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
+            or getattr(
+                getattr(getattr(processor, "audio_tokenizer", None), "config", None),
+                "sampling_rate",
+                0,
+            )
+            or states[0].sample_rate
+            or 24000
+        )
 
         if not all_segments:
             all_waveforms = []
