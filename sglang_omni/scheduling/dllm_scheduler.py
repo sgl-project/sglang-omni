@@ -57,6 +57,9 @@ class DllmScheduler:
         self.server_args = server_args
         self.model_config = model_config
         self.dllm_config = dllm_config
+        self._chunked_prefill_size = (
+            getattr(dllm_config, "block_size", None) or server_args.chunked_prefill_size
+        )
 
         self._running = False
         self._abort_lock = threading.Lock()
@@ -149,8 +152,8 @@ class DllmScheduler:
             None,  # running_batch
             0.5,  # new_token_ratio
             self.server_args.max_prefill_tokens,
-            self.server_args.chunked_prefill_size,
-            dllm_config=self.dllm_config,
+            self._chunked_prefill_size,
+            prefill_max_requests=1,
         )
 
         # Re-submit existing staging (chunked) requests.
@@ -174,9 +177,11 @@ class DllmScheduler:
         if not adder.can_run_list:
             return None
 
-        # Promote newly staged requests and remove them from waiting queue.
+        # Diffusion requests need to be rescheduled until they finish. Keep each
+        # scheduled request in our stage-local staging queue; current SGLang no
+        # longer exposes the old dllm_staging_reqs helper on PrefillAdder.
         staging_rids = {r.rid for r in self._staging_queue}
-        for req in adder.dllm_staging_reqs:
+        for req in adder.can_run_list:
             if req.rid not in staging_rids:
                 self._staging_queue.append(req)
                 staging_rids.add(req.rid)
@@ -201,17 +206,33 @@ class DllmScheduler:
         return new_batch
 
     def _apply_results(self, batch: Any, batch_result: Any) -> None:
-        next_token_ids_list = batch_result.next_token_ids
-
-        if not next_token_ids_list:
+        next_token_ids = batch_result.next_token_ids
+        if next_token_ids is None:
             return
 
-        for i, req in enumerate(batch.reqs):
-            token_ids = next_token_ids_list[i].tolist()
+        token_ids = (
+            next_token_ids.tolist()
+            if hasattr(next_token_ids, "tolist")
+            else next_token_ids
+        )
+        # This stage runs one request at a time (PrefillAdder is built with
+        # prefill_max_requests=1 in _schedule_next_batch), so the model may
+        # return a flat list of token ids for the single request rather than a
+        # list-per-request. Normalize that flat list into the per-request shape.
+        # NOTE: if prefill_max_requests is ever raised above 1, this flat-list
+        # branch must be revisited together with the scheduling cap, otherwise
+        # the zip() below would pair each Req with a single int.
+        if len(batch.reqs) == 1 and (not token_ids or isinstance(token_ids[0], int)):
+            token_ids_per_req = [token_ids]
+        else:
+            token_ids_per_req = token_ids
 
-            if token_ids:
-                req.output_ids.extend(token_ids)
-                req.check_finished(new_accepted_len=len(token_ids))
+        for req, req_token_ids in zip(batch.reqs, token_ids_per_req):
+            for token_id in req_token_ids:
+                req.output_ids.append(int(token_id))
+                req.check_finished()
+                if req.finished():
+                    break
 
             if req.finished():
                 req_data = self._rid_to_req_data.pop(req.rid, None)

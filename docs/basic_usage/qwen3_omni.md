@@ -420,11 +420,12 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `audios` | list | `null` | List of audio file paths (local paths or URLs) |
 | `videos` | list | `null` | List of video file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
+| `max_completion_tokens` | int | `null` | OpenAI-compatible alias for `max_tokens` |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Random seed for reproducibility |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `audio` | dict | `null` | Audio output configuration, e.g. `{"voice": "default", "format": "wav"}` |
+| `audio` | dict | `null` | Speech response format configuration, e.g. `{"format": "wav"}` |
 | `stage_sampling` | dict | `null` | Per-stage sampling overrides, e.g. `{"thinker": {"temperature": 0.8}}` |
