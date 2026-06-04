@@ -51,14 +51,15 @@ sgl-omni serve \
   --port 8000
 ```
 
-For local or data-URL references, remote-domain allowlisting is not needed. To
-serve local `file://` reference audio, allow the directory that contains those
-clips:
+Data-URL references do not need remote-domain allowlisting. For `file://`
+reference audio, allow the directory that contains those clips. When running
+from the repository root, the checked-in example clips live under
+`docs/_static/audio`:
 
 ```bash
 sgl-omni serve \
   --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
-  --allowed-local-media-path /path/to/reference-audio \
+  --allowed-local-media-path docs/_static/audio \
   --port 8000
 ```
 
