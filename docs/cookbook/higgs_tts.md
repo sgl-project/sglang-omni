@@ -539,13 +539,11 @@ Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40
 
 | Concurrency | Mean latency | RTF (per-req) | audio_s/s |
 |---:|---:|---:|---:|
-| 1 | 4637 ms | 0.526 | 1.90 |
-| 16 | 7138 ms | 0.747 | 12.88 |
-| 32 | 10188 ms | 0.865 | 16.94 |
+| 1 | [—] | [—] | [—] |
+| 16 | [—] | [—] | [—] |
+| 32 | [—] | [—] | [—] |
 
 ## Evaluation Benchmarks
-
-[TODO: Run the evaluation with SGLang inference.]
 
 We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) on three zero-shot voice-cloning benchmarks.
 
@@ -553,50 +551,8 @@ We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) o
 
 | Lang | WER ↓ | SIM ↑ |
 |---|---|---|
-| en | [—] | [—] |
-| zh | [—] | [—] |
-| **macro** | **[—]** | **[—]** |
+| en | [0.80] | [73.00] |
+| zh | [1.46] | [67.26] |
+| **macro** | **[1.13]** | **[70.13]** |
 
-### CV3 (9 langs)
-
-| Lang | WER ↓ | SIM ↑ |
-|---|---|---|
-| de | [—] | [—] |
-| en | [—] | [—] |
-| es | [—] | [—] |
-| fr | [—] | [—] |
-| it | [—] | [—] |
-| ja | [—] | [—] |
-| ko | [—] | [—] |
-| ru | [—] | [—] |
-| zh | [—] | [—] |
-| **macro** | **[—]** | **[—]** |
-
-### MiniMax-Multilingual (23 langs)
-
-| Lang | WER ↓ | SIM ↑ |
-|---|---|---|
-| ar | [—] | [—] |
-| cs | [—] | [—] |
-| de | [—] | [—] |
-| el | [—] | [—] |
-| en | [—] | [—] |
-| es | [—] | [—] |
-| fi | [—] | [—] |
-| fr | [—] | [—] |
-| hi | [—] | [—] |
-| id | [—] | [—] |
-| it | [—] | [—] |
-| ja | [—] | [—] |
-| ko | [—] | [—] |
-| nl | [—] | [—] |
-| pl | [—] | [—] |
-| pt | [—] | [—] |
-| ro | [—] | [—] |
-| ru | [—] | [—] |
-| th | [—] | [—] |
-| tr | [—] | [—] |
-| uk | [—] | [—] |
-| vi | [—] | [—] |
-| zh | [—] | [—] |
-| **macro** | **[—]** | **[—]** |
+Results are generated with SGLang Omni. WER/CER and speaker similarity follow the original text normalization and metric implementation from [seed-tts-eval](https://github.com/BytedanceSpeech/seed-tts-eval).
