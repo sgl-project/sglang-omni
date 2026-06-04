@@ -779,7 +779,8 @@ def serve(
         typer.Option(
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
-                "Required unless --config provides model_path."
+                "When SGLANG_OMNI_USE_MODELSCOPE is set, this is resolved as a "
+                "ModelScope repo id instead. Required unless --config provides model_path."
             )
         ),
     ] = None,

@@ -10,14 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import torch.nn as nn
-from transformers import AutoConfig
 
 try:
     from transformers.initialization import no_init_weights
 except ImportError:
     from transformers.modeling_utils import no_init_weights
 
-from transformers.utils.hub import cached_file
+from sglang_omni.utils.hub import AutoConfig, cached_file, hf_hub_download
 
 # ---------------------------------------------------------------------------
 # Architecture resolution helpers
@@ -60,8 +59,6 @@ def load_mistral_params_json(model_path: str) -> dict | None:
     if os.path.isdir(model_path):
         return None
     try:
-        from huggingface_hub import hf_hub_download
-
         cached = hf_hub_download(repo_id=model_path, filename="params.json")
         with open(cached) as f:
             return json.load(f)
@@ -96,8 +93,6 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     elif not os.path.isdir(model_path):
         # Treat as a Hub repo id — download config.json
         try:
-            from huggingface_hub import hf_hub_download
-
             cached = hf_hub_download(repo_id=model_path, filename="config.json")
             with open(cached) as f:
                 raw = json.load(f)

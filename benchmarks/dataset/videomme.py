@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from datasets import load_dataset
-from huggingface_hub import snapshot_download
+
+from sglang_omni.utils.hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 

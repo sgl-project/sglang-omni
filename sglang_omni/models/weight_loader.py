@@ -9,8 +9,8 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from huggingface_hub import snapshot_download
-from transformers.utils.hub import cached_file
+
+from sglang_omni.utils.hub import cached_file, snapshot_download
 
 
 def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:

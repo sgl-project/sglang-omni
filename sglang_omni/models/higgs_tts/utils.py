@@ -17,12 +17,12 @@ from typing import Any
 
 import numpy as np
 import torch
-from huggingface_hub import snapshot_download
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.base import _is_url
 from sglang_omni.preprocessing.resource_connector import global_http_connection
+from sglang_omni.utils.hub import snapshot_download
 
 # Codec-vocab specials (inside the [N*V] codebook space, NOT the text vocab).
 BOC_ID = 1024
