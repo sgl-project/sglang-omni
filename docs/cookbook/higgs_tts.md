@@ -490,20 +490,70 @@ Reference output:
   <source src="../_static/audio/gaokao-listening.wav" type="audio/wav">
 </audio>
 
-### Pre-encoded reference codes
-For high-throughput pipelines (e.g. RL rollout) where the same reference audio is reused across many requests, you can encode the reference audio offline and pass the discrete codes directly via `reference_codes` — this skips the server-side codec encode step. Shape must be `[T, num_codebooks=8]`.
+#### Emotion
 
-```python
-# python
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "input": SPEECH_INPUT,
-        "reference_codes": codes_TN,   # [T, 8] int list, pre-delay-pattern
-        "reference_text": REFERENCE_TEXT,
-    },
-)
-```
+| Token | Description |
+|---|---|
+| `<\|emotion:elation\|>` | Elation / joy |
+| `<\|emotion:amusement\|>` | Amusement / playful laughter |
+| `<\|emotion:enthusiasm\|>` | Enthusiasm / excitement |
+| `<\|emotion:determination\|>` | Determination / firmness |
+| `<\|emotion:pride\|>` | Pride / confidence |
+| `<\|emotion:contentment\|>` | Calm satisfaction |
+| `<\|emotion:affection\|>` | Warmth / affection |
+| `<\|emotion:relief\|>` | Relief |
+| `<\|emotion:contemplation\|>` | Thoughtful / reflective |
+| `<\|emotion:confusion\|>` | Confused |
+| `<\|emotion:surprise\|>` | Surprised |
+| `<\|emotion:awe\|>` | Awe / wonder |
+| `<\|emotion:longing\|>` | Longing / yearning |
+| `<\|emotion:arousal\|>` | Heightened desire |
+| `<\|emotion:anger\|>` | Anger |
+| `<\|emotion:fear\|>` | Fear |
+| `<\|emotion:disgust\|>` | Disgust |
+| `<\|emotion:bitterness\|>` | Bitterness |
+| `<\|emotion:sadness\|>` | Sadness |
+| `<\|emotion:shame\|>` | Shame |
+| `<\|emotion:helplessness\|>` | Helplessness |
+
+#### Style
+
+| Token | Description |
+|---|---|
+| `<\|style:singing\|>` | Singing |
+| `<\|style:shouting\|>` | Shouting / projected voice |
+| `<\|style:whispering\|>` | Whisper |
+
+#### Sound Effects
+
+Pair each token with the matching onomatopoeia immediately after it.
+
+| Token | Description | Suggested onomatopoeia |
+|---|---|---|
+| `<\|sfx:cough\|>` | Cough | Ahem |
+| `<\|sfx:laughter\|>` | Laughter | Haha / Hehe |
+| `<\|sfx:crying\|>` | Crying | Boohoo / Sob |
+| `<\|sfx:screaming\|>` | Screaming | Ahh / Aaah |
+| `<\|sfx:burping\|>` | Burping | Burp |
+| `<\|sfx:humming\|>` | Humming | Hmm / Mmm |
+| `<\|sfx:sigh\|>` | Sigh | Uh / Ahh |
+| `<\|sfx:sniff\|>` | Sniff | Sff |
+| `<\|sfx:sneeze\|>` | Sneeze | Achoo |
+
+#### Prosody
+
+| Token | Effect |
+|---|---|
+| `<\|prosody:speed_very_slow\|>` | ~0.65× speed |
+| `<\|prosody:speed_slow\|>` | ~0.85× speed |
+| `<\|prosody:speed_fast\|>` | ~1.2× speed |
+| `<\|prosody:speed_very_fast\|>` | ~1.4× speed |
+| `<\|prosody:pitch_low\|>` | ~−3 semitones |
+| `<\|prosody:pitch_high\|>` | ~+2.5 semitones |
+| `<\|prosody:pause\|>` | ~400–700 ms pause |
+| `<\|prosody:long_pause\|>` | ~700–1500 ms pause |
+| `<\|prosody:expressive_high\|>` | More expressive delivery |
+| `<\|prosody:expressive_low\|>` | Flatter delivery |
 
 ### Request parameters
 
@@ -514,8 +564,7 @@ resp = requests.post(
 | `response_format` | string | `"wav"` | Output audio format |
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path or HTTP URL) and `text` (transcript) |
-| `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
-| `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
+| `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `max_new_tokens` | int | `2048` | Maximum number of generated multi-codebook steps |
 | `temperature` | float | `1.0` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |

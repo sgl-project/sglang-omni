@@ -23,6 +23,7 @@ The model repository is public, so no Hugging Face token is required.
 ## Server Configuration
 
 The pipeline is `preprocessing → tts_generation → vocoder`.
+First startup can take several minutes while the `tts_generation` stage captures CUDA graphs.
 
 ```bash
 sgl-omni serve \
@@ -135,10 +136,10 @@ Whisper-large-v3. Hardware: 1× H200 SXM.
 | Throughput (req/s) | 5.40 |
 | Completed / failed requests | 1088 / 0 |
 
-Reproduce with the SeedTTS command in our [seedTTS benchmark](../../benchmarks/README.md). The Voxtral
-model card also quotes ~70 ms first-audio latency at concurrency 1; the table above is a
-throughput-oriented run at concurrency 16, so its RTF reflects batched load rather than the
-latency-optimized single-stream figure. Output is 24 kHz.
+Reproduce with the SeedTTS command documented in `benchmarks/README.md`. The Voxtral model card
+also quotes ~70 ms first-audio latency at concurrency 1; the table above is a throughput-oriented
+run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
+single-stream figure. Output is 24 kHz.
 
 ## Known Limitations
 
