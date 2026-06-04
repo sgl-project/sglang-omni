@@ -51,6 +51,10 @@ myst_enable_extensions = [
 
 myst_heading_anchors = 5
 
+# Render bare ```mermaid fences via sphinxcontrib.mermaid (otherwise MyST emits
+# them as literal code blocks). Keeps the fences native on GitHub too.
+myst_fence_as_directive = ["mermaid"]
+
 nbsphinx_kernel_name = "python3"
 nbsphinx_execute_arguments = [
     "--InlineBackend.figure_formats={'svg', 'pdf'}",

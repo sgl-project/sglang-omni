@@ -108,7 +108,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ming-omni",
-    "messages": [{"role": "user", "content": "你好，请用一句话介绍你自己。"}],
+    "messages": [{"role": "user", "content": "Explain what tensor parallelism is in one sentence."}],
     "modalities": ["text"],
     "max_tokens": 128,
     "temperature": 0.0
@@ -124,7 +124,7 @@ resp = requests.post(
     "http://localhost:8000/v1/chat/completions",
     json={
         "model": "ming-omni",
-        "messages": [{"role": "user", "content": "你好，请用一句话介绍你自己。"}],
+        "messages": [{"role": "user", "content": "Explain what tensor parallelism is in one sentence."}],
         "modalities": ["text"],
         "max_tokens": 128,
         "temperature": 0.0,
@@ -137,7 +137,7 @@ print(resp.json()["choices"][0]["message"]["content"])
 Output (text-only TP4 server, `temperature: 0.0`):
 
 ```text
-你好，我是通义千问，一个由阿里云开发的超大规模语言模型，可以回答各种问题、提供帮助和进行对话。
+Tensor parallelism is a technique used in distributed computing to split large tensors across multiple devices, allowing for parallel computation and efficient processing of large-scale machine learning models.
 ```
 
 ### Image and Text Input
@@ -149,8 +149,8 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ming-omni",
-    "messages": [{"role": "user", "content": "How many cars are in this image?"}],
-    "images": ["/path/to/cars.jpg"],
+    "messages": [{"role": "user", "content": "Describe this image in one sentence."}],
+    "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
     "modalities": ["text"],
     "max_tokens": 64,
     "temperature": 0.0
@@ -166,8 +166,8 @@ resp = requests.post(
     "http://localhost:8000/v1/chat/completions",
     json={
         "model": "ming-omni",
-        "messages": [{"role": "user", "content": "How many cars are in this image?"}],
-        "images": ["/path/to/cars.jpg"],
+        "messages": [{"role": "user", "content": "Describe this image in one sentence."}],
+        "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
         "modalities": ["text"],
         "max_tokens": 64,
         "temperature": 0.0,
@@ -177,24 +177,24 @@ resp.raise_for_status()
 print(resp.json()["choices"][0]["message"]["content"])
 ```
 
-Output (image of four parked cars, `temperature: 0.0`):
+Output (the woman-and-dog beach image, `temperature: 0.0`):
 
 ```text
-4
+A woman and her dog are sitting on the beach, sharing a high-five as the sun sets in the background.
 ```
 
 ### Audio and Image Input
 
-Use an empty text message when the semantic question is entirely in the audio:
+Provide both `images` and `audios`; a text prompt can direct the model to attend to each:
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ming-omni",
-    "messages": [{"role": "user", "content": ""}],
-    "images": ["/path/to/cars.jpg"],
-    "audios": ["/path/to/question.wav"],
+    "messages": [{"role": "user", "content": "What is said in the audio, and what is shown in the image?"}],
+    "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
+    "audios": ["https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"],
     "modalities": ["text"],
     "max_tokens": 64,
     "temperature": 0.0
@@ -210,9 +210,9 @@ resp = requests.post(
     "http://localhost:8000/v1/chat/completions",
     json={
         "model": "ming-omni",
-        "messages": [{"role": "user", "content": ""}],
-        "images": ["/path/to/cars.jpg"],
-        "audios": ["/path/to/question.wav"],
+        "messages": [{"role": "user", "content": "What is said in the audio, and what is shown in the image?"}],
+        "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
+        "audios": ["https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"],
         "modalities": ["text"],
         "max_tokens": 64,
         "temperature": 0.0,
@@ -222,13 +222,10 @@ resp.raise_for_status()
 print(resp.json()["choices"][0]["message"]["content"])
 ```
 
-Output (spoken question "how many cars" over the same image; truncated at `max_tokens: 64`):
+Output (English speech sample plus the beach image; truncated at `max_tokens: 64`):
 
 ```text
-To determine the number of cars in the picture, we analyze each section of the image:
-
-1. **Top - left section**: Contains 1 car (a white Rolls - Royce).
-2. **Top - right section**: Contains 1 car (a gray Mercedes - Benz SUV).
+The audio clip features a woman's voice, while the image depicts a woman and a dog on a beach. The woman in the image is sitting on the sand, facing the dog, and appears to be interacting with it. The dog is sitting upright, looking at the woman, and seems to be engaged in the interaction
 ```
 
 ### Video Input
@@ -241,7 +238,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   -d '{
     "model": "ming-omni",
     "messages": [{"role": "user", "content": "Describe the action in this video."}],
-    "videos": ["/path/to/demo.mp4"],
+    "videos": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-VL/space_woaudio.mp4"],
     "video_max_frames": 16,
     "modalities": ["text"],
     "max_tokens": 96,
@@ -259,7 +256,7 @@ resp = requests.post(
     json={
         "model": "ming-omni",
         "messages": [{"role": "user", "content": "Describe the action in this video."}],
-        "videos": ["/path/to/demo.mp4"],
+        "videos": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-VL/space_woaudio.mp4"],
         "video_max_frames": 16,
         "modalities": ["text"],
         "max_tokens": 96,
@@ -270,10 +267,10 @@ resp.raise_for_status()
 print(resp.json()["choices"][0]["message"]["content"])
 ```
 
-Output (short clip of someone drawing on a tablet, `temperature: 0.0`):
+Output (short clip of two astronauts on a space station, `temperature: 0.0`):
 
 ```text
-In the video, a person is seen using a stylus to draw a guitar on a tablet. The individual's left hand is holding the tablet steady while the right hand, holding the stylus, is actively sketching the guitar. The drawing process appears to be in progress, with the guitar taking shape on the tablet's screen.
+The video shows two astronauts inside a space station. One astronaut is holding a microphone and speaking, while the other is standing with his arms crossed. The background includes various equipment and a laptop.
 ```
 
 ### Text Input, Text + Audio Output
@@ -285,7 +282,7 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "ming-omni",
-    "messages": [{"role": "user", "content": "Say a short hello in English."}],
+    "messages": [{"role": "user", "content": "Read this sentence aloud: This model understands text, images, audio, and video, and can reply with either text or speech."}],
     "modalities": ["text", "audio"],
     "audio": {"format": "wav"},
     "max_tokens": 64,
@@ -304,7 +301,7 @@ resp = requests.post(
     "http://localhost:8000/v1/chat/completions",
     json={
         "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Say a short hello in English."}],
+        "messages": [{"role": "user", "content": "Read this sentence aloud: This model understands text, images, audio, and video, and can reply with either text or speech."}],
         "modalities": ["text", "audio"],
         "audio": {"format": "wav"},
         "max_tokens": 64,
@@ -323,10 +320,16 @@ with open("ming_output.wav", "wb") as f:
 Output (speech server, `temperature: 0.0`):
 
 ```text
-Hello! How can I assist you today?
+This model understands text, images, audio, and video, and can reply with either text or speech.
 ```
 
-`ming_output.wav` is a mono WAV carrying the talker's 44.1 kHz speech (~224 KB for this reply).
+`ming_output.wav` is a mono WAV carrying the talker's 44.1 kHz speech (~700 KB for this ~8 s reply).
+
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/ming-omni-intro.wav" type="audio/wav">
+</audio>
 
 ### Streaming Speech
 
@@ -392,7 +395,7 @@ with requests.post(
 
 The example writes each audio chunk as a separate WAV file. If you want one playback file, parse each WAV chunk and concatenate PCM frames with a standard audio library.
 
-Output: with the streaming speech pipeline the audio arrives as multiple `delta.audio.data` chunks. Against the **non-streaming** speech server (the `Text + Audio Output` command), `stream: true` still returns valid SSE but the audio comes back as a single aggregate chunk after generation — for example three SSE events carrying the text `Hello! How can I assist you today?` and one ~241 KB WAV chunk:
+Output: with the streaming speech pipeline the audio arrives as multiple `delta.audio.data` chunks. Against the **non-streaming** speech server (the `Text + Audio Output` command), `stream: true` still returns valid SSE but the audio comes back as a single aggregate chunk after generation — for example one text delta carrying `Hello! How can I assist you today?`, one ~276 KB aggregate WAV chunk, and a final `finish_reason: stop` event before `[DONE]`:
 
 ```text
 Hello! How can I assist you today?
