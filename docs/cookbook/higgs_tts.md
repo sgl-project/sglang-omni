@@ -28,19 +28,6 @@ The model reaches **single-digit WER/CER on 100 languages**, which split into tw
 
 🇦🇱 Albanian · 🇲🇼🇿🇲 Chichewa/Nyanja · 🇮🇳🇵🇰 Eastern Punjabi · 🇺🇬 Ganda · 🇮🇸 Icelandic · 🇮🇪 Irish · 🇩🇿 Kabyle · 🇨🇻 Kabuverdianu · 🇰🇪 Kamba · 🇻🇦 Latin · 🇱🇺 Luxembourgish · 🇪🇹🇰🇪 Oromo · 🇦🇫🇵🇰 Pashto · 🇵🇰🇮🇳 Sindhi · 🇸🇴 Somali · 🇦🇴 Umbundu · 🇬🇧 Welsh
 
-## Control Tokens
-
-All tags follow `<|category:value|>` syntax and can be inserted mid-utterance.
-
-- **Emotion** — `elation`, `amusement`, `enthusiasm`, `determination`, `pride`, `contentment`, `affection`, `relief`, `contemplation`, `confusion`, `surprise`, `awe`, `longing`, `arousal`, `anger`, `fear`, `disgust`, `bitterness`, `sadness`, `shame`, `helplessness`
-- **Style** — `singing`, `shouting`, `whispering`
-- **Sound effects** — `cough`, `laughter`, `crying`, `screaming`, `burping`, `humming`, `sigh`, `sniff`, `sneeze`
-- **Prosody**
-  - Speed — `speed_very_slow` (&approx;0.65×), `speed_slow` (&approx;0.85×), `speed_fast` (&approx;1.2×), `speed_very_fast` (&approx;1.4×)
-  - Pauses — `pause` (&approx;400–700 ms), `long_pause` (&approx;700–1500 ms)
-  - Pitch — `pitch_low` (&approx;−3 st), `pitch_high` (&approx;+2.5 st)
-  - Delivery — `expressive_high`, `expressive_low`
-
 ## Evaluation Benchmarks
 
 ### Multilingual Voice Clone
@@ -286,10 +273,19 @@ Audio chunks have `"finish_reason": null` and carry audio data in `audio.data`. 
 
 ### Inline Control Tokens
 
-Embed control tokens directly in the `input` field. Tokens from different
-categories can be combined.
+All tags follow `<|category:value|>` syntax and can be inserted mid-utterance.
 
-Each request is a single **turn**, and two rules make control tokens reliable:
+- **Emotion** — `elation`, `amusement`, `enthusiasm`, `determination`, `pride`, `contentment`, `affection`, `relief`, `contemplation`, `confusion`, `surprise`, `awe`, `longing`, `arousal`, `anger`, `fear`, `disgust`, `bitterness`, `sadness`, `shame`, `helplessness`
+- **Style** — `singing`, `shouting`, `whispering`
+- **Sound effects** — `cough`, `laughter`, `crying`, `screaming`, `burping`, `humming`, `sigh`, `sniff`, `sneeze`
+- **Prosody**
+  - Speed — `speed_very_slow` (&approx;0.65×), `speed_slow` (&approx;0.85×), `speed_fast` (&approx;1.2×), `speed_very_fast` (&approx;1.4×)
+  - Pauses — `pause` (&approx;400–700 ms), `long_pause` (&approx;700–1500 ms)
+  - Pitch — `pitch_low` (&approx;−3 st), `pitch_high` (&approx;+2.5 st)
+  - Delivery — `expressive_high`, `expressive_low`
+
+Embed control tokens directly in the `input` field. Tokens from different
+categories can be combined. Each request is a single **turn**, and two rules make control tokens reliable:
 
 1. **Lead the turn with the delivery tokens.** Emotion (`<|emotion:…|>`), Style
    (`<|style:…|>`), and the prosody *speed* (`<|prosody:speed_…|>`), *pitch*
@@ -302,8 +298,7 @@ Each request is a single **turn**, and two rules make control tokens reliable:
 2. **Pair every sound effect with its onomatopoeia.** A `<|sfx:…|>` token lands
    best when the matching written sound follows it immediately
    (e.g. `<|sfx:laughter|>Haha`, `<|sfx:sigh|>Uh`, `<|sfx:sneeze|>Achoo`) — the
-   onomatopoeia gives the model the acoustic cue to realize the effect. See the
-   [Sound Effects](#sound-effects) table for suggested pairings.
+   onomatopoeia gives the model the acoustic cue to realize the effect.
 
 **Demo**
 
@@ -495,71 +490,6 @@ Reference output:
   <source src="../_static/audio/gaokao-listening.wav" type="audio/wav">
 </audio>
 
-#### Emotion
-
-| Token | Description |
-|---|---|
-| `<\|emotion:elation\|>` | Elation / joy |
-| `<\|emotion:amusement\|>` | Amusement / playful laughter |
-| `<\|emotion:enthusiasm\|>` | Enthusiasm / excitement |
-| `<\|emotion:determination\|>` | Determination / firmness |
-| `<\|emotion:pride\|>` | Pride / confidence |
-| `<\|emotion:contentment\|>` | Calm satisfaction |
-| `<\|emotion:affection\|>` | Warmth / affection |
-| `<\|emotion:relief\|>` | Relief |
-| `<\|emotion:contemplation\|>` | Thoughtful / reflective |
-| `<\|emotion:confusion\|>` | Confused |
-| `<\|emotion:surprise\|>` | Surprised |
-| `<\|emotion:awe\|>` | Awe / wonder |
-| `<\|emotion:longing\|>` | Longing / yearning |
-| `<\|emotion:arousal\|>` | Heightened desire |
-| `<\|emotion:anger\|>` | Anger |
-| `<\|emotion:fear\|>` | Fear |
-| `<\|emotion:disgust\|>` | Disgust |
-| `<\|emotion:bitterness\|>` | Bitterness |
-| `<\|emotion:sadness\|>` | Sadness |
-| `<\|emotion:shame\|>` | Shame |
-| `<\|emotion:helplessness\|>` | Helplessness |
-
-#### Style
-
-| Token | Description |
-|---|---|
-| `<\|style:singing\|>` | Singing |
-| `<\|style:shouting\|>` | Shouting / projected voice |
-| `<\|style:whispering\|>` | Whisper |
-
-#### Sound Effects
-
-Pair each token with the matching onomatopoeia immediately after it.
-
-| Token | Description | Suggested onomatopoeia |
-|---|---|---|
-| `<\|sfx:cough\|>` | Cough | Ahem |
-| `<\|sfx:laughter\|>` | Laughter | Haha / Hehe |
-| `<\|sfx:crying\|>` | Crying | Boohoo / Sob |
-| `<\|sfx:screaming\|>` | Screaming | Ahh / Aaah |
-| `<\|sfx:burping\|>` | Burping | Burp |
-| `<\|sfx:humming\|>` | Humming | Hmm / Mmm |
-| `<\|sfx:sigh\|>` | Sigh | Uh / Ahh |
-| `<\|sfx:sniff\|>` | Sniff | Sff |
-| `<\|sfx:sneeze\|>` | Sneeze | Achoo |
-
-#### Prosody
-
-| Token | Effect |
-|---|---|
-| `<\|prosody:speed_very_slow\|>` | ~0.65× speed |
-| `<\|prosody:speed_slow\|>` | ~0.85× speed |
-| `<\|prosody:speed_fast\|>` | ~1.2× speed |
-| `<\|prosody:speed_very_fast\|>` | ~1.4× speed |
-| `<\|prosody:pitch_low\|>` | ~−3 semitones |
-| `<\|prosody:pitch_high\|>` | ~+2.5 semitones |
-| `<\|prosody:pause\|>` | ~400–700 ms pause |
-| `<\|prosody:long_pause\|>` | ~700–1500 ms pause |
-| `<\|prosody:expressive_high\|>` | More expressive delivery |
-| `<\|prosody:expressive_low\|>` | Flatter delivery |
-
 ### Pre-encoded reference codes
 For high-throughput pipelines (e.g. RL rollout) where the same reference audio is reused across many requests, you can encode the reference audio offline and pass the discrete codes directly via `reference_codes` — this skips the server-side codec encode step. Shape must be `[T, num_codebooks=8]`.
 
@@ -595,12 +525,12 @@ resp = requests.post(
 
 ### Throughput
 
-Throughput on Seed-TTS EN (full set, 1088 samples). Each row is the mean of 3 complete runs (1088/1088 succeeded). Hardware: 1× H100.
+Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurrency` sweep against a Higgs server (`max_running_requests=16`, bf16, CUDA Graph on). Each row is the **mean of 3 runs**. Hardware: **1× H100**.
 
-| Concurrency | Mean latency | RTF (per-req) | audio_s/s |
-|---:|---:|---:|---:|
-| 1 | 617 ms | 0.147 | 6.89 |
-| 2 | 742 ms | 0.180 | 11.37 |
-| 4 | 733 ms | 0.177 | 22.84 |
-| 8 | 898 ms | 0.217 | 37.38 |
-| 16 | 1079 ms | 0.262 | 61.84 |
+| Concurrency | Throughput (req/s) | Mean latency | RTF (per-req) | audio_s/s |
+|---:|---:|---:|---:|---:|
+| 1 | 1.62 | 617 ms | 0.147 | 6.89 |
+| 2 | 2.70 | 742 ms | 0.180 | 11.37 |
+| 4 | 5.45 | 733 ms | 0.177 | 22.84 |
+| 8 | 8.91 | 898 ms | 0.217 | 37.38 |
+| 16 | 14.74 | 1079 ms | 0.262 | 61.84 |
