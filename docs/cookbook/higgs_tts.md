@@ -34,7 +34,7 @@ The model reaches **single-digit WER/CER on 100 languages**, which split into tw
 
 We evaluate Higgs Audio v3 TTS on public multilingual TTS suites and our internal 111-language Higgs-Multilingual set, covering both common and lower-resource languages.
 
-WER / CER (↓, %), macro-averaged across each benchmark's language set (Higgs Audio v3 TTS; reproducible with original metrics and normalization):
+WER / CER (↓, %), macro-averaged across each benchmark's language set. Higgs Audio v3 TTS results are reproducible with original metrics and normalization:
 
 | Benchmark | Languages | WER/CER ↓ |
 |---|---:|---:|
@@ -70,11 +70,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-The voice-cloning examples below use checked-in local clips from
-`docs/_static/audio`, so the server launch command allows that directory.
-Data-URL references do not need a local-media path. Remote HTTP(S) references
-require `--allowed-media-domain` for both the source host and any redirect
-targets.
+The voice-cloning examples below use local reference clips from
+`docs/_static/audio`.
 
 ## Synthesizing Speech
 
@@ -171,7 +168,7 @@ Unlike a standard request where you wait for the full audio to be generated befo
 
 Higgs TTS implements streaming via [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) by default. Each SSE event carries a base64-encoded audio chunk. Your client can decode and play each chunk as it arrives, rather than buffering the entire response.
 
-Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in the request body. During generation, the vocoder emits incremental audio chunks; the terminal event is intentionally slim and carries metadata such as `sample_rate` and `usage` instead of repeating the full waveform. Inside the pipeline, audio chunks use the compact `audio_waveform` payload (`bytes` plus `audio_waveform_shape`, `audio_waveform_dtype`, and `sample_rate`), which the HTTP layer encodes into the SSE `audio.data` field.
+Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in the request body. During generation, the vocoder emits incremental audio chunks. The terminal event is intentionally slim and carries metadata such as `sample_rate` and `usage` instead of repeating the full waveform. Inside the pipeline, audio chunks use the compact `audio_waveform` payload (`bytes` plus `audio_waveform_shape`, `audio_waveform_dtype`, and `sample_rate`), which the HTTP layer encodes into the SSE `audio.data` field.
 
 1. Use curl
 
@@ -211,7 +208,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. The response headers report the actual stream sample rate, channel count, and bit depth. Raw PCM speech requests default `initial_codec_chunk_frames` to `1` for lower first-audio latency; clients can still set another value, including `0`. The setting controls only the first vocoder chunk for TTFA tuning; follow-up chunks return to the normal Higgs streaming window.
+`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. The response headers report the actual stream sample rate, channel count, and bit depth. Raw PCM speech requests default `initial_codec_chunk_frames` to `1` for lower first-audio latency. Clients can still set another value, including `0`. The setting controls only the first vocoder chunk for TTFA tuning. Follow-up chunks return to the normal Higgs streaming window.
 
 2. Use Python
 
@@ -290,9 +287,9 @@ All tags follow `<|category:value|>` syntax and can be inserted mid-utterance.
 - **Style** — `singing`, `shouting`, `whispering`
 - **Sound effects** — `cough`, `laughter`, `crying`, `screaming`, `burping`, `humming`, `sigh`, `sniff`, `sneeze`
 - **Prosody**
-  - Speed — `speed_very_slow` (&approx;0.65×), `speed_slow` (&approx;0.85×), `speed_fast` (&approx;1.2×), `speed_very_fast` (&approx;1.4×)
-  - Pauses — `pause` (&approx;400–700 ms), `long_pause` (&approx;700–1500 ms)
-  - Pitch — `pitch_low` (&approx;−3 st), `pitch_high` (&approx;+2.5 st)
+  - Speed — `speed_very_slow` (~0.65×), `speed_slow` (~0.85×), `speed_fast` (~1.2×), `speed_very_fast` (~1.4×)
+  - Pauses — `pause` (~400–700 ms), `long_pause` (~700–1500 ms)
+  - Pitch — `pitch_low` (~−3 st), `pitch_high` (~+2.5 st)
   - Delivery — `expressive_high`, `expressive_low`
 
 Embed control tokens directly in the `input` field. Tokens from different
@@ -574,7 +571,7 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `voice` | string | `"default"` | Voice identifier (ignored when `references` is set) |
 | `response_format` | string | `"wav"` | Output audio format (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed remote URL, data URL, allowed local path, or allowed `file://` URI) and `text` (transcript) |
+| `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path, file URL, data URL, or HTTP URL) and `text` (transcript) |
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
 | `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
@@ -601,7 +598,7 @@ Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurre
 - **Concurrency** — Maximum number of in-flight client requests (`--max-concurrency`).
 - **Throughput (req/s)** — Completed requests divided by total benchmark wall-clock time.
 - **Mean latency** — Average end-to-end time per request (send to full response received).
-- **RTF (per-req)** — Average ratio of processing time to generated audio duration per request (&lt;1 is faster than real time).
+- **RTF (per-req)** — Average ratio of processing time to generated audio duration per request. `<1` is faster than real time.
 - **audio_s/s** — Total seconds of audio produced divided by total benchmark wall-clock time.
 
 To reproduce the results, follow the instructions in [this script](https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py).

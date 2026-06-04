@@ -23,11 +23,11 @@ uv pip install --no-deps qwen-tts==0.1.1
 | Model family | Example config | Request notes |
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
-| [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`; use `--no-ref-audio` for SeedTTS benchmarking |
-| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`; `language` defaults to `auto` |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
-| [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
-| [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
+| [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
+| [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Missing `voice` defaults to `Vivian` |
+| [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
+| [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 
 ## Launch the Server
 
@@ -35,22 +35,10 @@ uv pip install --no-deps qwen-tts==0.1.1
 sgl-omni serve \
   --model-path fishaudio/s2-pro \
   --config examples/configs/s2pro_tts.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
-
-Local reference audio is disabled by default. To allow local paths or
-`file://` reference files, launch with an explicit directory:
-
-```bash
-sgl-omni serve \
-  --model-path fishaudio/s2-pro \
-  --config examples/configs/s2pro_tts.yaml \
-  --allowed-local-media-path /path/to/reference-audio \
-  --port 8000
-```
-
-Remote HTTP(S) reference audio requires `--allowed-media-domain`. Repeat the
-flag to allow multiple trusted media hosts.
 
 For Voxtral:
 
@@ -67,6 +55,8 @@ For Qwen3-TTS Base:
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --config examples/configs/qwen3_tts_0_6b.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
 
@@ -112,15 +102,13 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 Qwen3-TTS Base requires reference audio:
 
 ```bash
-REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
-
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{
-    \"input\": \"This is a local reference audio test.\",
-    \"ref_audio\": \"${REF_URI}\",
-    \"ref_text\": \"Reference transcript for the local audio clip.\"
-  }" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his."
+  }' \
   --output output.wav
 ```
 
@@ -141,24 +129,20 @@ For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a refere
 
 ### Fish Speech Voice Cloning
 
-The examples below use an allowed local audio clip. The `references` field
-accepts `audio_path` as allowed HTTP(S), data URL, allowed local path, or an
-allowed `file://` URI, plus `text` (transcript of that audio).
+The examples below use a sample clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). The `references` field accepts `audio_path` (a local path, file URL, data URL, or HTTP URL) and `text` (transcript of that audio).
 
 1. Non-streaming request
 
 ```bash
-REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
-
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{
-    \"input\": \"This is a local reference audio test.\",
-    \"references\": [{
-      \"audio_path\": \"${REF_URI}\",
-      \"text\": \"Reference transcript for the local audio clip.\"
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
     }]
-  }" \
+  }' \
   --output output.wav
 ```
 
@@ -169,19 +153,17 @@ Enable streaming to receive audio chunks in real time via Server-Sent Events
 `"response_format": "pcm"`:
 
 ```bash
-REF_URI="file://$PWD/docs/_static/audio/gaokao-listening.wav"
-
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{
-    \"input\": \"This is a local reference audio streaming test.\",
-    \"references\": [{
-      \"audio_path\": \"${REF_URI}\",
-      \"text\": \"Reference transcript for the local audio clip.\"
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
     }],
-    \"stream\": true,
-    \"response_format\": \"pcm\"
-  }"
+    "stream": true,
+    "response_format": "pcm"
+  }'
 ```
 
 The server returns a stream of SSE events. Each event contains an
@@ -202,7 +184,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Raw audio streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band SSE events, final usage, or a `[DONE]` sentinel. When the client does not set `initial_codec_chunk_frames`, raw PCM requests default to a 1-frame first vocoder chunk for lower first-audio latency; set `initial_codec_chunk_frames` to `0` to use the model's steady chunk size from the start.
+Raw audio streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band SSE events, final usage, or a `[DONE]` sentinel. When the client does not set `initial_codec_chunk_frames`, raw PCM requests default to a 1-frame first vocoder chunk for lower first-audio latency. Set `initial_codec_chunk_frames` to `0` to use the model's steady chunk size from the start.
 
 ## Use Python
 
@@ -247,11 +229,9 @@ response.stream_to_file("output.wav")
 ### Voice Cloning
 
 ```python
-from pathlib import Path
-
-REFERENCE_AUDIO = Path("docs/_static/audio/gaokao-listening.wav").resolve().as_uri()
-REFERENCE_TEXT = "Reference transcript for the local audio clip."
-SPEECH_INPUT = "This is a local reference audio test."
+REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
+REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
+SPEECH_INPUT = "Get the trust fund to the bank early."
 ```
 
 1. Non-streaming Request
@@ -324,14 +304,14 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `voice` | string | `"default"` | Voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |
-| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes; the response headers declare the stream sample rate, channel count, and bit depth |
-| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first; raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed HTTP(S), data URL, allowed local path, or allowed `file://` URI) and `text` |
-| `ref_audio` | string | `null` | Reference audio as allowed HTTP(S), data URL, allowed local path, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
-| `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
+| `stream` | bool | `false` | Enable streaming via SSE. When true, `response_format` must be `pcm` |
+| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes. The response headers declare the stream sample rate, channel count, and bit depth |
+| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first. Raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
+| `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
+| `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
+| `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
-| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
+| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
 | `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `token_count` | int | `null` | Model-specific duration token target |
@@ -341,7 +321,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
-| `seed` | int | `null` | Model-specific; Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 
 Invalid speech requests return an OpenAI-style error envelope:
 
