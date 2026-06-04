@@ -537,6 +537,8 @@ def test_moss_preprocess_batch_mixed_reference_types(
             return {"input_ids": torch.stack(rows, dim=0)}
 
     def fake_decode_data_uri(ref_audio: str):
+        if not ref_audio.startswith("data:"):
+            return None
         return torch.full((1, 4), 0.5, dtype=torch.float32), 24000
 
     processor = FakeProcessor()
@@ -686,6 +688,8 @@ def test_moss_preprocess_batch_mixed_paths_and_data_uris(
             return {"input_ids": torch.stack(rows, dim=0)}
 
     def fake_decode_data_uri(ref_audio: str):
+        if not ref_audio.startswith("data:"):
+            return None
         return torch.full((1, 4), 0.5, dtype=torch.float32), 24000
 
     processor = FakeProcessor()
