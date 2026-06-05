@@ -71,6 +71,9 @@ class MossTTSSGLangRequestData(ARRequestData):
     req: Any = None
     synced: bool = False
     generation_steps: int = 0
+    moss_sampling_steps: int | None = None
+    moss_stop_pending: bool = False
+    moss_pending_finish: tuple[str, int] | None = None
     suppress_tokens: list[int] | None = None
     input_embeds_are_projected: bool = False
     prefill_input_embeds: torch.Tensor | None = None
@@ -96,6 +99,10 @@ class MossTTSSGLangRequestData(ARRequestData):
     delayed_length: int = _INF_DELAY
     is_audio: bool = False
     engine_start_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.moss_sampling_steps is None:
+            self.moss_sampling_steps = int(self.generation_steps)
 
 
 @dataclass

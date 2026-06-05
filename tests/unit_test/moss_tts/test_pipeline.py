@@ -239,6 +239,111 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     assert captured["model_arch_override"] == "MossTTSDelaySGLangModel"
 
 
+def test_moss_tts_engine_passes_async_decode_args(monkeypatch) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    captured: dict[str, object] = {}
+
+    def fake_build_sglang_server_args(model_path, context_length, **kwargs):
+        captured["model_path"] = model_path
+        captured["context_length"] = context_length
+        captured["build_kwargs"] = dict(kwargs)
+        return SimpleNamespace(
+            disable_cuda_graph=kwargs["disable_cuda_graph"],
+            disable_overlap_schedule=False,
+        )
+
+    def fake_create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        *,
+        model_arch_override=None,
+    ):
+        captured["gpu_id"] = gpu_id
+        captured["model_arch_override"] = model_arch_override
+        model = object()
+        model_runner = SimpleNamespace(
+            model=model,
+            init_device_graphs=lambda: captured.setdefault("graph_inits", 0) or None,
+        )
+        model_worker = SimpleNamespace(model_runner=model_runner)
+        return (
+            model_worker,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+        )
+
+    class FakeOutputProcessor:
+        def __init__(self, **kwargs) -> None:
+            captured["output_processor_kwargs"] = kwargs
+
+    class FakeMossTTSModelRunner:
+        def __init__(self, model_worker, output_proc) -> None:
+            captured["model_runner_args"] = (model_worker, output_proc)
+
+    class FakeOmniScheduler:
+        def __init__(self, **kwargs) -> None:
+            captured["scheduler_kwargs"] = kwargs
+
+    fake_model_runner_module = types.ModuleType(
+        "sglang_omni.models.moss_tts.model_runner"
+    )
+    fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
+    fake_bootstrap_module = types.ModuleType("sglang_omni.scheduling.bootstrap")
+    fake_bootstrap_module.create_sglang_infrastructure = (
+        fake_create_sglang_infrastructure
+    )
+    fake_omni_scheduler_module = types.ModuleType(
+        "sglang_omni.scheduling.omni_scheduler"
+    )
+    fake_omni_scheduler_module.OmniScheduler = FakeOmniScheduler
+    fake_sglang_backend_module = types.ModuleType(
+        "sglang_omni.scheduling.sglang_backend"
+    )
+    fake_sglang_backend_module.SGLangOutputProcessor = FakeOutputProcessor
+    fake_sglang_backend_module.build_sglang_server_args = fake_build_sglang_server_args
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "make_moss_tts_scheduler_adapters",
+        lambda model: (lambda payload: payload, lambda data: data),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.moss_tts.model_runner",
+        fake_model_runner_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.bootstrap",
+        fake_bootstrap_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.omni_scheduler",
+        fake_omni_scheduler_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.sglang_backend",
+        fake_sglang_backend_module,
+    )
+
+    stages.create_sglang_tts_engine_executor(
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        enable_async_decode=True,
+        async_decode_min_batch_size=4,
+    )
+
+    assert captured["scheduler_kwargs"]["enable_async_decode"] is True
+    assert captured["scheduler_kwargs"]["async_decode_min_batch_size"] == 4
+
+
 def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None:
     from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
 
@@ -775,7 +880,7 @@ def test_moss_channel_logits_use_decode_metadata(
     assert metadata.next_token_logits_buffer is None
 
 
-def test_moss_post_process_outputs_skips_im_end() -> None:
+def test_moss_post_process_outputs_is_noop_for_rows_and_feedback() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
@@ -802,10 +907,12 @@ def test_moss_post_process_outputs_skips_im_end() -> None:
         },
     )
 
-    assert [row.tolist() for row in requests[0].data.output_rows] == [[12, 2, 4]]
-    assert len(requests[0].data.pending_feedback_queue) == 1
+    assert requests[0].data.output_rows == []
+    assert requests[0].data.pending_feedback_queue == []
     assert requests[1].data.output_rows == []
     assert requests[1].data.pending_feedback_queue == []
+    assert runner._pending_rows is None
+    assert runner._pending_embeds is None
 
 
 def test_moss_delay_codec_splits_non_pad_segments() -> None:

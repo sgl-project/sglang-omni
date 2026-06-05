@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import torch
@@ -14,6 +15,27 @@ from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
+
+
+class _MossFinishMatchedToken:
+    def __init__(self, matched: int):
+        self.matched = matched
+
+    def to_json(self):
+        return {"type": "stop", "matched": self.matched}
+
+
+class _MossFinishLength:
+    def __init__(self, length: int):
+        self.length = length
+
+    def to_json(self):
+        return {"type": "length", "length": self.length}
+
+
+def _finish_reason_class(name: str, fallback: type):
+    module = sys.modules.get("sglang.srt.managers.schedule_batch")
+    return getattr(module, name, fallback) if module is not None else fallback
 
 
 class MossTTSModelRunner(ModelRunner):
@@ -68,6 +90,30 @@ class MossTTSModelRunner(ModelRunner):
     ) -> None:
         self._collect_moss_step(result, forward_batch, schedule_batch, requests)
 
+    def post_decode_launch(
+        self,
+        result: Any,
+        forward_batch: Any,
+        requests: list,
+    ) -> None:
+        self._collect_moss_step(
+            result, forward_batch, None, requests, defer_finish=True
+        )
+        return None
+
+    def post_decode_resolve(
+        self,
+        host_buf: Any,
+        result: Any,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        del host_buf, result, forward_batch, schedule_batch
+        for sched_req in requests:
+            self._apply_moss_pending_finish(sched_req.data)
+        return None
+
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
@@ -119,7 +165,11 @@ class MossTTSModelRunner(ModelRunner):
             )
         rows = []
         for sched_req in requests:
-            queue = sched_req.data.pending_feedback_queue
+            data = sched_req.data
+            if bool(getattr(data, "moss_stop_pending", False)):
+                rows.append(torch.zeros(self.model.hidden_size, device=weight.device))
+                continue
+            queue = data.pending_feedback_queue
             if not queue:
                 rows.append(torch.zeros(self.model.hidden_size, device=weight.device))
                 continue
@@ -144,6 +194,8 @@ class MossTTSModelRunner(ModelRunner):
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
+        *,
+        defer_finish: bool = False,
     ) -> None:
         channel_logits = self._channel_logits_from_result(result, forward_batch)
         n_vq = len(channel_logits) - 1
@@ -154,15 +206,91 @@ class MossTTSModelRunner(ModelRunner):
 
         datas = [sched_req.data for sched_req in requests]
         rows = self._sample_rows(channel_logits, datas, n_vq=n_vq)
+        self._commit_moss_rows(result, requests, rows, defer_finish=defer_finish)
 
-        next_token_ids = rows[:, 0].contiguous()
-        result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
+        if schedule_batch is not None:
+            schedule_batch.output_ids = result.next_token_ids
+
+    def _commit_moss_rows(
+        self,
+        result: Any,
+        requests: list,
+        rows: torch.Tensor,
+        *,
+        defer_finish: bool = False,
+    ) -> None:
+        result.next_token_ids = rows[:, 0].contiguous()
+        if not requests:
+            return
+
         embeds = self.model._prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
-        )
-        self._pending_rows = rows
-        self._pending_embeds = embeds.detach()
+        ).detach()
+        eos_id = int(self.model.config.im_end_token_id)
+
+        for row_idx, sched_req in enumerate(requests):
+            data = sched_req.data
+            req = getattr(data, "req", None)
+            req_finished = bool(req is not None and req.finished())
+            if bool(getattr(data, "moss_stop_pending", False)) or req_finished:
+                continue
+
+            self._advance_moss_sampling_step(data)
+            row = rows[row_idx].detach().clone()
+            if int(row[0].item()) == eos_id:
+                data.moss_stop_pending = True
+                data.moss_pending_finish = ("stop", eos_id)
+                if not defer_finish:
+                    self._apply_moss_pending_finish(data)
+                continue
+
+            data.output_rows.append(row)
+            if self._moss_reaches_length_boundary(data, req):
+                data.moss_stop_pending = True
+                max_new_tokens = self._moss_max_new_tokens(data, req)
+                if max_new_tokens is not None:
+                    data.moss_pending_finish = ("length", max_new_tokens)
+                    if not defer_finish:
+                        self._apply_moss_pending_finish(data)
+                continue
+
+            data.pending_feedback_queue.append(embeds[row_idx].detach().clone())
+
+    @staticmethod
+    def _moss_max_new_tokens(data: Any, req: Any) -> int | None:
+        sampling_params = getattr(req, "sampling_params", None)
+        max_new_tokens = getattr(sampling_params, "max_new_tokens", None)
+        if max_new_tokens is None:
+            max_new_tokens = getattr(data, "max_new_tokens", None)
+        if max_new_tokens is None or int(max_new_tokens) <= 0:
+            return None
+        return int(max_new_tokens)
+
+    @staticmethod
+    def _moss_reaches_length_boundary(data: Any, req: Any) -> bool:
+        max_new_tokens = MossTTSModelRunner._moss_max_new_tokens(data, req)
+        if max_new_tokens is None:
+            return False
+        output_ids = getattr(req, "output_ids", None) if req is not None else None
+        return len(output_ids or []) + 1 >= max_new_tokens
+
+    @staticmethod
+    def _apply_moss_pending_finish(data: Any) -> None:
+        pending = getattr(data, "moss_pending_finish", None)
+        if pending is None:
+            return
+        req = getattr(data, "req", None)
+        if req is not None and getattr(req, "finished_reason", None) is None:
+            kind, value = pending
+            if kind == "stop":
+                finish_cls = _finish_reason_class(
+                    "FINISH_MATCHED_TOKEN", _MossFinishMatchedToken
+                )
+                req.finished_reason = finish_cls(int(value))
+            elif kind == "length":
+                finish_cls = _finish_reason_class("FINISH_LENGTH", _MossFinishLength)
+                req.finished_reason = finish_cls(int(value))
+        data.moss_pending_finish = None
 
     def _channel_logits_from_result(
         self,
@@ -205,6 +333,22 @@ class MossTTSModelRunner(ModelRunner):
         data.delay_state = state
         return state
 
+    @staticmethod
+    def _moss_sampling_steps(data: Any) -> int:
+        value = getattr(data, "moss_sampling_steps", None)
+        generation_steps = int(data.generation_steps or 0)
+        if value is None:
+            value = generation_steps
+            data.moss_sampling_steps = value
+        elif generation_steps > int(value):
+            value = generation_steps
+            data.moss_sampling_steps = value
+        return int(value)
+
+    @staticmethod
+    def _advance_moss_sampling_step(data: Any) -> None:
+        data.moss_sampling_steps = MossTTSModelRunner._moss_sampling_steps(data) + 1
+
     def _sample_rows(
         self,
         channel_logits: list[torch.Tensor],
@@ -236,7 +380,9 @@ class MossTTSModelRunner(ModelRunner):
         delayed = delay_state[:, 1]
         is_audio = delay_state[:, 2].bool()
         gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
+            [self._moss_sampling_steps(d) for d in datas],
+            dtype=torch.long,
+            device=device,
         )
         text_temp = torch.tensor(
             [float(d.text_temperature) for d in datas],
@@ -540,19 +686,7 @@ class MossTTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
-        rows = self._pending_rows
-        embeds = self._pending_embeds
+        del scheduler_output
+        del outputs
         self._pending_rows = None
         self._pending_embeds = None
-        if rows is None or embeds is None:
-            return
-
-        eos_id = int(self.model.config.im_end_token_id)
-        for row_idx, sched_req in enumerate(scheduler_output.requests):
-            req_output = outputs[sched_req.request_id]
-            if req_output.data is None or int(req_output.data) == eos_id:
-                continue
-            sched_req.data.output_rows.append(rows[row_idx].detach().clone())
-            sched_req.data.pending_feedback_queue.append(
-                embeds[row_idx].detach().clone()
-            )

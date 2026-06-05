@@ -84,7 +84,10 @@ def test_async_decode_cli_invalid_mode_rejected():
 
 def test_async_decode_cli_rejects_unsupported_config():
     config = Qwen3TTSPipelineConfig(model_path="dummy")
-    with pytest.raises(typer.BadParameter, match="currently supports only Higgs TTS"):
+    with pytest.raises(
+        typer.BadParameter,
+        match="currently supports only Higgs TTS and MOSS-TTS",
+    ):
         apply_async_decode_cli_overrides(
             config, async_decode="off", async_decode_min_batch_size=None
         )
