@@ -384,6 +384,8 @@ def create_vocoder_executor(
         return _store_vocoder_result(payload, state, wav, sample_rate)
 
     def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        if not payloads:
+            return []
         all_segments = []
         payload_segment_ranges = []
         states = []
