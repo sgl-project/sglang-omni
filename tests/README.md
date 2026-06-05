@@ -63,7 +63,7 @@ tests/
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
-    │   ├── test_cli_async_decode.py
+    │   ├── test_cli_decode_mode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_tts/
@@ -304,7 +304,7 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--async-decode` tri-state CLI override.
+  - async-decode default-on config + `--decode-mode async|sync` CLI override.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts
