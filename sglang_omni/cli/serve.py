@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib
+import inspect
 import logging
+import warnings
 from typing import Annotated, Literal, NoReturn
 
 import typer
@@ -485,6 +488,17 @@ def apply_thinker_server_args_cli_overrides(
     return pipeline_config
 
 
+def _factory_supports_tp(factory_path: str) -> bool:
+    """Check if a stage factory accepts ``tp_rank`` in its signature."""
+    try:
+        module_path, func_name = factory_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        func = getattr(module, func_name)
+        return "tp_rank" in inspect.signature(func).parameters
+    except Exception:
+        return False
+
+
 def apply_global_tp_expansion(
     pipeline_config: PipelineConfig,
     *,
@@ -493,8 +507,11 @@ def apply_global_tp_expansion(
     """Expand a global ``--tp N`` into model-specific per-stage TP sizes.
 
     The mapping is defined by each model config's
-    :meth:`PipelineConfig.global_tp_stage_config` classmethod.  Per-stage
-    CLI overrides (e.g. ``--thinker-tp-size``) applied later take precedence.
+    :meth:`PipelineConfig.global_tp_stage_config` classmethod.  For each
+    stage in the mapping, the factory signature is probed for ``tp_rank``
+    support — stages whose factories don't accept TP kwargs fall back to
+    ``tp_size=1`` with a warning.  Per-stage CLI overrides applied later
+    take precedence.
     """
     if global_tp is None:
         return pipeline_config
@@ -509,10 +526,19 @@ def apply_global_tp_expansion(
         )
 
     for stage in pipeline_config.stages:
-        if stage.name in stage_tp_map:
-            tp = stage_tp_map[stage.name]
-            stage.tp_size = tp
-            stage.parallelism.tp = tp
+        if stage.name not in stage_tp_map:
+            continue
+        tp = stage_tp_map[stage.name]
+        if tp > 1 and not _factory_supports_tp(stage.factory):
+            warnings.warn(
+                f"Stage '{stage.name}' factory does not support TP kwargs; "
+                f"keeping tp_size=1. Encoder TP support is in progress "
+                f"(see https://github.com/sgl-project/sglang-omni/pull/615).",
+                stacklevel=2,
+            )
+            continue
+        stage.tp_size = tp
+        stage.parallelism.tp = tp
     return pipeline_config
 
 

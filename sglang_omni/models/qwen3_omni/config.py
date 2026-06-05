@@ -253,8 +253,8 @@ _SPEECH_DEFAULT_PROCESSES = {
 def _qwen3_global_tp_mapping(tp: int) -> dict[str, int]:
     """Shared TP mapping for Qwen3-Omni stages.
 
-    image_encoder mirrors thinker TP; audio_encoder scales at half the rate
-    (TP >= 2 uses half of thinker TP, minimum 1).
+    Encoders are included in the mapping but will fall back to tp_size=1 at
+    expansion time if their factories don't yet accept TP kwargs (see #615).
     """
     if tp < 1:
         raise ValueError(f"global tp must be >= 1, got {tp}")
