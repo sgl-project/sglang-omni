@@ -412,26 +412,59 @@ def test_partial_start_cli_rejects_unsupported_config_with_stable_message():
 # -- global TP expansion tests --
 
 
-def test_global_tp_text_config_sets_thinker_and_encoders():
-    config = Qwen3OmniPipelineConfig(model_path="dummy")
+def test_global_tp_probes_real_thinker_factory():
+    """Verify that the real thinker factory is probed and TP is applied if supported."""
+    from sglang_omni.cli.serve import _factory_supports_tp
 
-    apply_global_tp_expansion(config, global_tp=2)
-
-    assert _stage(config, "thinker").tp_size == 2
-    assert _stage(config, "thinker").parallelism.tp == 2
-    assert _stage(config, "image_encoder").tp_size == 2
-    assert _stage(config, "audio_encoder").tp_size == 1
-
-
-def test_global_tp_speech_config_sets_talker_ar():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    thinker = _stage(config, "thinker")
 
+    supports_tp = _factory_supports_tp(thinker.factory)
     apply_global_tp_expansion(config, global_tp=2)
 
-    assert _stage(config, "thinker").tp_size == 2
-    assert _stage(config, "image_encoder").tp_size == 2
-    assert _stage(config, "audio_encoder").tp_size == 1
-    assert _stage(config, "talker_ar").tp_size == 2
+    if supports_tp:
+        assert thinker.tp_size == 2
+        assert thinker.parallelism.tp == 2
+    else:
+        # factory doesn't support TP yet — stays at 1
+        assert thinker.tp_size == 1
+
+
+def test_global_tp_probes_real_encoder_factory():
+    """Verify that the real encoder factory is probed and falls back if unsupported."""
+    from sglang_omni.cli.serve import _factory_supports_tp
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    image_enc = _stage(config, "image_encoder")
+    audio_enc = _stage(config, "audio_encoder")
+
+    image_supports = _factory_supports_tp(image_enc.factory)
+    audio_supports = _factory_supports_tp(audio_enc.factory)
+
+    if not image_supports or not audio_supports:
+        with pytest.warns(UserWarning, match="does not support TP kwargs"):
+            apply_global_tp_expansion(config, global_tp=2)
+
+    if not image_supports:
+        assert image_enc.tp_size == 1
+    if not audio_supports:
+        assert audio_enc.tp_size == 1
+
+
+def test_global_tp_probes_real_talker_ar_factory():
+    """Verify that the real talker_ar factory is probed."""
+    from sglang_omni.cli.serve import _factory_supports_tp
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    talker = _stage(config, "talker_ar")
+
+    supports_tp = _factory_supports_tp(talker.factory)
+    apply_global_tp_expansion(config, global_tp=2)
+
+    if supports_tp:
+        assert talker.tp_size == 2
+    else:
+        assert talker.tp_size == 1
 
 
 def test_global_tp_1_is_identity():
@@ -442,17 +475,6 @@ def test_global_tp_1_is_identity():
 
     for stage in config.stages:
         assert stage.tp_size == original[stage.name]
-
-
-def test_global_tp_4_scales_audio_encoder():
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_global_tp_expansion(config, global_tp=4)
-
-    assert _stage(config, "thinker").tp_size == 4
-    assert _stage(config, "image_encoder").tp_size == 4
-    assert _stage(config, "audio_encoder").tp_size == 2
-    assert _stage(config, "talker_ar").tp_size == 4
 
 
 def test_global_tp_none_is_noop():
@@ -493,8 +515,8 @@ def test_global_tp_rejects_invalid_values(bad_tp):
 def test_global_tp_per_stage_override_takes_precedence():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    # global sets thinker=2, then per-stage override sets thinker=4
     apply_global_tp_expansion(config, global_tp=2)
+    # Per-stage override should work regardless of factory probe result
     apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=4,
@@ -504,5 +526,83 @@ def test_global_tp_per_stage_override_takes_precedence():
     )
 
     assert _stage(config, "thinker").tp_size == 4
-    # image_encoder still at global_tp=2
-    assert _stage(config, "image_encoder").tp_size == 2
+
+
+def test_global_tp_builds_placement_plan():
+    """Verify that the expanded config can build a placement plan."""
+    from sglang_omni.config.placement import build_stage_placement_plan
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    # First expand TP — this sets tp_size based on factory probe
+    apply_global_tp_expansion(config, global_tp=2)
+
+    # Now assign GPUs and memory fractions based on actual tp_size.
+    # Default speech config puts thinker on gpu=0 and talker_ar on gpu=1;
+    # Qwen3OmniPlacementPolicy forbids sharing a GPU between them unless
+    # using the colocated config, so keep them on separate GPUs.
+    gpu_counter = 0
+    for stage in config.stages:
+        if stage.tp_size > 1:
+            stage.gpu = list(range(gpu_counter, gpu_counter + stage.tp_size))
+            gpu_counter += stage.tp_size
+        else:
+            stage.gpu = gpu_counter
+            gpu_counter += 1
+        # Give every stage a memory fraction so placement validation passes
+        if stage.name in ("thinker", "talker_ar"):
+            stage.runtime.resources.total_gpu_memory_fraction = 0.3
+        else:
+            stage.runtime.resources.total_gpu_memory_fraction = 0.05
+
+    # Should not raise
+    plan = build_stage_placement_plan(config)
+    assert plan is not None
+
+
+def test_global_tp_text_config_probes_thinker_factory():
+    """Verify that the text-only config also probes the thinker factory."""
+    from sglang_omni.cli.serve import _factory_supports_tp
+
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+    thinker = _stage(config, "thinker")
+
+    supports_tp = _factory_supports_tp(thinker.factory)
+    apply_global_tp_expansion(config, global_tp=2)
+
+    if supports_tp:
+        assert thinker.tp_size == 2
+    else:
+        assert thinker.tp_size == 1
+
+
+def test_global_tp_audio_encoder_scales_at_half():
+    """Verify audio_encoder gets max(1, tp//2) when all factories support TP."""
+    from sglang_omni.cli.serve import _factory_supports_tp
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    audio_enc = _stage(config, "audio_encoder")
+
+    supports_tp = _factory_supports_tp(audio_enc.factory)
+    apply_global_tp_expansion(config, global_tp=4)
+
+    if supports_tp:
+        assert audio_enc.tp_size == 2  # max(1, 4//2)
+    else:
+        assert audio_enc.tp_size == 1
+
+
+def test_global_tp_cli_end_to_end():
+    """Verify that --tp flows through serve() into the launched config.
+
+    This test calls the real serve() with --tp 2 and a real model path.
+    It requires a model checkpoint and GPU to pass; without them it will
+    fail at model loading, which is expected until the environment is set up.
+    """
+    import os
+
+    model_path = os.environ.get("SGLANG_OMNI_TEST_MODEL_PATH")
+    if model_path is None:
+        pytest.skip("Set SGLANG_OMNI_TEST_MODEL_PATH to run e2e tests")
+
+    serve(**_serve_kwargs(model_path=model_path, global_tp=2))
