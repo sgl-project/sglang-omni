@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Codec-codebook layout helpers shared by codebook TTS models."""
+"""Delay-pattern layout helpers for multi-codebook audio tokens."""
 
 from __future__ import annotations
 
