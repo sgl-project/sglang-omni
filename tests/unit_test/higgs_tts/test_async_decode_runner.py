@@ -29,7 +29,7 @@ import pytest
 import torch
 
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
-from sglang_omni.models.higgs_tts.utils import EOC_ID
+from sglang_omni.models.tts_common.codebook_layout import EOC_ID
 
 
 def _build_runner(
