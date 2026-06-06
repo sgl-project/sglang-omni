@@ -305,7 +305,7 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     dtype: str = "float32",
     max_batch_size: int = 8,
-    max_batch_wait_ms: int = 50,
+    max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
