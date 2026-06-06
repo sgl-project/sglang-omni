@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from sglang_omni.models.higgs_tts.codebook_layout import EOC_ID
 from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
     STOP_CODE,
@@ -18,7 +19,6 @@ from sglang_omni.models.higgs_tts.sampler import (
     batched_step,
     step,
 )
-from sglang_omni.models.tts_common.codebook_layout import EOC_ID
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # top_k=1 forces greedy (only argmax stays finite after the filter), matching

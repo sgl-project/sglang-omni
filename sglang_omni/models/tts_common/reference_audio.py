@@ -103,7 +103,6 @@ class ReferenceAudioHashMemo:
 
 
 _DEFAULT_REFERENCE_AUDIO_HASH_MEMO = ReferenceAudioHashMemo()
-_REF_PATH_HASH_MEMO = _DEFAULT_REFERENCE_AUDIO_HASH_MEMO.memo
 
 
 def _reference_path_cache_key(path_like: str | Path) -> str | None:

@@ -3,16 +3,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TypeVar
+from collections.abc import Callable, Hashable
 
 import numpy as np
 import torch
 
 WaveformInput = torch.Tensor | np.ndarray
-ItemT = TypeVar("ItemT")
-KeyT = TypeVar("KeyT")
-ResultT = TypeVar("ResultT")
 
 
 def to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
@@ -38,23 +34,23 @@ def to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
 
 
 def run_bucketed_batch(
-    items: list[ItemT],
+    items: list[torch.Tensor],
     *,
-    bucket_key_fn: Callable[[ItemT], KeyT],
-    single_fn: Callable[[ItemT], ResultT],
-    batch_fn: Callable[[list[ItemT]], list[ResultT]],
+    bucket_key_fn: Callable[[torch.Tensor], Hashable],
+    single_fn: Callable[[torch.Tensor], torch.Tensor],
+    batch_fn: Callable[[list[torch.Tensor]], list[torch.Tensor]],
     error_label: str,
-) -> list[ResultT]:
+) -> list[torch.Tensor]:
     if not items:
         return []
     if len(items) == 1:
         return [single_fn(items[0])]
 
-    buckets: dict[KeyT, list[int]] = {}
+    buckets: dict[Hashable, list[int]] = {}
     for i, item in enumerate(items):
         buckets.setdefault(bucket_key_fn(item), []).append(i)
 
-    results: list[ResultT | None] = [None] * len(items)
+    results: list[torch.Tensor | None] = [None] * len(items)
     for indices in buckets.values():
         if len(indices) == 1:
             results[indices[0]] = single_fn(items[indices[0]])
@@ -63,7 +59,7 @@ def run_bucketed_batch(
         for idx, result in zip(indices, batch_results):
             results[idx] = result
 
-    out: list[ResultT] = []
+    out: list[torch.Tensor] = []
     for i, result in enumerate(results):
         if result is None:
             raise RuntimeError(f"{error_label} did not produce result for item {i}")

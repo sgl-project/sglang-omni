@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from sglang_omni.models.higgs_tts import stages
+from sglang_omni.models.higgs_tts.codebook_layout import EOC_ID, apply_delay_pattern
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
@@ -17,7 +18,6 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
 from sglang_omni.models.tts_common import reference_audio
-from sglang_omni.models.tts_common.codebook_layout import EOC_ID, apply_delay_pattern
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -165,7 +165,7 @@ def test_higgs_reference_cache_key_memoizes_stable_file_hash(
 ) -> None:
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"fake wav bytes")
-    reference_audio._REF_PATH_HASH_MEMO.clear()
+    memo = reference_audio.ReferenceAudioHashMemo()
     read_calls = 0
     original_read_bytes = reference_audio.Path.read_bytes
 
@@ -177,8 +177,8 @@ def test_higgs_reference_cache_key_memoizes_stable_file_hash(
 
     monkeypatch.setattr(reference_audio.Path, "read_bytes", counting_read_bytes)
 
-    first_key = reference_audio.reference_audio_cache_key(ref_audio)
-    second_key = reference_audio.reference_audio_cache_key(ref_audio)
+    first_key = reference_audio.reference_audio_cache_key(ref_audio, memo=memo)
+    second_key = reference_audio.reference_audio_cache_key(ref_audio, memo=memo)
 
     assert first_key == second_key
     assert read_calls == 1

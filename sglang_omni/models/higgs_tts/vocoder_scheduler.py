@@ -9,8 +9,8 @@ from typing import Any, Mapping
 import torch
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
+from sglang_omni.models.higgs_tts.codebook_layout import reverse_delay_pattern
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-from sglang_omni.models.tts_common.codebook_layout import reverse_delay_pattern
 from sglang_omni.models.tts_streaming import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,

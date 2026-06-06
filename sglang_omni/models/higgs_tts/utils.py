@@ -17,7 +17,7 @@ import torch
 from huggingface_hub import snapshot_download
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
-from sglang_omni.models.tts_common.codebook_layout import (
+from sglang_omni.models.higgs_tts.codebook_layout import (
     BOC_ID,
     EOC_ID,
     apply_delay_pattern,
