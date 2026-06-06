@@ -32,7 +32,7 @@ Core features:
 
 | Model | Type | Notes |
 |-------|------|-------|
-| [boson-sglang/higgs-audio-v3-tts-4b-base](https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base) | TTS | Voice cloning, streaming, 100+ languages |
+| [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) | TTS | Voice cloning, streaming, 102 languages |
 | [fishaudio/s2-pro](https://huggingface.co/fishaudio/s2-pro) | TTS | Voice cloning, streaming |
 | [mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) | TTS | Named voices, streaming, 9 languages |
 | [Qwen/Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | TTS | Voice cloning, streaming, 10 languages, 0.6B / 1.7B |
