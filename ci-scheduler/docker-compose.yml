@@ -1,0 +1,20 @@
+services:
+  ci-scheduler:
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/ci-scheduler.sqlite3
+      STAGES_PATH: /app/stages.json
+      HOST: 0.0.0.0
+      PORT: 8080
+    volumes:
+      - scheduler-data:/data
+      # Optional: mount a private key file and set GITHUB_PRIVATE_KEY_PATH in .env.
+      # - ./private-key.pem:/run/secrets/github-app.pem:ro
+
+volumes:
+  scheduler-data:
