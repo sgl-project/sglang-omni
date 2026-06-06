@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.models.tts_runtime import build_tts_usage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
@@ -274,17 +275,11 @@ def _build_audio_chunk_payload(
 
 
 def _build_usage(state: S2ProState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-
-    usage = {
-        "prompt_tokens": state.prompt_tokens,
-        "completion_tokens": state.completion_tokens,
-        "total_tokens": state.prompt_tokens + state.completion_tokens,
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
+    return build_tts_usage(
+        prompt_tokens=state.prompt_tokens,
+        completion_tokens=state.completion_tokens,
+        engine_time_s=float(state.engine_time_s),
+    )
 
 
 class S2ProVocoderScheduler(StreamingSimpleScheduler):

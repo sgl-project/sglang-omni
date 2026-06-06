@@ -16,6 +16,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
     set_qwen3_tts_preprocessing_context,
 )
+from sglang_omni.models.tts_runtime import build_tts_usage, require_batch_result_count
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -139,16 +140,11 @@ def _audio_to_list(audio: Any) -> list[float]:
 
 
 def _build_usage(state: Qwen3TTSState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-    usage = {
-        "prompt_tokens": state.prompt_tokens,
-        "completion_tokens": state.completion_tokens,
-        "total_tokens": state.prompt_tokens + state.completion_tokens,
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
+    return build_tts_usage(
+        prompt_tokens=state.prompt_tokens,
+        completion_tokens=state.completion_tokens,
+        engine_time_s=state.engine_time_s,
+    )
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
@@ -339,10 +335,12 @@ def create_vocoder_executor(
         wavs, sample_rate = tokenizer.decode(
             [{"audio_codes": codes} for _, codes in items]
         )
-        if len(wavs) != len(items):
-            raise RuntimeError(
-                f"Qwen3-TTS speech tokenizer returned {len(wavs)} audios for {len(items)} requests"
-            )
+        require_batch_result_count(
+            owner="Qwen3-TTS speech tokenizer",
+            result_label="audios",
+            actual=len(wavs),
+            expected=len(items),
+        )
         return [
             _store_vocoder_result(payload, state, codes, wav, sample_rate)
             for payload, (state, codes), wav in zip(payloads, items, wavs)

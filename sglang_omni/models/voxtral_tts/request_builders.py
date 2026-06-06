@@ -13,6 +13,7 @@ import torch
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 
@@ -65,8 +66,7 @@ def build_sglang_voxtral_request(
         vocab_size=model.voxtral_config.text_config.vocab_size,
         extra_key=_voice_cache_key(voice, voice_embedding),
     )
-    req.tokenizer = None
-    req._codec_suppress_tokens = None
+    attach_sglang_req_compat(req, tokenizer=None, codec_suppress_tokens=None)
 
     data = VoxtralSGLangRequestData(
         input_ids=input_ids,

@@ -239,21 +239,7 @@ class HiggsTTSModelRunner(ModelRunner):
         collect tensors (codes / was_done / generation_done) into the staging
         buffer. All GPU->GPU; returns the device staging buffer.
         """
-        model = self.model
-        rows_t = model._cg_row_indices[:n_real]
-        pool = model._sampler_pool
-        pool.delay_count[rows_t] = model._cg_active_delay_count[:n_real]
-        pool.eoc_countdown[rows_t] = model._cg_active_eoc_countdown[:n_real]
-        pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
-        pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
-
-        # Note(Jiaxin): pack the 3 tensors so a single D2H pulls them all back.
-        num_codebooks = model._cg_codes_BN.shape[1]
-        staging = model._cg_collect_staging
-        staging[:n_real, :num_codebooks] = model._cg_codes_BN[:n_real]
-        staging[:n_real, num_codebooks] = model._cg_was_done[:n_real]
-        staging[:n_real, num_codebooks + 1] = model._cg_active_generation_done[:n_real]
-        return staging
+        return self.model._sampler_runtime.pack_decode_collect_staging(n_real)
 
     def _decode_collect_host(
         self,

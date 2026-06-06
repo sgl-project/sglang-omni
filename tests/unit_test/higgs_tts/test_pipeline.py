@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from sglang_omni.models.higgs_tts import stages
+from sglang_omni.models.higgs_tts import reference_audio, stages
 from sglang_omni.models.higgs_tts.codebook_layout import EOC_ID, apply_delay_pattern
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
@@ -17,9 +17,32 @@ from sglang_omni.models.higgs_tts.request_builders import build_higgs_stream_met
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
-from sglang_omni.models.tts_common import reference_audio
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+
+
+def _pack_decode_collect_staging(runtime, n_real: int) -> torch.Tensor:
+    rows_t = runtime._cg_row_indices[:n_real]
+    pool = runtime._sampler_pool
+    pool.delay_count[rows_t] = runtime._cg_active_delay_count[:n_real]
+    pool.eoc_countdown[rows_t] = runtime._cg_active_eoc_countdown[:n_real]
+    pool.generation_done[rows_t] = runtime._cg_active_generation_done[:n_real]
+    pool.last_codes[rows_t] = runtime._cg_active_last_codes[:n_real]
+
+    num_codebooks = runtime._cg_codes_BN.shape[1]
+    staging = runtime._cg_collect_staging
+    staging[:n_real, :num_codebooks] = runtime._cg_codes_BN[:n_real]
+    staging[:n_real, num_codebooks] = runtime._cg_was_done[:n_real]
+    staging[:n_real, num_codebooks + 1] = runtime._cg_active_generation_done[:n_real]
+    return staging
+
+
+def _fake_cg_model(**runtime_attrs):
+    runtime = SimpleNamespace(**runtime_attrs)
+    runtime.pack_decode_collect_staging = lambda n_real: _pack_decode_collect_staging(
+        runtime, n_real
+    )
+    return SimpleNamespace(_sampler_runtime=runtime, **runtime_attrs)
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -165,7 +188,7 @@ def test_higgs_reference_cache_key_memoizes_stable_file_hash(
 ) -> None:
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"fake wav bytes")
-    memo = reference_audio.ReferenceAudioHashMemo()
+    reference_audio._REF_PATH_HASH_MEMO.clear()
     read_calls = 0
     original_read_bytes = reference_audio.Path.read_bytes
 
@@ -177,8 +200,8 @@ def test_higgs_reference_cache_key_memoizes_stable_file_hash(
 
     monkeypatch.setattr(reference_audio.Path, "read_bytes", counting_read_bytes)
 
-    first_key = reference_audio.reference_audio_cache_key(ref_audio, memo=memo)
-    second_key = reference_audio.reference_audio_cache_key(ref_audio, memo=memo)
+    first_key = reference_audio.reference_audio_cache_key(ref_audio)
+    second_key = reference_audio.reference_audio_cache_key(ref_audio)
 
     assert first_key == second_key
     assert read_calls == 1
@@ -426,7 +449,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
     runner._vocoder_target = "vocoder"
-    runner.model = SimpleNamespace(
+    runner.model = _fake_cg_model(
         _cg_row_indices=torch.tensor([0]),
         _cg_active_delay_count=torch.tensor([8], dtype=torch.int32),
         _cg_active_eoc_countdown=torch.tensor([0], dtype=torch.int32),
@@ -469,7 +492,7 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
     runner._vocoder_target = "vocoder"
-    runner.model = SimpleNamespace(
+    runner.model = _fake_cg_model(
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),

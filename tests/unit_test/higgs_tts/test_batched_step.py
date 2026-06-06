@@ -70,11 +70,6 @@ def _assert_pools_equal(a: dict, b: dict) -> None:
         ), f"mismatch on {key}\n a={a[key]}\n b={b[key]}"
 
 
-# ---------------------------------------------------------------------------
-# Parity: delay window
-# ---------------------------------------------------------------------------
-
-
 def test_batched_matches_per_row_delay_window():
     """First N steps must force codebooks > delay_count to BOC."""
     B = 3
@@ -96,11 +91,6 @@ def test_batched_matches_per_row_delay_window():
 
         assert torch.equal(codes_pr, codes_bt), f"codes mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
-
-
-# ---------------------------------------------------------------------------
-# Parity: EOC + wind-down + generation_done flag
-# ---------------------------------------------------------------------------
 
 
 def test_batched_matches_per_row_eoc_winddown():
@@ -154,11 +144,6 @@ def test_batched_matches_per_row_eoc_winddown():
     assert bool(pool_bt.generation_done.all().item())
 
 
-# ---------------------------------------------------------------------------
-# Done rows: subsequent calls return STOP and leave state untouched
-# ---------------------------------------------------------------------------
-
-
 def test_batched_done_row_returns_stop_and_freezes_state():
     """A row already marked generation_done must return STOP and not mutate."""
     pool = HiggsBatchedSamplerState(2, N, device=DEVICE)
@@ -191,11 +176,6 @@ def test_batched_done_row_returns_stop_and_freezes_state():
     assert int(pool.delay_count[1].item()) == 1
 
 
-# ---------------------------------------------------------------------------
-# Mixed batch: each row in a different phase, still parity
-# ---------------------------------------------------------------------------
-
-
 def test_batched_matches_per_row_mixed_phases():
     """One row mid-delay, one mid-winddown, one fresh — batched == per-row."""
     pool_pr = HiggsBatchedSamplerState(3, N, device=DEVICE)
@@ -226,11 +206,6 @@ def test_batched_matches_per_row_mixed_phases():
         )
         assert torch.equal(codes_pr, codes_bt), f"mixed-phase mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
-
-
-# ---------------------------------------------------------------------------
-# Per-row top_k regression
-# ---------------------------------------------------------------------------
 
 
 def test_batched_step_mixed_top_k_per_row_filter():
@@ -282,13 +257,6 @@ def test_batched_step_mixed_top_k_per_row_filter():
             f"row 1 cb {cb} sampled {int(codes[1, cb].item())} "
             f"outside its own strong-set {row1_allowed}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Greedy short-circuit determinism (T4): temperature=0 / top_k=1 -> argmax,
-# RNG-free and reproducible (the batched sampler used to always go through
-# multinomial, making temperature=0 decode non-deterministic run-to-run).
-# ---------------------------------------------------------------------------
 
 
 def _tie_logits(B: int, device: str) -> torch.Tensor:

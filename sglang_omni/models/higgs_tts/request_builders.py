@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -13,8 +12,10 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.higgs_tts.reference_audio import reference_codes_fingerprint
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 
@@ -38,26 +39,6 @@ class _ResettableHiggsModel(Protocol):
 
 _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
-
-
-def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
-    """Stable hash of the full N-codebook ref-audio sequence.
-
-    Returned as a short hex string used as ``Req.extra_key``. ``None`` for
-    zero-shot (no ref audio) so all zero-shot requests share the radix subtree.
-    Each codec value packs into 2 bytes (range 0..1025) so the hash is
-    sensitive to every codebook, not just cb0.
-    """
-    if not codes:
-        return None
-    buf = bytearray(2 * sum(len(row) for row in codes))
-    i = 0
-    for row in codes:
-        for c in row:
-            buf[i] = c & 0xFF
-            buf[i + 1] = (c >> 8) & 0xFF
-            i += 2
-    return hashlib.blake2b(bytes(buf), digest_size=16).hexdigest()
 
 
 def build_sglang_higgs_request(
@@ -91,11 +72,14 @@ def build_sglang_higgs_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=reference_codes_fingerprint(state.reference_codes_delayed),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
-    req._codec_suppress_tokens = None
-    req._input_embeds_are_projected = False
+    attach_sglang_req_compat(
+        req,
+        codec_suppress_tokens=None,
+        input_embeds_are_projected=False,
+    )
 
     return HiggsSGLangRequestData(
         input_ids=input_ids,

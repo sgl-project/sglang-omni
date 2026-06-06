@@ -32,6 +32,30 @@ from sglang_omni.models.higgs_tts.codebook_layout import EOC_ID
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 
 
+def _pack_decode_collect_staging(runtime, n_real: int) -> torch.Tensor:
+    rows_t = runtime._cg_row_indices[:n_real]
+    pool = runtime._sampler_pool
+    pool.delay_count[rows_t] = runtime._cg_active_delay_count[:n_real]
+    pool.eoc_countdown[rows_t] = runtime._cg_active_eoc_countdown[:n_real]
+    pool.generation_done[rows_t] = runtime._cg_active_generation_done[:n_real]
+    pool.last_codes[rows_t] = runtime._cg_active_last_codes[:n_real]
+
+    num_codebooks = runtime._cg_codes_BN.shape[1]
+    staging = runtime._cg_collect_staging
+    staging[:n_real, :num_codebooks] = runtime._cg_codes_BN[:n_real]
+    staging[:n_real, num_codebooks] = runtime._cg_was_done[:n_real]
+    staging[:n_real, num_codebooks + 1] = runtime._cg_active_generation_done[:n_real]
+    return staging
+
+
+def _fake_cg_model(**runtime_attrs):
+    runtime = SimpleNamespace(**runtime_attrs)
+    runtime.pack_decode_collect_staging = lambda n_real: _pack_decode_collect_staging(
+        runtime, n_real
+    )
+    return SimpleNamespace(_sampler_runtime=runtime, **runtime_attrs)
+
+
 def _build_runner(
     *,
     codes_BN,
@@ -58,7 +82,7 @@ def _build_runner(
     runner._host_staging_buffers = []
     runner._async_query_hit = 0
     runner._async_query_miss = 0
-    runner.model = SimpleNamespace(
+    runner.model = _fake_cg_model(
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
@@ -282,7 +306,7 @@ def test_async_real_pinned_path_matches_sync():
         runner._host_staging_buffers = []
         runner._async_query_hit = 0
         runner._async_query_miss = 0
-        runner.model = SimpleNamespace(
+        runner.model = _fake_cg_model(
             _cg_row_indices=torch.arange(n, device=dev),
             _cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
             _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),

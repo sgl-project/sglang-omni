@@ -32,11 +32,6 @@ class HiggsSamplerState:
     last_codes: torch.Tensor | None = None
 
 
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-compatible) sampler state
-# ---------------------------------------------------------------------------
-
-
 class HiggsBatchedSamplerState:
     """Per-request sampler state stored as ``[max_bs, ...]`` GPU tensors.
 
@@ -204,11 +199,6 @@ def step(
         state.last_codes = codes_N.clone()
 
     return codes_N
-
-
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-friendly) sampler step
-# ---------------------------------------------------------------------------
 
 
 def _sample_independent_batched(

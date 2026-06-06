@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Delay-pattern layout helpers for multi-codebook audio tokens."""
+"""Higgs codec-codebook layout helpers."""
 
 from __future__ import annotations
 
@@ -7,17 +7,12 @@ from typing import Any
 
 import torch
 
-# Codec-vocab specials (inside the per-codebook codec vocabulary).
+# Codec-vocab specials (inside the [N*V] codebook space, NOT the text vocab).
 BOC_ID = 1024
 EOC_ID = 1025
 
 
-def apply_delay_pattern(
-    codes_TN: torch.Tensor,
-    *,
-    boc_id: int = BOC_ID,
-    eoc_id: int = EOC_ID,
-) -> torch.Tensor:
+def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
     """``[T, N]`` raw codes -> ``[T + N - 1, N]`` delayed, BOC/EOC padded."""
     if codes_TN.ndim != 2:
         raise ValueError(
@@ -25,11 +20,11 @@ def apply_delay_pattern(
         )
     T, N = codes_TN.shape
     out = torch.full(
-        (T + N - 1, N), eoc_id, device=codes_TN.device, dtype=codes_TN.dtype
+        (T + N - 1, N), EOC_ID, device=codes_TN.device, dtype=codes_TN.dtype
     )
     t_idx = torch.arange(T + N - 1, device=codes_TN.device)
     for c in range(N):
-        out[t_idx < c, c] = boc_id
+        out[t_idx < c, c] = BOC_ID
         out[c : c + T, c] = codes_TN[:, c]
     return out
 
