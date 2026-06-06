@@ -9,8 +9,8 @@ import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_request import attach_sglang_req_attrs
 
 _S2PRO_GRAPH_TOP_K = 30
 
@@ -103,7 +103,7 @@ def build_sglang_tts_request(
         vocab_size=tokenizer.vocab_size,
         eos_token_ids={im_end_token_id},
     )
-    attach_sglang_req_compat(
+    attach_sglang_req_attrs(
         req,
         tokenizer=tokenizer,
         codec_suppress_tokens=None,

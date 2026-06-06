@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request compatibility helpers for SGLang-backed schedulers."""
+"""Helpers for attaching Omni-owned attrs to SGLang ``Req`` objects."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from typing import Any
 _UNSET = object()
 
 
-def attach_sglang_req_compat(
+def attach_sglang_req_attrs(
     req: Any,
     *,
     tokenizer: Any = _UNSET,
     codec_suppress_tokens: Any = _UNSET,
     input_embeds_are_projected: Any = _UNSET,
 ) -> None:
-    """Attach Omni compatibility attrs consumed by SGLang backend hooks."""
+    """Attach optional attrs consumed by Omni's SGLang backend hooks."""
 
     if tokenizer is not _UNSET:
         req.tokenizer = tokenizer

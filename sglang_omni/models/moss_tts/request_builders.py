@@ -18,7 +18,7 @@ import torch
 
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
+from sglang_omni.scheduling.sglang_request import attach_sglang_req_attrs
 from sglang_omni.scheduling.types import ARRequestData
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
@@ -599,7 +599,7 @@ def build_sglang_moss_tts_request(
         eos_token_ids={int(cfg.im_end_token_id)},
         vocab_size=int(cfg.vocab_size_list[0]),
     )
-    attach_sglang_req_compat(
+    attach_sglang_req_attrs(
         req,
         tokenizer=None,
         codec_suppress_tokens=None,

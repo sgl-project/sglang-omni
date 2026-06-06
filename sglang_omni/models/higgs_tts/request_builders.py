@@ -15,8 +15,8 @@ from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.reference_audio import reference_codes_fingerprint
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_request import attach_sglang_req_attrs
 
 
 @dataclass
@@ -75,7 +75,7 @@ def build_sglang_higgs_request(
         extra_key=reference_codes_fingerprint(state.reference_codes_delayed),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
-    attach_sglang_req_compat(
+    attach_sglang_req_attrs(
         req,
         codec_suppress_tokens=None,
         input_embeds_are_projected=False,

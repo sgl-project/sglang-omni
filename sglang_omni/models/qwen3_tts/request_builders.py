@@ -15,8 +15,8 @@ import torch
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.request_compat import attach_sglang_req_compat
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_request import attach_sglang_req_attrs
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
 QWEN3_TTS_TASK_BASE = "Base"
@@ -748,7 +748,7 @@ def build_sglang_qwen3_tts_request(
         for token_id in range(model.config.vocab_size - 1024, model.config.vocab_size)
         if token_id != int(model.config.codec_eos_token_id)
     )
-    attach_sglang_req_compat(
+    attach_sglang_req_attrs(
         req,
         tokenizer=None,
         codec_suppress_tokens=codec_suppress_tokens,
