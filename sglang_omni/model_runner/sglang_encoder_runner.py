@@ -249,6 +249,115 @@ def _enable_fp32_linear(
     return counts
 
 
+def _linearized_patch_embed_forward(
+    self: nn.Module, hidden_states: torch.Tensor
+) -> torch.Tensor:
+    """PatchEmbed forward for non-overlapping Conv3d patch projections."""
+    linear = self.linearized_proj
+    return linear(hidden_states.to(dtype=linear.weight.dtype))
+
+
+def _optimize_conv3d_patch_embeds(model: nn.Module) -> int:
+    """Use Linear for non-overlapping Conv3d PatchEmbed modules.
+
+    Qwen3-Omni/VL visual patch embedding receives already-flattened patches.
+    Its Conv3d has ``kernel_size == stride`` and no overlap, so it is exactly
+    equivalent to a single Linear layer over the flattened patch. The local HF
+    encoder path already applies this optimization; the SGLang-backed partial
+    encoder needs it too.
+
+    Keep the original ``proj`` module in place after installing the linear
+    forward. Upstream SGLang visual classes expose ``dtype`` / ``device`` via
+    ``self.patch_embed.proj.weight``, and deleting it would break that API.
+    """
+    optimized = 0
+    for module in model.modules():
+        patch_embed = getattr(module, "patch_embed", None)
+        if patch_embed is None or hasattr(patch_embed, "linearized_proj"):
+            continue
+
+        conv = getattr(patch_embed, "proj", None)
+        if conv is None or not isinstance(conv, nn.Conv3d):
+            continue
+        if list(conv.kernel_size) != list(conv.stride):
+            continue
+        if (
+            conv.padding != (0, 0, 0)
+            or conv.dilation != (1, 1, 1)
+            or conv.groups != 1
+        ):
+            continue
+
+        embed_dim = conv.out_channels
+        in_features = (
+            conv.in_channels
+            * conv.kernel_size[0]
+            * conv.kernel_size[1]
+            * conv.kernel_size[2]
+        )
+        linear = nn.Linear(
+            in_features,
+            embed_dim,
+            bias=conv.bias is not None,
+            dtype=conv.weight.dtype,
+            device=conv.weight.device,
+        )
+        with torch.no_grad():
+            linear.weight.copy_(conv.weight.view(embed_dim, -1))
+            if conv.bias is not None and linear.bias is not None:
+                linear.bias.copy_(conv.bias)
+
+        patch_embed.linearized_proj = linear
+        patch_embed.forward = MethodType(_linearized_patch_embed_forward, patch_embed)
+        optimized += 1
+
+    return optimized
+
+
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _apply_rotary_pos_emb_no_compile(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    unsqueeze_dim: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """SGLang vision rotary helper without per-shape torch.compile startup."""
+    orig_q_dtype = q.dtype
+    orig_k_dtype = k.dtype
+    q = q.float()
+    k = k.float()
+    cos = cos.unsqueeze(unsqueeze_dim).float()
+    sin = sin.unsqueeze(unsqueeze_dim).float()
+    q_embed = (q * cos) + (_rotate_half(q) * sin)
+    k_embed = (k * cos) + (_rotate_half(k) * sin)
+    return q_embed.to(orig_q_dtype), k_embed.to(orig_k_dtype)
+
+
+def _use_no_compile_vision_rotary() -> bool:
+    """Patch SGLang ViT attention to avoid first-request Inductor compile.
+
+    Upstream SGLang's vision attention imports a torch.compile-wrapped rotary
+    helper. That is fast after the first shape-specific compile, but Qwen3-Omni
+    encoder stages run user-visible no-cache requests through this path. The
+    compile cost dominates TP1 first-request latency, so the partial encoder
+    uses the same eager rotary arithmetic without changing numerics.
+    """
+    import sglang.srt.layers.attention.vision as vision_attention
+
+    current = getattr(vision_attention, "apply_rotary_pos_emb", None)
+    if getattr(current, "_sglang_omni_no_compile", False):
+        return False
+    setattr(_apply_rotary_pos_emb_no_compile, "_sglang_omni_no_compile", True)
+    vision_attention.apply_rotary_pos_emb = _apply_rotary_pos_emb_no_compile
+    return True
+
+
 class EncoderModuleContainer(nn.Module):
     """Module holder for partial encoder loading.
 
@@ -554,11 +663,25 @@ class SGLangEncoderRunner:
         self._device_config = DeviceConfig(device="cuda", gpu_id=cuda_device)
 
         # ---- Partial-load path ----------------------------------------
+        if any(spec.name == "visual" for spec in encoder_specs):
+            if _use_no_compile_vision_rotary():
+                logger.info(
+                    "SGLangEncoderRunner patched vision rotary embedding to "
+                    "avoid shape-specific torch.compile on first encoder request"
+                )
+
         # Build only the encoder submodules the adapter declared, then
         # iterate the upstream loader's weight stream and let the
         # container drop everything that doesn't match a declared
         # prefix.
         self.model = self._build_and_load_encoder(encoder_specs)
+        patch_embed_count = _optimize_conv3d_patch_embeds(self.model)
+        if patch_embed_count:
+            logger.info(
+                "SGLangEncoderRunner optimized %d Conv3d PatchEmbed module(s) "
+                "with equivalent Linear forward",
+                patch_embed_count,
+            )
         if self.tp_parity_mode in {"fp32_row_parallel", "fp32_linear"}:
             counts = _enable_fp32_linear(
                 self.model,
