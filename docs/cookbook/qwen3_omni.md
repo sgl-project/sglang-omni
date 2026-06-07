@@ -96,7 +96,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_min_pixels` | int | `null` | Minimum pixels per video frame |
 | `video_max_pixels` | int | `null` | Maximum pixels per video frame |
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
-| `use_audio_in_video` | bool | `null` | Extract the video's own audio track and interleave it with the sampled frames (Qwen-Omni `use_audio_in_video`); without it the audio track of `videos` entries is ignored |
+| `use_audio_in_video` | bool | `null` | Extract the video's own audio track and interleave it with the sampled frames (Qwen-Omni `use_audio_in_video`); when unset or `null` the audio track is not extracted (the preprocessor's default). Requires `videos` |
 
 ### Known Limitations
 

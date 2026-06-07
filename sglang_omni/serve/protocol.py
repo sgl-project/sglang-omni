@@ -89,8 +89,8 @@ class ChatCompletionRequest(BaseModel):
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
     # Extract the video's own audio track and interleave it with the visual
-    # stream (Qwen-Omni "use_audio_in_video"). Defaults to the model
-    # preprocessor's behavior when unset.
+    # stream (Qwen-Omni "use_audio_in_video"). When unset, the audio track
+    # is not extracted (the preprocessor's default).
     use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
@@ -111,6 +111,12 @@ class ChatCompletionRequest(BaseModel):
     @property
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
+
+    @model_validator(mode="after")
+    def _check_use_audio_in_video_requires_videos(self) -> "ChatCompletionRequest":
+        if self.use_audio_in_video and not self.videos:
+            raise ValueError("use_audio_in_video requires a non-empty 'videos' list")
+        return self
 
 
 class ChatCompletionChoice(BaseModel):
