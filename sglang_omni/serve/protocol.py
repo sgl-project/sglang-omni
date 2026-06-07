@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Shared / Common
@@ -184,6 +184,7 @@ class CreateSpeechRequest(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     stream: bool = False
+    stream_format: Literal["sse", "audio"] = "sse"
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
@@ -196,6 +197,7 @@ class CreateSpeechRequest(BaseModel):
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
+    initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
 
     # Generation parameters
     max_new_tokens: int | None = None
@@ -207,6 +209,15 @@ class CreateSpeechRequest(BaseModel):
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, Any]] | None = None
+
+    @model_validator(mode="after")
+    def validate_stream_format(self) -> "CreateSpeechRequest":
+        if self.stream_format == "audio":
+            if not self.stream:
+                raise ValueError('stream_format="audio" requires stream=true')
+            if self.response_format.lower() != "pcm":
+                raise ValueError('stream_format="audio" requires response_format="pcm"')
+        return self
 
 
 # ---------------------------------------------------------------------------

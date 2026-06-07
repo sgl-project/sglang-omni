@@ -13,6 +13,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
@@ -127,12 +128,17 @@ def build_higgs_stream_metadata(
             f"Invalid Higgs stream codec contract: "
             f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
         )
-    return {
+    metadata: dict[str, Any] = {
         "modality": "audio_codes",
         "stream": True,
         "num_codebooks": num_codebooks,
         "codebook_size": codebook_size,
     }
+    if params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
+            INITIAL_CODEC_CHUNK_FRAMES_PARAM
+        ]
+    return metadata
 
 
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:

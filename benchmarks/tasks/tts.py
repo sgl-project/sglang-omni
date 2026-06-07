@@ -20,7 +20,7 @@ import string
 import time
 import wave
 from dataclasses import dataclass
-from typing import Protocol
+from typing import AsyncIterator, Protocol
 
 import aiohttp
 import numpy as np
@@ -38,7 +38,6 @@ from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
     get_wav_duration,
     parse_sse_event,
-    process_sse_line,
     save_json_results,
 )
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
@@ -1444,7 +1443,10 @@ def _build_tts_payload(
     sample: SampleInput,
     model_name: str,
     *,
+    response_format: str = "wav",
     stream: bool = False,
+    stream_format: str = "sse",
+    initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
     voice: str | None = None,
@@ -1455,7 +1457,9 @@ def _build_tts_payload(
     payload: dict = {
         "model": model_name,
         "input": sample.target_text,
-        "response_format": "wav",
+        "response_format": (
+            "pcm" if stream and stream_format == "audio" else response_format
+        ),
     }
     if not no_ref_audio:
         if ref_format == "references":
@@ -1477,6 +1481,9 @@ def _build_tts_payload(
             payload[key] = value
     if stream:
         payload["stream"] = True
+        payload["stream_format"] = stream_format
+        if initial_codec_chunk_frames is not None:
+            payload["initial_codec_chunk_frames"] = initial_codec_chunk_frames
     return payload
 
 
@@ -1535,6 +1542,7 @@ async def _handle_streaming_response(
     usage_data: dict | None = None
     buffer = bytearray()
     pcm_chunks: list[bytes] = []
+    chunk_times: list[float] = []
     stream_format: tuple[int, int, int] | None = None
     async for chunk in response.content.iter_any():
         buffer.extend(chunk)
@@ -1543,20 +1551,32 @@ async def _handle_streaming_response(
             raw_line = bytes(buffer[:idx])
             del buffer[: idx + 1]
             line = raw_line.decode("utf-8", errors="replace").strip()
-            total_audio_duration, usage_data = process_sse_line(
-                line, total_audio_duration, usage_data
+            stream_format, duration_delta, usage_update = _collect_streaming_audio(
+                line, pcm_chunks, stream_format, chunk_times
             )
-            stream_format = _collect_streaming_audio(line, pcm_chunks, stream_format)
+            total_audio_duration += duration_delta
+            if usage_update is not None:
+                usage_data = usage_update
     if buffer.strip():
         line = bytes(buffer).decode("utf-8", errors="replace").strip()
-        total_audio_duration, usage_data = process_sse_line(
-            line, total_audio_duration, usage_data
+        stream_format, duration_delta, usage_update = _collect_streaming_audio(
+            line, pcm_chunks, stream_format, chunk_times
         )
-        stream_format = _collect_streaming_audio(line, pcm_chunks, stream_format)
+        total_audio_duration += duration_delta
+        if usage_update is not None:
+            usage_data = usage_update
     result.audio_duration_s = total_audio_duration
     if total_audio_duration > 0:
         elapsed = time.perf_counter() - start_time
         result.rtf = elapsed / total_audio_duration
+    if chunk_times:
+        result.audio_ttfp_s = chunk_times[0] - start_time
+        result.inter_chunk_s = [
+            now - prev for prev, now in zip(chunk_times, chunk_times[1:])
+        ]
+    result.audio_chunk_count = len(pcm_chunks)
+    if pcm_chunks:
+        result.first_audio_payload_bytes = len(pcm_chunks[0])
     result.is_success = total_audio_duration > 0
     if save_audio_dir and pcm_chunks and stream_format is not None:
         audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
@@ -1575,6 +1595,77 @@ async def _handle_streaming_response(
             result.engine_time_s = float(eng_time)
         if result.completion_tokens > 0 and result.engine_time_s > 0:
             result.tok_per_s = result.completion_tokens / result.engine_time_s
+
+
+def _parse_pcm_response_format(
+    headers: aiohttp.typedefs.LooseHeaders,
+) -> tuple[int, int, int]:
+    sample_rate = int(headers.get("x-sample-rate", 24000))
+    num_channels = int(headers.get("x-channels", 1))
+    bit_depth = int(headers.get("x-bit-depth", 16))
+    sample_width = max(1, bit_depth // 8)
+    return sample_rate, num_channels, sample_width
+
+
+async def _iter_response_http_chunks(
+    response: aiohttp.ClientResponse,
+) -> AsyncIterator[tuple[bytes, float]]:
+    pending = bytearray()
+    pending_start_s: float | None = None
+    async for data, end_of_http_chunk in response.content.iter_chunks():
+        now = time.perf_counter()
+        if data:
+            if not pending:
+                pending_start_s = now
+            pending.extend(data)
+        if end_of_http_chunk and pending:
+            yield bytes(pending), pending_start_s or now
+            pending.clear()
+            pending_start_s = None
+
+    if pending:
+        yield bytes(pending), pending_start_s or time.perf_counter()
+
+
+async def _handle_raw_pcm_streaming_response(
+    response: aiohttp.ClientResponse,
+    result: RequestResult,
+    start_time: float,
+    save_audio_dir: str | None,
+) -> None:
+    pcm_chunks: list[bytes] = []
+    chunk_times: list[float] = []
+    stream_format = _parse_pcm_response_format(response.headers)
+    async for chunk, chunk_time in _iter_response_http_chunks(response):
+        if not chunk:
+            continue
+        if not chunk_times:
+            result.audio_ttfp_s = chunk_time - start_time
+            result.first_audio_payload_bytes = len(chunk)
+        chunk_times.append(chunk_time)
+        pcm_chunks.append(bytes(chunk))
+
+    if chunk_times:
+        result.inter_chunk_s = [
+            now - prev for prev, now in zip(chunk_times, chunk_times[1:])
+        ]
+    result.audio_chunk_count = len(pcm_chunks)
+    pcm_bytes = b"".join(pcm_chunks)
+    sample_rate, num_channels, sample_width = stream_format
+    bytes_per_second = sample_rate * num_channels * sample_width
+    if not pcm_bytes or bytes_per_second <= 0:
+        result.error = f"Empty or invalid PCM response ({len(pcm_bytes)} bytes)"
+        return
+
+    result.audio_duration_s = len(pcm_bytes) / bytes_per_second
+    elapsed = time.perf_counter() - start_time
+    result.rtf = elapsed / result.audio_duration_s
+    result.is_success = True
+    if save_audio_dir:
+        audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
+        with open(audio_path, "wb") as fh:
+            fh.write(_build_streaming_wav_bytes(pcm_chunks, stream_format))
+        result.wav_path = audio_path
 
 
 async def _handle_non_streaming_response(
@@ -1604,28 +1695,63 @@ def _collect_streaming_audio(
     line: str,
     pcm_chunks: list[bytes],
     stream_format: tuple[int, int, int] | None,
-) -> tuple[int, int, int] | None:
+    chunk_times_out: list[float] | None = None,
+) -> tuple[tuple[int, int, int] | None, float, dict | None]:
     event = parse_sse_event(line)
     if event is None:
-        return stream_format
+        return stream_format, 0.0, None
+
+    usage = event.get("usage")
+    usage_update = usage if isinstance(usage, dict) else None
 
     audio = event.get("audio")
     if not isinstance(audio, dict) or not audio.get("data"):
-        return stream_format
+        return stream_format, 0.0, usage_update
 
     try:
         chunk_bytes = base64.b64decode(audio["data"])
+        audio_format = str(audio.get("format") or "").lower()
+        mime_type = str(audio.get("mime_type") or "").lower()
+        if audio_format == "pcm" or mime_type == "audio/pcm":
+            sample_rate = int(audio.get("sample_rate") or 24000)
+            pcm_chunks.append(chunk_bytes)
+            if chunk_times_out is not None:
+                chunk_times_out.append(time.perf_counter())
+            chunk_format = (sample_rate, 1, 2)
+            if stream_format is None:
+                stream_format = chunk_format
+            elif stream_format != chunk_format:
+                raise ValueError(
+                    f"Streaming PCM format changed from {stream_format} "
+                    f"to {chunk_format}"
+                )
+            duration = len(chunk_bytes) / (sample_rate * 2) if sample_rate > 0 else 0.0
+            return stream_format, duration, usage_update
+
         if len(chunk_bytes) <= WAV_HEADER_SIZE:
-            return stream_format
+            return stream_format, 0.0, usage_update
         with io.BytesIO(chunk_bytes) as buf:
             with wave.open(buf, "rb") as wf:
-                pcm_chunks.append(wf.readframes(wf.getnframes()))
-                if stream_format is not None:
-                    return stream_format
-                return (wf.getframerate(), wf.getnchannels(), wf.getsampwidth())
+                frames = wf.readframes(wf.getnframes())
+                pcm_chunks.append(frames)
+                if chunk_times_out is not None:
+                    chunk_times_out.append(time.perf_counter())
+                sample_rate = wf.getframerate()
+                num_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                duration = wf.getnframes() / sample_rate if sample_rate > 0 else 0.0
+                chunk_format = (sample_rate, num_channels, sample_width)
+                if stream_format is None:
+                    stream_format = chunk_format
+                elif stream_format != chunk_format:
+                    raise ValueError(
+                        f"Streaming WAV format changed from {stream_format} "
+                        f"to {chunk_format}"
+                    )
+                return stream_format, duration, usage_update
     except (binascii.Error, wave.Error, EOFError) as exc:
         logger.debug(f"Skipping malformed streaming audio chunk: {exc}")
-        return stream_format
+        return stream_format, 0.0, usage_update
 
 
 def _collect_chat_streaming_audio(
@@ -1696,7 +1822,10 @@ def make_tts_send_fn(
     model_name: str,
     api_url: str,
     *,
+    response_format: str = "wav",
     stream: bool = False,
+    stream_format: str = "sse",
+    initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
     voice: str | None = None,
@@ -1717,7 +1846,10 @@ def make_tts_send_fn(
         payload = _build_tts_payload(
             sample,
             model_name,
+            response_format=response_format,
             stream=stream,
+            stream_format=stream_format,
+            initial_codec_chunk_frames=initial_codec_chunk_frames,
             no_ref_audio=no_ref_audio,
             ref_format=ref_format,
             voice=voice,
@@ -1730,6 +1862,10 @@ def make_tts_send_fn(
             async with session.post(api_url, json=payload) as response:
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
+                elif stream and stream_format == "audio":
+                    await _handle_raw_pcm_streaming_response(
+                        response, result, start_time, save_audio_dir
+                    )
                 elif stream:
                     await _handle_streaming_response(
                         response, result, start_time, save_audio_dir
@@ -1802,6 +1938,9 @@ def save_speed_results(
                 "prompt_tokens",
                 "completion_tokens",
                 "output_token_rate",
+                "audio_ttfp_s",
+                "audio_chunk_count",
+                "first_audio_payload_bytes",
                 "is_success",
                 "error",
             ]
@@ -1817,6 +1956,9 @@ def save_speed_results(
                     o.prompt_tokens or "",
                     o.completion_tokens or "",
                     f"{o.tok_per_s:.1f}" if o.tok_per_s > 0 else "",
+                    (f"{o.audio_ttfp_s:.4f}" if o.audio_ttfp_s is not None else ""),
+                    o.audio_chunk_count or "",
+                    o.first_audio_payload_bytes or "",
                     o.is_success,
                     o.error or "",
                 ]

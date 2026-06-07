@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -9,10 +12,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     _build_tts_payload,
+    _collect_streaming_audio,
+    _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
@@ -322,6 +328,104 @@ def test_moss_tts_benchmark_auto_token_count_uses_openmoss_estimate() -> None:
     assert payload["token_count"] == 32
 
 
+def test_tts_benchmark_payload_supports_sse_pcm_control() -> None:
+    sample = SampleInput(
+        sample_id="sample-1",
+        ref_text="reference",
+        ref_audio="ref.wav",
+        target_text="hello world",
+    )
+
+    payload = _build_tts_payload(
+        sample,
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        stream=True,
+        stream_format="sse",
+        response_format="pcm",
+        initial_codec_chunk_frames=1,
+    )
+
+    assert payload["stream"] is True
+    assert payload["stream_format"] == "sse"
+    assert payload["response_format"] == "pcm"
+    assert payload["initial_codec_chunk_frames"] == 1
+
+
+def test_tts_benchmark_raw_audio_transport_forces_pcm_payload() -> None:
+    sample = SampleInput(
+        sample_id="sample-1",
+        ref_text="reference",
+        ref_audio="ref.wav",
+        target_text="hello world",
+    )
+
+    payload = _build_tts_payload(
+        sample,
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        stream=True,
+        stream_format="audio",
+        response_format="wav",
+    )
+
+    assert payload["stream_format"] == "audio"
+    assert payload["response_format"] == "pcm"
+
+
+def test_tts_benchmark_sse_parser_accepts_pcm_audio_chunks() -> None:
+    pcm = b"\x00\x01" * 960
+    line = "data: " + json.dumps(
+        {
+            "audio": {
+                "data": base64.b64encode(pcm).decode("ascii"),
+                "format": "pcm",
+                "mime_type": "audio/pcm",
+                "sample_rate": 24000,
+            }
+        }
+    )
+    chunks: list[bytes] = []
+
+    stream_format, duration, usage = _collect_streaming_audio(
+        line,
+        chunks,
+        stream_format=None,
+        chunk_times_out=[],
+    )
+
+    assert chunks == [pcm]
+    assert stream_format == (24000, 1, 2)
+    assert duration == pytest.approx(0.04)
+    assert usage is None
+
+
+def test_tts_benchmark_raw_pcm_uses_http_chunk_boundaries() -> None:
+    class FakeContent:
+        async def iter_chunks(self):
+            yield b"abcd", False
+            yield b"efghij", True
+            yield b"klmnop", True
+
+    response = SimpleNamespace(
+        headers={"x-sample-rate": "4", "x-channels": "1", "x-bit-depth": "16"},
+        content=FakeContent(),
+    )
+    result = RequestResult(request_id="raw-pcm")
+
+    asyncio.run(
+        _handle_raw_pcm_streaming_response(
+            response,
+            result,
+            start_time=0.0,
+            save_audio_dir=None,
+        )
+    )
+
+    assert result.is_success
+    assert result.audio_chunk_count == 2
+    assert result.first_audio_payload_bytes == 10
+    assert result.audio_duration_s == pytest.approx(2.0)
+
+
 def test_moss_tts_preserves_explicit_standard_sampling_values() -> None:
     payload = make_payload(
         inputs="hello",
@@ -485,35 +589,16 @@ def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:
 def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
-    class FakeAttnBackend:
-        def __init__(self) -> None:
-            self.called = False
-
-        def init_forward_metadata(self, forward_batch) -> None:
-            del forward_batch
-            self.called = True
-
     class FakeModel:
         dtype = torch.float32
         hidden_size = 2
 
-        def __init__(self) -> None:
-            self.call_kwargs = None
-
         def _prepare_multi_modal_inputs(self, rows):
             return rows.to(torch.float32)[:, :2]
 
-        def __call__(self, **kwargs):
-            self.call_kwargs = kwargs
-            return SimpleNamespace(hidden_states=kwargs["input_embeds"])
-
-    attn_backend = FakeAttnBackend()
     model = FakeModel()
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = model
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
-    )
     prompt_rows = torch.tensor(
         [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
         dtype=torch.long,
@@ -532,13 +617,12 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
 
     result = runner.custom_prefill_forward(forward_batch, object(), [sched_req])
 
-    assert attn_backend.called
-    assert result.can_run_cuda_graph is False
+    assert result is None
+    assert torch.equal(forward_batch.input_ids, torch.tensor([123456, 123457]))
     assert torch.equal(
-        model.call_kwargs["input_embeds"],
+        forward_batch.input_embeds,
         torch.tensor([[4.0, 5.0], [7.0, 8.0]]),
     )
-    assert torch.equal(model.call_kwargs["input_ids"], forward_batch.input_ids)
 
 
 def test_moss_decode_feedback_uses_row_id_embedding() -> None:

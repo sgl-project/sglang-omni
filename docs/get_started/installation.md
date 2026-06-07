@@ -7,7 +7,7 @@ We provide two installation paths. Docker is recommended — the image ships wit
 **1. Pull the image**
 
 ```bash
-docker pull frankleeeee/sglang-omni:dev
+docker pull lmsysorg/sglang-omni:dev
 ```
 
 **2. Run the container**
@@ -19,7 +19,7 @@ docker run -it \
     --ipc host \
     --network host \
     --privileged \
-    frankleeeee/sglang-omni:dev \
+    lmsysorg/sglang-omni:dev \
     /bin/zsh
 ```
 
