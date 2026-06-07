@@ -92,6 +92,9 @@ class SGLModelRunner(ModelRunner):
             register_ming_model_registry,
         )
         from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+        from sglang_omni.models.moss_tts_local.sglang_model import (
+            MossTTSLocalSGLangModel,
+        )
         from sglang_omni.models.qwen3_asr.sglang_model import (
             Qwen3ASRForConditionalGeneration,
         )
@@ -118,6 +121,7 @@ class SGLModelRunner(ModelRunner):
         )
         ModelRegistry.models["Qwen3TTSTalker"] = Qwen3TTSTalker
         ModelRegistry.models["MossTTSDelaySGLangModel"] = MossTTSDelaySGLangModel
+        ModelRegistry.models["MossTTSLocalSGLangModel"] = MossTTSLocalSGLangModel
         ModelRegistry.models["VoxtralSGLangTTSModel"] = VoxtralSGLangTTSModel
         ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
         ModelRegistry.models["WhisperForConditionalGeneration"] = (
