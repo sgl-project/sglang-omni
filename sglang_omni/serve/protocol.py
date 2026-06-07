@@ -88,6 +88,10 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    # Extract the video's own audio track and interleave it with the visual
+    # stream (Qwen-Omni "use_audio_in_video"). Defaults to the model
+    # preprocessor's behavior when unset.
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None

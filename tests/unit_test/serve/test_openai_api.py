@@ -11,11 +11,13 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.client import _extract_inputs
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    _build_chat_generate_request,
     _build_speech_generate_request,
     _chat_stream,
     _speech_stream,
@@ -450,3 +452,45 @@ def test_speech_request_passes_moss_token_count() -> None:
     gen_req = build_speech_generate_request(req, "moss-tts")
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
+
+
+def test_chat_request_forwards_use_audio_in_video() -> None:
+    req = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "What do you hear?"}],
+        videos=["/data/clip.mp4"],
+        use_audio_in_video=True,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+    assert gen_req.metadata["use_audio_in_video"] is True
+
+    inputs = _extract_inputs(gen_req)
+    assert inputs["videos"] == ["/data/clip.mp4"]
+    assert inputs["use_audio_in_video"] is True
+
+
+def test_chat_request_forwards_explicit_use_audio_in_video_false() -> None:
+    req = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "What do you hear?"}],
+        videos=["/data/clip.mp4"],
+        use_audio_in_video=False,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+    assert gen_req.metadata["use_audio_in_video"] is False
+
+    inputs = _extract_inputs(gen_req)
+    assert inputs["use_audio_in_video"] is False
+
+
+def test_chat_request_omits_use_audio_in_video_when_unset() -> None:
+    req = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "What do you hear?"}],
+        videos=["/data/clip.mp4"],
+    )
+
+    gen_req = _build_chat_generate_request(req)
+    assert "use_audio_in_video" not in gen_req.metadata
+
+    inputs = _extract_inputs(gen_req)
+    assert "use_audio_in_video" not in inputs
