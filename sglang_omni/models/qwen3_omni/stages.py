@@ -15,6 +15,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.qwen3_omni import compat as _qwen3_omni_compat
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -61,6 +62,43 @@ class _ArMemoryContract:
     mem_fraction_static_pinned: bool
     effective_total_gpu_memory_fraction: float | None
     applied_encoder_mem_reserve: float
+
+
+_SM80_INCOMPATIBLE_MOE_BACKENDS: frozenset[str] = frozenset({"flashinfer_cutlass"})
+
+
+def _apply_compat_overrides(
+    *,
+    stage_name: str,
+    gpu_id: int,
+    overrides: dict[str, Any],
+) -> None:
+    """Inject Qwen3-Omni hardware workarounds into ``overrides``.
+
+    Caller's explicit ``moe_runner_backend`` is preserved unless it is on
+    the SM-80-bad list, in which case we raise.
+    """
+    compat = _qwen3_omni_compat.get_qwen3_omni_compat_overrides(gpu_id)
+    if not compat:
+        return
+    caller_backend = overrides.get("moe_runner_backend", "auto")
+    for key, value in compat.items():
+        if caller_backend == "auto" or key not in overrides:
+            overrides[key] = value
+            continue
+        if (
+            caller_backend in _SM80_INCOMPATIBLE_MOE_BACKENDS
+            and _qwen3_omni_compat._is_sm80(gpu_id)
+        ):
+            raise ValueError(
+                f"Qwen3-Omni stage {stage_name!r} on cuda:{gpu_id} (SM 80 / A100) "
+                f"was explicitly configured with moe_runner_backend="
+                f"{caller_backend!r}, but flashinfer's {caller_backend} "
+                f"fused_moe kernel does not support SM 80 and will raise "
+                f"ValueError('Invalid backend: 80') during CUDA graph capture. "
+                f"Either remove the explicit override (let the compat layer "
+                f"select 'triton'), or run on a different GPU."
+            )
 
 
 def _apply_qwen_thinker_encoder_reserve(
@@ -948,7 +986,7 @@ def create_sglang_thinker_executor_from_config(
     async_decode_min_batch_size: int = 2,
 ):
     """Returns OmniScheduler for thinker."""
-    # note (luojiaxuan):
+# note (luojiaxuan):
     # The thinker runs prefill XOR decode per scheduler step, so under
     # concurrent streaming a large fraction of steps are prefill-only while
     # in-flight decodes stall (measured on Qwen3-Omni-30B TP=2, 32 streams:
@@ -968,6 +1006,7 @@ def create_sglang_thinker_executor_from_config(
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
+    _apply_compat_overrides(stage_name="thinker", gpu_id=gpu_id, overrides=overrides)
     overrides["tp_size"] = tp_size
     has_explicit_colocated_mem_fraction = (
         total_gpu_memory_fraction is not None
@@ -1080,6 +1119,7 @@ def create_talker_ar_executor_from_config(
         disable_cuda_graph=False,
         sampling_backend="pytorch",
     )
+    _apply_compat_overrides(stage_name="talker_ar", gpu_id=gpu_id, overrides=overrides)
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,
