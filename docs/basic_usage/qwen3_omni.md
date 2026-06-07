@@ -419,6 +419,7 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `audios` | list | `null` | List of audio file paths (local paths or URLs) |
 | `videos` | list | `null` | List of video file paths (local paths or URLs) |
+| `use_audio_in_video` | bool | `null` | Extract the video's audio track and interleave it with the sampled frames. Requires `videos` |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 | `max_completion_tokens` | int | `null` | OpenAI-compatible alias for `max_tokens` |
 | `temperature` | float | `null` | Sampling temperature |
