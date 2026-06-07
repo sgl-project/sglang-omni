@@ -158,7 +158,7 @@ def _reference_path_cache_key(path_like: str | Path) -> str | None:
 
 
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
-    """Stable cache key for a reference-audio input."""
+    """Safe source key for preprocessing waveform-cache lookup."""
     if isinstance(reference_audio, (str, Path)):
         return _reference_path_cache_key(reference_audio)
     if not isinstance(reference_audio, dict):
@@ -176,6 +176,19 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
         return None
     raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
     return hash_media_item(raw)
+
+
+def _reference_code_cache_key_from_waveform(
+    waveform: torch.Tensor, sample_rate: int
+) -> str:
+    """Content key for the reference-code cache after audio decode/resample.
+
+    Hashing the waveform consumed by the codec keeps cache reuse tied to actual
+    audio content across local files, bytes/base64 payloads, and URL refs.
+    """
+    wav = waveform.detach().cpu().contiguous().float()
+    meta = f"sr:{int(sample_rate)}|shape:{tuple(wav.shape)}"
+    return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
 
 
 def create_preprocessing_executor(
@@ -238,13 +251,14 @@ def create_preprocessing_executor(
             )
 
         waveform_tensor = None
-        reference_cache_key = None
+        reference_code_cache_key = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
-            reference_cache_key = _reference_audio_cache_key(reference_audio)
+            reference_source_key = _reference_audio_cache_key(reference_audio)
             with reference_waveform_cache_lock:
-                cached_waveform = reference_waveform_cache.get(reference_cache_key)
-            if cached_waveform is not None:
+                cached_reference = reference_waveform_cache.get(reference_source_key)
+            if cached_reference is not None:
+                cached_waveform, reference_code_cache_key = cached_reference
                 waveform_tensor = cached_waveform.clone()
             if waveform_tensor is None:
                 waveform_np, sample_rate = load_audio_to_24k(reference_audio)
@@ -257,10 +271,15 @@ def create_preprocessing_executor(
                         f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
                     )
                 waveform_tensor = wav.view(1, 1, -1).contiguous().float()
-                with reference_waveform_cache_lock:
-                    reference_waveform_cache.put(
-                        reference_cache_key, waveform_tensor.clone()
-                    )
+                reference_code_cache_key = _reference_code_cache_key_from_waveform(
+                    waveform_tensor, 24000
+                )
+                if reference_source_key is not None:
+                    with reference_waveform_cache_lock:
+                        reference_waveform_cache.put(
+                            reference_source_key,
+                            (waveform_tensor.clone(), reference_code_cache_key),
+                        )
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -289,7 +308,7 @@ def create_preprocessing_executor(
             prompt_token_ids=prompt_ids,
             reference_codes_delayed=ref_codes_delayed,
             reference_waveform=waveform_tensor,
-            reference_cache_key=reference_cache_key,
+            reference_code_cache_key=reference_code_cache_key,
             target_text=target_text_for_encoder,
             reference_text=reference_text_for_encoder,
             num_codebooks=num_codebooks,
@@ -347,7 +366,7 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        cached_delayed = reference_code_cache.get(state.reference_cache_key)
+        cached_delayed = reference_code_cache.get(state.reference_code_cache_key)
         if cached_delayed is not None:
             delayed_rows = cached_delayed.tolist()
         else:
@@ -362,7 +381,7 @@ def create_audio_encoder_executor(
             delayed = apply_delay_pattern(ref_codes_TN)
             delayed_rows = delayed.tolist()
             reference_code_cache.put(
-                state.reference_cache_key, delayed.to("cpu", torch.int32)
+                state.reference_code_cache_key, delayed.to("cpu", torch.int32)
             )
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
@@ -371,7 +390,7 @@ def create_audio_encoder_executor(
             reference_text=state.reference_text,
         )
         state.reference_waveform = None
-        state.reference_cache_key = None
+        state.reference_code_cache_key = None
         state.target_text = None
         state.reference_text = None
         payload.data = state.to_dict()
