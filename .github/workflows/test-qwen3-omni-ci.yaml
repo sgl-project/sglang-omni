@@ -20,10 +20,6 @@ env:
 jobs:
   stage-1-thinker:
     name: stage 1 - thinker length integration
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -60,10 +56,6 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
@@ -117,10 +109,6 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -161,10 +149,6 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -205,10 +189,6 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -250,10 +230,6 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -294,10 +270,6 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -338,10 +310,6 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -382,10 +350,6 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -426,10 +390,6 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -470,10 +430,6 @@ jobs:
 
   stage-11-thinker-tp2:
     name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 35
     container:

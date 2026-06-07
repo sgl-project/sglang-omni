@@ -9,7 +9,7 @@ name: Omni CI
 on:
   pull_request:
     branches: [main]
-    types: [labeled, synchronize, reopened, ready_for_review]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -32,18 +32,52 @@ env:
 
 jobs:
   preflight:
-    name: preflight - lint and mergeability
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    name: omni-ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Reruns reuse the original pull_request event payload, so fetch
+            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+
+      - name: Log PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          echo "PR labels: ${{ steps.pr.outputs.labels }}"
+          echo "PR draft: ${{ steps.pr.outputs.draft }}"
+
+      - name: Block draft PR
+        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        run: |
+          echo "PR is draft. Blocking Omni CI."
+          exit 1
+
+      - name: Require run-ci label
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
+            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into Omni CI."
+            exit 1
+          fi
+
       - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Check PR lint and mergeability
         if: ${{ github.event_name == 'pull_request' }}
@@ -58,10 +92,7 @@ jobs:
   setup:
     name: setup - omni venv
     needs: preflight
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    if: needs.preflight.result == 'success'
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -99,10 +130,7 @@ jobs:
   tts-ci:
     name: TTS CI
     needs: setup
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    if: needs.setup.result == 'success'
     uses: ./.github/workflows/test-tts-ci.yaml
     secrets: inherit
 
@@ -111,10 +139,7 @@ jobs:
     needs: [setup, tts-ci]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
     secrets: inherit
 
@@ -123,10 +148,7 @@ jobs:
     needs: [setup, qwen3-omni-ci]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     uses: ./.github/workflows/test.yaml
     secrets: inherit
 
@@ -135,10 +157,7 @@ jobs:
     needs: [setup, tts-ci, qwen3-omni-ci, pr-test]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     runs-on: [self-hosted]
     timeout-minutes: 5
     container:
