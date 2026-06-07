@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import GenerateRequest, SpeechResult, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
@@ -108,6 +108,30 @@ class SuccessfulSpeechClient:
         )
 
 
+class SuccessfulNonStreamingSpeechClient:
+    def __init__(self, *, usage: UsageInfo | None = None) -> None:
+        self.usage = usage
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def speech(
+        self,
+        request: Any,
+        *,
+        request_id: str,
+        response_format: str,
+        speed: float,
+    ) -> SpeechResult:
+        del request, request_id, speed
+        return SpeechResult(
+            audio_bytes=b"audio-bytes",
+            mime_type="audio/wav",
+            format=response_format,
+            usage=self.usage,
+        )
+
+
 class SuccessfulTranscriptionClient:
     def __init__(self) -> None:
         self.requests: list[GenerateRequest] = []
@@ -155,6 +179,77 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     )
     assert speech_resp.status_code == 500
     assert "cuda out of memory" in speech_resp.json()["detail"]
+
+
+def test_speech_response_omits_usage_headers_by_default() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulNonStreamingSpeechClient(
+                usage=UsageInfo(
+                    prompt_tokens=3,
+                    completion_tokens=5,
+                    engine_time_s=0.25,
+                )
+            ),
+            model_name="higgs-audio-v2",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "response_format": "wav"},
+    )
+
+    assert response.status_code == 200
+    assert "X-Prompt-Tokens" not in response.headers
+    assert "X-Completion-Tokens" not in response.headers
+    assert "X-Engine-Time" not in response.headers
+
+
+def test_speech_response_includes_usage_headers_when_requested() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulNonStreamingSpeechClient(
+                usage=UsageInfo(
+                    prompt_tokens=3,
+                    completion_tokens=5,
+                    engine_time_s=0.25,
+                )
+            ),
+            model_name="higgs-audio-v2",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        headers={"X-Include-Usage": "true"},
+        json={"input": "hello", "response_format": "wav"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Prompt-Tokens"] == "3"
+    assert response.headers["X-Completion-Tokens"] == "5"
+    assert response.headers["X-Engine-Time"] == "0.25"
+
+
+def test_speech_response_usage_opt_in_omits_empty_usage_headers() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulNonStreamingSpeechClient(usage=None),
+            model_name="higgs-audio-v2",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        headers={"X-Include-Usage": "true"},
+        json={"input": "hello", "response_format": "wav"},
+    )
+
+    assert response.status_code == 200
+    assert "X-Prompt-Tokens" not in response.headers
+    assert "X-Completion-Tokens" not in response.headers
+    assert "X-Engine-Time" not in response.headers
 
 
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:

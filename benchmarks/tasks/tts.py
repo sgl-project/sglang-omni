@@ -65,6 +65,7 @@ MOSS_TTS_TOKEN_COUNT_AUTO = "auto"
 MOSS_TTS_ZH_TOKENS_PER_CHAR = 3.098411951313033
 MOSS_TTS_EN_TOKENS_PER_CHAR = 0.8673376262755219
 MOSS_TTS_MIN_AUTO_TOKEN_COUNT = 32
+TTS_USAGE_HEADERS = {"X-Include-Usage": "true"}
 UTMOS_BATCH_SIZE = 8
 
 
@@ -1859,7 +1860,9 @@ def make_tts_send_fn(
         )
         start_time = time.perf_counter()
         try:
-            async with session.post(api_url, json=payload) as response:
+            async with session.post(
+                api_url, json=payload, headers=TTS_USAGE_HEADERS
+            ) as response:
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream and stream_format == "audio":

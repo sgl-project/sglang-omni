@@ -18,9 +18,10 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     JSONResponse,
@@ -35,6 +36,7 @@ from sglang_omni.client import (
     GenerateRequest,
     Message,
     SamplingParams,
+    UsageInfo,
 )
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
@@ -65,6 +67,8 @@ logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 STREAM_DONE_SENTINEL = "[DONE]"
 RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES = 1
+SPEECH_INCLUDE_USAGE_HEADER = "X-Include-Usage"
+SPEECH_INCLUDE_USAGE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
@@ -75,6 +79,25 @@ _BAD_REQUEST_MARKERS = (
 def _is_bad_request_error(exc: Exception) -> bool:
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
+
+
+def _should_include_speech_usage_headers(headers: Mapping[str, str]) -> bool:
+    value = headers.get(SPEECH_INCLUDE_USAGE_HEADER, "")
+    return value.strip().lower() in SPEECH_INCLUDE_USAGE_TRUE_VALUES
+
+
+def _build_speech_usage_headers(usage: UsageInfo | None) -> dict[str, str]:
+    if usage is None:
+        return {}
+
+    headers: dict[str, str] = {}
+    if usage.prompt_tokens is not None:
+        headers["X-Prompt-Tokens"] = str(usage.prompt_tokens)
+    if usage.completion_tokens is not None:
+        headers["X-Completion-Tokens"] = str(usage.completion_tokens)
+    if usage.engine_time_s is not None:
+        headers["X-Engine-Time"] = str(usage.engine_time_s)
+    return headers
 
 
 def create_app(
@@ -501,7 +524,7 @@ def _register_realtime(app: FastAPI) -> None:
 
 def _register_speech(app: FastAPI) -> None:
     @app.post("/v1/audio/speech")
-    async def create_speech(req: CreateSpeechRequest) -> Response:
+    async def create_speech(req: CreateSpeechRequest, request: Request) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
 
@@ -552,13 +575,8 @@ def _register_speech(app: FastAPI) -> None:
         headers = {
             "Content-Disposition": f'attachment; filename="speech.{result.format}"',
         }
-        if result.usage is not None:
-            if result.usage.prompt_tokens is not None:
-                headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
-            if result.usage.completion_tokens is not None:
-                headers["X-Completion-Tokens"] = str(result.usage.completion_tokens)
-            if result.usage.engine_time_s is not None:
-                headers["X-Engine-Time"] = str(result.usage.engine_time_s)
+        if _should_include_speech_usage_headers(request.headers):
+            headers.update(_build_speech_usage_headers(result.usage))
 
         return Response(
             content=result.audio_bytes,
