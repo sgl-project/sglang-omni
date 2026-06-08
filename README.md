@@ -1,9 +1,6 @@
 <div align="center">
 <img src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/docs/_static/image/sgl-omni-logo.svg" alt="logo" width="400"></img>
 
-[![license](https://img.shields.io/github/license/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/tree/main/LICENSE)
-[![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
-[![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang-omni)
 
 </div>
