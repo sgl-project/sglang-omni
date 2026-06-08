@@ -17,7 +17,16 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 
 
+@pytest.fixture(autouse=True)
+def cleanup_model_runner_import():
+    yield
+    sys.modules.pop("sglang_omni.models.moss_tts.model_runner", None)
+
+
 def install_fake_sglang_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(
+        sys.modules, "sglang_omni.models.moss_tts.model_runner", raising=False
+    )
     modules = {
         "sglang": types.ModuleType("sglang"),
         "sglang.srt": types.ModuleType("sglang.srt"),
