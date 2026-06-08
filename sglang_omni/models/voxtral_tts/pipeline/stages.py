@@ -350,16 +350,38 @@ def create_vocoder_executor(
     *,
     device: str = "cuda:0",
     gpu_id: int | None = None,
+    max_batch_size: int = 4,
+    max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
-    """Factory for the vocoder (audio tokenizer decode) stage."""
+    """Factory for the vocoder (audio tokenizer decode) stage.
+
+    Concurrent requests are coalesced into a single ``decode_helper_batch_async``
+    call (``batch_compute_fn`` below). Voxtral's decoder is fully causal
+    (``CausalConv1d`` / ``CausalConvTranspose1d``), so the helper's pad-to-max +
+    crop does **not** contaminate across requests of different lengths (a
+    non-causal codec could not be padded this way). The batched output matches
+    single-request decode up to bf16 batch-dependent conv-algorithm noise
+    (rel ~1e-2, quality-neutral — WER-validated, same property as the Higgs
+    batched vocoder decode #574 / MOSS #651).
+    """
     checkpoint_dir = _resolve_checkpoint(model_path)
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
+    # Optional override of the vocoder coalescing batch size (1 disables batching).
+    max_batch_size = int(
+        os.environ.get("SGLANG_OMNI_VOXTRAL_VOCODER_MAX_BATCH", max_batch_size)
+    )
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)
 
-    def _vocode(payload: StagePayload) -> StagePayload:
+    # Prepend warmup context frames so the causal decoder has initial context
+    # (mitigates boundary artifacts / noise at the start of the waveform); the
+    # samples corresponding to the warmup frames are trimmed after decoding.
+    n_warmup = 2
+
+    def _prepare(payload: StagePayload) -> tuple[Any, torch.Tensor, int]:
+        """payload -> (state, codes_with_warmup, warmup_samples)."""
         state = load_state(payload)
         audio_codes = state.audio_codes
 
@@ -368,11 +390,6 @@ def create_vocoder_executor(
         if not isinstance(audio_codes, torch.Tensor):
             audio_codes = torch.tensor(audio_codes)
 
-        # Prepend warmup context frames so the causal decoder has initial
-        # context (mitigates boundary artifacts / noise at the start of the
-        # waveform).  After decoding, the samples corresponding to the
-        # warmup frames are trimmed away.
-        n_warmup = 2
         warmup_samples = 0
         if audio_codes.shape[0] > 0:
             first_frame = audio_codes[0:1]
@@ -381,10 +398,12 @@ def create_vocoder_executor(
             warmup_samples = n_warmup * audio_tokenizer.downsample_factor
         else:
             codes_with_warmup = audio_codes
+        return state, codes_with_warmup, warmup_samples
 
-        results = audio_tokenizer.decode_helper_batch_async([codes_with_warmup])
-        audio_np = results[0]
-
+    def _postprocess(
+        payload: StagePayload, state: Any, audio_np: torch.Tensor, warmup_samples: int
+    ) -> StagePayload:
+        """(payload, state, decoded waveform, warmup_samples) -> audio payload."""
         # Trim warmup samples from the beginning
         if warmup_samples > 0 and len(audio_np) > warmup_samples:
             audio_np = audio_np[warmup_samples:]
@@ -423,4 +442,25 @@ def create_vocoder_executor(
 
         return payload
 
-    return SimpleScheduler(_vocode)
+    def _vocode(payload: StagePayload) -> StagePayload:
+        state, codes_with_warmup, warmup_samples = _prepare(payload)
+        audio_np = audio_tokenizer.decode_helper_batch_async([codes_with_warmup])[0]
+        return _postprocess(payload, state, audio_np, warmup_samples)
+
+    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        prepared = [_prepare(p) for p in payloads]
+        codes_list = [codes for (_, codes, _) in prepared]
+        # Single cross-request decode; helper pads to max chunk length and crops
+        # each back to its own length (causal-safe), returning one wav per input.
+        wavs = audio_tokenizer.decode_helper_batch_async(codes_list)
+        return [
+            _postprocess(payload, state, wav, warmup_samples)
+            for payload, (state, _, warmup_samples), wav in zip(payloads, prepared, wavs)
+        ]
+
+    return SimpleScheduler(
+        _vocode,
+        batch_compute_fn=_vocode_batch,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
