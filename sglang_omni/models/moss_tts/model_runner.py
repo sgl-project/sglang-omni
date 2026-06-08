@@ -10,6 +10,7 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
+from sglang_omni.models.moss_tts.state_pool import MossDecodeJournal
 from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
@@ -23,6 +24,7 @@ class MossTTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._pending_rows: torch.Tensor | None = None
         self._pending_embeds: torch.Tensor | None = None
+        self._pending_journals: list[MossDecodeJournal] | None = None
 
     def custom_prefill_forward(
         self,
@@ -117,8 +119,14 @@ class MossTTSModelRunner(ModelRunner):
                 "MOSS-TTS decode batch exceeds the staged decode-embedding rows "
                 f"({batch_size} > {int(weight.shape[0])})"
             )
+        pool = getattr(self.model, "_decode_state_pool", None)
         rows = []
         for sched_req in requests:
+            request_id = getattr(sched_req, "request_id", None)
+            if pool is not None and request_id is not None:
+                row = pool.acquire_row(str(request_id))
+                rows.append(pool.feedback_or_zero(row))
+                continue
             queue = sched_req.data.pending_feedback_queue
             if not queue:
                 rows.append(torch.zeros(self.model.hidden_size, device=weight.device))
@@ -153,7 +161,21 @@ class MossTTSModelRunner(ModelRunner):
             return
 
         datas = [sched_req.data for sched_req in requests]
-        rows = self._sample_rows(channel_logits, datas, n_vq=n_vq)
+        pool = getattr(self.model, "_decode_state_pool", None)
+        pool_rows = None
+        if pool is not None:
+            pool_rows = torch.tensor(
+                [
+                    pool.acquire_row(str(sched_req.request_id))
+                    for sched_req in requests
+                    if getattr(sched_req, "request_id", None) is not None
+                ],
+                dtype=torch.long,
+                device=channel_logits[0].device,
+            )
+            if int(pool_rows.numel()) != len(requests):
+                pool_rows = None
+        rows = self._sample_rows(channel_logits, datas, n_vq=n_vq, pool_rows=pool_rows)
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
@@ -161,8 +183,84 @@ class MossTTSModelRunner(ModelRunner):
         embeds = self.model._prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
         )
+        if pool is not None:
+            journals = []
+            eos_id = getattr(getattr(self.model, "config", None), "im_end_token_id", None)
+            eos_id = None if eos_id is None else int(eos_id)
+            for row_idx, sched_req in enumerate(requests):
+                request_id = getattr(sched_req, "request_id", None)
+                if request_id is None:
+                    continue
+                pool_row = pool.acquire_row(str(request_id))
+                token_id = int(rows[row_idx, 0].item())
+                pool.sampling_steps[pool_row] += 1
+                if eos_id is not None and token_id == eos_id:
+                    pool.clear_feedback(pool_row)
+                    pool.mark_stop(pool_row, kind=1, value=eos_id)
+                    journals.append(
+                        MossDecodeJournal(
+                            request_id=str(request_id),
+                            row=pool_row,
+                            sampled_row=None,
+                            next_token_id=token_id,
+                            emit_output_row=False,
+                            finish_kind="stop",
+                            finish_value=eos_id,
+                        )
+                    )
+                    continue
+                pool.append_generated_row(pool_row, rows[row_idx].detach())
+                max_new_tokens = self._moss_max_new_tokens(sched_req.data)
+                if (
+                    max_new_tokens is not None
+                    and self._moss_reaches_length_boundary(
+                        sched_req.data, max_new_tokens
+                    )
+                ):
+                    pool.clear_feedback(pool_row)
+                    pool.mark_stop(pool_row, kind=2, value=max_new_tokens)
+                    journals.append(
+                        MossDecodeJournal(
+                            request_id=str(request_id),
+                            row=pool_row,
+                            sampled_row=rows[row_idx].detach().clone(),
+                            next_token_id=token_id,
+                            emit_output_row=True,
+                            finish_kind="length",
+                            finish_value=max_new_tokens,
+                        )
+                    )
+                    continue
+                pool.write_feedback(pool_row, embeds[row_idx].detach())
+                journals.append(
+                    MossDecodeJournal(
+                        request_id=str(request_id),
+                        row=pool_row,
+                        sampled_row=rows[row_idx].detach().clone(),
+                        next_token_id=token_id,
+                        emit_output_row=True,
+                    )
+                )
+            self._pending_journals = journals
         self._pending_rows = rows
         self._pending_embeds = embeds.detach()
+
+    @staticmethod
+    def _moss_max_new_tokens(data: Any) -> int | None:
+        req = getattr(data, "req", None)
+        sampling_params = getattr(req, "sampling_params", None)
+        max_new_tokens = getattr(sampling_params, "max_new_tokens", None)
+        if max_new_tokens is None:
+            max_new_tokens = getattr(data, "max_new_tokens", None)
+        if max_new_tokens is None or int(max_new_tokens) <= 0:
+            return None
+        return int(max_new_tokens)
+
+    @staticmethod
+    def _moss_reaches_length_boundary(data: Any, max_new_tokens: int) -> bool:
+        req = getattr(data, "req", None)
+        output_ids = getattr(req, "output_ids", None) if req is not None else None
+        return len(output_ids or []) + 1 >= int(max_new_tokens)
 
     def _channel_logits_from_result(
         self,
@@ -211,6 +309,7 @@ class MossTTSModelRunner(ModelRunner):
         datas: list,
         *,
         n_vq: int,
+        pool_rows: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """One batched MOSS-TTS delay-pattern decode step over the whole batch.
 
@@ -229,15 +328,40 @@ class MossTTSModelRunner(ModelRunner):
         im_end = int(cfg.im_end_token_id)
         audio_pad_code = int(cfg.audio_pad_code)
 
-        delay_state = torch.stack(
-            [self._delay_state_tensor(d, device) for d in datas], dim=0
-        )
+        pool = getattr(self.model, "_decode_state_pool", None)
+        use_pool = pool is not None and pool_rows is not None
+        if use_pool:
+            pool_rows = pool_rows.to(device=pool.delay_state.device, dtype=torch.long)
+            needs_init = ~pool.delay_initialized[pool_rows]
+            if bool(needs_init.any()):
+                init_state = torch.stack(
+                    [
+                        self._delay_state_tensor(data, pool.delay_state.device)
+                        for data in datas
+                    ],
+                    dim=0,
+                )
+                pool.delay_state[pool_rows[needs_init]] = init_state[needs_init].to(
+                    device=pool.delay_state.device,
+                    dtype=pool.delay_state.dtype,
+                )
+                pool.delay_initialized[pool_rows[needs_init]] = True
+            delay_state = pool.delay_state[pool_rows].to(device=device, dtype=torch.long)
+        else:
+            delay_state = torch.stack(
+                [self._delay_state_tensor(d, device) for d in datas], dim=0
+            )
         audio_lengths = delay_state[:, 0]
         delayed = delay_state[:, 1]
         is_audio = delay_state[:, 2].bool()
-        gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
-        )
+        if use_pool:
+            gen_steps = pool.sampling_steps[pool_rows].to(device=device, dtype=torch.long)
+        else:
+            gen_steps = torch.tensor(
+                [int(d.generation_steps) for d in datas],
+                dtype=torch.long,
+                device=device,
+            )
         text_temp = torch.tensor(
             [float(d.text_temperature) for d in datas],
             dtype=torch.float32,
@@ -342,7 +466,12 @@ class MossTTSModelRunner(ModelRunner):
             if 0 <= audio_pad_code < audio_logits.shape[-1]:
                 audio_logits[..., audio_pad_code:] = _NEG_INF
             if bool((audio_rep != 1.0).any()):
-                self._apply_audio_repetition_penalty(audio_logits, datas, n_vq=n_vq)
+                self._apply_audio_repetition_penalty(
+                    audio_logits,
+                    datas,
+                    n_vq=n_vq,
+                    pool_rows=pool_rows if use_pool else None,
+                )
             audio_temp_full = audio_temp.unsqueeze(1).expand(batch_size, n_vq)
             audio_top_p_full = audio_top_p.unsqueeze(1).expand(batch_size, n_vq)
             audio_top_k_full = audio_top_k.unsqueeze(1).expand(batch_size, n_vq)
@@ -371,8 +500,15 @@ class MossTTSModelRunner(ModelRunner):
         delayed[delayed > n_vq] = _INT64_MAX
 
         next_state = torch.stack((audio_lengths, delayed, is_audio.long()), dim=1)
+        if use_pool:
+            pool.delay_state[pool_rows] = next_state.to(
+                device=pool.delay_state.device,
+                dtype=pool.delay_state.dtype,
+            )
+            pool.delay_initialized[pool_rows] = True
         for i, data in enumerate(datas):
-            data.delay_state = next_state[i].detach()
+            if not use_pool:
+                data.delay_state = next_state[i].detach()
             if device.type == "cpu":
                 data.audio_length = int(next_state[i, 0])
                 delayed_i = int(next_state[i, 1])
@@ -491,12 +627,13 @@ class MossTTSModelRunner(ModelRunner):
         )
         return scores.masked_fill(remove_scattered, _NEG_INF)
 
-    @staticmethod
     def _apply_audio_repetition_penalty(
+        self,
         audio_logits: torch.Tensor,
         datas: list,
         *,
         n_vq: int,
+        pool_rows: torch.Tensor | None = None,
     ) -> None:
         """In-place delay-pattern repetition penalty, per request and codebook.
 
@@ -507,6 +644,7 @@ class MossTTSModelRunner(ModelRunner):
         """
         device = audio_logits.device
         vocab = audio_logits.shape[-1]
+        pool = getattr(self.model, "_decode_state_pool", None)
         for i, data in enumerate(datas):
             penalty = float(data.audio_repetition_penalty)
             if penalty == 1.0:
@@ -515,9 +653,14 @@ class MossTTSModelRunner(ModelRunner):
             prompt_rows = getattr(data, "prompt_rows", None)
             if prompt_rows is not None and prompt_rows.numel() > 0:
                 parts.append(prompt_rows[:, 1:])
-            output_rows = getattr(data, "output_rows", None)
-            if output_rows:
-                parts.append(torch.stack(output_rows, dim=0)[:, 1:])
+            if pool is not None and pool_rows is not None:
+                history = pool.generated_history(int(pool_rows[i].item()))
+                if history.numel() > 0:
+                    parts.append(history[:, 1:])
+            if not parts:
+                output_rows = getattr(data, "output_rows", None)
+                if output_rows:
+                    parts.append(torch.stack(output_rows, dim=0)[:, 1:])
             if not parts:
                 continue
             history = torch.cat(
@@ -540,6 +683,28 @@ class MossTTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
+        journals = getattr(self, "_pending_journals", None)
+        self._pending_journals = None
+        if journals is not None:
+            self._pending_rows = None
+            self._pending_embeds = None
+            journals_by_id = {journal.request_id: journal for journal in journals}
+            eos_id = int(self.model.config.im_end_token_id)
+            for sched_req in scheduler_output.requests:
+                journal = journals_by_id.get(sched_req.request_id)
+                if journal is None:
+                    continue
+                req_output = outputs[sched_req.request_id]
+                if (
+                    not journal.emit_output_row
+                    or journal.sampled_row is None
+                    or req_output.data is None
+                    or int(req_output.data) == eos_id
+                ):
+                    continue
+                sched_req.data.output_rows.append(journal.sampled_row.detach().clone())
+            return
+
         rows = self._pending_rows
         embeds = self._pending_embeds
         self._pending_rows = None

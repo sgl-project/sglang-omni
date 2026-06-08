@@ -30,6 +30,7 @@ from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
+from sglang_omni.models.moss_tts.state_pool import MossDecodeStatePool
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,23 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         self._decode_input_embedding.weight.requires_grad_(False)
+        self._decode_state_pool = MossDecodeStatePool(
+            max_batch_size=int(max_batch_size or 1),
+            hidden_size=self.hidden_size,
+            max_new_tokens=int(getattr(self.config, "max_new_tokens", 4096)),
+            num_channels=int(self.config.channels),
+            device=weight.device,
+            dtype=weight.dtype,
+        )
+
+    def acquire_decode_row(self, req_id: str) -> int:
+        return self._decode_state_pool.acquire_row(req_id)
+
+    def release_row(self, req_id: str) -> None:
+        self._decode_state_pool.release_row(req_id)
+
+    def reset_request(self, req_id: str) -> None:
+        self.release_row(req_id)
 
     @staticmethod
     def _normalize_config(config: Any) -> Any:

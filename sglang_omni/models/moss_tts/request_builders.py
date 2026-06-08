@@ -684,6 +684,10 @@ def make_moss_tts_scheduler_adapters(*, model: Any):
         return build_sglang_moss_tts_request(payload, model=model)
 
     def result_adapter(data: MossTTSSGLangRequestData) -> StagePayload:
-        return apply_sglang_moss_tts_result(data.stage_payload, data)
+        result = apply_sglang_moss_tts_result(data.stage_payload, data)
+        reset_request = getattr(model, "reset_request", None)
+        if reset_request is not None:
+            reset_request(data.stage_payload.request_id)
+        return result
 
     return request_builder, result_adapter
