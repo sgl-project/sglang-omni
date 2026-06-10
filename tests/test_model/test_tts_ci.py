@@ -999,7 +999,9 @@ def test_voice_cloning_similarity(
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
         if _PRESET.gate_thresholds:
-            _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
+            _assert_similarity_results(
+                results, VC_SIMILARITY_MEAN_MIN, collector=checks
+            )
     checks.assert_all()
 
 
