@@ -135,12 +135,12 @@ jobs:
     if: needs.setup.result == 'success'
     runs-on: ubuntu-latest
     outputs:
-      tts-ci-model: ${{ steps.pick.outputs.tts-ci-model }}
+      tts_ci_model: ${{ steps.pick.outputs.tts_ci_model }}
     steps:
       - id: pick
         run: |
           models=(higgs moss)
-          echo "tts-ci-model=${models[$((RANDOM % ${#models[@]}))]}" >> "$GITHUB_OUTPUT"
+          echo "tts_ci_model=${models[$((RANDOM % ${#models[@]}))]}" >> "$GITHUB_OUTPUT"
 
   tts-ci:
     name: TTS CI
@@ -151,7 +151,7 @@ jobs:
       needs.pick-tts-model.result == 'success'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
-      tts-ci-model: ${{ needs.pick-tts-model.outputs.tts-ci-model }}
+      tts_ci_model: ${{ needs.pick-tts-model.outputs.tts_ci_model }}
     secrets: inherit
 
   qwen3-omni-ci:

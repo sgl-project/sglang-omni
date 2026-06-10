@@ -3,7 +3,7 @@ name: TTS CI
 on:
   workflow_call:
     inputs:
-      tts-ci-model:
+      tts_ci_model:
         type: string
         default: higgs
 
@@ -103,7 +103,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-          TTS_CI_MODEL: ${{ inputs.tts-ci-model }}
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
@@ -147,7 +147,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-          TTS_CI_MODEL: ${{ inputs.tts-ci-model }}
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
@@ -189,7 +189,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
         env:
-          TTS_CI_MODEL: ${{ inputs.tts-ci-model }}
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
           TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
           TTS_CONSISTENCY_CONCURRENCY: "16"
