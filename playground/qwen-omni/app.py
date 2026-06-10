@@ -27,26 +27,51 @@ _MEDIA_SUFFIXES = {
 
 
 def _fs_root() -> Path:
-    """Filesystem root — always container root ``/``."""
-    return Path("/")
+    """Filesystem root for the file browser.
+
+    Reads from ``SGLANG_OMNI_FS_ROOT`` (default: ``/data``).
+    Using ``/`` is intentionally forbidden — the file browser should
+    never expose the entire container filesystem.
+    """
+    raw = os.environ.get("SGLANG_OMNI_FS_ROOT", "/data")
+    root = Path(raw).resolve()
+    if root == Path("/"):
+        raise RuntimeError(
+            "SGLANG_OMNI_FS_ROOT must not be '/'. "
+            "Set it to a restricted directory such as /data or /workspace."
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _fs_resolve(root: Path, raw_path: str | None) -> Path:
+    """Resolve *raw_path* to an absolute path confined under *root*.
+
+    Protects against path traversal (``../`` sequences, absolute paths
+    outside the root) **and** symlink escapes by resolving both the
+    candidate and the root, then checking containment.
+    """
+    resolved_root = root.resolve()
     if raw_path is None or raw_path.strip() == "":
-        candidate = root
+        return resolved_root
+
+    requested = Path(raw_path.strip())
+    # Always join relative to the root, even if the caller supplies an
+    # absolute path — this prevents ``/etc/shadow``-style access.
+    if requested.is_absolute():
+        candidate = requested.resolve()
     else:
-        requested = Path(raw_path.strip())
-        candidate = (
-            requested.resolve()
-            if requested.is_absolute()
-            else (root / requested).resolve()
-        )
+        candidate = (resolved_root / requested).resolve()
+
+    # Containment check: the resolved candidate must sit under the
+    # resolved root.  Because neither side is ``/``, this is a
+    # meaningful constraint.
     try:
-        candidate.relative_to(root)
+        candidate.relative_to(resolved_root)
     except ValueError:
         raise HTTPException(
             status_code=403,
-            detail=f"Path is outside allowed root: {root}",
+            detail=f"Path is outside allowed root: {resolved_root}",
         )
     return candidate
 
