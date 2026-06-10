@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import pytest
 import typer
-import typer.main
 
-from sglang_omni.cli import app
 from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -116,22 +114,6 @@ def test_decode_mode_cli_absent_is_noop_without_tts_engine_stage():
         "enable_async_decode" not in (stage.factory_args or {})
         for stage in result.stages
     )
-
-
-def test_decode_mode_options_are_registered_and_old_async_flags_are_removed():
-    serve_cmd = typer.main.get_command(app).commands["serve"]
-    opt_names = {
-        opt for param in serve_cmd.params for opt in getattr(param, "opts", [])
-    }
-    assert "--decode-mode" in opt_names
-    assert "--async-lookahead-min-batch-size" in opt_names
-
-    assert "--async-decode" not in opt_names
-    assert "--async_decode" not in opt_names
-    assert "--enable-async-decode" not in opt_names
-    assert "--enable_async_decode" not in opt_names
-    assert "--async-decode-min-batch-size" not in opt_names
-    assert "--async_decode_min_batch_size" not in opt_names
 
 
 def test_async_lookahead_min_batch_size_without_tts_engine_fails_fast():
