@@ -697,23 +697,6 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
     print(message)
 
 
-def _print_wer_summary(summary: dict, *, mode: str, concurrency: int) -> None:
-    wer_corpus = summary.get("wer_corpus")
-    wer_mean = summary.get("wer_per_sample_mean")
-    n_above = summary.get("n_above_50_pct_wer", "n/a")
-    evaluated = summary.get("evaluated", "n/a")
-    total = summary.get("total_samples", "n/a")
-    wer_corpus_str = f"{wer_corpus:.4f}" if wer_corpus is not None else "n/a"
-    wer_mean_str = f"{wer_mean:.4f}" if wer_mean is not None else "n/a"
-    print(
-        f"\n[TTS CI] WER (no gate) | {mode} c{concurrency}"
-        f" | wer_corpus={wer_corpus_str}"
-        f" | wer_per_sample_mean={wer_mean_str}"
-        f" | n_above_50_pct_wer={n_above}"
-        f" | evaluated={evaluated}/{total}"
-    )
-
-
 def _sample_scope_label(max_samples: int | None) -> str:
     if max_samples is None:
         return "full SeedTTS EN set"
@@ -953,18 +936,6 @@ def test_voice_cloning_streaming_consistency(
                 max_failed_requests=0,
                 collector=checks,
             )
-        else:
-            for label, store in (("non-stream", ns), ("stream", st)):
-                ok = [r for r in store if r.get("is_success")]
-                ct = sorted(r.get("completion_tokens", 0) for r in ok)
-                dur = [r.get("audio_duration_s", 0.0) for r in ok]
-                ct_median = ct[len(ct) // 2] if ct else "n/a"
-                dur_mean = f"{sum(dur)/len(dur):.3f}" if dur else "n/a"
-                print(
-                    f"\n[TTS CI] consistency (no gate) | {label} c{concurrency}"
-                    f" | completion_tokens total={sum(ct)} median={ct_median}"
-                    f" | audio_duration_s mean={dur_mean}"
-                )
     checks.assert_all()
 
 
@@ -1002,12 +973,6 @@ def test_voice_cloning_wer(
                 VC_WER_CORPUS_THRESHOLD,
                 collector=checks,
             )
-        else:
-            _print_wer_summary(
-                results.get("summary", {}),
-                mode="non-streaming",
-                concurrency=concurrency,
-            )
     checks.assert_all()
 
 
@@ -1034,15 +999,7 @@ def test_voice_cloning_similarity(
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
         if _PRESET.gate_thresholds:
-            _assert_similarity_results(
-                results, VC_SIMILARITY_MEAN_MIN, collector=checks
-            )
-        else:
-            mean = results.get("summary", {}).get("speaker_similarity_mean")
-            mean_str = f"{mean:.4f}" if mean is not None else "n/a"
-            print(
-                f"\n[TTS CI] speaker similarity (no gate) | c{concurrency} | mean={mean_str}"
-            )
+            _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
     checks.assert_all()
 
 
@@ -1058,10 +1015,6 @@ def test_voice_cloning_utmos(
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
         if _PRESET.gate_thresholds:
             _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
-        else:
-            mean = results.get("summary", {}).get("utmos_mean")
-            mean_str = f"{mean:.4f}" if mean is not None else "n/a"
-            print(f"\n[TTS CI] UTMOS (no gate) | c{concurrency} | mean={mean_str}")
     checks.assert_all()
 
 
@@ -1100,10 +1053,6 @@ def test_voice_cloning_streaming_wer(
                 results,
                 VC_STREAM_WER_CORPUS_THRESHOLD,
                 collector=checks,
-            )
-        else:
-            _print_wer_summary(
-                results.get("summary", {}), mode="streaming", concurrency=concurrency
             )
     checks.assert_all()
 
