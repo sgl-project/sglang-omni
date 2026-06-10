@@ -73,24 +73,24 @@ class MossTTSLocalPreparedRequest:
 
 
 @dataclass
-class _PreprocessingContext:
+class _AudioEncoderContext:
     processor: Any
     reference_encoder: Any = None
 
 
-_PREPROCESSING_CONTEXT: _PreprocessingContext | None = None
+_AUDIO_ENCODER_CONTEXT: _AudioEncoderContext | None = None
 _PREPARED_REQUESTS: dict[str, MossTTSLocalPreparedRequest] = {}
 _INFLIGHT_REQUESTS: set[str] = set()
 _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
-def set_moss_tts_local_preprocessing_context(
+def set_moss_tts_local_audio_encoder_context(
     *, processor: Any, reference_encoder: Any = None
 ) -> None:
-    global _PREPROCESSING_CONTEXT
+    global _AUDIO_ENCODER_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = _PreprocessingContext(
+        _AUDIO_ENCODER_CONTEXT = _AudioEncoderContext(
             processor=processor, reference_encoder=reference_encoder
         )
         _PREPARED_REQUESTS.clear()
@@ -98,13 +98,25 @@ def set_moss_tts_local_preprocessing_context(
         _ABORTED_REQUESTS.clear()
 
 
-def clear_moss_tts_local_preprocessing_context() -> None:
-    global _PREPROCESSING_CONTEXT
+def clear_moss_tts_local_audio_encoder_context() -> None:
+    global _AUDIO_ENCODER_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = None
+        _AUDIO_ENCODER_CONTEXT = None
         _PREPARED_REQUESTS.clear()
         _INFLIGHT_REQUESTS.clear()
         _ABORTED_REQUESTS.clear()
+
+
+def set_moss_tts_local_preprocessing_context(
+    *, processor: Any, reference_encoder: Any = None
+) -> None:
+    set_moss_tts_local_audio_encoder_context(
+        processor=processor, reference_encoder=reference_encoder
+    )
+
+
+def clear_moss_tts_local_preprocessing_context() -> None:
+    clear_moss_tts_local_audio_encoder_context()
 
 
 def cleanup_prepared_moss_tts_local_request(request_id: str) -> None:
@@ -128,7 +140,7 @@ def pop_prepared_moss_tts_local_request(
         prepared = _PREPARED_REQUESTS.pop(str(marker), None)
     if prepared is None:
         raise RuntimeError(
-            "MOSS-TTS Local preprocessing state is missing for prepared payload "
+            "MOSS-TTS Local audio encoder state is missing for prepared payload "
             f"{marker!r}; the AR scheduler must not rebuild it"
         )
     return prepared
@@ -272,10 +284,10 @@ def _build_processor_message(
 def _prepare_moss_tts_local_request(
     payload: StagePayload,
     *,
+    state: MossTTSLocalState,
     processor: Any,
     reference_encoder: Any = None,
 ) -> MossTTSLocalPreparedRequest:
-    state = build_moss_tts_local_state(payload)
     message = _build_processor_message(processor, state, reference_encoder)
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
@@ -295,22 +307,35 @@ def _prepare_moss_tts_local_request(
 
 
 def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
-    """Run prompt/reference preprocessing outside the AR scheduler."""
+    """Normalize the request into serializable MOSS-TTS Local state."""
+
+    state = build_moss_tts_local_state(payload)
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def encode_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
+    """Run reference encoding and prompt packing outside the AR scheduler."""
 
     rid = str(payload.request_id)
     with _PREPARED_REQUESTS_LOCK:
-        context = _PREPROCESSING_CONTEXT
+        context = _AUDIO_ENCODER_CONTEXT
         if context is not None:
             _INFLIGHT_REQUESTS.add(rid)
     if context is None:
         raise RuntimeError(
-            "MOSS-TTS Local preprocessing context is not initialized; "
-            "create_preprocessing_executor must register it before requests run"
+            "MOSS-TTS Local audio encoder context is not initialized; "
+            "create_audio_encoder_executor must register it before requests run"
         )
 
     try:
+        state = MossTTSLocalState.from_dict(payload.data)
         prepared = _prepare_moss_tts_local_request(
             payload,
+            state=state,
             processor=context.processor,
             reference_encoder=context.reference_encoder,
         )
@@ -345,7 +370,7 @@ def build_sglang_moss_tts_local_request(
     if prepared is None:
         raise RuntimeError(
             "MOSS-TTS Local AR request builder requires a payload prepared by "
-            "preprocess_moss_tts_local_payload"
+            "encode_moss_tts_local_payload"
         )
 
     cfg = model.config
