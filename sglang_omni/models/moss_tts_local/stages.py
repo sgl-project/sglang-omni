@@ -22,9 +22,10 @@ from sglang_omni.models.moss_tts_local.payload_types import (
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
     cleanup_prepared_moss_tts_local_request,
+    encode_moss_tts_local_payload,
     make_moss_tts_local_scheduler_adapters,
     preprocess_moss_tts_local_payload,
-    set_moss_tts_local_preprocessing_context,
+    set_moss_tts_local_audio_encoder_context,
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -38,7 +39,7 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 
-# NOTE: the preprocessing and vocoder stages each load their own processor
+# NOTE: the audio_encoder and vocoder stages each load their own processor
 # (and thus their own ~4.3 GB bf16 codec instance). The codec's chunked decode
 # flips module-global streaming state (`model.streaming()`), so a decode on a
 # shared instance corrupts any concurrently running reference encode; with
@@ -66,7 +67,7 @@ def _normalize_processor_config(processor: Any) -> None:
 
 
 def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
-    """Pick the codec GPU for the preprocessing/vocoder stages.
+    """Pick the codec GPU for the audio_encoder/vocoder stages.
 
     The ~1B-param codec encoder costs ~0.25 GPU-seconds per reference, which
     at concurrency 16 starves the AR engine when both share one device.
@@ -126,7 +127,7 @@ class _BatchedReferenceEncoder:
     """Coalesces concurrent reference-audio encodes into batched codec calls.
 
     Each request needs its reference run through the ~1B-param codec encoder
-    (~0.25 GPU-seconds). The preprocessing workers call :meth:`encode`
+    (~0.25 GPU-seconds). The audio_encoder workers call :meth:`encode`
     concurrently; a single daemon thread drains the queue and encodes up to
     ``max_batch_size`` files in one ``batch_encode`` forward, which costs
     barely more than a single encode. Failures fall back to per-item encodes
@@ -228,6 +229,18 @@ class _BatchedReferenceEncoder:
 
 
 def create_preprocessing_executor(
+    model_path: str | None = None,
+    *,
+    max_concurrency: int = 16,
+) -> SimpleScheduler:
+    del model_path  # CPU stage, no model assets to load.
+    return SimpleScheduler(
+        preprocess_moss_tts_local_payload,
+        max_concurrency=max_concurrency,
+    )
+
+
+def create_audio_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
@@ -243,14 +256,11 @@ def create_preprocessing_executor(
         max_batch_size=encode_batch_size,
         max_batch_wait_ms=encode_batch_wait_ms,
     )
-    set_moss_tts_local_preprocessing_context(
+    set_moss_tts_local_audio_encoder_context(
         processor=processor, reference_encoder=reference_encoder
     )
-    # Reference encoding runs through the ~1B-param causal codec encoder, so
-    # unlike MOSS Delay the audio tokenizer must live on the GPU; threads
-    # release the GIL during the codec forward, keeping the AR engine fed.
     return SimpleScheduler(
-        preprocess_moss_tts_local_payload,
+        encode_moss_tts_local_payload,
         abort_callback=cleanup_prepared_moss_tts_local_request,
         max_concurrency=max_concurrency,
     )

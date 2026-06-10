@@ -41,6 +41,10 @@ class MossTTSLocalState:
     instructions: str | None = None
     token_count: int | None = None
     generation_kwargs: dict[str, Any] = field(default_factory=dict)
+    reference_waveform: Any | None = None
+    reference_sample_rate: int | None = None
+    reference_audio_path: str | None = None
+    reference_codes: Any | None = None
     audio_codes: Any | None = None
     sample_rate: int = 48000
     prompt_tokens: int = 0
@@ -73,6 +77,16 @@ class MossTTSLocalState:
             data["instructions"] = self.instructions
         if self.token_count is not None:
             data["token_count"] = int(self.token_count)
+        if self.reference_waveform is not None:
+            data["reference_waveform"] = self._tensor_to_payload(
+                self.reference_waveform
+            )
+        if self.reference_sample_rate is not None:
+            data["reference_sample_rate"] = int(self.reference_sample_rate)
+        if self.reference_audio_path is not None:
+            data["reference_audio_path"] = self.reference_audio_path
+        if self.reference_codes is not None:
+            data["reference_codes"] = self._tensor_to_payload(self.reference_codes)
         if self.audio_codes is not None:
             data["audio_codes"] = self._tensor_to_payload(self.audio_codes)
         if self.prompt_tokens:
@@ -102,6 +116,14 @@ class MossTTSLocalState:
             generation_kwargs=(
                 dict(generation_kwargs) if isinstance(generation_kwargs, dict) else {}
             ),
+            reference_waveform=data.get("reference_waveform"),
+            reference_sample_rate=(
+                int(data["reference_sample_rate"])
+                if data.get("reference_sample_rate") is not None
+                else None
+            ),
+            reference_audio_path=data.get("reference_audio_path"),
+            reference_codes=data.get("reference_codes"),
             audio_codes=data.get("audio_codes"),
             sample_rate=int(data.get("sample_rate", 48000) or 48000),
             prompt_tokens=int(data.get("prompt_tokens", 0) or 0),

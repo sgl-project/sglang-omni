@@ -27,9 +27,10 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     apply_sglang_moss_tts_local_result,
     build_generation_kwargs,
     build_moss_tts_local_state,
-    clear_moss_tts_local_preprocessing_context,
+    clear_moss_tts_local_audio_encoder_context,
+    encode_moss_tts_local_payload,
     preprocess_moss_tts_local_payload,
-    set_moss_tts_local_preprocessing_context,
+    set_moss_tts_local_audio_encoder_context,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -166,15 +167,23 @@ def test_registry_resolves_local_architecture():
 def test_pipeline_stage_wiring():
     config = MossTTSLocalPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
     stages = {stage.name: stage for stage in config.stages}
-    assert set(stages) == {"preprocessing", "tts_engine", "vocoder"}
-    assert stages["preprocessing"].next == "tts_engine"
+    assert set(stages) == {
+        "preprocessing",
+        "audio_encoder",
+        "tts_engine",
+        "vocoder",
+    }
+    assert stages["preprocessing"].next == "audio_encoder"
+    assert stages["audio_encoder"].next == "tts_engine"
     assert stages["tts_engine"].next == "vocoder"
     assert stages["vocoder"].terminal
     for stage in stages.values():
         assert "moss_tts_local" in stage.factory
     assert stages["preprocessing"].process == "pipeline"
-    assert stages["preprocessing"].gpu == 0
-    assert stages["preprocessing"].factory_args["device"] == "cuda:1"
+    assert "device" not in (stages["preprocessing"].factory_args or {})
+    assert stages["audio_encoder"].process == "pipeline"
+    assert stages["audio_encoder"].gpu == 0
+    assert stages["audio_encoder"].factory_args["device"] == "cuda:1"
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
     assert stages["vocoder"].process == "pipeline"
@@ -183,14 +192,14 @@ def test_pipeline_stage_wiring():
 
     placement = build_stage_placement_plan(config)
     assert placement.stages["tts_engine"].gpu_ids == (0,)
-    assert placement.stages["preprocessing"].gpu_ids == (0,)
+    assert placement.stages["audio_encoder"].gpu_ids == (0,)
     assert placement.stages["vocoder"].gpu_ids == (0,)
 
     colocated = MossTTSLocalColocatedPipelineConfig(
         model_path="OpenMOSS-Team/moss-local-test"
     )
     colocated_stages = {stage.name: stage for stage in colocated.stages}
-    assert colocated_stages["preprocessing"].factory_args["device"] == "cuda:0"
+    assert colocated_stages["audio_encoder"].factory_args["device"] == "cuda:0"
     assert colocated_stages["vocoder"].factory_args["device"] == "cuda:0"
 
 
@@ -300,9 +309,11 @@ def _payload(text: str = "hello") -> StagePayload:
 
 
 def test_preprocess_and_result_adapter():
-    set_moss_tts_local_preprocessing_context(processor=_FakeProcessor())
+    set_moss_tts_local_audio_encoder_context(processor=_FakeProcessor())
     try:
-        payload = preprocess_moss_tts_local_payload(_payload())
+        pre_payload = preprocess_moss_tts_local_payload(_payload())
+        assert pre_payload.data.get("_moss_tts_local_prepared_request") is None
+        payload = encode_moss_tts_local_payload(pre_payload)
         assert payload.data.get("_moss_tts_local_prepared_request") == "req-1"
 
         from sglang_omni.models.moss_tts_local.request_builders import (
@@ -335,7 +346,7 @@ def test_preprocess_and_result_adapter():
         assert result.data["completion_tokens"] == 3
         assert result.data["prompt_tokens"] == prepared.prompt_rows.shape[0]
     finally:
-        clear_moss_tts_local_preprocessing_context()
+        clear_moss_tts_local_audio_encoder_context()
 
 
 def test_result_adapter_empty_generation():

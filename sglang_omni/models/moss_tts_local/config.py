@@ -18,6 +18,12 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            next="audio_encoder",
+        ),
+        StageConfig(
+            name="audio_encoder",
+            process="pipeline",
+            factory=f"{_PKG}.stages.create_audio_encoder_executor",
             factory_args={"device": codec_device},
             gpu=0,
             next="tts_engine",
@@ -42,7 +48,7 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
 
 
 class MossTTSLocalPipelineConfig(PipelineConfig):
-    """MOSS-TTS Local pipeline: preprocessing -> AR engine -> vocoder."""
+    """MOSS-TTS Local pipeline: preprocessing -> audio_encoder -> AR engine -> vocoder."""
 
     architecture: ClassVar[str] = "MossTTSLocalModel"
     architecture_aliases: ClassVar[tuple[str, ...]] = (
