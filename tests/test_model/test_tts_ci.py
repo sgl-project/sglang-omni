@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -70,11 +71,34 @@ from tests.utils import (
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
-TTS_MODEL_PATH = os.environ.get(
-    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
-)
 
-STARTUP_TIMEOUT = 180
+@dataclass
+class TtsCiModelPreset:
+    model_path: str
+    ref_format: str = "flat"
+    token_count: str | int | None = None
+    worker_extra_args: str = ""
+    startup_timeout: int = 180
+    gate_thresholds: bool = True
+
+
+TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
+    "higgs": TtsCiModelPreset(
+        model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+    ),
+    "moss": TtsCiModelPreset(
+        model_path="OpenMOSS-Team/MOSS-TTS-v1.5",
+        ref_format="references",
+        token_count="auto",
+        gate_thresholds=False,
+    ),
+}
+
+_MODEL_NAME = os.environ.get("TTS_CI_MODEL", "higgs")
+_PRESET = TTS_CI_MODEL_PRESETS[_MODEL_NAME]
+TTS_MODEL_PATH = _PRESET.model_path
+
+STARTUP_TIMEOUT = _PRESET.startup_timeout
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
@@ -196,6 +220,8 @@ def _run_benchmark(
         concurrency=concurrency,
         max_samples=max_samples,
         stream=stream,
+        ref_format=_PRESET.ref_format,
+        token_count=_PRESET.token_count,
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     _validate_speed_results_keys(speed_results)
@@ -232,6 +258,8 @@ def _run_wer_transcribe(
         stream=stream,
         concurrency=concurrency,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
+        ref_format=_PRESET.ref_format,
+        token_count=_PRESET.token_count,
     )
     run_tts_seedtts_transcribe(
         config,
@@ -524,14 +552,16 @@ def _store_consistency_inputs(
                 f"TTS {mode} c{concurrency}: request {request_id} "
                 f"completion_tokens={completion_tokens}, expected > 0",
             )
-        assert_speed_thresholds(
-            summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
-        )
+        if _PRESET.gate_thresholds:
+            assert_speed_thresholds(
+                summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
+            )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
-        assert_speed_thresholds(
-            summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
-        )
+        if _PRESET.gate_thresholds:
+            assert_speed_thresholds(
+                summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
+            )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
     SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
@@ -667,6 +697,23 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
     print(message)
 
 
+def _print_wer_summary(summary: dict, *, mode: str, concurrency: int) -> None:
+    wer_corpus = summary.get("wer_corpus")
+    wer_mean = summary.get("wer_per_sample_mean")
+    n_above = summary.get("n_above_50_pct_wer", "n/a")
+    evaluated = summary.get("evaluated", "n/a")
+    total = summary.get("total_samples", "n/a")
+    wer_corpus_str = f"{wer_corpus:.4f}" if wer_corpus is not None else "n/a"
+    wer_mean_str = f"{wer_mean:.4f}" if wer_mean is not None else "n/a"
+    print(
+        f"\n[TTS CI] WER (no gate) | {mode} c{concurrency}"
+        f" | wer_corpus={wer_corpus_str}"
+        f" | wer_per_sample_mean={wer_mean_str}"
+        f" | n_above_50_pct_wer={n_above}"
+        f" | evaluated={evaluated}/{total}"
+    )
+
+
 def _sample_scope_label(max_samples: int | None) -> str:
     if max_samples is None:
         return "full SeedTTS EN set"
@@ -736,7 +783,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args=TTS_WORKER_EXTRA_ARGS,
+        worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip(),
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:
@@ -898,13 +945,26 @@ def test_voice_cloning_streaming_consistency(
             checks.fail(f"vc_stream_c{concurrency} results missing")
         if ns is None or st is None:
             continue
-        assert_streaming_consistency(
-            ns,
-            st,
-            expected_stream_count=len(ns),
-            max_failed_requests=0,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_streaming_consistency(
+                ns,
+                st,
+                expected_stream_count=len(ns),
+                max_failed_requests=0,
+                collector=checks,
+            )
+        else:
+            for label, store in (("non-stream", ns), ("stream", st)):
+                ok = [r for r in store if r.get("is_success")]
+                ct = sorted(r.get("completion_tokens", 0) for r in ok)
+                dur = [r.get("audio_duration_s", 0.0) for r in ok]
+                ct_median = ct[len(ct) // 2] if ct else "n/a"
+                dur_mean = f"{sum(dur)/len(dur):.3f}" if dur else "n/a"
+                print(
+                    f"\n[TTS CI] consistency (no gate) | {label} c{concurrency}"
+                    f" | completion_tokens total={sum(ct)} median={ct_median}"
+                    f" | audio_duration_s mean={dur_mean}"
+                )
     checks.assert_all()
 
 
@@ -936,11 +996,18 @@ def test_voice_cloning_wer(
             label=f"TTS non-stream c{concurrency}",
             collector=checks,
         )
-        assert_wer_results(
-            results,
-            VC_WER_CORPUS_THRESHOLD,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_wer_results(
+                results,
+                VC_WER_CORPUS_THRESHOLD,
+                collector=checks,
+            )
+        else:
+            _print_wer_summary(
+                results.get("summary", {}),
+                mode="non-streaming",
+                concurrency=concurrency,
+            )
     checks.assert_all()
 
 
@@ -966,7 +1033,16 @@ def test_voice_cloning_similarity(
             similarity_checkpoint,
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
-        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
+        if _PRESET.gate_thresholds:
+            _assert_similarity_results(
+                results, VC_SIMILARITY_MEAN_MIN, collector=checks
+            )
+        else:
+            mean = results.get("summary", {}).get("speaker_similarity_mean")
+            mean_str = f"{mean:.4f}" if mean is not None else "n/a"
+            print(
+                f"\n[TTS CI] speaker similarity (no gate) | c{concurrency} | mean={mean_str}"
+            )
     checks.assert_all()
 
 
@@ -980,7 +1056,12 @@ def test_voice_cloning_utmos(
     for concurrency in selected_tts_concurrencies:
         _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
-        _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+        if _PRESET.gate_thresholds:
+            _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+        else:
+            mean = results.get("summary", {}).get("utmos_mean")
+            mean_str = f"{mean:.4f}" if mean is not None else "n/a"
+            print(f"\n[TTS CI] UTMOS (no gate) | c{concurrency} | mean={mean_str}")
     checks.assert_all()
 
 
@@ -1014,11 +1095,16 @@ def test_voice_cloning_streaming_wer(
             label=f"TTS stream c{concurrency}",
             collector=checks,
         )
-        assert_wer_results(
-            results,
-            VC_STREAM_WER_CORPUS_THRESHOLD,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_wer_results(
+                results,
+                VC_STREAM_WER_CORPUS_THRESHOLD,
+                collector=checks,
+            )
+        else:
+            _print_wer_summary(
+                results.get("summary", {}), mode="streaming", concurrency=concurrency
+            )
     checks.assert_all()
 
 
