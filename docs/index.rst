@@ -73,6 +73,7 @@ Supported Models
    cookbook/fishaudio_s2_pro.md
    cookbook/qwen3_tts.md
    cookbook/moss_tts.md
+   cookbook/moss_tts_local.md
    cookbook/qwen3_asr.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md

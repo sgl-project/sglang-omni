@@ -28,6 +28,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
+| [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 1.7B depth-transformer variant; same request API as MOSS-TTS; **requires `--config`** (model id alone resolves to the Delay pipeline) |
 
 ## Launch the Server
 
