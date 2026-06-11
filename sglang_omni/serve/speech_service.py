@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import importlib.util
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,7 @@ from urllib.parse import urlparse
 from pydantic import ValidationError
 
 from sglang_omni.client import GenerateRequest, SamplingParams
+from sglang_omni.client.audio import audio_encoding_unavailable_reason
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -65,7 +64,6 @@ class SpeechRequestValidator:
             allow_remote_media_without_domains=False,
             reject_unsafe_remote_addresses=True,
         )
-        self.encoder_dependency_errors = _build_encoder_dependency_errors()
 
     def parse_request(self, payload: Any) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""
@@ -295,7 +293,7 @@ class SpeechRequestValidator:
             raise bad_request(str(exc), param=param) from exc
 
     def _validate_encoder_dependency(self, response_format: str) -> None:
-        message = self.encoder_dependency_errors.get(response_format)
+        message = audio_encoding_unavailable_reason(response_format)
         if message is not None:
             raise service_unavailable(message, param="response_format")
 
@@ -512,24 +510,6 @@ def _validate_reference_size(size_bytes: int, *, param: str) -> None:
             f"{param} must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
             param=param,
         )
-
-
-def _build_encoder_dependency_errors() -> dict[str, str]:
-    errors: dict[str, str] = {}
-    if importlib.util.find_spec("soundfile") is None:
-        errors["flac"] = "soundfile is required for response_format='flac'"
-    if importlib.util.find_spec("pydub") is None:
-        for response_format in ("mp3", "aac", "opus"):
-            errors[response_format] = (
-                f"pydub is required for response_format={response_format!r}"
-            )
-    elif shutil.which("ffmpeg") is None and shutil.which("avconv") is None:
-        for response_format in ("mp3", "aac", "opus"):
-            errors[response_format] = (
-                "ffmpeg or avconv is required for "
-                f"response_format={response_format!r}"
-            )
-    return errors
 
 
 def _normalize_language(value: str) -> str:

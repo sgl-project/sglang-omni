@@ -77,9 +77,9 @@ def bad_request(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,
         status_code=400,
-        error_type="invalid_request_error",
+        error_type="BadRequestError",
         param=param,
-        code=None,
+        code=400,
     )
 
 

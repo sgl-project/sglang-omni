@@ -8,9 +8,12 @@ various output formats (WAV, MP3, FLAC, etc.) for API responses.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
 import logging
+import shutil
 import struct
+from functools import cache
 from typing import Any
 
 import numpy as np
@@ -75,6 +78,33 @@ PYAV_ENCODE_CONFIGS = {
         },
     },
 }
+
+
+@cache
+def audio_encoding_unavailable_reason(response_format: str) -> str | None:
+    """Return why the requested response format cannot be encoded."""
+
+    if response_format == "flac":
+        if importlib.util.find_spec("soundfile") is None:
+            return "soundfile is required for response_format='flac'"
+        return None
+
+    if response_format not in PYAV_ENCODE_CONFIGS:
+        return None
+
+    if importlib.util.find_spec("av") is not None:
+        return None
+
+    if importlib.util.find_spec("pydub") is None:
+        return "PyAV or pydub is required for " f"response_format={response_format!r}"
+
+    if shutil.which("ffmpeg") is None and shutil.which("avconv") is None:
+        return (
+            "PyAV, ffmpeg, or avconv is required for "
+            f"response_format={response_format!r}"
+        )
+
+    return None
 
 
 def to_numpy(audio: Any) -> np.ndarray:

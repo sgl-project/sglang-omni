@@ -287,9 +287,9 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     assert response.json() == {
         "error": {
             "message": "stream=true requires response_format='pcm'",
-            "type": "invalid_request_error",
+            "type": "BadRequestError",
             "param": "response_format",
-            "code": None,
+            "code": 400,
         }
     }
 
@@ -317,7 +317,8 @@ def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert response.json()["error"]["type"] == "BadRequestError"
+    assert response.json()["error"]["code"] == 400
 
 
 def test_speech_endpoint_stream_without_audio_returns_error() -> None:

@@ -846,6 +846,17 @@ async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
     if done:
         await asyncio.gather(*done, return_exceptions=True)
+    else:
+        task.add_done_callback(_discard_cancelled_task_result)
+
+
+def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Cancelled request task finished with an error", exc_info=True)
 
 
 async def _wait_for_request_disconnect(request: Request) -> None:

@@ -329,9 +329,9 @@ Invalid speech requests return an OpenAI-style error envelope:
 {
   "error": {
     "message": "stream=true requires response_format='pcm'",
-    "type": "invalid_request_error",
+    "type": "BadRequestError",
     "param": "response_format",
-    "code": null
+    "code": 400
   }
 }
 ```

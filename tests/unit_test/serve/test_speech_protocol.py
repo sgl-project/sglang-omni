@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from sglang_omni.client import audio as client_audio
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
@@ -55,11 +56,20 @@ def test_speech_service_requires_pcm_for_http_streaming(
     assert "stream=true" in exc_info.value.message
 
 
-def test_speech_service_reports_missing_encoder_dependency_as_capability_error() -> (
-    None
-):
+def test_speech_service_reports_missing_encoder_dependency_as_capability_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable_reason(response_format: str) -> str | None:
+        if response_format == "mp3":
+            return "mp3 encoder is unavailable"
+        return None
+
+    monkeypatch.setattr(
+        speech_service,
+        "audio_encoding_unavailable_reason",
+        unavailable_reason,
+    )
     service = SpeechRequestValidator(default_model="tts")
-    service.encoder_dependency_errors["mp3"] = "mp3 encoder is unavailable"
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello", "response_format": "mp3"})
@@ -67,6 +77,30 @@ def test_speech_service_reports_missing_encoder_dependency_as_capability_error()
     assert exc_info.value.status_code == 503
     assert exc_info.value.error_type == "server_error"
     assert exc_info.value.param == "response_format"
+
+
+def test_speech_service_accepts_pyav_compressed_encoder_without_pydub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def find_spec(name: str):
+        if name == "av":
+            return object()
+        if name == "pydub":
+            return None
+        if name == "soundfile":
+            return object()
+        return object()
+
+    monkeypatch.setattr(client_audio.importlib.util, "find_spec", find_spec)
+    client_audio.audio_encoding_unavailable_reason.cache_clear()
+
+    try:
+        service = SpeechRequestValidator(default_model="tts")
+        request = service.parse_request({"input": "hello", "response_format": "mp3"})
+    finally:
+        client_audio.audio_encoding_unavailable_reason.cache_clear()
+
+    assert request.response_format == "mp3"
 
 
 def test_speech_service_rejects_boolean_seed() -> None:
@@ -246,6 +280,34 @@ def test_reference_audio_accepts_allowed_https(
         "text": "hello",
         "references": [{"data": encoded, "media_type": "audio/wav"}],
     }
+
+
+def test_reference_audio_rejects_http_status_with_speech_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["example.com"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
+    )
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(404)
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://example.com/missing.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.error_type == "BadRequestError"
+    assert exc_info.value.code == 400
+    assert exc_info.value.param == "ref_audio"
+    assert "HTTP 404" in exc_info.value.message
 
 
 def test_reference_audio_honors_allowed_media_domains() -> None:

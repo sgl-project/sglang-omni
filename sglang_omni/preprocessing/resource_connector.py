@@ -164,6 +164,15 @@ def _read_limited_response_bytes(
     return b"".join(chunks)
 
 
+def _media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return ValueError(f"Media URL returned HTTP {status_code}: {url}")
+    if isinstance(exc, httpx.TimeoutException):
+        return ValueError(f"Timed out loading media URL: {url}")
+    return ValueError(f"Failed to load media URL {url}: {exc}")
+
+
 async def _read_limited_response_bytes_async(
     response: httpx.Response, *, max_bytes: int | None
 ) -> bytes:
@@ -389,20 +398,23 @@ class MultiModalResourceConnector:
         current_url = url
         for _ in range(_MAX_HTTP_REDIRECTS + 1):
             self._assert_url_allowed(urlparse(current_url))
-            with client.stream(
-                "GET",
-                current_url,
-                timeout=timeout,
-                follow_redirects=False,
-            ) as response:
-                if response.is_redirect:
-                    current_url = _next_redirect_url(response)
-                    continue
-                response.raise_for_status()
-                return (
-                    _read_limited_response_bytes(response, max_bytes=max_bytes),
-                    _response_media_type(response),
-                )
+            try:
+                with client.stream(
+                    "GET",
+                    current_url,
+                    timeout=timeout,
+                    follow_redirects=False,
+                ) as response:
+                    if response.is_redirect:
+                        current_url = _next_redirect_url(response)
+                        continue
+                    response.raise_for_status()
+                    return (
+                        _read_limited_response_bytes(response, max_bytes=max_bytes),
+                        _response_media_type(response),
+                    )
+            except httpx.HTTPError as exc:
+                raise _media_http_error(exc, current_url) from exc
         raise ValueError(f"Too many redirects while loading media URL: {url}")
 
     async def _load_http_bytes_async(
@@ -416,22 +428,25 @@ class MultiModalResourceConnector:
         current_url = url
         for _ in range(_MAX_HTTP_REDIRECTS + 1):
             await self._assert_url_allowed_async(urlparse(current_url))
-            async with client.stream(
-                "GET",
-                current_url,
-                timeout=timeout,
-                follow_redirects=False,
-            ) as response:
-                if response.is_redirect:
-                    current_url = _next_redirect_url(response)
-                    continue
-                response.raise_for_status()
-                return (
-                    await _read_limited_response_bytes_async(
-                        response, max_bytes=max_bytes
-                    ),
-                    _response_media_type(response),
-                )
+            try:
+                async with client.stream(
+                    "GET",
+                    current_url,
+                    timeout=timeout,
+                    follow_redirects=False,
+                ) as response:
+                    if response.is_redirect:
+                        current_url = _next_redirect_url(response)
+                        continue
+                    response.raise_for_status()
+                    return (
+                        await _read_limited_response_bytes_async(
+                            response, max_bytes=max_bytes
+                        ),
+                        _response_media_type(response),
+                    )
+            except httpx.HTTPError as exc:
+                raise _media_http_error(exc, current_url) from exc
         raise ValueError(f"Too many redirects while loading media URL: {url}")
 
     async def fetch_audio_async(
