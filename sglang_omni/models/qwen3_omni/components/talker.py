@@ -48,22 +48,6 @@ def _bind_default_weight_loaders(module: nn.Module) -> None:
             param.weight_loader = default_weight_loader
 
 
-def _quant_config_for_code_predictor_dense_mlp(
-    quant_config: Optional[QuantizationConfig],
-) -> Optional[QuantizationConfig]:
-    """Keep dense code-predictor MLP projections quantized under SGLang 0.5.8."""
-    ignored_layers = getattr(quant_config, "ignored_layers", None)
-    if not ignored_layers or "mlp.gate" not in ignored_layers:
-        return quant_config
-
-    # FIXME (Ratish): when upgrading past SGLang 0.5.8. Newer SGLang uses
-    # dotted-boundary ignored-layer matching, so this local workaround should be
-    # removed once this repo depends on that behavior.
-    cloned = copy.copy(quant_config)
-    cloned.ignored_layers = [layer for layer in ignored_layers if layer != "mlp.gate"]
-    return cloned
-
-
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """Repeat KV heads to match the number of query heads."""
     batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
@@ -506,9 +490,6 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         # 5 dense decoder layers
         alt_stream = torch.cuda.Stream()
         self.model.layers = nn.ModuleList()
-        dense_mlp_quant_config = _quant_config_for_code_predictor_dense_mlp(
-            quant_config
-        )
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP
             layer = nn.Module()
@@ -532,7 +513,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             layer.mlp = Qwen3OmniMoeTalkerDenseMLP(
                 cp_config.hidden_size,
                 cp_config.intermediate_size,
-                quant_config=dense_mlp_quant_config,
+                quant_config=quant_config,
                 prefix=add_prefix(f"model.layers.{idx}.mlp", prefix),
             )
             layer.input_layernorm = RMSNorm(

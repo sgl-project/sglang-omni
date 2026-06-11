@@ -205,10 +205,10 @@ def make_qwen3_asr_scheduler_adapters(
             modality=Modality.AUDIO,
             hash=_audio_fingerprint_int(fingerprint),
             feature=features,
+            model_specific_data={
+                "feature_attention_mask": feature_attention_mask,
+            }
         )
-        # get_audio_feature reads item.feature_attention_mask via __getattr__;
-        # stash it in model_specific_data (not a real dataclass field in 0.5.8).
-        audio_item.set("feature_attention_mask", feature_attention_mask)
         # general_mm_embed_routine locates audio positions by matching each
         # item's pad_value against input_ids. The omni scheduler does not run
         # pad_input_ids for us, so compute the pad_value, replace the

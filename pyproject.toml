@@ -16,17 +16,17 @@ dependencies = [
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
-    "torch==2.9.1",          # PyTorch for tensor operations
-    "torchvision==0.24.1",    # torchvision for vision processor
+    "torch==2.11.0",          # PyTorch for tensor operations
+    "torchvision==0.26.0",    # torchvision for vision processor, pinned version based on torch 2.11.0
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers<5.0",   # HF models/tokenizers
+    "transformers=5.6.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub>=0.36.0",# HF model downloads
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    "sglang==0.5.8",
+    "sglang==0.5.12",
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -42,7 +42,7 @@ dependencies = [
     "openai==2.6.1",
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
-    "mistral-common[audio]>=1.8.0",
+    "mistral_common[audio]>=1.11.0",
     # /v1/realtime — server-side VAD
     "silero-vad>=5.1",
     "onnxruntime>=1.17",
@@ -63,7 +63,7 @@ dependencies = [
     "omegaconf",
     "descript-audiotools",
     "descript-audio-codec",
-    "torchaudio",
+    "torchaudio==2.11.0",
     # Gradio playground
     "gradio>=4.0.0",
     # Ming-Omni

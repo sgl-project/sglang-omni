@@ -26,7 +26,7 @@ _APPLY_LOCK = threading.Lock()
 # Released sglang versions whose Qwen3VLMoeVisionModel layout matches the
 # patch. Dev builds (``0.0.0.dev1+...``) are accepted with a warning since
 # they are unversioned snapshots that may or may not match.
-_SUPPORTED_SGLANG_VERSIONS: frozenset[str] = frozenset({"0.5.8", "0.5.8.post1"})
+_SUPPORTED_SGLANG_VERSIONS: frozenset[str] = frozenset({"0.5.12", "0.5.12.post1"})
 
 # Instance attributes the patches read; preflight checks each is present
 # either as a class-level descriptor or as a self.<name> = assignment in
