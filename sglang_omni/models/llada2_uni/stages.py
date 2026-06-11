@@ -92,7 +92,10 @@ def create_sglang_dllm_thinker_executor_from_config(
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 
-    overrides = {"disable_cuda_graph": True}
+    overrides: dict[str, Any] = {
+        "attention_backend": "flashinfer",
+        "disable_cuda_graph": True,
+    }
     overrides.update(server_args_overrides or {})
 
     server_args = build_sglang_server_args(

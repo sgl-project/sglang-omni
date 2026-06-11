@@ -76,6 +76,7 @@ Supported Models
    cookbook/qwen3_asr.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
+   cookbook/ming_omni.md
    cookbook/llada2_uni.md
 
 .. toctree::
