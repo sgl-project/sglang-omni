@@ -18,12 +18,7 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={
-                "device": codec_device,
-                "ref_audio_cache": True,
-                "ref_audio_cache_max_items": 256,
-                "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
-            },
+            factory_args={"device": codec_device},
             gpu=0,
             next="tts_engine",
         ),

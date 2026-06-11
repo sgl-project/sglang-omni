@@ -249,17 +249,15 @@ def _build_processor_message(
     from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
 
     ref_audio = state.ref_audio
-    if reference_encoder is not None and isinstance(ref_audio, str):
-        if _DATA_URI_RE.match(ref_audio) is None:
-            # File-path refs share one batched codec forward via the coalescer.
-            reference = [reference_encoder.encode(ref_audio)]
-        elif hasattr(reference_encoder, "encode_data_uri"):
-            # Data-URI refs through the same LRU (bytes: keyspace).
-            reference = [
-                reference_encoder.encode_data_uri(ref_audio, processor=processor)
-            ]
-        else:
-            reference = _reference_for_processor(processor, ref_audio)
+    if (
+        reference_encoder is not None
+        and isinstance(ref_audio, str)
+        and _DATA_URI_RE.match(ref_audio) is None
+    ):
+        # File-path references encode through the shared coalescer so
+        # concurrent requests share one batched codec forward instead of
+        # serializing ~0.25 GPU-seconds each.
+        reference = [reference_encoder.encode(ref_audio)]
     else:
         reference = _reference_for_processor(processor, ref_audio)
     return processor.build_user_message(
