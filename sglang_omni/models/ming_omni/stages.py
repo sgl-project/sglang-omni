@@ -11,7 +11,6 @@ from typing import Any
 
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
-from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
@@ -93,17 +92,6 @@ def _single_encoder_stage_name(state: MingOmniPipelineState) -> str:
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
         )
     return next(iter(state.encoder_outs))
-
-
-def _attach_decode_final_metadata(
-    result: dict[str, Any],
-    state: MingOmniPipelineState,
-    thinker_out: dict[str, Any],
-) -> None:
-    finish_reason = thinker_out.get("finish_reason")
-    if finish_reason is not None:
-        result.setdefault("finish_reason", finish_reason)
-    result.setdefault("usage", build_text_usage(state, thinker_out))
 
 
 def create_preprocessing_executor(model_path: str):

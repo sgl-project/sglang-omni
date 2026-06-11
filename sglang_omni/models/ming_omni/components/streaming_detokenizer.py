@@ -11,15 +11,26 @@ forwards to the Coordinator.
 Final result is emitted on ``new_request`` (the thinker's terminal payload),
 preserving the existing non-streaming result shape. When streaming, ``text``
 is stripped from the final result to avoid sending the full response twice.
+
+Incremental decode runs on the held ``pending_tokens`` buffer only, which is
+equality-safe for suffix-additive tokenizers (byte-level BPE, as Ming uses)
+but would drop inter-word spaces with a sentencepiece/metaspace tokenizer.
 """
 from __future__ import annotations
 
 import logging
 import queue as _queue_mod
+import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+from sglang_omni.models.ming_omni.pipeline.merge import decode_events
+from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
+from sglang_omni.models.ming_omni.pipeline.state_io import load_state
+from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -32,9 +43,12 @@ _DONE_SEEN_EVICT_TO = 5000
 # cancelled, which calls our abort() and removes the entry from _state. This
 # cap is a safety net against orphan entries if abort is ever lost (e.g. a
 # stream_chunk arrived before new_request, and the request was aborted before
-# new_request was delivered to the decode stage).
+# new_request was delivered to the decode stage). Only entries idle for
+# _STATE_ORPHAN_IDLE_S are evicted: live streaming requests receive chunks
+# continuously, and done=True entries are awaiting an imminent new_request —
+# evicting either would drop tokens or hang an active request.
 _STATE_MAX = 10000
-_STATE_EVICT_TO = 5000
+_STATE_ORPHAN_IDLE_S = 300.0
 
 
 @dataclass
@@ -42,6 +56,7 @@ class _RequestState:
     pending_tokens: list[int] = field(default_factory=list)
     payload: StagePayload | None = None
     done: bool = False
+    last_seen: float = 0.0
 
 
 class MingStreamingDetokenizeScheduler:
@@ -66,6 +81,9 @@ class MingStreamingDetokenizeScheduler:
         self._running = False
         self._state: dict[str, _RequestState] = {}
         self._done_seen: OrderedDict[str, None] = OrderedDict()
+        # abort() runs on the stage's event-loop thread while start() runs on
+        # the scheduler thread; guards iteration/multi-op sections.
+        self._state_lock = threading.Lock()
 
     def start(self) -> None:
         self._running = True
@@ -99,39 +117,52 @@ class MingStreamingDetokenizeScheduler:
         self._running = False
 
     def abort(self, request_id: str) -> None:
-        self._state.pop(request_id, None)
-        self._done_seen.pop(request_id, None)
+        with self._state_lock:
+            self._state.pop(request_id, None)
+            self._done_seen.pop(request_id, None)
 
     def _ensure_state(self, request_id: str) -> _RequestState:
         s = self._state.get(request_id)
         if s is None:
-            s = _RequestState()
+            s = _RequestState(last_seen=time.monotonic())
             self._state[request_id] = s
             if len(self._state) > _STATE_MAX:
-                # Evict oldest orphan entries: those that received stream_chunk
-                # but never received new_request (payload is None). Active
-                # requests with a payload are kept.
-                to_evict = len(self._state) - _STATE_EVICT_TO
-                orphans = [
-                    rid for rid, st in self._state.items()
-                    if st.payload is None and rid != request_id
-                ]
-                for rid in orphans[:to_evict]:
-                    self._state.pop(rid, None)
+                self._evict_idle_orphans()
+        s.last_seen = time.monotonic()
         return s
 
+    def _evict_idle_orphans(self) -> None:
+        cutoff = time.monotonic() - _STATE_ORPHAN_IDLE_S
+        with self._state_lock:
+            stale = [
+                rid
+                for rid, st in self._state.items()
+                if st.payload is None and not st.done and st.last_seen < cutoff
+            ]
+            for rid in stale:
+                self._state.pop(rid, None)
+        if stale:
+            logger.warning(
+                "Evicted %d idle orphan stream states (cap %d exceeded)",
+                len(stale),
+                _STATE_MAX,
+            )
+
     def _on_stream_chunk(self, request_id: str, item: Any) -> None:
-        # item is IncomingMessage.data; thinker sends token_id as
+        # item is the StreamItem the runtime wraps around the thinker's
         # torch.tensor([token_id], dtype=torch.long)
-        data = item.data if hasattr(item, "data") else item
+        data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
 
         s = self._ensure_state(request_id)
         s.pending_tokens.append(token_id)
 
         candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
-        # Incomplete multi-byte UTF-8 surfaces as U+FFFD; hold until next token.
-        if "�" in candidate:
+        # A trailing U+FFFD means an incomplete multi-byte UTF-8 char; hold
+        # until the next token. Interior U+FFFD (model emitting a literal
+        # replacement char) flushes normally — holding would stall streaming
+        # for the rest of the request.
+        if candidate.endswith("�"):
             return
 
         s.pending_tokens.clear()
@@ -159,8 +190,9 @@ class MingStreamingDetokenizeScheduler:
             # _on_new_request to consume.
             self._done_seen[request_id] = None
             if len(self._done_seen) > _DONE_SEEN_MAX:
-                for _ in range(len(self._done_seen) - _DONE_SEEN_EVICT_TO):
-                    self._done_seen.popitem(last=False)
+                with self._state_lock:
+                    while len(self._done_seen) > _DONE_SEEN_EVICT_TO:
+                        self._done_seen.popitem(last=False)
             return
         s.done = True
         if s.payload is not None:
@@ -216,11 +248,6 @@ class MingStreamingDetokenizeScheduler:
     def _build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
     ) -> dict[str, Any]:
-        from sglang_omni.models.ming_omni.pipeline.merge import decode_events
-        from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
-        from sglang_omni.models.ming_omni.pipeline.state_io import load_state
-        from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
-
         state = load_state(payload)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
@@ -242,9 +269,7 @@ class MingStreamingDetokenizeScheduler:
             )
         )
 
-        result: dict[str, Any] = {
-            "events": [_event_to_dict(e) for e in events]
-        }
+        result: dict[str, Any] = {"events": [_event_to_dict(e) for e in events]}
         final_event = next(
             (
                 e
@@ -257,9 +282,12 @@ class MingStreamingDetokenizeScheduler:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
 
-        # Streaming clients already received the full output as per-token deltas.
-        # Strip text from the terminal result to prevent double-sending.
-        if is_streaming:
+        # Streaming clients already received the full output as per-token
+        # deltas; strip text from the terminal result to prevent
+        # double-sending. Must mirror the emission gate in
+        # make_text_stream_output_builder: when text output was not requested
+        # no deltas were ever emitted, so the final result keeps its text.
+        if is_streaming and text_output_requested(payload.request):
             result.pop("text", None)
         elif "text" not in result:
             output_ids = thinker_out.get("output_ids")
@@ -269,10 +297,7 @@ class MingStreamingDetokenizeScheduler:
                 )
                 result.setdefault("modality", "text")
 
-        finish_reason = thinker_out.get("finish_reason")
-        if finish_reason is not None:
-            result.setdefault("finish_reason", finish_reason)
-        result.setdefault("usage", build_text_usage(state, thinker_out))
+        _attach_decode_final_metadata(result, state, thinker_out)
 
         return result
 
@@ -284,6 +309,36 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         "payload": dict(event.payload),
         "is_final": bool(event.is_final),
     }
+
+
+def text_output_requested(request: Any) -> bool:
+    """Return True if text is among the requested output modalities.
+
+    Reads ``request.metadata["output_modalities"]``; defaults to True when
+    the field is absent (text is always produced unless explicitly excluded).
+    """
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+    modalities = metadata.get("output_modalities")
+    if modalities is None:
+        return True
+    if isinstance(modalities, str):
+        return modalities.lower() == "text"
+    if isinstance(modalities, (list, tuple, set)):
+        return any(str(m).lower() == "text" for m in modalities)
+    return True
+
+
+def _attach_decode_final_metadata(
+    result: dict[str, Any],
+    state: MingOmniPipelineState,
+    thinker_out: dict[str, Any],
+) -> None:
+    finish_reason = thinker_out.get("finish_reason")
+    if finish_reason is not None:
+        result.setdefault("finish_reason", finish_reason)
+    result.setdefault("usage", build_text_usage(state, thinker_out))
 
 
 def create_ming_streaming_detokenize_scheduler(

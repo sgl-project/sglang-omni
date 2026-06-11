@@ -84,17 +84,11 @@ def create_thinker_scheduler(
         video_token_id=video_token_id,
     )
 
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    if enable_streaming_tts:
-        stream_output_builder = make_combined_stream_output_builder(
-            make_text_stream_output_builder(),
-            make_thinker_stream_output_builder(
-                tokenizer=tokenizer,
-                eos_token_id=eos_token_id,
-            ),
-        )
-    else:
-        stream_output_builder = make_text_stream_output_builder()
+    stream_output_builder = _select_stream_output_builder(
+        enable_streaming_tts,
+        tokenizer=tokenizer,
+        eos_token_id=getattr(tokenizer, "eos_token_id", None),
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -268,6 +262,23 @@ def make_combined_stream_output_builder(
     return _build_stream_output
 
 
+def _select_stream_output_builder(
+    enable_streaming_tts: bool,
+    *,
+    tokenizer: Any,
+    eos_token_id: int | None,
+) -> StreamOutputBuilder:
+    if enable_streaming_tts:
+        return make_combined_stream_output_builder(
+            make_text_stream_output_builder(),
+            make_thinker_stream_output_builder(
+                tokenizer=tokenizer,
+                eos_token_id=eos_token_id,
+            ),
+        )
+    return make_text_stream_output_builder()
+
+
 def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     """Per-token stream callback for text-only pipelines.
 
@@ -278,6 +289,9 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     """
     import torch
 
+    from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
+        text_output_requested,
+    )
     from sglang_omni.scheduling.messages import OutgoingMessage
 
     def _build_stream_output(request_id, req_data, req_output):
@@ -295,21 +309,20 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         if stage_payload is None:
             return []
 
-        is_streaming = bool(
-            (stage_payload.request.params or {}).get("stream", False)
-        )
+        is_streaming = bool((stage_payload.request.params or {}).get("stream", False))
         if not is_streaming:
             return []
 
         # Only emit text deltas when text output is actually requested.
         # Mirrors the output_modalities check in talker_executor.py.
-        if not _text_output_requested(stage_payload.request):
+        if not text_output_requested(stage_payload.request):
             return []
 
         return [
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
+                # Wrap int — relay_io.write_blob is tensor-only.
                 data=torch.tensor([token_id], dtype=torch.long),
                 target=text_decode_stage,
                 metadata={"token_id": token_id},
@@ -317,25 +330,6 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         ]
 
     return _build_stream_output
-
-
-def _text_output_requested(request: Any) -> bool:
-    """Return True if text is among the requested output modalities.
-
-    Reads ``request.metadata["output_modalities"]``; defaults to True when
-    the field is absent (text is always produced unless explicitly excluded).
-    """
-    metadata = getattr(request, "metadata", None)
-    if not isinstance(metadata, dict):
-        return True
-    modalities = metadata.get("output_modalities")
-    if modalities is None:
-        return True
-    if isinstance(modalities, str):
-        return modalities.lower() == "text"
-    if isinstance(modalities, (list, tuple, set)):
-        return any(str(m).lower() == "text" for m in modalities)
-    return True
 
 
 def make_thinker_stream_output_builder(
