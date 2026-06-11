@@ -96,6 +96,7 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `video_min_pixels` | int | `null` | Minimum pixels per video frame |
 | `video_max_pixels` | int | `null` | Maximum pixels per video frame |
 | `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
+| `use_audio_in_video` | bool | `null` | Extract the video's audio track and interleave it with the sampled frames. Requires `videos` |
 
 ### Known Limitations
 

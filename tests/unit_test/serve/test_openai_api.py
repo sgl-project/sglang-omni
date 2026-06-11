@@ -450,3 +450,77 @@ def test_speech_request_passes_moss_token_count() -> None:
     gen_req = build_speech_generate_request(req, "moss-tts")
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
+
+
+class RecordingChatClient:
+    """Records the GenerateRequest the chat endpoint builds."""
+
+    def __init__(self) -> None:
+        self.requests: list[GenerateRequest] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        from sglang_omni.client.types import CompletionResult
+
+        del audio_format
+        self.requests.append(request)
+        return CompletionResult(request_id=request_id, text="ok")
+
+
+def _post_chat_with_video(use_audio_in_video: bool | None) -> GenerateRequest:
+    chat_client = RecordingChatClient()
+    client = TestClient(create_app(chat_client, model_name="qwen3-omni"))
+
+    payload: dict[str, Any] = {
+        "messages": [{"role": "user", "content": "What do you hear?"}],
+        "videos": ["/data/clip.mp4"],
+        "modalities": ["text"],
+    }
+    if use_audio_in_video is not None:
+        payload["use_audio_in_video"] = use_audio_in_video
+
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 200
+    assert chat_client.requests
+    return chat_client.requests[0]
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_chat_endpoint_forwards_use_audio_in_video(flag: bool) -> None:
+    gen_req = _post_chat_with_video(use_audio_in_video=flag)
+    assert gen_req.metadata["use_audio_in_video"] is flag
+
+    inputs = Client._build_omni_request(gen_req).inputs
+    assert inputs["videos"] == ["/data/clip.mp4"]
+    assert inputs["use_audio_in_video"] is flag
+
+
+def test_chat_endpoint_omits_use_audio_in_video_when_unset() -> None:
+    gen_req = _post_chat_with_video(use_audio_in_video=None)
+    assert "use_audio_in_video" not in gen_req.metadata
+
+    inputs = Client._build_omni_request(gen_req).inputs
+    assert "use_audio_in_video" not in inputs
+
+
+def test_chat_endpoint_rejects_use_audio_in_video_without_videos() -> None:
+    client = TestClient(create_app(RecordingChatClient(), model_name="qwen3-omni"))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "What do you hear?"}],
+            "use_audio_in_video": True,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "use_audio_in_video" in response.text

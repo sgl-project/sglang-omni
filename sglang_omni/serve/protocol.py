@@ -88,6 +88,7 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None
@@ -107,6 +108,12 @@ class ChatCompletionRequest(BaseModel):
     @property
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
+
+    @model_validator(mode="after")
+    def _check_use_audio_in_video_requires_videos(self) -> "ChatCompletionRequest":
+        if self.use_audio_in_video and not self.videos:
+            raise ValueError("use_audio_in_video requires a non-empty 'videos' list")
+        return self
 
 
 class ChatCompletionChoice(BaseModel):
