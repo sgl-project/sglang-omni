@@ -194,6 +194,105 @@ def test_pipeline_stage_wiring():
     assert colocated_stages["vocoder"].factory_args["device"] == "cuda:0"
 
 
+def test_tts_engine_forward_sample_flag_and_graph_init(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from sglang_omni.models.moss_tts_local import stages
+
+    build_kwargs = []
+    infrastructure_saw_graph_disabled = []
+    init_graph_calls = []
+    frame_graph_calls = []
+    models = []
+
+    class _FakeSGLangRunner:
+        def __init__(self, model):
+            self.model = model
+
+        def init_device_graphs(self):
+            init_graph_calls.append(True)
+
+    class _FakeWorker:
+        gpu_id = 0
+
+        def __init__(self):
+            model = SimpleNamespace(
+                forward_sample_in_forward=None,
+                init_frame_decode_graphs=lambda buckets: frame_graph_calls.append(
+                    list(buckets)
+                ),
+            )
+            models.append(model)
+            self.model_runner = _FakeSGLangRunner(model)
+
+    def fake_build_sglang_server_args(model_path, context_length, **kwargs):
+        del model_path, context_length
+        build_kwargs.append(dict(kwargs))
+        return SimpleNamespace(disable_cuda_graph=kwargs["disable_cuda_graph"])
+
+    def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
+        del kwargs
+        assert gpu_id == 0
+        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        return (
+            _FakeWorker(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            SimpleNamespace(),
+        )
+
+    class _FakeScheduler:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    fake_bootstrap = ModuleType("sglang_omni.scheduling.bootstrap")
+    fake_bootstrap.create_sglang_infrastructure = fake_create_sglang_infrastructure
+    fake_backend = ModuleType("sglang_omni.scheduling.sglang_backend")
+    fake_backend.build_sglang_server_args = fake_build_sglang_server_args
+    fake_backend.SGLangOutputProcessor = lambda **kwargs: SimpleNamespace(**kwargs)
+    fake_scheduler = ModuleType("sglang_omni.scheduling.omni_scheduler")
+    fake_scheduler.OmniScheduler = _FakeScheduler
+    fake_runner = ModuleType("sglang_omni.models.moss_tts_local.model_runner")
+    fake_runner.MossTTSLocalModelRunner = lambda *args, **kwargs: SimpleNamespace(
+        args=args, kwargs=kwargs
+    )
+
+    monkeypatch.setitem(sys.modules, "sglang_omni.scheduling.bootstrap", fake_bootstrap)
+    monkeypatch.setitem(
+        sys.modules, "sglang_omni.scheduling.sglang_backend", fake_backend
+    )
+    monkeypatch.setitem(
+        sys.modules, "sglang_omni.scheduling.omni_scheduler", fake_scheduler
+    )
+    monkeypatch.setitem(
+        sys.modules, "sglang_omni.models.moss_tts_local.model_runner", fake_runner
+    )
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda **kwargs: (object(), object()),
+    )
+
+    stages.create_sglang_tts_engine_executor("model", device="cuda:0")
+    stages.create_sglang_tts_engine_executor(
+        "model", device="cuda:0", forward_sample_in_forward=True
+    )
+
+    assert models[0].forward_sample_in_forward is False
+    assert models[1].forward_sample_in_forward is True
+    assert all("forward_sample_in_forward" not in kwargs for kwargs in build_kwargs)
+    assert infrastructure_saw_graph_disabled == [True, True]
+    assert len(init_graph_calls) == 2
+    assert frame_graph_calls == [[1, 2, 4, 8, 16], [1, 2, 4, 8, 16]]
+    assert models[1]._moss_local_decode_cuda_graph_bs == [1, 2, 4, 8, 16]
+    assert models[1]._moss_local_decode_graph_padding is True
+
+
 def test_special_token_defaults_match_v15_checkpoint():
     defaults = dict(moss_tts_local_special_token_defaults())
     assert defaults["audio_start_token_id"] == 151669

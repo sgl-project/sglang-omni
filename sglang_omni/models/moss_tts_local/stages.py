@@ -263,6 +263,7 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
+    forward_sample_in_forward: bool = False,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
@@ -326,6 +327,13 @@ def create_sglang_tts_engine_executor(
         server_args.disable_cuda_graph = False
 
     model = model_worker.model_runner.model
+    model.forward_sample_in_forward = bool(forward_sample_in_forward)
+    model._moss_local_decode_cuda_graph_bs = list(
+        overrides.get("cuda_graph_bs") or [1, 2, 4, 8, 16]
+    )
+    model._moss_local_decode_graph_padding = want_cuda_graph and not bool(
+        getattr(server_args, "disable_cuda_graph_padding", False)
+    )
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
         # Also graph the per-frame local-transformer decode (1 + n_vq

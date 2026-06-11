@@ -127,6 +127,8 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         self._decode_input_embedding.weight.requires_grad_(False)
+        self.forward_sample_in_forward = False
+        self.init_forward_sample_buffers()
 
         # Row-indexed decode-state pool: next-step-critical per-request state
         # (next-frame feedback embedding, request-static sampling params/seed)
@@ -134,6 +136,55 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         # above. Allocated here, before any frame/backbone graph capture, so
         # its addresses are fixed for the process lifetime.
         self._state_pool = MossTTSLocalDecodeStatePool(self)
+
+    def init_forward_sample_buffers(self) -> None:
+        """Allocate fixed decode-time staging used by the opt-in forward path."""
+        weight = self._decode_input_embedding.weight
+        max_running_requests = int(weight.shape[0])
+        device = weight.device
+        self._cg_text_temp = torch.ones(
+            max_running_requests, device=device, dtype=torch.float32
+        )
+        self._cg_text_top_p = torch.ones(
+            max_running_requests, device=device, dtype=torch.float32
+        )
+        self._cg_text_top_k = torch.full(
+            (max_running_requests,), 50, device=device, dtype=torch.int64
+        )
+        self._cg_audio_temp = torch.ones(
+            max_running_requests, device=device, dtype=torch.float32
+        )
+        self._cg_audio_top_p = torch.ones(
+            max_running_requests, device=device, dtype=torch.float32
+        )
+        self._cg_audio_top_k = torch.full(
+            (max_running_requests,), 25, device=device, dtype=torch.int64
+        )
+        self._cg_seeds = torch.zeros(
+            max_running_requests, device=device, dtype=torch.int64
+        )
+        self._cg_base_positions = torch.zeros(
+            max_running_requests, device=device, dtype=torch.int64
+        )
+
+        self._cg_stop_choice = torch.zeros(
+            max_running_requests, device=device, dtype=torch.int64
+        )
+        self._cg_codes = torch.zeros(
+            max_running_requests, self.n_vq, device=device, dtype=torch.int64
+        )
+        self._cg_feedback = torch.zeros(
+            max_running_requests,
+            self.hidden_size,
+            device=device,
+            dtype=weight.dtype,
+        )
+        self._cg_rows = torch.zeros(
+            max_running_requests,
+            self.n_vq + 1,
+            device=device,
+            dtype=torch.int64,
+        )
 
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) decode-state pool row for ``rid``."""
@@ -287,13 +338,13 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         input_embeds_are_projected: bool = False,
     ) -> LogitsProcessorOutput:
         del input_embeds_are_projected
+        forward_mode = getattr(forward_batch, "forward_mode", None)
+        is_decode = (
+            forward_mode is not None
+            and hasattr(forward_mode, "is_decode")
+            and bool(forward_mode.is_decode())
+        )
         if input_embeds is None:
-            forward_mode = getattr(forward_batch, "forward_mode", None)
-            is_decode = (
-                forward_mode is not None
-                and hasattr(forward_mode, "is_decode")
-                and bool(forward_mode.is_decode())
-            )
             if is_decode:
                 input_embeds = self._decode_input_embedding(input_ids)
             elif self.pp_group.is_first_rank:
@@ -315,10 +366,40 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             hidden_states,
             forward_batch,
         )
-        # The local-transformer frame decode (binary stop head + 12 sequential
-        # codebook samples) runs in the model runner after the graph-captured
-        # backbone returns; emitting hidden states with dummy logits keeps the
-        # backbone CUDA-graph replay free of model-specific outputs.
+        if (
+            is_decode
+            and bool(getattr(self, "forward_sample_in_forward", False))
+            and hasattr(self, "_cg_text_temp")
+        ):
+            batch_size = int(sample_hidden_states.shape[0])
+            stop_choice, codes, feedback = self._decode_frame_graphable(
+                sample_hidden_states,
+                text_temperature=self._cg_text_temp[:batch_size],
+                text_top_p=self._cg_text_top_p[:batch_size],
+                text_top_k=self._cg_text_top_k[:batch_size],
+                audio_temperature=self._cg_audio_temp[:batch_size],
+                audio_top_p=self._cg_audio_top_p[:batch_size],
+                audio_top_k=self._cg_audio_top_k[:batch_size],
+                seeds=self._cg_seeds[:batch_size],
+                base_positions=self._cg_base_positions[:batch_size],
+            )
+            self._cg_stop_choice[:batch_size] = stop_choice
+            self._cg_codes[:batch_size] = codes
+            self._cg_feedback[:batch_size] = feedback
+            slot_id = int(self.config.audio_assistant_slot_token_id)
+            end_id = int(self.config.audio_end_token_id)
+            next_text = torch.where(
+                stop_choice == 0,
+                torch.full_like(stop_choice, slot_id),
+                torch.full_like(stop_choice, end_id),
+            )
+            self._cg_rows[:batch_size, 0] = next_text
+            self._cg_rows[:batch_size, 1:] = codes
+
+        # Legacy flow consumes hidden_states in the model runner and samples
+        # there. The opt-in forward-sample flow above has already written the
+        # sampled frame to fixed staging buffers. In both cases dummy logits
+        # keep SGLang's output contract satisfied.
         dummy_logits = sample_hidden_states.new_empty(
             (sample_hidden_states.shape[0], 1)
         )
