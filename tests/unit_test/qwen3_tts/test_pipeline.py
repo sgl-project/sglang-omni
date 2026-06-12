@@ -1377,7 +1377,6 @@ def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
     torch.nn.Module.__init__(model)
     model.codec_embedding = torch.nn.Embedding(8, 4)
     model.layers = torch.nn.ModuleList([])
-    model._compiled_decode_layers = model.layers
     model.start_layer = 0
     model.end_layer = 0
     model.norm = IdentityNorm()
@@ -1666,12 +1665,13 @@ def test_qwen3_tts_compile_backbone_compiles_every_layer(
     ]
 
 
-def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
+def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Qwen3-TTS defers graph capture until custom buffers are ready."""
     install_fake_sglang(monkeypatch)
     from transformers import AutoProcessor
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    from transformers.utils import generic
 
     from sglang_omni.models.qwen3_tts import model_runner as model_runner_mod
     from sglang_omni.models.qwen3_tts import stages
@@ -1681,6 +1681,17 @@ def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.scheduling import bootstrap as bootstrap_mod
     from sglang_omni.scheduling import omni_scheduler as scheduler_mod
     from sglang_omni.scheduling import sglang_backend
+
+    check_model_inputs_calls = []
+
+    def transformers_56_check_model_inputs(func):
+        check_model_inputs_calls.append(func)
+        return f"wrapped:{func.__name__}"
+
+    monkeypatch.setattr(
+        generic, "check_model_inputs", transformers_56_check_model_inputs
+    )
+    monkeypatch.delitem(ROPE_INIT_FUNCTIONS, "default", raising=False)
 
     build_kwargs: dict = {}
     infrastructure_saw_graph_disabled: list[bool] = []
@@ -1789,12 +1800,41 @@ def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
+    scheduler = stages.create_sglang_tts_engine_executor(
+        "model",
+        device="cuda:0",
+        server_args_overrides={"mem_fraction_static": 0.7, "max_running_requests": 2},
+    )
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
+    assert build_kwargs["mem_fraction_static"] == 0.7
+    assert build_kwargs["max_running_requests"] == 2
     assert build_kwargs["torch_compile_max_bs"] == 16
+
+    def target():
+        return None
+
+    decorator = generic.check_model_inputs()
+    assert decorator(target) == "wrapped:target"
+    assert generic.check_model_inputs(target) == "wrapped:target"
+    assert check_model_inputs_calls == [target, target]
+
+    inv_freq, attention_scaling = ROPE_INIT_FUNCTIONS["default"](
+        SimpleNamespace(
+            rope_theta=10000.0,
+            hidden_size=8,
+            num_attention_heads=2,
+        ),
+        None,
+    )
+    assert attention_scaling == 1.0
+    torch.testing.assert_close(
+        inv_freq,
+        torch.tensor([1.0, 0.01], dtype=torch.float32),
+    )
+
     assert infrastructure_saw_graph_disabled == [True]
     assert len(compile_calls) == 1
     assert init_graph_calls == [True]

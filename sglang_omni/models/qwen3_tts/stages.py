@@ -9,6 +9,9 @@ from typing import Any
 
 import torch
 
+from sglang_omni.models.qwen3_tts.compat import (
+    apply_qwen_tts_transformers_compatibility_patches,
+)
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
@@ -53,6 +56,7 @@ def _load_qwen3_tts_tokenizer(
     dtype: str,
     attn_implementation: str | None,
 ):
+    apply_qwen_tts_transformers_compatibility_patches()
     try:
         from qwen_tts import Qwen3TTSTokenizer
     except ImportError as exc:
@@ -73,6 +77,7 @@ def _load_qwen3_tts_tokenizer(
 
 
 def _register_qwen3_tts_hf_config() -> None:
+    apply_qwen_tts_transformers_compatibility_patches()
     try:
         from qwen_tts.core.models import Qwen3TTSConfig
         from transformers import AutoConfig
@@ -166,7 +171,9 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
+    server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
+    apply_qwen_tts_transformers_compatibility_patches()
     from qwen_tts import Qwen3TTSModel
     from transformers import AutoProcessor
 
@@ -184,19 +191,25 @@ def create_sglang_tts_engine_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
+    overrides: dict[str, Any] = {
+        "dtype": dtype,
+        "disable_cuda_graph": False,
+        "disable_overlap_schedule": True,
+        "enable_torch_compile": True,
+        "mem_fraction_static": 0.85,
+        "max_prefill_tokens": 8192,
+        "max_running_requests": 16,
+        "sampling_backend": "pytorch",
+        "torch_compile_max_bs": 16,
+        "trust_remote_code": True,
+    }
+    if server_args_overrides:
+        overrides.update(server_args_overrides)
+
     server_args = build_sglang_server_args(
         checkpoint_dir,
         context_length=8192,
-        dtype=dtype,
-        disable_cuda_graph=False,
-        disable_overlap_schedule=True,
-        enable_torch_compile=True,
-        mem_fraction_static=0.85,
-        max_prefill_tokens=8192,
-        max_running_requests=16,
-        sampling_backend="pytorch",
-        torch_compile_max_bs=16,
-        trust_remote_code=True,
+        **overrides,
     )
 
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))

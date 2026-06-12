@@ -14,6 +14,8 @@ from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
+_UINT64_MASK = (1 << 64) - 1
+_INT64_SEED_MASK = (1 << 63) - 1
 
 
 class MossTTSModelRunner(ModelRunner):
@@ -448,12 +450,53 @@ class MossTTSModelRunner(ModelRunner):
         positions_row = MossTTSModelRunner._as_row_tensor(
             positions, num_rows, torch.long, device
         )
-        sampled = multinomial_with_seed(probs, seeds_row, positions_row).view(-1)
-
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-        if bool(fallback.any()):
-            sampled[fallback] = torch.argmax(logits[fallback], dim=-1)
+        sample_mask = ~fallback
+        sampled = torch.argmax(logits, dim=-1)
+        if bool(sample_mask.any()):
+            if device.type == "cpu":
+                sampled[sample_mask] = MossTTSModelRunner._multinomial_with_seed_cpu(
+                    probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                )
+            else:
+                # Note:(Chenchen Hong) post1's multinomial_with_seed is Gumbel-max
+                # and wants logits, not probs (probs lost the -inf masking and made
+                # MOSS emit only the pad code); the CPU fallback still needs probs.
+                sampled[sample_mask] = multinomial_with_seed(
+                    scores[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                ).view(-1)
         return sampled.to(torch.long)
+
+    @staticmethod
+    def _multinomial_with_seed_cpu(
+        probs: torch.Tensor,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """CPU-only seeded fallback; approximates the GPU sampler (not bit-exact)."""
+        sampled = torch.empty(probs.shape[0], dtype=torch.long, device=probs.device)
+        for row_idx in range(probs.shape[0]):
+            row = probs[row_idx]
+            if float(row.sum().item()) <= 0.0:
+                sampled[row_idx] = 0
+                continue
+            seed = int(seeds[row_idx].item()) & _UINT64_MASK
+            position = int(positions[row_idx].item()) & _UINT64_MASK
+            mixed_seed = (
+                seed
+                ^ ((position + 0x9E3779B97F4A7C15) & _UINT64_MASK)
+                ^ ((position << 17) & _UINT64_MASK)
+            ) & _INT64_SEED_MASK
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(mixed_seed)
+            sampled[row_idx] = torch.multinomial(
+                row.cpu(), num_samples=1, generator=generator
+            ).to(device=probs.device)
+        return sampled
 
     @staticmethod
     def _apply_top_k(scores: torch.Tensor, top_k_row: torch.Tensor) -> torch.Tensor:

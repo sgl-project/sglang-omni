@@ -1,0 +1,86 @@
+{
+  "base_url": "http://127.0.0.1:8000",
+  "model_name": "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+  "test_type": "engine",
+  "seed": 0,
+  "params": {
+    "profile": "stress",
+    "enabled_endpoints": [
+      "speech",
+      "speech_sse",
+      "voices",
+      "batch",
+      "websocket"
+    ],
+    "speaker_max_uploaded": 1000,
+    "load_stages": [
+      {
+        "id": "closed-1",
+        "mode": "closed_loop",
+        "request_count": 32,
+        "max_concurrency": 1
+      },
+      {
+        "id": "closed-16",
+        "mode": "closed_loop",
+        "request_count": 128,
+        "max_concurrency": 16
+      },
+      {
+        "id": "ramp-128",
+        "mode": "ramp",
+        "request_count": 256,
+        "max_concurrency": 128,
+        "start_request_rate": 2,
+        "request_rate": 64,
+        "arrival_distribution": "poisson"
+      },
+      {
+        "id": "soak-300s",
+        "mode": "soak",
+        "request_count": 512,
+        "duration_s": 300,
+        "max_concurrency": 128,
+        "arrival_distribution": "poisson"
+      },
+      {
+        "id": "ws-burst-512",
+        "mode": "burst",
+        "request_count": 512,
+        "max_concurrency": 512,
+        "enabled_endpoints": [
+          "websocket"
+        ]
+      },
+      {
+        "id": "voice-cache-pressure",
+        "mode": "closed_loop",
+        "request_count": 96,
+        "max_concurrency": 16,
+        "enabled_endpoints": [
+          "voices"
+        ],
+        "voice_cache_pressure_voice_count": 768,
+        "voice_speaker_cap_count": 0
+      },
+      {
+        "id": "voice-speaker-cap",
+        "mode": "closed_loop",
+        "request_count": 2,
+        "max_concurrency": 1,
+        "enabled_endpoints": [
+          "voices"
+        ],
+        "voice_cache_pressure_voice_count": 0,
+        "voice_speaker_cap_count": 1001,
+        "speaker_max_uploaded": 1000
+      },
+      {
+        "id": "mixed-burst-512",
+        "mode": "burst",
+        "request_count": 512,
+        "max_concurrency": 512
+      }
+    ]
+  }
+}

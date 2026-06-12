@@ -13,6 +13,7 @@ benchmarks/
 ├── dataset/        # Dataset loaders + download helpers
 ├── benchmarker/    # Framework: runner, data structures, utilities
 ├── eval/           # Entry-point scripts (one per task × model)
+├── tts_serving/    # TTS serving harness and Docker contract
 ├── cache/          # (gitignored) dataset caches
 └── results/        # (gitignored) evaluation outputs
 ```
@@ -169,12 +170,16 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | Script | Task | Model | API |
 |--------|------|-------|-----|
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
+| `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, SSE, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_qwen3_asr_concurrency.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
+
+See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
+benchmark design, harness contract, scenario matrix, and Docker usage.
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1

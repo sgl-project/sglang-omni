@@ -139,6 +139,74 @@ def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce() -> None:
     )
 
 
+def test_ming_cli_applies_image_encoder_tp_and_gpus() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        image_encoder_tp_size=2,
+        image_encoder_gpus="4,5",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    image_encoder = _stage(config, "image_encoder")
+    assert image_encoder.tp_size == 2
+    assert image_encoder.gpu == [4, 5]
+    assert image_encoder.parallelism.tp == 2
+
+
+def test_ming_cli_image_encoder_tp1_collapses_to_scalar_gpu() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        image_encoder_tp_size=1,
+        image_encoder_gpus="4",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    assert _stage(config, "image_encoder").gpu == 4
+
+
+def test_ming_cli_rejects_image_encoder_gpu_count_mismatch() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter):
+        apply_parallelism_cli_overrides(
+            config,
+            thinker_tp_size=None,
+            thinker_gpus=None,
+            image_encoder_tp_size=2,
+            image_encoder_gpus="4",
+            talker_gpu=None,
+            code2wav_gpu=None,
+        )
+
+
+def test_ming_cli_leaves_image_encoder_untouched_when_flags_omitted() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+    before_tp = _stage(config, "image_encoder").tp_size
+    before_gpu = _stage(config, "image_encoder").gpu
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    image_encoder = _stage(config, "image_encoder")
+    assert image_encoder.tp_size == before_tp
+    assert image_encoder.gpu == before_gpu
+
+
 def test_ming_cli_applies_tp_server_args_for_config_mutated_tp() -> None:
     config = MingOmniPipelineConfig(model_path="dummy")
     thinker = _stage(config, "thinker")
