@@ -5,6 +5,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from transformers import AutoFeatureExtractor, AutoTokenizer
+
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.qwen3_asr.request_builders import (
+    make_qwen3_asr_scheduler_adapters,
+)
+from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend import (
+    SGLangOutputProcessor,
+    build_sglang_server_args,
+)
+
 
 def create_sglang_qwen3_asr_executor(
     model_path: str,
@@ -13,53 +27,20 @@ def create_sglang_qwen3_asr_executor(
     dtype: str = "float16",
     max_running_requests: int = 32,
     max_new_tokens: int = 256,
-    # Leave unset by default so SGLang/Omni auto-tunes the static KV/radix
-    # memory budget from GPU size, chunked prefill, and CUDA graph settings.
     mem_fraction_static: float | None = None,
-    # SeedTTS WER inputs are unique audio clips, so caching audio embeddings on
-    # GPU has essentially no reuse and only retains runtime memory.
     mm_embedding_cache_size_bytes: int = 0,
-    # CUDA graph capture is fast for this ASR path; torch.compile dominates
-    # startup latency and gives little benefit for the benchmark workload.
     enable_torch_compile: bool = False,
-    # Keep ASR on the stable multimodal attention implementation instead of
-    # inheriting hardware-dependent SGLang vision-attention defaults.
     mm_attention_backend: str | None = "triton_attn",
     server_args_overrides: dict[str, Any] | None = None,
 ):
-    from transformers import AutoProcessor
-
-    from sglang_omni.model_runner.base import ModelRunner
-
-    # Import the config module first: its module-level AutoConfig.register(...)
-    # calls make transformers recognize model_type "qwen3_asr" before any
-    # ServerArgs/ModelConfig code parses the checkpoint's config.json.
-    # TODO: This is a dirty work, need further polish
-    from sglang_omni.models.qwen3_asr import configuration_qwen3_asr  # noqa: F401
-    from sglang_omni.models.qwen3_asr.request_builders import (
-        make_qwen3_asr_scheduler_adapters,
-    )
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.sglang_backend import (
-        SGLangOutputProcessor,
-        build_sglang_server_args,
-    )
 
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
-    processor = AutoProcessor.from_pretrained(model_path)
-    tokenizer = getattr(processor, "tokenizer", processor)
-
-    # Qwen3-ASR's HF repo only ships a tokenizer, so AutoProcessor returns no
-    # audio feature_extractor. Build the WhisperFeatureExtractor (128 mel bins, matching num_mel_bins) ourselves
-    from transformers import AutoFeatureExtractor
-
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     feature_extractor = AutoFeatureExtractor.from_pretrained(
         model_path, trust_remote_code=True
     )
 
-    # 30 s @ 100 fps -> 3000 mel frames -> 1500 after the encoder's stride-2 conv
     encoder_token_count = int(feature_extractor.nb_max_frames // 2)
 
     overrides: dict[str, Any] = {
@@ -75,6 +56,7 @@ def create_sglang_qwen3_asr_executor(
         "sampling_backend": "pytorch",
         "dtype": dtype,
     }
+    # Note (Chenyang): Use triton for fallback on Blackwell
     if mm_attention_backend is not None:
         overrides["mm_attention_backend"] = mm_attention_backend
     if server_args_overrides:
@@ -107,12 +89,6 @@ def create_sglang_qwen3_asr_executor(
     if want_cuda_graph:
         server_args.disable_cuda_graph = False
         model_worker.model_runner.init_device_graphs()
-
-    # general_mm_embed_routine reads a module-global multimodal embedding cache
-    # that upstream sglang inits in its own model runner; the omni runner does
-    # not, so initialize it explicitly. Keep it disabled by default for ASR
-    # because benchmark audio requests are not reused.
-    from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
 
