@@ -19,12 +19,6 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
-_BLACKWELL_MIN_MAJOR_COMPUTE_CAPABILITY = 10
-
-
-def _is_blackwell_compute_capability(major: int, minor: int = 0) -> bool:
-    del minor
-    return major >= _BLACKWELL_MIN_MAJOR_COMPUTE_CAPABILITY
 
 
 def _get_compute_capability(
@@ -105,14 +99,16 @@ def _visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
     return [0]
 
 
-def is_visible_gpu_blackwell(
+def visible_gpu_has_min_compute_capability(
     logical_gpu_id: int,
+    min_major: int,
+    min_minor: int = 0,
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    """Return whether a logical visible CUDA device is Blackwell-class."""
+    """Return whether a logical visible CUDA device meets a CUDA capability floor."""
     source_env = os.environ if env is None else env
     capability = _get_compute_capability(logical_gpu_id, source_env)
-    return capability is not None and _is_blackwell_compute_capability(*capability)
+    return capability is not None and capability >= (min_major, min_minor)
 
 
 def visible_gpus_need_flashinfer_cuda_norm(
@@ -121,7 +117,7 @@ def visible_gpus_need_flashinfer_cuda_norm(
     """Return whether any visible CUDA device needs the FlashInfer CUDA norm workaround."""
     source_env = os.environ if env is None else env
     for gpu_id in _visible_gpu_ids(source_env):
-        if is_visible_gpu_blackwell(gpu_id, source_env):
+        if visible_gpu_has_min_compute_capability(gpu_id, 10, env=source_env):
             return True
     return False
 
