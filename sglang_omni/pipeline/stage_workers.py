@@ -20,6 +20,10 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
+from sglang_omni.utils.gpu_compat import (
+    apply_gpu_compat_env_defaults,
+    get_gpu_compat_env_defaults,
+)
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 
@@ -148,6 +152,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
 
     updates = {
         **env_default_updates,
+        **get_gpu_compat_env_defaults(),
         **_get_worker_process_env(spec),
     }
     if not updates:
@@ -341,6 +346,7 @@ def stage_process_main(
     startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
+    apply_gpu_compat_env_defaults()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
