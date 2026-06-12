@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""HF-parity patches for sglang ``Qwen3VLMoeVisionModel``.
+"""HF-parity patch for sglang ``Qwen3VLMoeVisionModel.rot_pos_emb``.
 
-Patches ``fast_pos_embed_interpolate`` and ``rot_pos_emb`` to match HF
-transformers' semantics. See sglang-omni issue #434 for context, scope,
-and removal plan.
+Patches ``rot_pos_emb`` to compute cos/sin in the model dtype, matching HF
+transformers' semantics. See sglang-omni issue #434 for context.
+
+Note:(Chenchen Hong) the former ``fast_pos_embed_interpolate`` patch was
+dropped on sglang 0.5.12.post1: upstream's native implementation produces
+output bit-identical to the patch (verified on Qwen3-Omni vs HF at 4x4 and
+32x32 grids, cos identical to 6 digits), so the patch was a no-op.
 """
 from __future__ import annotations
 
@@ -23,101 +27,23 @@ _PATCHED_FLAG = "_sglang_omni_hf_parity_patched"
 # half-patched class.
 _APPLY_LOCK = threading.Lock()
 
-# Released sglang versions whose Qwen3VLMoeVisionModel layout matches the
-# patch. Dev builds (``0.0.0.dev1+...``) are accepted with a warning since
-# they are unversioned snapshots that may or may not match.
-_SUPPORTED_SGLANG_VERSIONS: frozenset[str] = frozenset({"0.5.8", "0.5.8.post1"})
+# Released sglang version whose Qwen3VLMoeVisionModel layout and dependency
+# pins match the patch. Dev builds (``0.0.0.dev1+...``) are accepted with a
+# warning since they are unversioned snapshots that may or may not match.
+_SUPPORTED_SGLANG_VERSIONS: frozenset[str] = frozenset({"0.5.12.post1"})
 
-# Instance attributes the patches read; preflight checks each is present
+# Instance attributes the patch reads; preflight checks each is present
 # either as a class-level descriptor or as a self.<name> = assignment in
 # any parent's __init__.
 _REQUIRED_INSTANCE_ATTRS: Sequence[str] = (
     "spatial_merge_size",
-    "num_grid_per_side",
-    "pos_embed",
     "rotary_pos_emb",
     "rot_pos_ids",
     "dtype",
     "device",
 )
-# Methods the patches replace.
-_REQUIRED_METHODS: Sequence[str] = (
-    "fast_pos_embed_interpolate",
-    "rot_pos_emb",
-)
-
-
-def _patched_fast_pos_embed_interpolate(self, grid_thw):
-    """HF-aligned port; ``grid_thw`` accepts tensor or list."""
-    if hasattr(grid_thw, "tolist"):
-        grid_thw_list = grid_thw.tolist()
-    else:
-        grid_thw_list = list(grid_thw)
-    grid_ts = [row[0] for row in grid_thw_list]
-    grid_hs = [row[1] for row in grid_thw_list]
-    grid_ws = [row[2] for row in grid_thw_list]
-    device = self.pos_embed.weight.device
-
-    idx_list: list[list[int]] = [[] for _ in range(4)]
-    weight_list: list[list[float]] = [[] for _ in range(4)]
-
-    for _t, h, w in grid_thw_list:
-        # Pin to fp32 so the interpolation coords are independent of the
-        # ambient torch default dtype.
-        h_idxs = torch.linspace(0, self.num_grid_per_side - 1, h, dtype=torch.float32)
-        w_idxs = torch.linspace(0, self.num_grid_per_side - 1, w, dtype=torch.float32)
-
-        h_idxs_floor = h_idxs.int()
-        w_idxs_floor = w_idxs.int()
-        h_idxs_ceil = (h_idxs.int() + 1).clip(max=self.num_grid_per_side - 1)
-        w_idxs_ceil = (w_idxs.int() + 1).clip(max=self.num_grid_per_side - 1)
-
-        dh = h_idxs - h_idxs_floor
-        dw = w_idxs - w_idxs_floor
-
-        base_h = h_idxs_floor * self.num_grid_per_side
-        base_h_ceil = h_idxs_ceil * self.num_grid_per_side
-
-        indices = [
-            (base_h[None].T + w_idxs_floor[None]).flatten(),
-            (base_h[None].T + w_idxs_ceil[None]).flatten(),
-            (base_h_ceil[None].T + w_idxs_floor[None]).flatten(),
-            (base_h_ceil[None].T + w_idxs_ceil[None]).flatten(),
-        ]
-
-        weights = [
-            ((1 - dh)[None].T * (1 - dw)[None]).flatten(),
-            ((1 - dh)[None].T * dw[None]).flatten(),
-            (dh[None].T * (1 - dw)[None]).flatten(),
-            (dh[None].T * dw[None]).flatten(),
-        ]
-
-        for i in range(4):
-            idx_list[i].extend(indices[i].tolist())
-            weight_list[i].extend(weights[i].tolist())
-
-    idx_tensor = torch.tensor(idx_list, dtype=torch.long, device=device)
-    weight_tensor = torch.tensor(
-        weight_list, dtype=self.pos_embed.weight.dtype, device=device
-    )
-    pos_embeds = self.pos_embed(idx_tensor).to(device) * weight_tensor[:, :, None]
-    patch_pos_embeds = pos_embeds[0] + pos_embeds[1] + pos_embeds[2] + pos_embeds[3]
-
-    patch_pos_embeds = patch_pos_embeds.split([h * w for h, w in zip(grid_hs, grid_ws)])
-
-    patch_pos_embeds_permute = []
-    merge_size = self.spatial_merge_size
-    for pos_embed, t, h, w in zip(patch_pos_embeds, grid_ts, grid_hs, grid_ws):
-        pos_embed = pos_embed.repeat(t, 1)
-        pos_embed = (
-            pos_embed.view(
-                t, h // merge_size, merge_size, w // merge_size, merge_size, -1
-            )
-            .permute(0, 1, 3, 2, 4, 5)
-            .flatten(0, 4)
-        )
-        patch_pos_embeds_permute.append(pos_embed)
-    return torch.cat(patch_pos_embeds_permute)
+# Method the patch replaces.
+_REQUIRED_METHODS: Sequence[str] = ("rot_pos_emb",)
 
 
 def _patched_rot_pos_emb(self, grid_thw):
@@ -265,7 +191,7 @@ def _check_sglang_version() -> None:
 
 
 def apply_qwen3_vl_hf_parity_patches() -> None:
-    """Atomically apply both HF-parity patches to ``Qwen3VLMoeVisionModel``.
+    """Apply the ``rot_pos_emb`` HF-parity patch to ``Qwen3VLMoeVisionModel``.
 
     Idempotent (class-level flag) and threadsafe (module-level lock).
     Raises ``RuntimeError`` on unsupported sglang version or class-surface drift.
@@ -286,23 +212,11 @@ def apply_qwen3_vl_hf_parity_patches() -> None:
 
         _check_target_class_surface(Qwen3VLMoeVisionModel)
 
-        # Snapshot originals so a mid-apply failure can roll back, leaving
-        # the class either fully patched or untouched (never half-patched).
-        original_fpei = Qwen3VLMoeVisionModel.fast_pos_embed_interpolate
-        original_rope = Qwen3VLMoeVisionModel.rot_pos_emb
-        try:
-            Qwen3VLMoeVisionModel.fast_pos_embed_interpolate = (
-                _patched_fast_pos_embed_interpolate
-            )
-            Qwen3VLMoeVisionModel.rot_pos_emb = _patched_rot_pos_emb
-        except Exception:
-            Qwen3VLMoeVisionModel.fast_pos_embed_interpolate = original_fpei
-            Qwen3VLMoeVisionModel.rot_pos_emb = original_rope
-            raise
+        Qwen3VLMoeVisionModel.rot_pos_emb = _patched_rot_pos_emb
         setattr(Qwen3VLMoeVisionModel, _PATCHED_FLAG, True)
 
     logger.info(
-        "Applied HF-parity patches to %s.%s "
+        "Applied rot_pos_emb HF-parity patch to %s.%s "
         "(see sglang-omni issue #434 for context).",
         Qwen3VLMoeVisionModel.__module__,
         Qwen3VLMoeVisionModel.__name__,

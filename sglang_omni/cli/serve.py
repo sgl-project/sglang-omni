@@ -490,6 +490,8 @@ def apply_parallelism_cli_overrides(
     *,
     thinker_tp_size: int | None,
     thinker_gpus: str | None,
+    image_encoder_tp_size: int | None = None,
+    image_encoder_gpus: str | None = None,
     talker_gpu: int | None,
     code2wav_gpu: int | None,
 ) -> PipelineConfig:
@@ -511,6 +513,29 @@ def apply_parallelism_cli_overrides(
             if thinker_gpu_override is not None:
                 stage.gpu = thinker_gpu_override
             _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
+            if stage.tp_size == 1 and isinstance(stage.gpu, list):
+                stage.gpu = int(stage.gpu[0])
+
+    image_encoder_gpu_override = (
+        _parse_gpu_placement("image_encoder_gpus", image_encoder_gpus)
+        if image_encoder_gpus is not None
+        else None
+    )
+    if image_encoder_tp_size is not None or image_encoder_gpu_override is not None:
+        image_encoder_stages = _find_matching_stages(
+            pipeline_config,
+            stage_name="image_encoder",
+            reason="tensor parallel settings",
+        )
+        for stage in image_encoder_stages:
+            if image_encoder_tp_size is not None:
+                stage.tp_size = int(image_encoder_tp_size)
+                stage.parallelism.tp = stage.tp_size
+            if image_encoder_gpu_override is not None:
+                stage.gpu = image_encoder_gpu_override
+            _validate_stage_parallelism_config(
+                "image_encoder", stage.tp_size, stage.gpu
+            )
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
@@ -883,6 +908,22 @@ def serve(
             help="GPU ids for thinker TP ranks, e.g. '0,1' or '[0, 1]'.",
         ),
     ] = None,
+    image_encoder_tp_size: Annotated[
+        int | None,
+        typer.Option(
+            "--image-encoder-tp-size",
+            "--image_encoder_tp_size",
+            help="Set tensor parallel size for image_encoder stage.",
+        ),
+    ] = None,
+    image_encoder_gpus: Annotated[
+        str | None,
+        typer.Option(
+            "--image-encoder-gpus",
+            "--image_encoder_gpus",
+            help="GPU ids for image_encoder TP ranks, e.g. '4,5' or '[4, 5]'.",
+        ),
+    ] = None,
     talker_gpu: Annotated[
         int | None,
         typer.Option(
@@ -1060,6 +1101,8 @@ def serve(
         merged_config,
         thinker_tp_size=thinker_tp_size,
         thinker_gpus=thinker_gpus,
+        image_encoder_tp_size=image_encoder_tp_size,
+        image_encoder_gpus=image_encoder_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
     )

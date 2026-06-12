@@ -293,6 +293,19 @@ class ModelRunner:
             schedule_batch.output_ids = batch_result.next_token_ids
         return batch_result
 
+    def finalize_skip_rids(self, scheduler_output) -> set[str]:
+        """Request ids whose ``generation_steps`` must NOT advance this step.
+
+        Default empty. A model overrides this when a batch contains rows that
+        are sampled but must not count as a generated step — e.g. non-final
+        chunked-prefill rows, whose spurious step would shift the final chunk's
+        sampling position off the no-chunk path. Unioned into ``skip_rids``
+        inside ``_finalize`` so it covers the sync, async-resolve, and
+        prefill-only paths alike. Additive and behaviour-neutral for any model
+        that does not override it.
+        """
+        return set()
+
     def _finalize(
         self,
         batch_result,
@@ -335,7 +348,7 @@ class ModelRunner:
 
         outputs = self.output_processor.process(batch_result, scheduler_output)
         self.post_process_outputs(batch_result, scheduler_output, outputs)
-        skip_rids = skip_rids or set()
+        skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
         for sched_req in scheduler_output.requests:
             if sched_req.request_id in skip_rids:
                 continue

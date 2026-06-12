@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-_MING_AR_TP_STAGES = frozenset({"thinker"})
+_MING_TP_STAGES = frozenset({"thinker", "image_encoder"})
 
 
 def validate_attention_tp_config(
@@ -43,13 +43,13 @@ def validate_attention_tp_config(
 
 
 def validate_stage_tp_support(*, stage_name: str, tp_size: int) -> None:
-    """Reject TP for Ming stages that are not backed by SGLang AR model code."""
+    """Reject TP for Ming stages that do not implement SGLang tensor parallelism."""
     if tp_size < 1:
         raise ValueError(f"Stage {stage_name!r}: tp_size must be >= 1, got {tp_size}")
     if tp_size == 1:
         return
-    if stage_name not in _MING_AR_TP_STAGES:
+    if stage_name not in _MING_TP_STAGES:
         raise ValueError(
             f"Stage {stage_name!r} does not support TP in Ming-Omni V1. "
-            "Only the thinker stage is currently SGLang-TP aware."
+            f"SGLang-TP is supported for: {', '.join(sorted(_MING_TP_STAGES))}."
         )
