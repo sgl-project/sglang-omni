@@ -16,19 +16,21 @@ dependencies = [
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
-    "torch==2.9.1",          # PyTorch for tensor operations
-    "torchvision==0.24.1",    # torchvision for vision processor
+    "torch==2.11.0",          # PyTorch for tensor operations
+    "torchvision==0.26.0",    # torchvision for vision processor, pinned version based on torch 2.11.0
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers<5.0",   # HF models/tokenizers
+    "transformers==5.6.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub>=0.36.0",# HF model downloads
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    "sglang==0.5.8",
-    "nixl",
-    "mooncake-transfer-engine>=0.3.0",
+    "sglang==0.5.12.post1",
+    "flash-attn-4>=4.0.0b9,<4.0.0b16",  # Avoid cutlass-dsl>=4.5.2 conflict
+    "kernels>=0.14.0,<0.15",  # Match Transformers 5.6 / SGLang 0.5.12.post1 stack (ships kernels 0.14.1)
+    "nixl-cu13>=1.1.0",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
+    "mooncake-transfer-engine-cuda13>=0.3.10",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks `import mooncake` on cu130
     "logger",
     "httpx",
     "xxhash>=3.0.0",
@@ -42,7 +44,7 @@ dependencies = [
     "openai==2.6.1",
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
-    "mistral-common[audio]>=1.8.0",
+    "mistral_common[audio]>=1.11.0",
     # /v1/realtime — server-side VAD
     "silero-vad>=5.1",
     "onnxruntime>=1.17",
@@ -63,13 +65,13 @@ dependencies = [
     "omegaconf",
     "descript-audiotools",
     "descript-audio-codec",
-    "torchaudio",
+    "torchaudio==2.11.0",
+    "torchcodec==0.11.1",     # Matches sglang==0.5.12.post1 dependency
     # Gradio playground
     "gradio>=4.0.0",
     # Ming-Omni
-    "diffusers==0.37.1",
+    "diffusers==0.37.0",      # Align with sglang 0.5.12.post1 hard pin (diffusers==0.37.0)
     "x-transformers",          # Ming talker rotary embeddings
-    # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
 
 [project.scripts]
@@ -86,6 +88,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
+    "gpu: requires a CUDA device (auto-skipped without one)",
 ]
 
 [tool.setuptools.packages.find]

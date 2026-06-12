@@ -28,7 +28,7 @@ runs:
         echo "HF_HUB_ENABLE_HF_TRANSFER=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
-        echo "UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" >> "${GITHUB_ENV}"
+        echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
         echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
 
     - name: Restore cache
@@ -63,20 +63,17 @@ runs:
 
         echo "::warning::Prepared ${VENV_NAME} environment is missing or incomplete under ${OMNI_CI_HOME}; rebuilding it for this job."
         bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
-    - name: Remove flashinfer
+    - name: Remove stale flashinfer JIT artifacts
       shell: bash
       run: |
-        # Runtime JIT artifacts only; host wheel cache is under
-        # /github/home/.cache/flashinfer-jit-cache/ and is never removed here.
+        # Note:(Chenchen Hong) On the hongccc/sglang-omni:dev (CUDA 13) image the
+        # flashinfer-python 0.6.11.post1 wheel JIT-compiles its kernels against the
+        # base image's matching cu13 toolkit. We no longer preinstall a
+        # flashinfer-jit-cache wheel: the only published jit-cache builds are
+        # 0.6.13 (cu128/cu129/cu130) and do not match the pinned 0.6.11.post1,
+        # and the prior cu128 pin mismatched the cu13 runtime. Wipe any stale
+        # JIT artifacts so the cu13 kernels compile cleanly on first use.
         rm -rf "${OMNI_CI_HOME}/.cache/flashinfer"
-
-    - name: Ensure flashinfer-jit-cache
-      shell: bash
-      env:
-        VENV_NAME: ${{ inputs.venv-name }}
-      run: |
-        bash .github/scripts/install_flashinfer_jit_cache.sh "${VENV_NAME}"
-        echo "FLASHINFER_DISABLE_VERSION_CHECK=1" >> "${GITHUB_ENV}"
 
     - name: Kill GPU processes
       shell: bash

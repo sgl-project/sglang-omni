@@ -231,6 +231,50 @@ def test_finalize_skips_overrun_bookkeeping_and_extras():
     assert skip_data.extra_model_outputs == {}
 
 
+def test_finalize_unions_finalize_skip_rids_hook():
+    # finalize_skip_rids() (default empty on base) is unioned into skip_rids
+    # inside _finalize, so a model can suppress generation_steps for rows it
+    # sampled but must not count (e.g. non-final chunked prefill) even when the
+    # caller passes no skip_rids.
+    class _OutputProcessor:
+        def process(self, batch_result, scheduler_output):
+            del batch_result
+            return {
+                req.request_id: RequestOutput(request_id=req.request_id, extra={})
+                for req in scheduler_output.requests
+            }
+
+    runner = ModelRunner.__new__(ModelRunner)
+    runner.output_processor = _OutputProcessor()
+    runner.finalize_skip_rids = lambda scheduler_output: {"chunk"}
+    batch_result = types.SimpleNamespace(
+        next_token_ids=torch.tensor([1, 2]),
+        logits_output=None,
+        can_run_cuda_graph=False,
+    )
+    schedule_batch = types.SimpleNamespace(is_prefill_only=False, output_ids=None)
+    normal_data = types.SimpleNamespace(generation_steps=0, extra_model_outputs={})
+    chunk_data = types.SimpleNamespace(generation_steps=0, extra_model_outputs={})
+    scheduler_output = types.SimpleNamespace(
+        requests=[
+            types.SimpleNamespace(request_id="normal", data=normal_data),
+            types.SimpleNamespace(request_id="chunk", data=chunk_data),
+        ]
+    )
+
+    runner._finalize(
+        batch_result,
+        types.SimpleNamespace(),
+        schedule_batch,
+        types.SimpleNamespace(),
+        scheduler_output,
+    )
+
+    # The hook rid is skipped with no skip_rids arg; the normal row advances.
+    assert normal_data.generation_steps == 1
+    assert chunk_data.generation_steps == 0
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_host_staging_pingpong():
     r = _StubRunner()

@@ -724,10 +724,11 @@ def _select_speech_audio_delta(
     if audio.ndim > 1:
         audio = audio.squeeze()
     if audio.ndim > 1:
-        if audio.shape[0] < audio.shape[-1]:
-            audio = audio[0]
-        else:
-            audio = audio[:, 0]
+        # Streaming chunks are mono; downmix multi-channel payloads
+        # (e.g. the 48 kHz stereo MOSS-TTS Local codec) instead of
+        # silently dropping channels.
+        channel_axis = 0 if audio.shape[0] < audio.shape[-1] else -1
+        audio = audio.mean(axis=channel_axis).astype("float32")
 
     total_samples = int(audio.shape[-1]) if audio.ndim else 0
     if not is_terminal:

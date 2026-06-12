@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Callable
 import numpy as np
 
 from sglang_omni.client.audio import (
+    DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
     audio_to_base64,
     encode_audio,
@@ -87,6 +88,7 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
 
@@ -96,6 +98,8 @@ class Client:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.sample_rate is not None:
+                sample_rate = chunk.sample_rate
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
 
@@ -109,8 +113,14 @@ class Client:
             if len(audio_chunks) == 1:
                 combined = audio_chunks[0]
             else:
-                combined = np.concatenate([to_numpy(c) for c in audio_chunks])
-            audio_b64 = audio_to_base64(combined, output_format=audio_format)
+                arrays = [to_numpy(c) for c in audio_chunks]
+                axis = -1 if arrays[0].ndim > 1 else 0
+                combined = np.concatenate(arrays, axis=axis)
+            audio_b64 = audio_to_base64(
+                combined,
+                sample_rate=sample_rate or DEFAULT_SAMPLE_RATE,
+                output_format=audio_format,
+            )
             audio = CompletionAudio(
                 id=f"audio-{request_id}",
                 data=audio_b64,
@@ -145,7 +155,9 @@ class Client:
             audio_b64: str | None = None
             if chunk.modality == "audio" and chunk.audio_data is not None:
                 audio_b64 = audio_to_base64(
-                    chunk.audio_data, output_format=audio_format
+                    chunk.audio_data,
+                    sample_rate=chunk.sample_rate or DEFAULT_SAMPLE_RATE,
+                    output_format=audio_format,
                 )
 
             yield CompletionStreamChunk(
@@ -195,7 +207,9 @@ class Client:
         if len(audio_chunks) == 1:
             audio_data = audio_chunks[0]
         else:
-            audio_data = np.concatenate([to_numpy(c) for c in audio_chunks])
+            arrays = [to_numpy(c) for c in audio_chunks]
+            axis = -1 if arrays[0].ndim > 1 else 0
+            audio_data = np.concatenate(arrays, axis=axis)
 
         encode_kwargs: dict[str, Any] = {
             "response_format": response_format,

@@ -40,7 +40,7 @@ uv pip install -v -e .   # drop `-e` for a non-editable install
 Build the prerequisites first:
 
 - **UCX 1.20.x** with CUDA + verbs support — follow [upstream](https://github.com/openucx/ucx), or reuse the exact build flags in [`docker/Dockerfile`](../../docker/Dockerfile).
-- **flash-attn** — install a prebuilt wheel matching your `torch==2.9.1` / CUDA version.
+- **flash-attn-4** — install `>=4.0.0b9,<4.0.0b16`, matching `torch==2.11.0` and SGLang's `nvidia-cutlass-dsl` pin.
 
 Then install:
 

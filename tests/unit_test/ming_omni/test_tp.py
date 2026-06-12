@@ -290,12 +290,9 @@ def test_ming_speech_rejects_talker_inside_explicit_thinker_tp_gpus() -> None:
 @pytest.mark.parametrize(
     ("config_cls_name", "stage_name", "gpu"),
     [
-        ("MingOmniPipelineConfig", "image_encoder", [0, 1]),
         ("MingOmniPipelineConfig", "audio_encoder", [0, 1]),
-        ("MingOmniSpeechPipelineConfig", "image_encoder", [0, 1]),
         ("MingOmniSpeechPipelineConfig", "audio_encoder", [0, 1]),
         ("MingOmniSpeechPipelineConfig", "talker", [2, 3]),
-        ("MingOmniStreamingSpeechPipelineConfig", "image_encoder", [2, 3]),
         ("MingOmniStreamingSpeechPipelineConfig", "audio_encoder", [2, 3]),
         ("MingOmniStreamingSpeechPipelineConfig", "segmenter", None),
         ("MingOmniStreamingSpeechPipelineConfig", "talker_stream", [2, 3]),
@@ -335,6 +332,22 @@ def test_ming_streaming_speech_allows_thinker_tp_size_gt_one() -> None:
 
     assert config.gpu_placement["thinker"] == [0, 1]
     assert config.gpu_placement["talker_stream"] == 2
+
+
+def test_ming_text_allows_image_encoder_tp_size_gt_one() -> None:
+    from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
+
+    config = MingOmniPipelineConfig(model_path="dummy")
+    stages = [stage.model_copy(deep=True) for stage in config.stages]
+    for stage in stages:
+        if stage.name == "image_encoder":
+            stage.tp_size = 2
+            stage.parallelism = stage.parallelism.model_copy(update={"tp": 2})
+            stage.gpu = [2, 3]
+
+    rebuilt = MingOmniPipelineConfig(model_path="dummy", stages=stages)
+
+    assert rebuilt.gpu_placement["image_encoder"] == [2, 3]
 
 
 def test_ming_speech_rejects_talker_on_non_contiguous_thinker_tp_gpu() -> None:

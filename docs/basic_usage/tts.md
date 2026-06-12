@@ -10,11 +10,11 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
-Qwen3-TTS uses the upstream `qwen-tts` package, which currently requires
-Transformers 4.57.3. Install it only in environments that serve Qwen3-TTS:
+Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
+so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains in place:
 
 ```bash
-uv pip install --upgrade transformers==4.57.3 accelerate==1.12.0 sox einops
+uv pip install --upgrade sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 

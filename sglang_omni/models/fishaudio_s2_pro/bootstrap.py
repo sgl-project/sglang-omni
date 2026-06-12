@@ -12,6 +12,32 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+def _rematerialize_audio_decoder_buffers(
+    audio_decoder: torch.nn.Module, device: Any
+) -> None:
+    """Recompute the audio decoder's non-persistent computed buffers.
+
+    Note:(Chenchen Hong) ``freqs_cis`` and ``codebook_offsets`` are registered
+    with ``persistent=False`` and computed in ``__init__``, so they are absent
+    from the checkpoint. Under transformers 5.6's meta / low-cpu-mem
+    ``from_pretrained`` they survive load as uninitialized memory; ``.to(device)``
+    then materializes garbage indices that overflow the codebook embedding and
+    trigger a CUDA device-side assert during graph capture. Recompute them from
+    the decoder config on the real device, mirroring ``__init__`` exactly.
+    """
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.utils import (
+        precompute_freqs_cis,
+    )
+
+    cfg = audio_decoder.config
+    audio_decoder.codebook_offsets = (
+        torch.arange(cfg.num_codebooks, device=device) * cfg.vocab_size
+    )
+    audio_decoder.freqs_cis = precompute_freqs_cis(
+        cfg.num_codebooks, cfg.head_dim, cfg.rope_base
+    ).to(device)
+
+
 def patch_fish_config_for_sglang() -> None:
     """Patch Fish config classes with the aliases SGLang expects."""
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
@@ -82,6 +108,7 @@ def load_audio_decoder(
     if audio_decoder is None:
         raise RuntimeError("Fish checkpoint did not contain an audio decoder")
     audio_decoder = audio_decoder.to(device=device)
+    _rematerialize_audio_decoder_buffers(audio_decoder, device)
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
     num_codebooks = int(config.audio_decoder_config.num_codebooks)

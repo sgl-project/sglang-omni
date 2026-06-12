@@ -335,6 +335,7 @@ def test_model_worker_backend_policy_precedence(
         "_is_fp8_cutlass_moe_supported",
         lambda: case.cutlass_supported,
     )
+    monkeypatch.setattr(model_worker, "_is_h20_device", lambda: False)
     server_args = _server_args(
         quantization=case.server_quantization,
         moe_runner_backend=case.initial_moe_backend,
@@ -391,14 +392,14 @@ def test_model_config_has_moe_prefers_effective_text_config() -> None:
         pytest.param(False, True, False, False, id="cutlass_runtime_rejected"),
     ],
 )
-def test_fp8_cutlass_moe_support_matches_sglang_0_5_8_contract(
+def test_fp8_cutlass_moe_support_matches_sglang_0_5_12_post1_contract(
     monkeypatch: pytest.MonkeyPatch,
     cutlass_supported: bool,
     sm90_supported: bool,
     sm100_supported: bool,
     expected_supported: bool,
 ) -> None:
-    """Mirrors the CUTLASS FP8 MoE assertions in pinned SGLang 0.5.8."""
+    """Mirrors the CUTLASS FP8 MoE assertions in pinned SGLang 0.5.12.post1."""
     _install_fake_cutlass_support_modules(
         monkeypatch,
         cutlass_supported=cutlass_supported,

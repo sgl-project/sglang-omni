@@ -313,6 +313,12 @@ that happened to contain an older version of the test.
   - preprocessing handoff and abort cleanup behavior
   - delay-pattern runner, codec splitting, and seeded sampling contracts.
 
+- `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
+  - pipeline config, request builders, and scheduler adapter contracts
+  - decode-state pool acquisition, cleanup, and resume/retraction lifecycle
+  - chunked prefill feedback/journal suppression and postprocess alignment checks
+  - synchronous frame-decode parity harness and S0 gate coverage.
+
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
   - worker metadata and health-state contracts

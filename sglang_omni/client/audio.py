@@ -134,9 +134,13 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     # Clamp to [-1, 1]
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype(np.int16)
-    pcm_bytes = pcm.tobytes()
+    if pcm.ndim == 2:
+        num_channels = int(pcm.shape[0])
+        pcm_bytes = np.ascontiguousarray(pcm.T).tobytes()
+    else:
+        num_channels = 1
+        pcm_bytes = pcm.tobytes()
 
-    num_channels = 1
     bits_per_sample = 16
     byte_rate = sample_rate * num_channels * bits_per_sample // 8
     block_align = num_channels * bits_per_sample // 8
@@ -236,7 +240,10 @@ def _encode_with_pyav(
 def encode_pcm(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as raw 16-bit PCM bytes."""
     audio = np.clip(audio, -1.0, 1.0)
-    return (audio * 32767.0).astype(np.int16).tobytes()
+    pcm = (audio * 32767.0).astype(np.int16)
+    if pcm.ndim == 2:
+        pcm = np.ascontiguousarray(pcm.T)
+    return pcm.tobytes()
 
 
 def encode_audio(
@@ -259,20 +266,21 @@ def encode_audio(
     """
     arr = to_numpy(audio)
 
-    # Flatten to 1D if needed
     if arr.ndim > 1:
         arr = arr.squeeze()
     if arr.ndim > 1:
-        # Multi-channel: take first channel.
-        # Handle both (channels, samples) and (samples, channels).
-        if arr.shape[0] < arr.shape[-1]:
-            arr = arr[0]
-        else:
-            arr = arr[:, 0]
+        if arr.shape[0] > arr.shape[-1]:
+            arr = arr.T
+        if response_format.lower().strip() != "wav":
+            arr = arr.mean(axis=0).astype(np.float32)
 
-    # Apply speed
     if speed != 1.0:
-        arr, sample_rate = apply_speed(arr, speed, sample_rate)
+        if arr.ndim > 1:
+            adjusted = [apply_speed(channel, speed, sample_rate) for channel in arr]
+            arr = np.stack([channel for channel, _ in adjusted])
+            sample_rate = adjusted[0][1]
+        else:
+            arr, sample_rate = apply_speed(arr, speed, sample_rate)
 
     fmt = response_format.lower().strip()
     mime = FORMAT_MIME_TYPES.get(fmt, "application/octet-stream")
@@ -329,7 +337,6 @@ def encode_audio(
             )
             return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
 
-    # Unknown format -> fall back to WAV
     logger.warning("Unknown audio format '%s'; falling back to WAV", fmt)
     return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
 
