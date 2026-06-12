@@ -52,7 +52,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 # _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
 # reset it; the underscored alias keeps this module's historical API.
 from sglang_omni.preprocessing.cache_key import _REF_PATH_HASH_MEMO  # noqa: F401
-from sglang_omni.preprocessing.cache_key import hash_media_item
+from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )

@@ -243,7 +243,7 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     def make_payload(request_id: str) -> StagePayload:
         state = HiggsTtsState(
             reference_waveform=torch.zeros(1, 1, 16),
-            reference_code_cache_key="path:/tmp/ref.wav",
+            reference_code_cache_key="waveform:sr:24000:test",
             target_text="hello",
             reference_text="speaker",
             num_codebooks=2,
