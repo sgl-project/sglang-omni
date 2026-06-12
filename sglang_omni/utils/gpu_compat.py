@@ -99,16 +99,17 @@ def _visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
     return [0]
 
 
-def visible_gpu_has_min_compute_capability(
+def get_visible_gpu_sm_version(
     logical_gpu_id: int,
-    min_major: int,
-    min_minor: int = 0,
     env: Mapping[str, str] | None = None,
-) -> bool:
-    """Return whether a logical visible CUDA device meets a CUDA capability floor."""
+) -> int | None:
+    """Return the CUDA SM version for a logical visible GPU."""
     source_env = os.environ if env is None else env
     capability = _get_compute_capability(logical_gpu_id, source_env)
-    return capability is not None and capability >= (min_major, min_minor)
+    if capability is None:
+        return None
+    major, minor = capability
+    return major * 10 + minor
 
 
 def visible_gpus_need_flashinfer_cuda_norm(
@@ -117,7 +118,8 @@ def visible_gpus_need_flashinfer_cuda_norm(
     """Return whether any visible CUDA device needs the FlashInfer CUDA norm workaround."""
     source_env = os.environ if env is None else env
     for gpu_id in _visible_gpu_ids(source_env):
-        if visible_gpu_has_min_compute_capability(gpu_id, 10, env=source_env):
+        sm_version = get_visible_gpu_sm_version(gpu_id, source_env)
+        if sm_version is not None and sm_version >= 100:
             return True
     return False
 

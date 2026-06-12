@@ -18,7 +18,7 @@ from sglang_omni.scheduling.sglang_backend import (
     SGLangOutputProcessor,
     build_sglang_server_args,
 )
-from sglang_omni.utils.gpu_compat import visible_gpu_has_min_compute_capability
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 
 def create_sglang_qwen3_asr_executor(
@@ -59,8 +59,10 @@ def create_sglang_qwen3_asr_executor(
     }
     if mm_attention_backend is not None:
         overrides["mm_attention_backend"] = mm_attention_backend
-    elif visible_gpu_has_min_compute_capability(gpu_id, 10):
-        overrides["mm_attention_backend"] = "triton_attn"
+    else:
+        sm_version = get_visible_gpu_sm_version(gpu_id)
+        if sm_version is not None and sm_version >= 100:
+            overrides["mm_attention_backend"] = "triton_attn"
     if server_args_overrides:
         overrides.update(server_args_overrides)
 
