@@ -22,6 +22,9 @@ def create_sglang_qwen3_asr_executor(
     # CUDA graph capture is fast for this ASR path; torch.compile dominates
     # startup latency and gives little benefit for the benchmark workload.
     enable_torch_compile: bool = False,
+    # Keep ASR on the stable multimodal attention implementation instead of
+    # inheriting hardware-dependent SGLang vision-attention defaults.
+    mm_attention_backend: str | None = "triton_attn",
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from transformers import AutoProcessor
@@ -72,6 +75,8 @@ def create_sglang_qwen3_asr_executor(
         "sampling_backend": "pytorch",
         "dtype": dtype,
     }
+    if mm_attention_backend is not None:
+        overrides["mm_attention_backend"] = mm_attention_backend
     if server_args_overrides:
         overrides.update(server_args_overrides)
 

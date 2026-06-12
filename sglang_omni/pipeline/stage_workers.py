@@ -150,10 +150,18 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
             if key not in os.environ:
                 env_default_updates[key] = value
 
+    worker_process_env = _get_worker_process_env(spec)
+    compat_env_defaults = get_gpu_compat_env_defaults(
+        {
+            **os.environ,
+            **env_default_updates,
+            **worker_process_env,
+        }
+    )
     updates = {
         **env_default_updates,
-        **get_gpu_compat_env_defaults(),
-        **_get_worker_process_env(spec),
+        **compat_env_defaults,
+        **worker_process_env,
     }
     if not updates:
         yield
@@ -346,7 +354,6 @@ def stage_process_main(
     startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
-    apply_gpu_compat_env_defaults()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
@@ -355,6 +362,7 @@ def stage_process_main(
     try:
         for stage_spec in spec.stage_specs:
             _prepare_cuda_environment(stage_spec, log)
+        apply_gpu_compat_env_defaults()
         _run_process(spec, ready_event, log)
     except Exception:
         import traceback

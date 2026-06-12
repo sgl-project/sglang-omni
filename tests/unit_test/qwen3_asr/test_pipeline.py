@@ -47,3 +47,9 @@ def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
     assert signature.parameters["enable_torch_compile"].default is False
+
+
+def test_qwen3_asr_stage_default_uses_stable_mm_attention_backend() -> None:
+    signature = inspect.signature(create_sglang_qwen3_asr_executor)
+
+    assert signature.parameters["mm_attention_backend"].default == "triton_attn"
