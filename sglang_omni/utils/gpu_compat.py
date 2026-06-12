@@ -105,14 +105,23 @@ def _visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
     return [0]
 
 
+def is_visible_gpu_blackwell(
+    logical_gpu_id: int,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether a logical visible CUDA device is Blackwell-class."""
+    source_env = os.environ if env is None else env
+    capability = _get_compute_capability(logical_gpu_id, source_env)
+    return capability is not None and _is_blackwell_compute_capability(*capability)
+
+
 def visible_gpus_need_flashinfer_cuda_norm(
     env: Mapping[str, str] | None = None,
 ) -> bool:
     """Return whether any visible CUDA device needs the FlashInfer CUDA norm workaround."""
     source_env = os.environ if env is None else env
     for gpu_id in _visible_gpu_ids(source_env):
-        capability = _get_compute_capability(gpu_id, source_env)
-        if capability is not None and _is_blackwell_compute_capability(*capability):
+        if is_visible_gpu_blackwell(gpu_id, source_env):
             return True
     return False
 

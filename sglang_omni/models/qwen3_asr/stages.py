@@ -18,6 +18,7 @@ from sglang_omni.scheduling.sglang_backend import (
     SGLangOutputProcessor,
     build_sglang_server_args,
 )
+from sglang_omni.utils.gpu_compat import is_visible_gpu_blackwell
 
 
 def create_sglang_qwen3_asr_executor(
@@ -30,7 +31,7 @@ def create_sglang_qwen3_asr_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
-    mm_attention_backend: str | None = "triton_attn",
+    mm_attention_backend: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ):
 
@@ -56,9 +57,10 @@ def create_sglang_qwen3_asr_executor(
         "sampling_backend": "pytorch",
         "dtype": dtype,
     }
-    # Note (Chenyang): Use triton for fallback on Blackwell
     if mm_attention_backend is not None:
         overrides["mm_attention_backend"] = mm_attention_backend
+    elif is_visible_gpu_blackwell(gpu_id):
+        overrides["mm_attention_backend"] = "triton_attn"
     if server_args_overrides:
         overrides.update(server_args_overrides)
 

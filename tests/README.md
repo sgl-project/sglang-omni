@@ -22,7 +22,6 @@ tests/
     │   ├── helpers.py
     │   ├── test_compile.py
     │   ├── test_coordinator.py
-    │   ├── test_gpu_compat.py
     │   ├── test_gpu_memory.py
     │   ├── test_ipc.py
     │   ├── test_placement.py
@@ -246,16 +245,9 @@ that happened to contain an older version of the test.
   - scheduler concurrency
   - scheduler callable contracts, including sync wrappers and callable objects
     that return awaitables.
-  - GPU compatibility env defaults for Blackwell-class compute capabilities,
-    user override preservation, `CUDA_VISIBLE_DEVICES` logical device mapping,
-    no-CVD device-count enumeration, preview-env handling that avoids stale
-    torch fallback state, and applying compatibility defaults to an explicit
-    mutable env mapping.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory concurrency defaults
-  - stable ASR multimodal attention backend default (`triton_attn`) while still
-    allowing caller overrides
   - single-source audio token length formula used by both processor and
     request builder paths
   - token-level result adapter marker handling, avoiding decode/encode
