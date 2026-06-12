@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_asr import request_builders as request_builders_module
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_audio_token_lengths,
     qwen3_asr_num_audio_tokens,
@@ -33,6 +37,13 @@ class _FakeTokenizer:
         self.encode_calls.append(text)
         assert text == "<asr_text>"
         return [100, 101]
+
+    def __call__(
+        self, text: str, *, add_special_tokens: bool = False
+    ) -> SimpleNamespace:
+        assert not add_special_tokens
+        num_audio_tokens = text.count("<|audio_pad|>")
+        return SimpleNamespace(input_ids=[7, *([42] * num_audio_tokens), 8])
 
     def decode(
         self,
@@ -72,6 +83,45 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
     assert torch.equal(qwen3_asr_audio_token_lengths(lengths), expected)
     assert torch.equal(processor._get_feat_extract_output_lengths(lengths), expected)
     assert qwen3_asr_num_audio_tokens(3000) == 390
+
+
+def test_qwen3_asr_request_builder_uses_inclusive_audio_offset(
+    monkeypatch,
+) -> None:
+    num_mel_frames = 461
+    expected_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
+    feature_attention_mask = torch.zeros((1, 3000), dtype=torch.long)
+    feature_attention_mask[:, :num_mel_frames] = 1
+
+    def feature_extractor(*args, **kwargs) -> SimpleNamespace:
+        return SimpleNamespace(
+            input_features=torch.zeros((1, 128, 3000)),
+            attention_mask=feature_attention_mask,
+        )
+
+    monkeypatch.setattr(
+        request_builders_module,
+        "load_audio",
+        lambda source: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+    )
+    payload = StagePayload(
+        request_id="req-asr",
+        request=OmniRequest(inputs=b"audio", params={"language": "en"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+    audio_item = data.req.multimodal_inputs.mm_items[0]
+    start, end = audio_item.offsets[0]
+
+    assert expected_audio_tokens == 60
+    assert end - start + 1 == expected_audio_tokens
+    assert data.prompt_token_ids.count(audio_item.pad_value) == expected_audio_tokens
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
