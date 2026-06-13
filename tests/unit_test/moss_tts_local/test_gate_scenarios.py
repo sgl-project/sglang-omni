@@ -11,7 +11,7 @@ methodology those scenarios implement.
 Methodology
 -----------
 Two-tier criteria. The gate compares the vocoder-entry ``audio_codes`` of an ON
-arm (``--async-decode on``) against an OFF arm (sync), per request, keyed by
+arm (``--decode-mode async``) against an OFF arm (sync), per request, keyed by
 seed. Only S1 is checked for exact bit-identity: it is ``bs=1`` with
 ``min_batch_size=1``, so it is both deterministic (a single request has no
 batch-composition variance) and lookahead-forced, which is exactly why it is the

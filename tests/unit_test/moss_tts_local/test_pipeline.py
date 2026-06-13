@@ -1563,20 +1563,20 @@ def test_chunked_rows_do_not_advance_sampling_steps():
 
 
 def test_async_decode_cli_accepts_moss_local():
-    """The set-ized --async-decode CLI gate accepts the MOSS-TTS-Local engine
+    """The decode-mode CLI gate accepts the MOSS-TTS-Local engine
     factory (no BadParameter) and writes the flags onto its tts_engine stage.
-    Default stays OFF (config sets no key); only an explicit --async-decode on
+    Default stays OFF (config sets no key); only an explicit --decode-mode async
     turns it on, pending the Phase-3 flag-flip PR.
     """
     pytest.importorskip("sglang")
 
-    from sglang_omni.cli.serve import apply_async_decode_cli_overrides
+    from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
     from sglang_omni.config import resolve_stage_factory_args
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
     config = MossTTSLocalPipelineConfig(model_path="dummy")
-    apply_async_decode_cli_overrides(
-        config, async_decode="on", async_decode_min_batch_size=4
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="async", async_lookahead_min_batch_size=4
     )
     stage = next(s for s in config.stages if s.name == "tts_engine")
     args = resolve_stage_factory_args(stage, config)
