@@ -28,6 +28,12 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
+| [Zyphra ZONOS2](https://huggingface.co/Zyphra/ZONOS2) | `examples/configs/zonos2.yaml` | Integration skeleton only; runtime serving is not implemented yet |
+
+ZONOS2 is tracked as an integration skeleton for the text-frontend → speaker-embedding →
+multi-codebook MoE decode → DAC vocoder pipeline. The config is available for development
+and review, but launching it will raise `NotImplementedError` until the runtime stages are
+ported.
 
 ## Launch the Server
 
