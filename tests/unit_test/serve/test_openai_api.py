@@ -263,6 +263,89 @@ class SuccessfulTranscriptionClient:
         return CompletionResult(request_id="transcription-1", text="hello world")
 
 
+class AdminClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], list[str] | None, float]] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def model_info(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("model_info", {}, stages, timeout_s))
+        return {
+            "success": True,
+            "message": "ok",
+            "results": [
+                {
+                    "stage": "decode",
+                    "success": True,
+                    "message": "ok",
+                    "data": {
+                        "model_path": "/tmp/current-model",
+                        "load_format": "safetensors",
+                        "weight_version": "v1",
+                    },
+                }
+            ],
+        }
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("pause_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("continue_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("update_weights_from_disk", payload, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append((action, payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("weights_checker", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
 def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     client = TestClient(create_app(_fault_client(model_name), model_name=model_name))
@@ -390,6 +473,58 @@ def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
     assert response.status_code == 500
     assert response.json()["error"]["type"] == "server_error"
     assert "No audio output generated" in response.json()["error"]["message"]
+
+
+def test_admin_routes_forward_to_client() -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    info = client.get("/model_info")
+    pause = client.post(
+        "/pause_generation",
+        json={"mode": "in_place", "stages": ["decode"], "timeout_s": 5},
+    )
+    update = client.post(
+        "/update_weights_from_disk",
+        json={
+            "model_path": "/tmp/new-model",
+            "load_format": "safetensors",
+            "weight_version": "v2",
+            "abort_all_requests": True,
+        },
+    )
+    checksum = client.post("/weights_checker", json={"action": "checksum"})
+
+    assert info.status_code == 200
+    assert info.json()["weight_version"] == "v1"
+    assert info.json()["model_path"] == "/tmp/current-model"
+    assert info.json()["load_format"] == "safetensors"
+    assert info.json()["stages"][0]["stage"] == "decode"
+    assert pause.status_code == 200
+    assert update.status_code == 200
+    assert checksum.status_code == 200
+    assert admin.calls == [
+        ("model_info", {}, None, 30.0),
+        ("pause_generation", {"mode": "in_place"}, ["decode"], 5),
+        (
+            "update_weights_from_disk",
+            {
+                "model_path": "/tmp/new-model",
+                "load_format": "safetensors",
+                "abort_all_requests": True,
+                "weight_version": "v2",
+                "is_async": False,
+                "torch_empty_cache": False,
+                "keep_pause": False,
+                "recapture_cuda_graph": False,
+                "token_step": 0,
+                "flush_cache": True,
+            },
+            None,
+            120.0,
+        ),
+        ("weights_checker", {"action": "checksum"}, None, 120.0),
+    ]
 
 
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:
@@ -702,3 +837,143 @@ def test_speech_request_passes_moss_token_count() -> None:
     )
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
+
+
+# ---------------------------------------------------------------------------
+# Admin auth tests
+# ---------------------------------------------------------------------------
+
+_ADMIN_PATHS_THAT_NEED_AUTH = [
+    ("GET", "/model_info"),
+    ("POST", "/model_info"),
+    ("POST", "/pause_generation"),
+    ("POST", "/continue_generation"),
+    ("POST", "/update_weights_from_disk"),
+    ("POST", "/update_weights_from_tensor"),
+    ("POST", "/update_weights_from_distributed"),
+    ("GET", "/weights_checker"),
+    ("POST", "/weights_checker"),
+]
+
+_ADMIN_API_KEY = "secret-key"
+
+
+def _admin_headers(
+    key: str = _ADMIN_API_KEY,
+    *,
+    scheme: str = "Bearer",
+) -> dict[str, str]:
+    return {"Authorization": f"{scheme} {key}"}
+
+
+def test_admin_routes_open_when_no_key_configured() -> None:
+    """Without a key, all admin routes are accessible with no auth header."""
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 200
+
+    resp = client.post("/pause_generation", json={})
+    assert resp.status_code == 200
+
+
+def test_admin_routes_require_bearer_token_when_key_configured() -> None:
+    """When admin_api_key is set, requests without the header are rejected."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(method, path, json={})
+        assert (
+            resp.status_code == 401
+        ), f"{method} {path} should be 401, got {resp.status_code}"
+        assert "WWW-Authenticate" in resp.headers
+
+
+def test_admin_routes_reject_wrong_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(
+            method, path, json={}, headers=_admin_headers("wrong-key")
+        )
+        assert (
+            resp.status_code == 403
+        ), f"{method} {path} should be 403, got {resp.status_code}"
+
+
+def test_admin_routes_accept_correct_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    resp = client.get("/model_info", headers=_admin_headers(scheme="bearer"))
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/pause_generation",
+        json={},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200
+
+
+def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-key")
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 401
+
+    resp = client.get("/model_info", headers=_admin_headers("env-key"))
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Stub endpoint 501 tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/update_weights_from_tensor", {}),
+        (
+            "/update_weights_from_distributed",
+            {"names": [], "dtypes": [], "shapes": []},
+        ),
+    ],
+)
+def test_unimplemented_weight_update_endpoints_return_501(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.post(path, json=payload)
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+    assert "update_weights_from_disk" in resp.json()["error"]["message"]
+
+
+def test_stub_endpoints_also_check_auth_before_501() -> None:
+    """Auth check fires before the 501 body."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 401
+
+    resp = client.post("/update_weights_from_distributed", json={})
+    assert resp.status_code == 401

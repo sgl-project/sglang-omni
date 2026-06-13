@@ -91,8 +91,10 @@ class StageLaunchConfig:
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
     follower_abort_queues: list[Any] = field(default_factory=list)
+    follower_admin_result_queues: list[Any] = field(default_factory=list)
     internal_work_queue: Any | None = None
     internal_abort_queue: Any | None = None
+    internal_admin_result_queue: Any | None = None
 
     @property
     def owns_external_io(self) -> bool:
@@ -323,7 +325,11 @@ class StageGroup:
         for q in self._startup_error_channels:
             _close_queue(q)
         for stage_spec in self.specs:
-            for q in stage_spec.follower_work_queues + stage_spec.follower_abort_queues:
+            for q in (
+                stage_spec.follower_work_queues
+                + stage_spec.follower_abort_queues
+                + stage_spec.follower_admin_result_queues
+            ):
                 _close_queue(q)
 
     async def shutdown(self, join_timeout: float = 30.0) -> None:
@@ -581,6 +587,7 @@ def _construct_stage(
             recv_endpoint=spec.recv_endpoint,
             work_queue=spec.internal_work_queue,
             abort_queue=spec.internal_abort_queue,
+            admin_result_queue=spec.internal_admin_result_queue,
         )
 
     tp_fanout = None
@@ -589,6 +596,7 @@ def _construct_stage(
             stage_name=spec.stage_name,
             follower_work_queues=spec.follower_work_queues,
             follower_abort_queues=spec.follower_abort_queues,
+            follower_admin_result_queues=spec.follower_admin_result_queues,
         )
 
     # --- Construct Stage ---

@@ -3,13 +3,19 @@
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
+    AdminMessage,
+    AdminOperation,
+    AdminResult,
+    AdminResultMessage,
     CompleteMessage,
     OmniRequest,
     RequestInfo,
@@ -18,9 +24,18 @@ from sglang_omni.proto import (
     StagePayload,
     StreamMessage,
     SubmitMessage,
+    is_update_action,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _AdminPendingOperation:
+    expected_stages: set[str]
+    action: str
+    results: dict[str, AdminResult] = field(default_factory=dict)
+    future: asyncio.Future | None = None
 
 
 class Coordinator:
@@ -75,6 +90,8 @@ class Coordinator:
         self._stream_queues: dict[
             str, asyncio.Queue[CompleteMessage | StreamMessage]
         ] = {}
+        self._admin_ops: dict[str, _AdminPendingOperation] = {}
+        self._admin_lock = asyncio.Lock()
 
         # State
         self._running = False
@@ -134,6 +151,127 @@ class Coordinator:
                 logger.info("Sent shutdown to stage: %s", name)
             except Exception as e:
                 logger.warning("Failed to send shutdown to stage %s: %s", name, e)
+
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        """Run an administrative operation against one or more stages."""
+        if not self._running:
+            raise RuntimeError("Coordinator is not running")
+
+        target_stages = self._resolve_admin_stages(stages)
+        if not target_stages:
+            raise ValueError("No stages registered for admin operation")
+
+        op_id = str(uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        pending = _AdminPendingOperation(
+            expected_stages=set(target_stages),
+            action=action,
+            future=loop.create_future(),
+        )
+        operation = AdminOperation(
+            op_id=op_id,
+            action=action,
+            payload=dict(payload or {}),
+            target_stages=list(target_stages),
+            timeout_s=timeout_s,
+        )
+
+        async with self._admin_lock:
+            self._admin_ops[op_id] = pending
+            try:
+                for stage_name in target_stages:
+                    info = self._stages[stage_name]
+                    await self.control_plane.send_admin(
+                        stage_name,
+                        info.control_endpoint,
+                        AdminMessage(operation=operation),
+                    )
+
+                assert pending.future is not None
+                results = await asyncio.wait_for(pending.future, timeout=timeout_s)
+            finally:
+                self._admin_ops.pop(op_id, None)
+
+        return self._aggregate_admin_results(
+            op_id=op_id,
+            action=action,
+            results=list(results.values()),
+        )
+
+    async def model_info(
+        self,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "model_info",
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "pause_generation",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "continue_generation",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "update_weights_from_disk",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "weights_checker",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
 
     async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
         """Submit a request to the pipeline and wait for completion."""
@@ -296,6 +434,8 @@ class Coordinator:
                 msg = await self.control_plane.recv_event()
                 if isinstance(msg, StreamMessage):
                     await self._handle_stream(msg)
+                elif isinstance(msg, AdminResultMessage):
+                    self._handle_admin_result(msg.result)
                 else:
                     await self._handle_completion(msg)
         except asyncio.CancelledError:
@@ -421,6 +561,67 @@ class Coordinator:
             },
         )
         await self._stream_queues[request_id].put(msg)
+
+    def _handle_admin_result(self, result: AdminResult) -> None:
+        pending = self._admin_ops.get(result.op_id)
+        if pending is None:
+            logger.warning(
+                "Coordinator received admin result for unknown op=%s stage=%s",
+                result.op_id,
+                result.stage,
+            )
+            return
+        pending.results[result.stage] = result
+        if (
+            pending.future is not None
+            and pending.results.keys() >= pending.expected_stages
+        ):
+            if not pending.future.done():
+                pending.future.set_result(dict(pending.results))
+
+    def _resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
+        if stages is None:
+            return sorted(self._stages)
+        resolved = list(stages)
+        unknown = sorted(set(resolved) - set(self._stages))
+        if unknown:
+            raise ValueError(f"Unknown admin target stage(s): {unknown}")
+        return resolved
+
+    def _aggregate_admin_results(
+        self,
+        *,
+        op_id: str,
+        action: str,
+        results: list[AdminResult],
+    ) -> dict[str, Any]:
+        updated_results = [
+            item
+            for item in results
+            if not item.data.get("skipped") and not item.data.get("unsupported")
+        ]
+        if is_update_action(action):
+            success = bool(updated_results) and all(
+                item.success for item in updated_results
+            )
+        else:
+            success = all(item.success for item in results)
+
+        errors = [item.error for item in results if item.error]
+        if success:
+            message = "ok"
+        elif errors:
+            message = "; ".join(errors)
+        else:
+            message = "admin operation did not complete successfully"
+
+        return {
+            "op_id": op_id,
+            "action": action,
+            "success": success,
+            "message": message,
+            "results": [item.to_dict() for item in results],
+        }
 
     def get_request_info(self, request_id: str) -> RequestInfo | None:
         """Get info about a request."""

@@ -141,6 +141,10 @@ class RecordingStageControlPlane:
         self.completions.append(msg)
         self.log.append("stage_cp_send_complete", msg.request_id, msg.success)
 
+    async def send_admin_result(self, msg: Any) -> None:
+        self.completions.append(msg)
+        self.log.append("stage_cp_send_admin_result", msg.result.op_id)
+
     def close(self) -> None:
         self.closed = True
         self.log.append("stage_cp_close")
@@ -166,6 +170,9 @@ class RecordingCoordinatorControlPlane:
 
     async def send_shutdown(self, stage: str, endpoint: str) -> None:
         self.shutdowns.append((stage, endpoint))
+
+    async def send_admin(self, stage: str, endpoint: str, msg: Any) -> None:
+        self.submitted.append((stage, endpoint, msg))
 
     async def recv_event(self) -> Any:
         return await self.events.get()

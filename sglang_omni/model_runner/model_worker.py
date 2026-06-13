@@ -4,7 +4,8 @@ import logging
 import os
 import socket
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -218,6 +219,90 @@ class ModelWorker:
             expert_distribution_metrics=out.expert_distribution_metrics,
         )
         return batch_result
+
+    def model_info(self) -> dict[str, Any]:
+        return {
+            "model_path": getattr(self.server_args, "model_path", None),
+            "load_format": getattr(self.server_args, "load_format", None),
+            "weight_version": getattr(self.server_args, "weight_version", None),
+            "tp_rank": self.tp_rank,
+            "tp_size": getattr(self.server_args, "tp_size", 1),
+            "model_arch_override": self.model_arch_override,
+            "supports_weight_update": hasattr(
+                self.model_runner, "update_weights_from_disk"
+            ),
+            "supports_weight_checker": True,
+        }
+
+    def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        model_path = payload.get("model_path")
+        if not model_path:
+            return False, "model_path is required"
+        update = getattr(self.model_runner, "update_weights_from_disk", None)
+        if update is None:
+            return False, "model runner does not support update_weights_from_disk"
+        load_format = payload.get("load_format") or getattr(
+            self.server_args, "load_format", None
+        )
+        success, message = update(
+            model_path,
+            load_format,
+            recapture_cuda_graph=bool(payload.get("recapture_cuda_graph", False)),
+        )
+        if success:
+            runner_args = getattr(self.model_runner, "server_args", None)
+            setattr(self.server_args, "model_path", model_path)
+            setattr(self.server_args, "load_format", load_format)
+            if runner_args is not None:
+                setattr(runner_args, "model_path", model_path)
+                setattr(runner_args, "load_format", load_format)
+            model_config = getattr(self.model_runner, "model_config", None)
+            if model_config is not None:
+                setattr(model_config, "model_path", model_path)
+
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                setattr(self.server_args, "weight_version", weight_version)
+                if runner_args is not None:
+                    setattr(runner_args, "weight_version", weight_version)
+        return bool(success), str(message)
+
+    def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        if payload.get("serialized_named_tensors") is not None:
+            return (
+                False,
+                "update_weights_from_tensor requires a tensor data plane; "
+                "Omni admin control plane only carries metadata",
+            )
+        return self._call_optional_weight_method("update_weights_from_tensor", payload)
+
+    def update_weights_from_distributed(
+        self, payload: dict[str, Any]
+    ) -> tuple[bool, str]:
+        return self._call_optional_weight_method(
+            "update_weights_from_distributed", payload
+        )
+
+    def weights_checker(self, action: str) -> dict[str, Any]:
+        checker = getattr(self, "_strict_weight_checker", None)
+        if checker is None:
+            from sglang_omni.model_runner.weight_checker import StrictWeightChecker
+
+            checker = StrictWeightChecker(self.model_runner)
+            self._strict_weight_checker = checker
+        return checker.run(action)
+
+    def _call_optional_weight_method(
+        self,
+        method_name: str,
+        payload: dict[str, Any],
+    ) -> tuple[bool, str]:
+        method = getattr(self.model_runner, method_name, None)
+        if method is None:
+            return False, f"model runner does not support {method_name}"
+        recv_req = SimpleNamespace(**payload)
+        success, message = method(recv_req)
+        return bool(success), str(message)
 
 
 def _resolve_nccl_port() -> int:

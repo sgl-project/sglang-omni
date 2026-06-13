@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import queue as _queue_mod
+import threading
 import time
 import types
 from collections import deque
@@ -30,6 +31,15 @@ from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.proto.admin import (
+    ADMIN_CONTINUE_GENERATION,
+    ADMIN_MODEL_INFO,
+    ADMIN_PAUSE_GENERATION,
+    ADMIN_UPDATE_WEIGHTS_FROM_DISK,
+    ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
+    ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
+    ADMIN_WEIGHTS_CHECKER,
+)
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -192,6 +202,10 @@ class OmniScheduler:
         self.sessions: dict = {}
         self.forward_sleep_time = None
         self._engine_paused = False
+        self._admin_lock = threading.Lock()
+        self._admin_queue = _queue_mod.Queue()
+        self._scheduler_thread_id: int | None = None
+        self._last_pause_mode: str | None = None
 
         # Chunked prefill
         self.chunked_prefill_size = server_args.chunked_prefill_size
@@ -815,13 +829,17 @@ class OmniScheduler:
             self._dirty_deferred_request_ids.add(request_id)
 
     def start(self) -> None:
+        self._scheduler_thread_id = threading.get_ident()
         self._running = True
-        if getattr(self, "enable_async_decode", False):
-            self._event_loop_async_decode()
-        elif self.enable_overlap:
-            self._event_loop_overlap()
-        else:
-            self._event_loop_normal()
+        try:
+            if getattr(self, "enable_async_decode", False):
+                self._event_loop_async_decode()
+            elif self.enable_overlap:
+                self._event_loop_overlap()
+            else:
+                self._event_loop_normal()
+        finally:
+            self._scheduler_thread_id = None
 
     def event_loop(self) -> None:
         self.start()
@@ -859,6 +877,344 @@ class OmniScheduler:
             _remove_from_batch(self.last_batch, request_id)
             _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
+
+    def admin(
+        self, action: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        payload = dict(payload or {})
+        if self._should_enqueue_admin():
+            return self._enqueue_admin(action, payload)
+        return self._run_admin_action(action, payload)
+
+    def _should_enqueue_admin(self) -> bool:
+        scheduler_thread_id = getattr(self, "_scheduler_thread_id", None)
+        return (
+            bool(getattr(self, "_running", False))
+            and scheduler_thread_id is not None
+            and threading.get_ident() != scheduler_thread_id
+        )
+
+    def _enqueue_admin(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout_s = float(payload.get("_admin_timeout_s", 300.0))
+        queued_payload = dict(payload)
+        queued_payload.pop("_admin_timeout_s", None)
+        response_queue = _queue_mod.Queue(maxsize=1)
+        self._admin_queue.put((action, queued_payload, response_queue))
+        try:
+            return response_queue.get(timeout=timeout_s)
+        except _queue_mod.Empty:
+            return {
+                "success": False,
+                "message": f"admin operation timed out after {timeout_s:.1f}s",
+                "error": "admin operation timed out",
+            }
+
+    def _process_admin_requests(self) -> int:
+        processed = 0
+        while True:
+            try:
+                action, payload, response_queue = self._admin_queue.get_nowait()
+            except _queue_mod.Empty:
+                break
+            try:
+                response = self._run_admin_action(action, payload)
+            except Exception as exc:
+                logger.exception("OmniScheduler admin operation failed: %s", action)
+                response = {
+                    "success": False,
+                    "message": str(exc),
+                    "error": str(exc),
+                }
+            response_queue.put(response)
+            processed += 1
+        return processed
+
+    def _run_admin_action(
+        self, action: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        payload = dict(payload or {})
+        if action == ADMIN_MODEL_INFO:
+            return self._admin_model_info()
+        if action == ADMIN_PAUSE_GENERATION:
+            return self._admin_pause_generation(payload)
+        if action == ADMIN_CONTINUE_GENERATION:
+            return self._admin_continue_generation(payload)
+        if action == ADMIN_UPDATE_WEIGHTS_FROM_DISK:
+            return self._admin_update_weights_from_disk(payload)
+        if action == ADMIN_UPDATE_WEIGHTS_FROM_TENSOR:
+            return self._admin_update_weights_from_tensor(payload)
+        if action == ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED:
+            return self._admin_update_weights_from_distributed(payload)
+        if action == ADMIN_WEIGHTS_CHECKER:
+            return self._admin_weights_checker(payload)
+        return {
+            "success": True,
+            "message": f"unsupported admin action: {action}",
+            "data": {"skipped": True, "unsupported": True},
+        }
+
+    def _admin_model_info(self) -> dict[str, Any]:
+        info = {}
+        if hasattr(self.model_worker, "model_info"):
+            info.update(self.model_worker.model_info())
+        info.update(
+            {
+                "stage_tp_rank": self.tp_rank,
+                "stage_tp_size": self.tp_size,
+                "engine_paused": self._engine_paused,
+                "waiting_queue_size": len(self.waiting_queue),
+                "running_batch_size": len(
+                    getattr(self.running_batch, "reqs", []) or []
+                ),
+                "model_path": getattr(self.server_args, "model_path", None),
+                "load_format": getattr(self.server_args, "load_format", None),
+                "weight_version": getattr(self.server_args, "weight_version", None),
+            }
+        )
+        return {"success": True, "message": "ok", "data": info}
+
+    def _admin_pause_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        mode = str(payload.get("mode") or "abort")
+        if mode not in {"abort", "retract", "in_place"}:
+            return {
+                "success": False,
+                "message": f"invalid pause mode: {mode}",
+                "error": f"invalid pause mode: {mode}",
+            }
+
+        with self._admin_lock:
+            self._engine_paused = True
+            self._last_pause_mode = mode
+            self._resolve_pending_async()
+            self._resolve_pending_overlap_results()
+            num_paused = 0
+            if mode == "abort":
+                num_paused = self._abort_all_requests()
+            elif mode == "retract":
+                num_paused = self._retract_running_requests()
+        return {
+            "success": True,
+            "message": "generation paused",
+            "data": {
+                "mode": mode,
+                "num_paused_requests": num_paused,
+                "engine_paused": self._engine_paused,
+            },
+        }
+
+    def _admin_continue_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._admin_lock:
+            if bool(payload.get("torch_empty_cache", True)):
+                self._empty_torch_cache()
+            self._engine_paused = False
+            self._last_pause_mode = None
+        return {
+            "success": True,
+            "message": "generation continued",
+            "data": {"engine_paused": self._engine_paused},
+        }
+
+    def _admin_update_weights_from_disk(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not hasattr(self.model_worker, "update_weights_from_disk"):
+            return {
+                "success": True,
+                "message": "stage does not support update_weights_from_disk",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        with self._admin_lock:
+            previous_pause_state = self._engine_paused
+            self._engine_paused = True
+            self._resolve_pending_async()
+            self._resolve_pending_overlap_results()
+            num_paused = 0
+            abort_all_requests = bool(payload.get("abort_all_requests", False))
+            if abort_all_requests:
+                num_paused = self._abort_all_requests()
+            else:
+                active_request_ids = self._active_request_ids()
+                if active_request_ids and not self._can_update_active_requests(
+                    previous_pause_state
+                ):
+                    if not bool(payload.get("keep_pause", False)):
+                        self._engine_paused = previous_pause_state
+                    return {
+                        "success": False,
+                        "message": (
+                            "active requests are present; set "
+                            "abort_all_requests=true or pause_generation with "
+                            "mode=retract before updating weights"
+                        ),
+                        "error": "active requests present during weight update",
+                        "data": {
+                            "active_request_count": len(active_request_ids),
+                            "active_request_ids": active_request_ids[:16],
+                            "abort_all_requests": abort_all_requests,
+                            "pause_mode": getattr(self, "_last_pause_mode", None),
+                            "engine_paused": self._engine_paused,
+                        },
+                    }
+
+            success, message = self.model_worker.update_weights_from_disk(payload)
+            flush_success: bool | None = None
+            if success and bool(payload.get("flush_cache", True)):
+                flush_success = self._flush_cache_after_update()
+                success = success and bool(flush_success)
+                if not flush_success:
+                    message = f"{message}; cache flush failed"
+
+            if bool(payload.get("torch_empty_cache", False)):
+                self._empty_torch_cache()
+            if not bool(payload.get("keep_pause", False)):
+                self._engine_paused = previous_pause_state
+
+        data = {
+            "num_paused_requests": num_paused,
+            "flush_cache": payload.get("flush_cache", True),
+            "flush_success": flush_success,
+            "keep_pause": bool(payload.get("keep_pause", False)),
+            "engine_paused": self._engine_paused,
+            "model_path": payload.get("model_path"),
+            "weight_version": payload.get("weight_version"),
+            "token_step": payload.get("token_step"),
+        }
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": data,
+            "error": None if success else str(message),
+        }
+
+    def _admin_update_weights_from_tensor(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not hasattr(self.model_worker, "update_weights_from_tensor"):
+            return {
+                "success": True,
+                "message": "stage does not support update_weights_from_tensor",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        with self._admin_lock:
+            success, message = self.model_worker.update_weights_from_tensor(payload)
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": {
+                "metadata_only": payload.get("serialized_named_tensors") is None,
+            },
+            "error": None if success else str(message),
+        }
+
+    def _admin_update_weights_from_distributed(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not hasattr(self.model_worker, "update_weights_from_distributed"):
+            return {
+                "success": True,
+                "message": "stage does not support update_weights_from_distributed",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        with self._admin_lock:
+            success, message = self.model_worker.update_weights_from_distributed(
+                payload
+            )
+        return {
+            "success": bool(success),
+            "message": str(message),
+            "data": {
+                "group_name": payload.get("group_name"),
+                "names": payload.get("names", []),
+            },
+            "error": None if success else str(message),
+        }
+
+    def _admin_weights_checker(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not hasattr(self.model_worker, "weights_checker"):
+            return {
+                "success": True,
+                "message": "stage does not support weights_checker",
+                "data": {"skipped": True, "unsupported": True},
+            }
+        action = str(payload.get("action") or "checksum")
+        with self._admin_lock:
+            data = self.model_worker.weights_checker(action)
+        return {"success": True, "message": "ok", "data": data}
+
+    def _abort_all_requests(self) -> int:
+        request_ids = self._active_request_ids()
+        for request_id in request_ids:
+            self.abort(request_id, defer_running_cleanup=False)
+        return len(request_ids)
+
+    def _active_request_ids(self) -> list[str]:
+        request_ids: set[str] = set()
+        for req in self.waiting_queue:
+            rid = getattr(req, "rid", None)
+            if rid is not None:
+                request_ids.add(rid)
+        for batch in (
+            self.running_batch,
+            self.cur_batch,
+            self.last_batch,
+            self._async_pending_batch(),
+        ):
+            if batch is None:
+                continue
+            for req in getattr(batch, "reqs", []) or []:
+                rid = getattr(req, "rid", None)
+                if rid is not None and not req.finished():
+                    request_ids.add(rid)
+        return sorted(request_ids)
+
+    def _can_update_active_requests(
+        self, previously_paused: bool | None = None
+    ) -> bool:
+        engine_paused = (
+            self._engine_paused if previously_paused is None else previously_paused
+        )
+        return bool(
+            engine_paused and getattr(self, "_last_pause_mode", None) == "retract"
+        )
+
+    def _retract_running_requests(self) -> int:
+        batch = self.running_batch
+        if batch is None or batch.is_empty():
+            return 0
+        batch.filter_batch(v1_spec_info_filtered=True)
+        if len(batch.reqs) == 0:
+            return 0
+        retracted_reqs = batch.retract_all(self.server_args)
+        add_to_queue = getattr(self, "_add_request_to_queue", None)
+        for req in retracted_reqs:
+            if callable(add_to_queue):
+                add_to_queue(req)
+            else:
+                self.waiting_queue.append(req)
+        batch.batch_is_full = False
+        self.chunked_req = None
+        return len(retracted_reqs)
+
+    def _flush_cache_after_update(self) -> bool:
+        try:
+            return bool(self.flush_cache())
+        except Exception:
+            logger.exception("flush_cache after weight update failed")
+            return False
+
+    def _resolve_pending_overlap_results(self) -> None:
+        result_queue = getattr(self, "result_queue", None)
+        if result_queue is None:
+            return
+        while result_queue:
+            batch, result = result_queue.popleft()
+            self.process_batch_result(batch, result)
+
+    @staticmethod
+    def _empty_torch_cache() -> None:
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.empty_cache()
 
     def _mark_running_request_aborted(self, request_id: str) -> bool:
         marked = False
@@ -908,10 +1264,12 @@ class OmniScheduler:
         # (which is mostly Python-side dispatch into many small CUDA kernels)
         # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 time.sleep(0.001)
                 continue
 
@@ -938,10 +1296,12 @@ class OmniScheduler:
             self.process_batch_result(tmp_batch, tmp_result)
 
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 time.sleep(0.001)
                 continue
 
@@ -1079,10 +1439,12 @@ class OmniScheduler:
         decode first and run synchronously (the in-flight step is never stranded).
         """
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 self._resolve_pending_async()
                 time.sleep(0.001)
                 continue

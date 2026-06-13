@@ -1,6 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+from .admin import (
+    ADMIN_CONTINUE_GENERATION,
+    ADMIN_MODEL_INFO,
+    ADMIN_PAUSE_GENERATION,
+    ADMIN_UPDATE_WEIGHTS_FROM_DISK,
+    ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
+    ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
+    ADMIN_WEIGHTS_CHECKER,
+    AdminOperation,
+    AdminResult,
+    is_update_action,
+)
 from .messages import (
     AbortMessage,
+    AdminMessage,
+    AdminResultMessage,
     CompleteMessage,
     DataReadyMessage,
     ProfilerStartMessage,
@@ -14,6 +28,18 @@ from .request import OmniRequest, RequestInfo, RequestState, StagePayload
 from .stage import StageInfo
 
 __all__ = [
+    "AdminOperation",
+    "AdminResult",
+    "AdminMessage",
+    "AdminResultMessage",
+    "ADMIN_MODEL_INFO",
+    "ADMIN_PAUSE_GENERATION",
+    "ADMIN_CONTINUE_GENERATION",
+    "ADMIN_UPDATE_WEIGHTS_FROM_DISK",
+    "ADMIN_UPDATE_WEIGHTS_FROM_TENSOR",
+    "ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED",
+    "ADMIN_WEIGHTS_CHECKER",
+    "is_update_action",
     "DataReadyMessage",
     "AbortMessage",
     "CompleteMessage",

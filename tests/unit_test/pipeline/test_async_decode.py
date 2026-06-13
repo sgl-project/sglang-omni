@@ -12,6 +12,8 @@ momentarily in flight.
 
 from __future__ import annotations
 
+import queue
+import threading
 import types
 from unittest import mock
 
@@ -372,11 +374,18 @@ class _FakeBatch:
         return self
 
 
+def _new_scheduler_for_async_loop():
+    s = OmniScheduler.__new__(OmniScheduler)
+    s._admin_lock = threading.Lock()
+    s._admin_queue = queue.Queue()
+    return s
+
+
 def _drive_loop(seq, min_bs=2):
     """Run the real event loop over `seq` (each item = bs int, or None for idle)
     and return the ordered list of path events taken."""
     events = []
-    s = OmniScheduler.__new__(OmniScheduler)
+    s = _new_scheduler_for_async_loop()
     s._running = True
     s._engine_paused = False
     s._async_pending = None
@@ -504,7 +513,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
             double_freed.append(req.name)
         freed.add(req.name)
 
-    s = OmniScheduler.__new__(OmniScheduler)
+    s = _new_scheduler_for_async_loop()
     s._running = True
     s._engine_paused = False
     s._async_pending = None
@@ -564,7 +573,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
 
 
 def _scaffold_async_loop(*, async_pending=None):
-    s = OmniScheduler.__new__(OmniScheduler)
+    s = _new_scheduler_for_async_loop()
     s._running = True
     s._engine_paused = False
     s._async_pending = async_pending

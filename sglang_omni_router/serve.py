@@ -86,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-check-interval-secs", type=int, default=10)
     parser.add_argument("--health-check-endpoint", default="/health")
     parser.add_argument("--log-level", default="info")
+    parser.add_argument(
+        "--admin-api-key",
+        default=None,
+        help=(
+            "Bearer token required for all admin endpoints "
+            "(pause_generation, update_weights_from_disk, weights_checker, etc.). "
+            "Can also be set via the SGLANG_OMNI_ADMIN_KEY environment variable. "
+            "If neither is set, admin endpoints are unauthenticated."
+        ),
+    )
     return parser
 
 
@@ -197,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"readiness_requires_routable_worker=true"
         )
         uvicorn.run(
-            create_app(config),
+            create_app(config, admin_api_key=getattr(args, "admin_api_key", None)),
             host=config.host,
             port=config.port,
             log_level=log_level.lower(),

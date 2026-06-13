@@ -261,6 +261,84 @@ class Client:
     def health(self) -> dict[str, Any]:
         return self._coordinator.health()
 
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.admin(
+            action,
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def model_info(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.model_info(
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.pause_generation(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.continue_generation(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.update_weights_from_disk(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.weights_checker(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

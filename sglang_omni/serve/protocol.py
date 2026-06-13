@@ -259,3 +259,63 @@ class ModelList(BaseModel):
 
     object: str = "list"
     data: list[ModelCard] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Administrative APIs
+# ---------------------------------------------------------------------------
+
+
+class AdminRequestBase(BaseModel):
+    """Common admin request routing controls."""
+
+    stages: list[str] | None = None
+    timeout_s: float | None = None
+
+
+class PauseGenerationRequest(AdminRequestBase):
+    mode: str = "abort"
+
+
+class ContinueGenerationRequest(AdminRequestBase):
+    torch_empty_cache: bool = True
+
+
+class UpdateWeightFromDiskRequest(AdminRequestBase):
+    model_path: str
+    load_format: str | None = None
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    is_async: bool = False
+    torch_empty_cache: bool = False
+    keep_pause: bool = False
+    recapture_cuda_graph: bool = False
+    token_step: int = 0
+    flush_cache: bool = True
+    manifest: dict[str, Any] | None = None
+
+
+class UpdateWeightsFromTensorRequest(AdminRequestBase):
+    serialized_named_tensors: list[Any] | None = None
+    load_format: str | None = None
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    disable_draft_model: bool | None = None
+    torch_empty_cache: bool = False
+
+
+class UpdateWeightsFromDistributedRequest(AdminRequestBase):
+    names: list[str]
+    dtypes: list[str]
+    shapes: list[list[int]]
+    group_name: str = "weight_update_group"
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    load_format: str | None = None
+    torch_empty_cache: bool = False
+
+
+class WeightsCheckerRequest(AdminRequestBase):
+    action: str = "checksum"

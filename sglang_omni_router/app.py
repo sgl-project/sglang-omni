@@ -11,11 +11,15 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from sglang_omni.http.admin_auth import (
+    make_admin_auth_dependency,
+    resolve_admin_api_key,
+)
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
@@ -30,12 +34,19 @@ from sglang_omni_router.worker import (
 
 logger = logging.getLogger(__name__)
 
+_ADMIN_UPDATE_PATHS = {
+    "/pause_generation",
+    "/update_weights_from_disk",
+}
+_ADMIN_UPDATE_LOCK_TIMEOUT_S = 300.0
+
 
 def create_app(
     config: RouterConfig,
     *,
     client: httpx.AsyncClient | None = None,
     health_client: httpx.AsyncClient | None = None,
+    admin_api_key: str | None = None,
 ) -> FastAPI:
     workers = build_workers(config.workers)
     timeout = httpx.Timeout(config.request_timeout_secs)
@@ -77,6 +88,7 @@ def create_app(
         app.state.health_http_client = health_client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
+        app.state.admin_update_lock = asyncio.Lock()
         await health_checker.start()
         try:
             yield
@@ -87,6 +99,8 @@ def create_app(
             if owns_client:
                 await client.aclose()
 
+    resolved_key = resolve_admin_api_key(admin_api_key)
+
     app = FastAPI(title="sglang-omni-router", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -96,7 +110,7 @@ def create_app(
         allow_headers=["*"],
     )
 
-    register_routes(app, workers, proxy, config)
+    register_routes(app, workers, proxy, config, admin_api_key=resolved_key)
     register_favicon(app)
     return app
 
@@ -106,7 +120,25 @@ def register_routes(
     workers: list[Worker],
     proxy: ProxyHandler,
     config: RouterConfig,
+    *,
+    admin_api_key: str | None = None,
 ) -> None:
+    _auth = make_admin_auth_dependency(admin_api_key)
+
+    def _not_implemented_response() -> JSONResponse:
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": {
+                    "message": (
+                        "This weight update path is not yet implemented. "
+                        "Use /update_weights_from_disk for the disk-based update path."
+                    ),
+                    "code": "not_implemented",
+                }
+            },
+        )
+
     @app.get("/live")
     async def live() -> JSONResponse:
         return JSONResponse({"status": "alive"})
@@ -274,6 +306,46 @@ def register_routes(
             timeout_secs=config.health_check_timeout_secs,
         )
 
+    @app.get("/model_info", dependencies=[Depends(_auth)])
+    async def model_info(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/model_info")
+
+    @app.post("/model_info", dependencies=[Depends(_auth)])
+    async def model_info_post(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/model_info")
+
+    @app.post("/pause_generation", dependencies=[Depends(_auth)])
+    async def pause_generation(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/pause_generation")
+
+    @app.post("/continue_generation", dependencies=[Depends(_auth)])
+    async def continue_generation(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/continue_generation")
+
+    @app.post("/update_weights_from_disk", dependencies=[Depends(_auth)])
+    async def update_weights_from_disk(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(
+            app,
+            request,
+            "/update_weights_from_disk",
+        )
+
+    @app.post("/update_weights_from_tensor", dependencies=[Depends(_auth)])
+    async def update_weights_from_tensor(request: Request) -> JSONResponse:
+        return _not_implemented_response()
+
+    @app.post("/update_weights_from_distributed", dependencies=[Depends(_auth)])
+    async def update_weights_from_distributed(request: Request) -> JSONResponse:
+        return _not_implemented_response()
+
+    @app.api_route(
+        "/weights_checker",
+        methods=["GET", "POST"],
+        dependencies=[Depends(_auth)],
+    )
+    async def weights_checker(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/weights_checker")
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
         return await proxy.forward_model_request(request, "/v1/chat/completions")
@@ -327,6 +399,235 @@ def _worker_pool_status_response(
         _pool_summary(workers, status=status),
         status_code=status_code,
     )
+
+
+async def _broadcast_admin_request(
+    app: FastAPI,
+    request: Request,
+    path: str,
+) -> JSONResponse:
+    workers: list[Worker] = app.state.workers
+    target_workers = [worker for worker in workers if not worker.is_dead]
+    if not target_workers:
+        return _error_response(503, "no live upstream workers")
+
+    if path in _ADMIN_UPDATE_PATHS:
+        try:
+            await asyncio.wait_for(
+                app.state.admin_update_lock.acquire(),
+                timeout=_ADMIN_UPDATE_LOCK_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            return _error_response(
+                503,
+                f"admin update lock not acquired within {_ADMIN_UPDATE_LOCK_TIMEOUT_S:.0f}s; "
+                "another update operation may be in progress",
+            )
+        try:
+            return await _broadcast_admin_request_locked(
+                app,
+                request,
+                path,
+                target_workers,
+                disable_targets=True,
+            )
+        finally:
+            app.state.admin_update_lock.release()
+
+    return await _broadcast_admin_request_locked(
+        app,
+        request,
+        path,
+        target_workers,
+        disable_targets=False,
+    )
+
+
+async def _broadcast_admin_request_locked(
+    app: FastAPI,
+    request: Request,
+    path: str,
+    workers: list[Worker],
+    *,
+    disable_targets: bool,
+) -> JSONResponse:
+    body = await request.body()
+    headers = filter_request_headers(request)
+    previous_disabled = {worker.worker_id: worker.disabled for worker in workers}
+    if disable_targets:
+        for worker in workers:
+            worker.set_disabled(True)
+    try:
+        results = await asyncio.gather(
+            *[
+                _send_admin_to_worker(
+                    app.state.http_client,
+                    worker,
+                    request,
+                    path,
+                    body,
+                    headers,
+                )
+                for worker in workers
+            ]
+        )
+    finally:
+        if disable_targets:
+            for worker in workers:
+                worker.set_disabled(previous_disabled[worker.worker_id])
+
+    success = all(item["success"] for item in results)
+    if path == "/model_info":
+        return _model_info_broadcast_response(results, success=success)
+
+    payload = {
+        "success": success,
+        "message": "ok" if success else "one or more workers failed admin request",
+        "path": path,
+        "worker_count": len(results),
+        "results": results,
+    }
+    return JSONResponse(payload, status_code=200 if success else 502)
+
+
+def _model_info_broadcast_response(
+    results: list[dict[str, Any]],
+    *,
+    success: bool,
+) -> JSONResponse:
+    if not success:
+        payload = {
+            "success": False,
+            "message": "one or more workers failed model_info request",
+            "path": "/model_info",
+            "worker_count": len(results),
+            "workers": results,
+            "results": results,
+        }
+        return JSONResponse(payload, status_code=502)
+
+    worker_infos = _extract_worker_model_infos(results)
+    weight_version = _common_worker_model_info_value(
+        worker_infos,
+        "weight_version",
+        mixed_status_code=409,
+        results=results,
+    )
+    payload = {
+        "success": True,
+        "message": "ok",
+        "path": "/model_info",
+        "worker_count": len(results),
+        "weight_version": weight_version,
+        "model_path": _common_worker_model_info_value(worker_infos, "model_path"),
+        "load_format": _common_worker_model_info_value(worker_infos, "load_format"),
+        "workers": results,
+        "results": results,
+    }
+    return JSONResponse(payload)
+
+
+def _extract_worker_model_infos(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    infos: list[dict[str, Any]] = []
+    for result in results:
+        body = result.get("body")
+        if not isinstance(body, dict):
+            continue
+        worker = result.get("worker")
+        top_level = {
+            key: body.get(key)
+            for key in ("weight_version", "model_path", "load_format")
+            if body.get(key) is not None
+        }
+        if top_level:
+            top_level["worker"] = worker
+            infos.append(top_level)
+        for stage in body.get("stages") or body.get("results") or []:
+            if not isinstance(stage, dict):
+                continue
+            data = stage.get("data")
+            if not isinstance(data, dict):
+                continue
+            if data.get("skipped") or data.get("unsupported"):
+                continue
+            info = dict(data)
+            info.setdefault("worker", worker)
+            info.setdefault("stage", stage.get("stage"))
+            infos.append(info)
+    return infos
+
+
+def _common_worker_model_info_value(
+    worker_infos: list[dict[str, Any]],
+    key: str,
+    *,
+    mixed_status_code: int | None = None,
+    results: list[dict[str, Any]] | None = None,
+) -> Any:
+    values = [info[key] for info in worker_infos if info.get(key) is not None]
+    if not values:
+        return None
+    unique: dict[str, Any] = {}
+    for value in values:
+        unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    if mixed_status_code is not None:
+        payload = {
+            "success": False,
+            "message": f"mixed worker {key}",
+            "path": "/model_info",
+            "mixed_state": {key: list(unique.values())},
+            "workers": results or [],
+            "results": results or [],
+        }
+        raise HTTPException(status_code=mixed_status_code, detail=payload)
+    return None
+
+
+async def _send_admin_to_worker(
+    client: httpx.AsyncClient,
+    worker: Worker,
+    request: Request,
+    path: str,
+    body: bytes,
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    upstream_url = f"{worker.url}{path}"
+    if request.url.query:
+        upstream_url = f"{upstream_url}?{request.url.query}"
+    try:
+        response = await client.request(
+            request.method,
+            upstream_url,
+            content=body,
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        return {
+            "worker": worker.url,
+            "success": False,
+            "error": type(exc).__name__,
+        }
+
+    body_payload = _decode_response_payload(response)
+    body_success = (
+        body_payload.get("success", True) if isinstance(body_payload, dict) else True
+    )
+    success = 200 <= response.status_code < 300 and body_success is not False
+    return {
+        "worker": worker.url,
+        "success": success,
+        "status_code": response.status_code,
+        "body": body_payload,
+    }
+
+
+def _decode_response_payload(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except Exception:
+        return response.text
 
 
 def _find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
