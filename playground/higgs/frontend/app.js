@@ -122,15 +122,7 @@ let synthesisInFlight = false;
 const PCM_DEFAULT_SAMPLE_RATE = 24000;
 const PCM_DEFAULT_CHANNELS = 1;
 const PCM_DEFAULT_BIT_DEPTH = 16;
-const PCM_DEFAULT_SAMPLE_WIDTH = PCM_DEFAULT_BIT_DEPTH / 8;
-const PCM_DEFAULT_FORMAT = {
-  audioFormat: 1,
-  channels: PCM_DEFAULT_CHANNELS,
-  sampleRate: PCM_DEFAULT_SAMPLE_RATE,
-  byteRate: PCM_DEFAULT_SAMPLE_RATE * PCM_DEFAULT_CHANNELS * PCM_DEFAULT_SAMPLE_WIDTH,
-  blockAlign: PCM_DEFAULT_CHANNELS * PCM_DEFAULT_SAMPLE_WIDTH,
-  bitsPerSample: PCM_DEFAULT_BIT_DEPTH,
-};
+const WAV_FORMAT_PCM = 1;
 
 function ensureAudioCtx() {
   if (!audioCtx) {
@@ -844,7 +836,7 @@ function pcmFormatFromHeaders(headers) {
     Number(headers.get("x-bit-depth")) || PCM_DEFAULT_BIT_DEPTH;
   const sampleWidth = bitsPerSample / 8;
   return {
-    audioFormat: PCM_DEFAULT_FORMAT.audioFormat,
+    audioFormat: WAV_FORMAT_PCM,
     channels,
     sampleRate,
     byteRate: sampleRate * channels * sampleWidth,
