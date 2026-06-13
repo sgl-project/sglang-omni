@@ -61,6 +61,7 @@ class StreamingUiUpdate:
     final_audio: Any
     status: Any
     artifact_paths: Any
+    pending_stream_result: Any
     synth_button: Any
     stream_button: Any
 
@@ -72,6 +73,7 @@ class StreamingUiUpdate:
             self.final_audio,
             self.status,
             self.artifact_paths,
+            self.pending_stream_result,
             self.synth_button,
             self.stream_button,
         )
@@ -218,6 +220,29 @@ def _clear_history(artifact_paths: list[str]):
         _reset_audio_output(),
         "Ready",
         [],
+        None,
+        synth_button,
+        stream_button,
+    )
+
+
+def _publish_pending_stream_result(pending_result: dict[str, Any] | None):
+    synth_button, stream_button = _unlock_request_buttons()
+    if not pending_result:
+        return (
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            None,
+            synth_button,
+            stream_button,
+        )
+
+    return (
+        pending_result["history"],
+        pending_result["final_audio_path"],
+        pending_result["status"],
+        None,
         synth_button,
         stream_button,
     )
@@ -341,6 +366,7 @@ def make_streaming_handler(api_base: str):
                 final_audio=None,
                 status=str(exc),
                 artifact_paths=artifact_paths,
+                pending_stream_result=None,
                 synth_button=synth_button,
                 stream_button=stream_button,
             ).to_gradio_outputs()
@@ -357,6 +383,7 @@ def make_streaming_handler(api_base: str):
             final_audio=_reset_audio_output(),
             status="Connecting to speech stream...",
             artifact_paths=artifact_paths,
+            pending_stream_result=None,
             synth_button=synth_button,
             stream_button=stream_button,
         ).to_gradio_outputs()
@@ -394,6 +421,7 @@ def make_streaming_handler(api_base: str):
                         final_audio=_keep_audio_output(),
                         status=f"Buffering live playback | chunk {chunk_count}",
                         artifact_paths=artifact_paths,
+                        pending_stream_result=None,
                         synth_button=gr.skip(),
                         stream_button=gr.skip(),
                     ).to_gradio_outputs()
@@ -413,6 +441,7 @@ def make_streaming_handler(api_base: str):
                     final_audio=_keep_audio_output(),
                     status=status,
                     artifact_paths=artifact_paths,
+                    pending_stream_result=None,
                     synth_button=gr.skip(),
                     stream_button=gr.skip(),
                 ).to_gradio_outputs()
@@ -426,6 +455,7 @@ def make_streaming_handler(api_base: str):
                 final_audio=_keep_audio_output(),
                 status=f"Request failed: {exc}",
                 artifact_paths=artifact_paths,
+                pending_stream_result=None,
                 synth_button=synth_button,
                 stream_button=stream_button,
             ).to_gradio_outputs()
@@ -440,6 +470,7 @@ def make_streaming_handler(api_base: str):
                 final_audio=_keep_audio_output(),
                 status=f"Stream parse failed: {exc}",
                 artifact_paths=artifact_paths,
+                pending_stream_result=None,
                 synth_button=synth_button,
                 stream_button=stream_button,
             ).to_gradio_outputs()
@@ -458,6 +489,7 @@ def make_streaming_handler(api_base: str):
                 final_audio=_keep_audio_output(),
                 status="No audio was returned.",
                 artifact_paths=artifact_paths,
+                pending_stream_result=None,
                 synth_button=synth_button,
                 stream_button=stream_button,
             ).to_gradio_outputs()
@@ -478,6 +510,7 @@ def make_streaming_handler(api_base: str):
                 final_audio=_keep_audio_output(),
                 status=status,
                 artifact_paths=artifact_paths,
+                pending_stream_result=None,
                 synth_button=gr.skip(),
                 stream_button=gr.skip(),
             ).to_gradio_outputs()
@@ -501,16 +534,21 @@ def make_streaming_handler(api_base: str):
                 summary,
             ],
         )
-        synth_button, stream_button = _unlock_request_buttons()
+        pending_result = {
+            "history": completed_history,
+            "final_audio_path": final_audio_path,
+            "status": summary,
+        }
         yield StreamingUiUpdate(
-            history=completed_history,
+            history=gr.skip(),
             text_input=gr.skip(),
             live_audio=_keep_audio_output(),
-            final_audio=final_audio_path,
-            status=summary,
+            final_audio=_keep_audio_output(),
+            status=_keep_audio_output(),
             artifact_paths=artifact_paths,
-            synth_button=synth_button,
-            stream_button=stream_button,
+            pending_stream_result=pending_result,
+            synth_button=gr.skip(),
+            stream_button=gr.skip(),
         ).to_gradio_outputs()
 
     return synthesize_stream
@@ -531,6 +569,7 @@ def create_demo(api_base: str):
         )
 
         artifact_state = gr.State([])
+        pending_stream_result = gr.State(None)
 
         with gr.Row():
             with gr.Column(scale=1, min_width=320):
@@ -666,6 +705,7 @@ def create_demo(api_base: str):
                 stream_final_audio,
                 stream_status,
                 artifact_state,
+                pending_stream_result,
                 synth_btn,
                 stream_btn,
             ],
@@ -673,6 +713,19 @@ def create_demo(api_base: str):
             concurrency_id="tts_request",
             show_progress="minimal",
             show_progress_on=[stream_status],
+        )
+        stream_audio.stop(
+            fn=_publish_pending_stream_result,
+            inputs=[pending_stream_result],
+            outputs=[
+                chatbot,
+                stream_final_audio,
+                stream_status,
+                pending_stream_result,
+                synth_btn,
+                stream_btn,
+            ],
+            queue=False,
         )
         clear_btn.click(
             fn=_clear_history,
@@ -685,6 +738,7 @@ def create_demo(api_base: str):
                 stream_final_audio,
                 stream_status,
                 artifact_state,
+                pending_stream_result,
                 synth_btn,
                 stream_btn,
             ],
