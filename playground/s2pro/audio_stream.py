@@ -7,6 +7,8 @@ import io
 import wave
 from dataclasses import dataclass
 
+import numpy as np
+
 DEFAULT_S2PRO_SAMPLE_RATE = 44100
 
 
@@ -88,8 +90,26 @@ def wav_duration_seconds(audio_bytes: bytes) -> float:
     return frame_count / sample_rate
 
 
-class BufferedWavChunkEmitter:
-    """Buffer short streamed WAV chunks into larger live-playback chunks."""
+def pcm_bytes_to_array(
+    audio_bytes: bytes,
+    *,
+    channels: int = 1,
+    sample_width: int = 2,
+) -> np.ndarray:
+    """Convert signed little-endian PCM bytes to a Gradio audio array."""
+    if sample_width != 2:
+        raise ValueError("Only 16-bit PCM live playback is supported")
+    if channels <= 0:
+        raise ValueError("PCM channels must be positive")
+
+    samples = np.frombuffer(audio_bytes, dtype="<i2").copy()
+    if channels == 1:
+        return samples
+    return samples.reshape(-1, channels)
+
+
+class BufferedPcmChunkEmitter:
+    """Buffer short streamed PCM chunks into larger live-playback chunks."""
 
     def __init__(
         self,
@@ -110,6 +130,18 @@ class BufferedWavChunkEmitter:
         self._frames: list[bytes] = []
         self._frame_count = 0
         self._chunk_count = 0
+
+    @property
+    def channels(self) -> int | None:
+        return self._channels
+
+    @property
+    def sample_width(self) -> int | None:
+        return self._sample_width
+
+    @property
+    def sample_rate(self) -> int | None:
+        return self._sample_rate
 
     def _validate_format(
         self,
@@ -141,12 +173,7 @@ class BufferedWavChunkEmitter:
         )
 
     def _emit(self) -> bytes:
-        audio_bytes = _write_wav_bytes(
-            channels=self._channels or 1,
-            sample_width=self._sample_width or 2,
-            sample_rate=self._sample_rate or DEFAULT_S2PRO_SAMPLE_RATE,
-            frames=self._frames,
-        )
+        audio_bytes = b"".join(self._frames)
         self._frames = []
         self._frame_count = 0
         self._chunk_count = 0

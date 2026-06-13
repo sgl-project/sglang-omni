@@ -14,8 +14,9 @@ from playground.s2pro.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.s2pro.artifacts import ArtifactStore
 from playground.s2pro.audio_stream import (
     DEFAULT_S2PRO_SAMPLE_RATE,
-    BufferedWavChunkEmitter,
+    BufferedPcmChunkEmitter,
     WavChunkAccumulator,
+    pcm_bytes_to_array,
     wav_duration_seconds,
 )
 from playground.s2pro.models import GenerationSettings, SpeechSynthesisRequest
@@ -127,6 +128,23 @@ def _reset_audio_output() -> dict[str, Any]:
 
 def _keep_audio_output():
     return gr.skip()
+
+
+def _live_audio_output(
+    audio_bytes: bytes,
+    *,
+    sample_rate: int,
+    channels: int,
+    sample_width: int,
+) -> tuple[int, Any]:
+    return (
+        sample_rate,
+        pcm_bytes_to_array(
+            audio_bytes,
+            channels=channels,
+            sample_width=sample_width,
+        ),
+    )
 
 
 def _button_update(
@@ -390,7 +408,7 @@ def make_streaming_handler(api_base: str):
 
         started_at = time.perf_counter()
         accumulator = WavChunkAccumulator()
-        live_emitter = BufferedWavChunkEmitter(
+        live_emitter = BufferedPcmChunkEmitter(
             min_emit_duration_s=_LIVE_AUDIO_MIN_CHUNK_DURATION_S,
             max_buffered_chunks=_LIVE_AUDIO_MAX_BUFFERED_CHUNKS,
         )
@@ -407,13 +425,13 @@ def make_streaming_handler(api_base: str):
                     channels=event.channels,
                     sample_width=event.sample_width,
                 )
-                live_audio = live_emitter.add_pcm_chunk(
+                live_audio_bytes = live_emitter.add_pcm_chunk(
                     event.audio_bytes,
                     sample_rate=sample_rate,
                     channels=event.channels,
                     sample_width=event.sample_width,
                 )
-                if live_audio is None:
+                if live_audio_bytes is None:
                     yield StreamingUiUpdate(
                         history=in_progress_history,
                         text_input="",
@@ -437,7 +455,12 @@ def make_streaming_handler(api_base: str):
                 yield StreamingUiUpdate(
                     history=in_progress_history,
                     text_input="",
-                    live_audio=live_audio,
+                    live_audio=_live_audio_output(
+                        live_audio_bytes,
+                        sample_rate=sample_rate,
+                        channels=event.channels,
+                        sample_width=event.sample_width,
+                    ),
                     final_audio=_keep_audio_output(),
                     status=status,
                     artifact_paths=artifact_paths,
@@ -495,8 +518,8 @@ def make_streaming_handler(api_base: str):
             ).to_gradio_outputs()
             return
 
-        live_tail = live_emitter.flush()
-        if live_tail is not None:
+        live_tail_bytes = live_emitter.flush()
+        if live_tail_bytes is not None:
             if first_audio_s is None:
                 first_audio_s = time.perf_counter() - started_at
             status = (
@@ -506,7 +529,12 @@ def make_streaming_handler(api_base: str):
             yield StreamingUiUpdate(
                 history=in_progress_history,
                 text_input="",
-                live_audio=live_tail,
+                live_audio=_live_audio_output(
+                    live_tail_bytes,
+                    sample_rate=live_emitter.sample_rate or DEFAULT_S2PRO_SAMPLE_RATE,
+                    channels=live_emitter.channels or 1,
+                    sample_width=live_emitter.sample_width or 2,
+                ),
                 final_audio=_keep_audio_output(),
                 status=status,
                 artifact_paths=artifact_paths,
