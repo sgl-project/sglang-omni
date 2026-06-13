@@ -6,9 +6,6 @@ from typing import Any
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_executor.model_runner import ModelRunner
-from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
-    ModelRunnerKVCacheMixin,
-)
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.utils.gpu_memory import (
@@ -135,9 +132,7 @@ class SGLModelRunner(ModelRunner):
         serving.
         """
         if self._total_gpu_memory_fraction is None:
-            return self._profile_available_bytes_from_free_memory_delta(
-                pre_model_load_memory
-            )
+            return super()._profile_available_bytes(pre_model_load_memory)
 
         process_memory = get_process_gpu_memory_bytes(self.gpu_id)
         device_info = get_gpu_device_info(self.gpu_id)
@@ -198,45 +193,6 @@ class SGLModelRunner(ModelRunner):
         )
         return available_bytes
 
-    def _profile_available_bytes_from_free_memory_delta(
-        self, pre_model_load_memory: float
-    ) -> int:
-        """Match SGLang free-memory-delta accounting for non-colocated AR stages."""
-        from sglang.srt.distributed.parallel_state import get_world_group
-        from sglang.srt.utils.common import get_available_gpu_memory
-
-        world_group = get_world_group()
-        post_model_load_memory = get_available_gpu_memory(
-            self.device,
-            self.gpu_id,
-            distributed=world_group.world_size > 1,
-            cpu_group=world_group.cpu_group,
-        )
-        rest_memory = post_model_load_memory - pre_model_load_memory * (
-            1 - self.mem_fraction_static
-        )
-        if self.mambaish_config is not None:
-            rest_memory = self.handle_max_mamba_cache(rest_memory)
-        return int(rest_memory * (1 << 30))
-
-    def profile_max_num_token(self, pre_model_load_memory: float) -> int:
-        """Profile token capacity for stage-budgeted colocated AR stages."""
-        if self._total_gpu_memory_fraction is None:
-            return ModelRunnerKVCacheMixin.profile_max_num_token(
-                self,
-                pre_model_load_memory,
-            )
-
-        num_layers = self._num_kv_cache_layers()
-        cell_size = self.get_cell_size_per_token(num_layers)
-        available_bytes = self._profile_available_bytes(pre_model_load_memory)
-        if self.mambaish_config is not None:
-            available_gib = available_bytes / (1 << 30)
-            available_bytes = int(
-                self.handle_max_mamba_cache(available_gib) * (1 << 30)
-            )
-        return available_bytes // cell_size
-
     def _profile_available_bytes_from_process_memory(
         self,
         total_memory: int,
@@ -258,21 +214,3 @@ class SGLModelRunner(ModelRunner):
             f"available_for_kv={format_bytes_gib(available_bytes)}"
         )
         return available_bytes
-
-    def _num_kv_cache_layers(self) -> int:
-        """Return the number of layers used by SGLang KV-cache sizing."""
-        if self.is_draft_worker:
-            return getattr(
-                self.model_config.hf_config,
-                "num_nextn_predict_layers",
-                self.num_effective_layers,
-            )
-        if mambaish := self.mambaish_config:
-            return len(
-                [
-                    layer_id
-                    for layer_id in mambaish.full_attention_layer_ids
-                    if self.start_layer <= layer_id < self.end_layer
-                ]
-            )
-        return self.num_effective_layers

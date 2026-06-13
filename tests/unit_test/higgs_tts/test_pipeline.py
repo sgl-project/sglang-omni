@@ -114,15 +114,15 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     )
 
 
-def test_higgs_reference_cache_key_round_trip() -> None:
-    state = HiggsTtsState(reference_cache_key="path:/tmp/ref.wav")
+def test_higgs_reference_code_cache_key_round_trip() -> None:
+    state = HiggsTtsState(reference_code_cache_key="waveform:sr:24000:test")
 
     restored = HiggsTtsState.from_dict(state.to_dict())
 
-    assert restored.reference_cache_key == "path:/tmp/ref.wav"
+    assert restored.reference_code_cache_key == "waveform:sr:24000:test"
 
 
-def test_higgs_reference_cache_key_tracks_file_content(tmp_path) -> None:
+def test_higgs_reference_source_key_tracks_file_content(tmp_path) -> None:
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"a")
     first_key = stages._reference_audio_cache_key(ref_audio)
@@ -139,7 +139,7 @@ def test_higgs_reference_cache_key_tracks_file_content(tmp_path) -> None:
     assert first_key != second_key
 
 
-def test_higgs_reference_cache_key_same_size_edit_and_urls(tmp_path) -> None:
+def test_higgs_reference_source_key_same_size_edit_and_urls(tmp_path) -> None:
     # Same path, same size, same head/tail, different middle must not stale-hit.
     head, tail = b"H" * 8192, b"T" * 8192
     ref_audio = tmp_path / "ref.wav"
@@ -153,7 +153,7 @@ def test_higgs_reference_cache_key_same_size_edit_and_urls(tmp_path) -> None:
     assert stages._reference_audio_cache_key(str(tmp_path / "missing.wav")) is None
 
 
-def test_higgs_reference_cache_key_memoizes_stable_file_hash(
+def test_higgs_reference_source_key_memoizes_stable_file_hash(
     monkeypatch, tmp_path
 ) -> None:
     ref_audio = tmp_path / "ref.wav"
@@ -177,7 +177,7 @@ def test_higgs_reference_cache_key_memoizes_stable_file_hash(
     assert read_calls == 1
 
 
-def test_higgs_reference_cache_key_ignores_media_type() -> None:
+def test_higgs_reference_source_key_ignores_media_type() -> None:
     raw = b"\x01\x02\x03fake-audio-bytes"
     encoded = base64.b64encode(raw).decode()
     key_wav = stages._reference_audio_cache_key(
@@ -243,7 +243,7 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     def make_payload(request_id: str) -> StagePayload:
         state = HiggsTtsState(
             reference_waveform=torch.zeros(1, 1, 16),
-            reference_cache_key="path:/tmp/ref.wav",
+            reference_code_cache_key="waveform:sr:24000:test",
             target_text="hello",
             reference_text="speaker",
             num_codebooks=2,
@@ -264,7 +264,7 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     assert first.data["prompt_token_ids"] == [5, 3, 7]
     assert second.data["prompt_token_ids"] == [5, 3, 7]
     assert "reference_waveform" not in second.data
-    assert "reference_cache_key" not in second.data
+    assert "reference_code_cache_key" not in second.data
 
 
 def test_higgs_preprocessing_uses_waveform_cache(monkeypatch, tmp_path) -> None:
@@ -285,6 +285,19 @@ def test_higgs_preprocessing_uses_waveform_cache(monkeypatch, tmp_path) -> None:
         return np.zeros(16, dtype=np.float32), 24000
 
     monkeypatch.setattr(stages, "load_audio_to_24k", fake_load_audio_to_24k)
+    reference_code_key_calls = 0
+    original_reference_code_cache_key = stages._reference_code_cache_key_from_waveform
+
+    def counting_reference_code_cache_key(waveform, sample_rate):
+        nonlocal reference_code_key_calls
+        reference_code_key_calls += 1
+        return original_reference_code_cache_key(waveform, sample_rate)
+
+    monkeypatch.setattr(
+        stages,
+        "_reference_code_cache_key_from_waveform",
+        counting_reference_code_cache_key,
+    )
 
     scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
     preprocess = scheduler._fn
@@ -310,12 +323,55 @@ def test_higgs_preprocessing_uses_waveform_cache(monkeypatch, tmp_path) -> None:
     second_state = HiggsTtsState.from_dict(second.data)
 
     assert load_calls == 1
-    assert first_state.reference_cache_key == second_state.reference_cache_key
+    assert reference_code_key_calls == 1
+    assert first_state.reference_code_cache_key == second_state.reference_code_cache_key
     assert torch.equal(first_state.reference_waveform, second_state.reference_waveform)
     assert (
         first_state.reference_waveform.data_ptr()
         != second_state.reference_waveform.data_ptr()
     )
+
+
+def test_higgs_preprocessing_url_refs_use_decoded_content_key(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", lambda _tokenizer: object())
+
+    def fake_load_audio_to_24k(reference_audio):
+        assert str(reference_audio).startswith("https://example.com/")
+        return np.zeros(16, dtype=np.float32), 24000
+
+    monkeypatch.setattr(stages, "load_audio_to_24k", fake_load_audio_to_24k)
+
+    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    preprocess = scheduler._fn
+
+    def make_payload(request_id: str, url: str) -> StagePayload:
+        return StagePayload(
+            request_id=request_id,
+            request=OmniRequest(
+                inputs={
+                    "text": "hello",
+                    "references": [{"audio_path": url, "text": "speaker"}],
+                },
+                params={},
+            ),
+            data={},
+        )
+
+    first = preprocess(make_payload("first", "https://example.com/a.wav"))
+    second = preprocess(make_payload("second", "https://example.com/b.wav"))
+    first_state = HiggsTtsState.from_dict(first.data)
+    second_state = HiggsTtsState.from_dict(second.data)
+
+    assert first_state.reference_code_cache_key is not None
+    assert first_state.reference_code_cache_key.startswith("waveform:")
+    assert first_state.reference_code_cache_key == second_state.reference_code_cache_key
 
 
 def test_higgs_model_runner_marks_sampler_finish() -> None:

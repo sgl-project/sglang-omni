@@ -477,6 +477,8 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
+    enable_async_decode: bool = False,
+    async_decode_min_batch_size: int = 2,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
@@ -558,6 +560,12 @@ def create_sglang_tts_engine_executor(
         model=model
     )
 
+    def abort_request(request_id: str) -> None:
+        # Drop any prepared handoff and release any held pool row; both are
+        # idempotent no-ops if the request never reached them.
+        cleanup_prepared_moss_tts_local_request(request_id)
+        model.reset_request(request_id)
+
     return OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
@@ -570,7 +578,9 @@ def create_sglang_tts_engine_executor(
         model_runner=MossTTSLocalModelRunner(model_worker, output_proc),
         request_builder=request_builder,
         result_adapter=result_adapter,
-        abort_callback=cleanup_prepared_moss_tts_local_request,
+        abort_callback=abort_request,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
 
 

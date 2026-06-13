@@ -49,7 +49,10 @@ def sample_seeded_branchless(
 
     probs = torch.softmax(scores, dim=-1)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    sampled = multinomial_with_seed(probs, seeds, positions).view(-1)
+    # Note:(Chenchen Hong, Xuesong) post1's multinomial_with_seed is Gumbel-max and
+    # wants logits, not probs: softmax maps the top-k/top-p -inf to 0, so gumbel can
+    # pick a masked token. Match eager.
+    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
     return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
 

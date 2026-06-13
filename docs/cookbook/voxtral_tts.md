@@ -13,7 +13,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ```bash
 # Voxtral preprocessing uses Mistral's Tekken tokenizer from mistral-common.
-uv pip install 'mistral-common[audio]>=1.8.0'
+uv pip install 'mistral_common[audio]>=1.11.0'
 
 hf download mistralai/Voxtral-4B-TTS-2603
 ```

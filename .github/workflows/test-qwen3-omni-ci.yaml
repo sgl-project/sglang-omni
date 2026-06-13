@@ -23,7 +23,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -59,7 +59,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -112,7 +112,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -152,7 +152,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -192,7 +192,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -233,7 +233,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -273,7 +273,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -313,7 +313,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -353,7 +353,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -393,7 +393,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -433,7 +433,7 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 35
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm

@@ -42,6 +42,7 @@ from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
     format_bytes_gib,
@@ -425,6 +426,7 @@ def launch_server(
             references in TTS requests.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
     """
+    apply_gpu_compat_env_defaults()
     asyncio.run(
         _run_server(
             pipeline_config,

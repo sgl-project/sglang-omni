@@ -617,6 +617,11 @@ class OmniScheduler:
         """
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
+            # Mirror upstream run_batch's per-forward counter: OmniScheduler
+            # overrides run_batch, so without this forward_ct stays 0 and
+            # SGLANG_TEST_RETRACT fires every step. Only the custom-runner path
+            # needs it (the fallback reaches upstream run_batch, which counts).
+            self.forward_ct = getattr(self, "forward_ct", 0) + 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
             self._emit_stream_output(sched_output, mr_output)
@@ -678,10 +683,13 @@ class OmniScheduler:
 
     def _run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU
-        (forward + sample + async D2H of the collect snapshot), without waiting.
-        Returns ``(sched_output, pending_step)``; the caller holds the pending
-        step (launch-first keeps two steps momentarily in flight)."""
+        (forward + sample, then ``post_decode_launch`` publishes the resolve
+        payload), without waiting. Returns ``(sched_output, pending_step)``; the
+        caller holds the pending step (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
+        # One forward per launch; mirror upstream run_batch's per-forward
+        # counter (the matching resolve does no forward, so it must not count).
+        self.forward_ct = getattr(self, "forward_ct", 0) + 1
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
@@ -1003,8 +1011,12 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        pre_finished = [r.finished() for r in batch.reqs]
-        # rids finished in a PRIOR step (overrun) — suppress their stream emit
+        # A request retracted at step S is still in step S+1's lagged batch;
+        # drop it like a prior-step finish so its KV is not re-freed.
+        pre_finished = [
+            r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
+        ]
+        # rids finished/retracted in a prior step (overrun): suppress their emit
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -1038,15 +1050,33 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
+    def _drop_stale_overrun(self, batch):
+        """Drop reqs finished OR retracted by the just-completed drain from the
+        stale fast-path batch, so run_batch does not forward/finalize them again
+        (double-free of already-freed KV). Returns the filtered batch, or None if
+        it empties. Mirrors the finished/is_retracted pre-drop in
+        _resolve_and_process; the fast path previously dropped only finished.
+        """
+        if batch is None or not batch.reqs:
+            return batch
+        drop = [
+            r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
+        ]
+        if not any(drop):
+            return batch
+        keep = [i for i, d in enumerate(drop) if not d]
+        batch.filter_batch(keep_indices=keep)
+        return batch if batch.reqs else None
+
     def _event_loop_async_decode(self) -> None:
         """One-step-lookahead decode loop (single stream + CUDA event).
 
         Each iteration LAUNCHES the current decode step (GPU forward + on-GPU
-        sample + async D2H of the collect snapshot, no GPU wait) and THEN
-        RESOLVES the previous step's host-side collect — so ~1.1ms of per-step
-        CPU work overlaps the current step's GPU forward (launch-first, D1 in
-        design.md §1.3). Prefill / empty batches flush any in-flight decode
-        first and run synchronously (the in-flight step is never stranded).
+        sample, then ``post_decode_launch`` publishes the resolve payload, no GPU
+        wait) and THEN RESOLVES the previous step's host-side collect, so the
+        resolve host work overlaps the current step's GPU forward (launch-first,
+        D1 in design.md section 1.3). Prefill / empty batches flush any in-flight
+        decode first and run synchronously (the in-flight step is never stranded).
         """
         while self._running:
             recv_reqs = self.recv_requests()
@@ -1060,10 +1090,14 @@ class OmniScheduler:
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
+            # Route through sync when the runner's collect has a sync-only
+            # fallback (default True for runners not overriding lookahead_eligible).
+            runner = getattr(self, "_model_runner", None)
             use_lookahead = (
                 batch is not None
                 and len(batch.reqs) >= self.async_decode_min_batch_size
                 and self._batch_is_decode(batch)
+                and (runner is None or runner.lookahead_eligible(batch))
             )
 
             if use_lookahead:
@@ -1092,24 +1126,12 @@ class OmniScheduler:
                 if self._async_pending is not None:
                     self._resolve_pending_async()
                     # Stale-batch overrun: `batch` was built (get_next_batch_to_run,
-                    # top of loop) BEFORE this drain. The drain can finish reqs that
-                    # are still present in `batch` (the live running batch); running
-                    # them again double-frees their committed KV cache
-                    # (process_batch_result_decode -> release_kv_cache ->
-                    # pop_committed_kv_cache asserts "already freed"). Drop them —
-                    # the fast-path analogue of the _resolve_and_process pre_finished
-                    # drop. Higgs marks EOC finishes in the sampler so they leave the
-                    # running set a step earlier; a model that marks no early finish
-                    # (e.g. the Qwen talker) lands every finish in this window.
-                    if (
-                        batch is not None
-                        and batch.reqs
-                        and any(r.finished() for r in batch.reqs)
-                    ):
-                        batch.filter_batch()
-                        if not batch.reqs:
-                            batch = None
-                        self.cur_batch = batch
+                    # top of loop) BEFORE this drain, which can finish OR retract reqs
+                    # still present in it. Drop them before run_batch so they are not
+                    # forwarded/finalized a second time (double-free of already-freed
+                    # KV). Fast-path analogue of the _resolve_and_process drop.
+                    batch = self._drop_stale_overrun(batch)
+                    self.cur_batch = batch
                 if batch:
                     result = self.run_batch(batch)
                     if result is not _FAILED_BATCH_RESULT:

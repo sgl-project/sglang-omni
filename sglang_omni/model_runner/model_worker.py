@@ -274,7 +274,11 @@ def _apply_model_worker_backend_policy(
         and effective_quantization is None
         and moe_runner_backend == "auto"
     ):
-        server_args.moe_runner_backend = "flashinfer_cutlass"
+        # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
+        # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
+        server_args.moe_runner_backend = (
+            "triton" if _is_h20_device() else "flashinfer_cutlass"
+        )
         moe_runner_backend = server_args.moe_runner_backend
 
     if (
@@ -375,8 +379,22 @@ def _get_config_value(config: object, key: str) -> object | None:
     return getattr(config, key, None)
 
 
+def _is_h20_device() -> bool:
+    """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
+    try:
+        import re
+
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        return bool(re.search(r"\bH20\b", torch.cuda.get_device_name(0)))
+    except Exception:
+        return False
+
+
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror pinned SGLang 0.5.8 FP8 CUTLASS MoE assertions."""
+    """Mirror pinned SGLang 0.5.12.post1 FP8 CUTLASS MoE assertions."""
     try:
         from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
         from sglang.srt.utils import is_sm90_supported, is_sm100_supported

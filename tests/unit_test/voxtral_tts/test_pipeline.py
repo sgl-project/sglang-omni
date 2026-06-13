@@ -505,3 +505,19 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is True
     assert scheduler.server_args.torch_compile_max_bs == 16
+
+
+def test_enable_inductor_gemm_autotune_sets_per_shape_autotuning() -> None:
+    from torch._inductor import config as inductor_config
+
+    saved_gemm = inductor_config.max_autotune_gemm
+    saved_backends = inductor_config.max_autotune_gemm_backends
+    try:
+        inductor_config.max_autotune_gemm = False
+        inductor_config.max_autotune_gemm_backends = "ATEN"
+        stages._enable_inductor_gemm_autotune()
+        assert inductor_config.max_autotune_gemm is True
+        assert inductor_config.max_autotune_gemm_backends == "TRITON,ATEN"
+    finally:
+        inductor_config.max_autotune_gemm = saved_gemm
+        inductor_config.max_autotune_gemm_backends = saved_backends

@@ -20,6 +20,9 @@ from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
 )
+from sglang_omni.models.qwen3_tts.compat import (
+    apply_qwen_tts_transformers_compatibility_patches,
+)
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -167,7 +170,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         residual = None
         layers = self.layers
         if is_decode:
-            layers = self._compiled_decode_layers
+            layers = getattr(self, "_compiled_decode_layers", self.layers)
         for idx in range(self.start_layer, self.end_layer):
             hidden_states, residual = layers[idx](
                 positions=positions,
@@ -270,6 +273,7 @@ class Qwen3TTSTalker(nn.Module):
         )
 
         if root_config is not None and self.tts_model_type == "base":
+            apply_qwen_tts_transformers_compatibility_patches()
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
 
             self.speaker_encoder = Qwen3TTSSpeakerEncoder(
@@ -376,6 +380,7 @@ class Qwen3TTSTalker(nn.Module):
 
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
+        apply_qwen_tts_transformers_compatibility_patches()
         from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
 
         if sr != self.speaker_encoder_sample_rate:

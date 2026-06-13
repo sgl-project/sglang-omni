@@ -36,6 +36,7 @@ from sglang_omni.models.moss_tts_local.local_transformer import (
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
+from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,29 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         self._decode_input_embedding.weight.requires_grad_(False)
+
+        # Row-indexed decode-state pool: next-step-critical per-request state
+        # (next-frame feedback embedding, sampling params/seed, generation step)
+        # lives in process-lifetime GPU buffers sized off the staging table
+        # above. Allocated here, before any frame/backbone graph capture, so
+        # its addresses are fixed for the process lifetime.
+        self._state_pool = MossTTSLocalDecodeStatePool(self)
+
+    def acquire_row(self, rid: str) -> int:
+        """Assign (or return the existing) decode-state pool row for ``rid``."""
+        return self._state_pool.acquire_row(rid)
+
+    def release_row(self, rid: str) -> None:
+        """Return ``rid``'s pool row to the free list. No-op if unheld."""
+        self._state_pool.release_row(rid)
+
+    def reset_request(self, rid: str) -> None:
+        """Release pool state for a finished or aborted request (idempotent)."""
+        self._state_pool.release_row(rid)
+
+    def row_for(self, rid: str) -> int | None:
+        """Return ``rid``'s pool row, or ``None`` if it holds none."""
+        return self._state_pool.row_for(rid)
 
     @staticmethod
     def _cfg_get(config: Any, name: str, default: Any) -> Any:
