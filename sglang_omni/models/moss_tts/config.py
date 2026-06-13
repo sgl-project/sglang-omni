@@ -35,6 +35,12 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_args={
+                "encoder_device": "cpu",
+                "enable_encoder_torch_compile": False,
+                "encoder_torch_compile_mode": "default",
+                "encoder_torch_compile_warmup_seconds": [1.0],
+            },
             next="tts_engine",
         ),
         StageConfig(

@@ -112,6 +112,7 @@ class MossTTSPreparedRequest:
 @dataclass
 class MossTTSPreprocessingContext:
     processor: Any
+    reference_audio_encoder: Any | None = None
 
 
 _PREPROCESSING_CONTEXT: MossTTSPreprocessingContext | None = None
@@ -124,12 +125,19 @@ _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
-def set_moss_tts_preprocessing_context(*, processor: Any) -> None:
+def set_moss_tts_preprocessing_context(
+    *,
+    processor: Any,
+    reference_audio_encoder: Any | None = None,
+) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = MossTTSPreprocessingContext(processor=processor)
+        _PREPROCESSING_CONTEXT = MossTTSPreprocessingContext(
+            processor=processor,
+            reference_audio_encoder=reference_audio_encoder,
+        )
         _PREPARED_REQUESTS.clear()
         _INFLIGHT_REQUESTS.clear()
         _ABORTED_REQUESTS.clear()
@@ -400,11 +408,17 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
     return key_ids
 
 
-def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any] | None:
+def _reference_for_processor(
+    processor: Any,
+    ref_audio: Any | None,
+    reference_audio_encoder: Any | None = None,
+) -> list[Any] | None:
     if ref_audio is None:
         return None
     if not isinstance(ref_audio, str):
         return [ref_audio]
+    if reference_audio_encoder is not None:
+        return [reference_audio_encoder.encode_reference_audio(ref_audio)]
     match = _DATA_URI_RE.match(ref_audio)
     if match is None:
         return [ref_audio]
@@ -423,8 +437,16 @@ def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any]
     return [codes]
 
 
-def _build_processor_message(processor: Any, state: MossTTSState) -> dict[str, Any]:
-    reference = _reference_for_processor(processor, state.ref_audio)
+def _build_processor_message(
+    processor: Any,
+    state: MossTTSState,
+    reference_audio_encoder: Any | None = None,
+) -> dict[str, Any]:
+    reference = _reference_for_processor(
+        processor,
+        state.ref_audio,
+        reference_audio_encoder,
+    )
     return processor.build_user_message(
         text=state.text,
         reference=reference,
@@ -438,9 +460,14 @@ def _prepare_moss_tts_request(
     payload: StagePayload,
     *,
     processor: Any,
+    reference_audio_encoder: Any | None = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
-    message = _build_processor_message(processor, state)
+    message = _build_processor_message(
+        processor,
+        state,
+        reference_audio_encoder,
+    )
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
@@ -473,7 +500,11 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
         )
 
     try:
-        prepared = _prepare_moss_tts_request(payload, processor=context.processor)
+        prepared = _prepare_moss_tts_request(
+            payload,
+            processor=context.processor,
+            reference_audio_encoder=context.reference_audio_encoder,
+        )
     except BaseException:
         with _PREPARED_REQUESTS_LOCK:
             _INFLIGHT_REQUESTS.discard(rid)
