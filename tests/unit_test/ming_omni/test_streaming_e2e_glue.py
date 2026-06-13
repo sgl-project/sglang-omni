@@ -68,6 +68,20 @@ def test_thinker_stream_builder_suppresses_during_chunked_prefill():
     assert msgs == []
 
 
+def test_thinker_stream_builder_suppresses_current_chunk_counter():
+    builder = make_thinker_stream_output_builder(
+        tokenizer=_FakeTokenizer(),
+        eos_token_id=None,
+    )
+    req = _make_req()
+    delattr(req, "is_chunked")
+    req.inflight_middle_chunks = 1
+    req_data = _make_req_data(req)
+
+    msgs = builder("req-current-chunk", req_data, _make_req_output(5))
+    assert msgs == []
+
+
 def test_thinker_stream_builder_buffers_incomplete_utf8():
     # Tokenizer that produces an incomplete UTF-8 sequence on first call.
     class _IncompleteThenComplete:

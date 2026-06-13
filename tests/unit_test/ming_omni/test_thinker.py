@@ -417,6 +417,8 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     image_embeds = torch.tensor([[20.0, 21.0], [22.0, 23.0]])
     model_inputs = {"image_embeds": image_embeds}
     req = _fake_req(model_inputs, is_chunked=1, rid="chunked-image")
+    delattr(req, "is_chunked")
+    req.inflight_middle_chunks = 1
     forward_batch, schedule_batch = _fake_batch(torch, [3, 1], req)
 
     input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
@@ -425,7 +427,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     assert req.omni_model_inputs is model_inputs
     assert req._omni_consumed == {"image": 1}
 
-    req.is_chunked = 0
+    req.inflight_middle_chunks = 0
     forward_batch, schedule_batch = _fake_batch(torch, [3, 2], req)
 
     input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)

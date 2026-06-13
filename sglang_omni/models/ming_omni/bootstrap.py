@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,7 @@ def make_thinker_stream_output_builder(
         # Suppress while chunked prefill is still consuming prompt tokens —
         # prompt-side states could otherwise masquerade as the first
         # assistant token and leak prompt content into TTS.
-        if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
+        if req is not None and get_inflight_middle_chunks(req) > 0:
             return []
         if req_output.data is None or req is None:
             return []

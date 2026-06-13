@@ -14,6 +14,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ class ThinkerModelRunner(ModelRunner):
                     deepstack_visual_embeds_list.append(ds_embeds)
                     visual_pos_masks_list.append(global_mask)
 
-            if req.is_chunked == 0:
+            if get_inflight_middle_chunks(req) == 0:
                 req.omni_model_inputs = None
                 req._omni_consumed = None
 
