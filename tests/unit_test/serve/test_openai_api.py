@@ -164,24 +164,6 @@ class EmptyDeltaStreamingSpeechClient:
         )
 
 
-class BlockingStreamingSpeechClient:
-    def __init__(self) -> None:
-        self.started = asyncio.Event()
-        self.aborted: list[str] = []
-
-    def health(self) -> dict[str, Any]:
-        return {"running": True}
-
-    async def generate(self, request: Any, request_id: str | None = None):
-        del request
-        self.started.set()
-        await asyncio.Future()
-        yield GenerateChunk(request_id=request_id or "speech-1")
-
-    async def abort(self, request_id: str) -> None:
-        self.aborted.append(request_id)
-
-
 class PrefetchedBlockingStreamingSpeechClient:
     def __init__(self) -> None:
         self.aborted: list[str] = []
@@ -557,29 +539,6 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
 
 
 def test_speech_stream_defaults_to_raw_pcm() -> None:
-    client = TestClient(
-        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
-    )
-
-    response = client.post(
-        "/v1/audio/speech",
-        json={
-            "input": "hello",
-            "stream": True,
-            "response_format": "pcm",
-        },
-    )
-
-    expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/pcm")
-    assert response.headers["x-sample-rate"] == "24000"
-    assert response.headers["x-channels"] == "1"
-    assert response.headers["x-bit-depth"] == "16"
-    assert response.content == expected
-
-
-def test_speech_stream_returns_raw_pcm_bytes() -> None:
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
     )
