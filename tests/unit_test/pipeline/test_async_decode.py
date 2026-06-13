@@ -64,10 +64,10 @@ class _StubRunner(ModelRunner):
         return f"hostbuf-{self.launch_calls}"
 
     def post_decode_resolve(
-        self, host_buf, result, forward_batch, schedule_batch, requests
+        self, launch_buf, result, forward_batch, schedule_batch, requests
     ):
         self.resolve_calls += 1
-        self.last_resolved_buf = host_buf
+        self.last_resolved_buf = launch_buf
 
     def _finalize(
         self,
@@ -140,12 +140,12 @@ def test_two_launches_return_distinct_handles():
     with _patch_event(ready=True):
         s1 = r.execute_launch(_sched_output(1))
         s2 = r.execute_launch(_sched_output(1))
-        assert s1 is not s2 and s1.host_buf != s2.host_buf
+        assert s1 is not s2 and s1.launch_buf != s2.launch_buf
         # resolve in order N-1 then N
         r.execute_resolve(s1)
-        assert r.last_resolved_buf == s1.host_buf
+        assert r.last_resolved_buf == s1.launch_buf
         r.execute_resolve(s2)
-        assert r.last_resolved_buf == s2.host_buf
+        assert r.last_resolved_buf == s2.launch_buf
 
 
 def test_resolve_none_returns_none():
@@ -185,6 +185,48 @@ def test_resolve_recomputes_finished_overrun_skip_rids():
         step = r.execute_launch(sched_output)
         r.execute_resolve(step)
     assert r.last_skip_rids == {"skip"}
+
+
+def test_resolve_skips_retracted_row():
+    """A request retracted (KV freed, returned to waiting) while its lagged step
+    was in flight must be skipped at resolve, exactly like a prior-step finish.
+
+    This guards the shared async-resolve path (Higgs and MOSS-TTS-Local both use
+    base ModelRunner.execute_resolve): without overlap, upstream would otherwise
+    append + check_finished the retracted req and re-free its already-freed KV
+    (a double-free assertion). Crash-fix only; faithful frame accounting for a
+    retracted req is out of scope here.
+    """
+    r = _StubRunner()
+    keep_req = types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+    retracted_req = types.SimpleNamespace(finished=lambda: False, is_retracted=True)
+    sched_output = types.SimpleNamespace(
+        requests=[
+            types.SimpleNamespace(
+                request_id="keep",
+                data=types.SimpleNamespace(req=keep_req),
+            ),
+            types.SimpleNamespace(
+                request_id="retracted",
+                data=types.SimpleNamespace(req=retracted_req),
+            ),
+        ],
+        batch_data=object(),
+    )
+    with _patch_event(ready=True):
+        step = r.execute_launch(sched_output)
+        r.execute_resolve(step)
+    assert r.last_skip_rids == {"retracted"}
+
+
+def test_base_lookahead_eligible_default_true():
+    """Base runner default: any batch is lookahead-eligible. A model with a
+    sync-only collect fallback overrides this; the scheduler's async gate
+    consults it alongside the min-batch-size and is-decode checks.
+    """
+    r = _StubRunner()
+    assert r.lookahead_eligible(types.SimpleNamespace(reqs=[])) is True
+    assert r.lookahead_eligible(None) is True
 
 
 def test_finalize_skips_overrun_bookkeeping_and_extras():

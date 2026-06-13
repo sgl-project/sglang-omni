@@ -72,6 +72,24 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        """Route to sync when the batch cannot take the graphed frame-decode
+        path: any request with ``audio_repetition_penalty != 1`` (its eager
+        rep-history gather lags one frame under lookahead and would diverge from
+        sync) or ``bs > frame_graph_max_bs``.
+        """
+        reqs = getattr(batch, "reqs", None) or []
+        if len(reqs) > int(getattr(self.model, "frame_graph_max_bs", 0)):
+            return False
+        for req in reqs:
+            data = getattr(req, "_omni_data", None)
+            if (
+                data is not None
+                and float(getattr(data, "audio_repetition_penalty", 1.0)) != 1.0
+            ):
+                return False
+        return True
+
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
@@ -94,7 +112,12 @@ class MossTTSLocalModelRunner(ModelRunner):
                 # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-                self.model._state_pool.reset_for_refill(sched_req.request_id)
+            # Realign the launch-side counter and clear the stranded pool row on
+            # any retraction re-prefill, including one retracted before it emitted
+            # a frame (empty output_rows). Both are no-ops for a fresh prefill:
+            # the counters are already aligned and no pool row is held.
+            data.sampling_steps = int(getattr(data, "generation_steps", 0))
+            self.model._state_pool.reset_for_refill(sched_req.request_id)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
@@ -159,6 +182,19 @@ class MossTTSLocalModelRunner(ModelRunner):
         del forward_batch
         if not requests:
             return
+        rows, end_id = self._run_frame_decode(result, requests)
+        # Radix key is a capture-safe GPU hash: a device op, no host sync.
+        next_text = rows[:, 0]
+        next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
+        result.next_token_ids = next_token_ids
+        schedule_batch.output_ids = next_token_ids
+
+    def _run_frame_decode(self, result: Any, requests: list):
+        """GPU half shared by sync ``_collect_frame`` and async
+        ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
+        ``next_token_ids``; the caller does, because the async path keeps a
+        private device snapshot of the published ids for resolve to restore.
+        """
         hidden_states = getattr(result.logits_output, "hidden_states", None)
         if not isinstance(hidden_states, torch.Tensor):
             raise RuntimeError(
@@ -199,8 +235,28 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_p = params["audio_top_p"]
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
+        # Advance the launch-side counter only for emitted rows; non-final
+        # chunked rows take a read-only position so a mid-prefill chunk's frame
+        # cannot shift the final chunk's sampling position off the no-chunk path.
+        emit_set = {
+            i
+            for i, sched_req in enumerate(requests)
+            if not self._is_chunked_request(sched_req)
+        }
         gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
+            [
+                (
+                    self._advance_sampling_position(d)
+                    if i in emit_set
+                    else max(
+                        int(getattr(d, "sampling_steps", None) or 0),
+                        int(d.generation_steps),
+                    )
+                )
+                for i, d in enumerate(datas)
+            ],
+            dtype=torch.long,
+            device=device,
         )
         rep_penalties = [float(d.audio_repetition_penalty) for d in datas]
         rep_histories = self._gather_rep_histories(datas, rep_penalties, device)
@@ -268,34 +324,64 @@ class MossTTSLocalModelRunner(ModelRunner):
         rows[:, 0] = next_text
         rows[:, 1:] = codes
 
-        next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
-        result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
         if embeds is None:
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
-        emit_indices = [
-            i
-            for i, sched_req in enumerate(requests)
-            if not self._is_chunked_request(sched_req)
-        ]
-        if not emit_indices:
-            return
+        emit_indices = sorted(emit_set)
+        if emit_indices:
+            emit_index_t = torch.tensor(
+                emit_indices, dtype=torch.long, device=rows.device
+            )
+            emit_pool_rows = [pool_rows[i] for i in emit_indices]
+            emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
+            emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
+            pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
+                device=pool.feedback_embeds.device,
+                dtype=pool.feedback_embeds.dtype,
+            )
+            result.moss_journal = MossTTSLocalDecodeJournal(
+                rids=[requests[i].request_id for i in emit_indices],
+                pool_rows=emit_pool_rows,
+                rows=rows.index_select(0, emit_index_t),
+            )
+        # Always return rows so both the sync inline path and the async launch
+        # publish next_token_ids; an all-chunked batch just attaches no journal.
+        return rows, end_id
 
-        emit_index_t = torch.tensor(emit_indices, dtype=torch.long, device=rows.device)
-        emit_pool_rows = [pool_rows[i] for i in emit_indices]
-        emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
-        emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
-        pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
-            device=pool.feedback_embeds.device,
-            dtype=pool.feedback_embeds.dtype,
-        )
-        result.moss_journal = MossTTSLocalDecodeJournal(
-            rids=[requests[i].request_id for i in emit_indices],
-            pool_rows=emit_pool_rows,
-            rows=rows.index_select(0, emit_index_t),
-        )
+    def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
+        """Async-decode GPU half of ``post_decode``: run the frame micro-decode
+        (``_run_frame_decode``) and publish the device-computed radix ids, no
+        host sync. Returns a private device snapshot of those ids for resolve:
+        the base aliases ``next_token_ids`` onto ``output_ids``, which the next
+        step overwrites in place before this step's lagged resolve, clobbering
+        the stop id and silently dropping a bs=1 eos finish (4096-frame runaway).
+        The clone preserves it; resolve swaps it back.
+        """
+        del forward_batch
+        if not requests:
+            return None
+        rows, end_id = self._run_frame_decode(result, requests)
+        next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
+        result.next_token_ids = next_token_ids
+        return next_token_ids.clone()
+
+    def post_decode_resolve(
+        self,
+        launch_buf: Any,
+        result: Any,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        """Async-decode host half: restore the launch-time ``next_token_ids``
+        snapshot (a pointer swap) so the shared ``_finalize`` tail reads the real
+        stop id, which the next step's in-place write clobbered from the aliased
+        tensor before this lagged resolve.
+        """
+        del forward_batch, schedule_batch, requests
+        if launch_buf is not None and result is not None:
+            result.next_token_ids = launch_buf
 
     @staticmethod
     def _row_radix_token_ids(
@@ -324,6 +410,21 @@ class MossTTSLocalModelRunner(ModelRunner):
         no GPU->CPU sync. See ``docs/design/gpu_radix_hash.md``.
         """
         return gpu_radix_row_hash(rows, next_text, end_id)
+
+    @staticmethod
+    def _advance_sampling_position(data: Any) -> int:
+        """RNG position for this collect, advancing the launch-side counter in
+        floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
+        path the two stay equal (generation_steps increments after every collect)
+        so the floor is a no-op and the position is bit-identical to before;
+        under lookahead generation_steps lags, so the floor lifts launch(N+1) off
+        the stale N.
+        """
+        s = max(
+            int(getattr(data, "sampling_steps", None) or 0), int(data.generation_steps)
+        )
+        data.sampling_steps = s + 1
+        return s
 
     @staticmethod
     def _gather_rep_histories(
@@ -424,6 +525,16 @@ class MossTTSLocalModelRunner(ModelRunner):
                 f"{journal.rids} != {expected_rids}"
             )
         for i, sched_req in enumerate(expected_reqs):
+            # Overrun: a request finished or retracted in a PRIOR step is still
+            # in this lagged resolve batch; its wasted frame must not reach
+            # output_rows / the vocoder. No-op on the sync path.
+            req = sched_req.data.req
+            if req is not None:
+                finished_fn = getattr(req, "finished", None)
+                if (callable(finished_fn) and finished_fn()) or bool(
+                    getattr(req, "is_retracted", False)
+                ):
+                    continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
                 continue

@@ -66,7 +66,7 @@ class HiggsTTSModelRunner(ModelRunner):
 
     def post_decode_launch(self, result, forward_batch, requests):
         """Async-decode GPU half: scatter + pack (GPU->GPU), then a
-        non-blocking D2H of the staging snapshot into a pinned host buffer.
+        non-blocking copy of the staging snapshot into a pinned host staging buffer.
         Returns the buffer; the base runner records the event right after, so
         ``event.query()`` then means "this snapshot is on the host".
         """

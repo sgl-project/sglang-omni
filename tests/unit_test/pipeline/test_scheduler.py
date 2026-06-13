@@ -266,6 +266,108 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     assert batch.input_ids.tolist() == [11, 12]
 
 
+def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
+    """OmniScheduler overrides upstream run_batch, so it must count forwards
+    itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
+    gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
+    sync run_batch and per async launch; resolve does no forward.
+    """
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = torch.tensor([1], dtype=torch.int32)
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+        def execute_launch(self, sched_output):
+            return SimpleNamespace()
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+    scheduler.forward_ct = 0
+
+    def _batch():
+        return SimpleNamespace(
+            reqs=[SimpleNamespace(rid="r", _omni_data=SimpleNamespace())],
+            output_ids=None,
+        )
+
+    scheduler._run_batch(_batch())
+    assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
+
+    scheduler._run_batch_launch(_batch())
+    assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
+
+
+def test_omni_scheduler_resolve_drops_retracted_req() -> None:
+    """A request retracted (KV freed, back to waiting) while its lagged async
+    step was in flight must be dropped from the resolve batch — skip_rids plus
+    excluded from process_batch_result and next_token_ids — so upstream never
+    re-frees its already-freed KV (the double-free assertion). Shared crash-fix
+    for the async resolve path used by Higgs and MOSS-TTS-Local.
+    """
+    captured: dict = {}
+
+    def fake_resolve(batch, sched_output, pending_step, skip_rids=None):
+        captured["skip_rids"] = skip_rids
+        return SimpleNamespace(next_token_ids=torch.tensor([10, 20], dtype=torch.long))
+
+    def fake_process(batch, result):
+        captured["reqs"] = [r.rid for r in batch.reqs]
+        captured["ntids"] = result.next_token_ids.tolist()
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._run_batch_resolve = fake_resolve
+    scheduler.process_batch_result = fake_process
+
+    keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
+    retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
+    batch = SimpleNamespace(reqs=[keep, retr])
+
+    scheduler._resolve_and_process(batch, object(), object())
+
+    assert captured["skip_rids"] == {"retr"}
+    assert captured["reqs"] == ["keep"]
+    assert captured["ntids"] == [10]  # retracted row trimmed from next_token_ids
+
+
+def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
+    """The synchronous fast path runs after _resolve_pending_async, whose drain can
+    retract a req still present in the stale batch. The fast path must drop finished
+    AND retracted reqs (not only finished) before run_batch, or a retracted req is
+    forwarded/finalized again and re-frees its already-freed KV.
+    """
+    captured: dict = {}
+
+    class FakeBatch:
+        def __init__(self, reqs):
+            self.reqs = reqs
+
+        def filter_batch(self, keep_indices=None):
+            captured["keep_indices"] = keep_indices
+            self.reqs = [self.reqs[i] for i in keep_indices]
+
+    scheduler = object.__new__(OmniScheduler)
+    keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
+    retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
+
+    # retracted (not finished) must be dropped from the stale batch
+    out = scheduler._drop_stale_overrun(FakeBatch([keep, retr]))
+    assert captured["keep_indices"] == [0]
+    assert [r.rid for r in out.reqs] == ["keep"]
+
+    # all dropped -> None so run_batch is skipped
+    fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
+    assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
+
+    # nothing stale -> batch returned unchanged, filter_batch never called
+    captured.clear()
+    clean = FakeBatch([keep])
+    assert scheduler._drop_stale_overrun(clean) is clean
+    assert "keep_indices" not in captured
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:
