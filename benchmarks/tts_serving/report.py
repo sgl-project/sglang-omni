@@ -454,10 +454,10 @@ def _coverage_failures(
         failures.append(_coverage_gap(f"{endpoint}.enabled", [endpoint]))
     if "speech" in enabled_endpoint_set:
         failures.extend(_speech_coverage_failures(scenarios))
-    if "speech_sse" in enabled_endpoint_set and not _has_capability(
-        scenarios, "speech.sse"
+    if "speech_stream" in enabled_endpoint_set and not _has_capability(
+        scenarios, "speech.stream"
     ):
-        failures.append(_coverage_gap("speech.sse", ["speech.sse"]))
+        failures.append(_coverage_gap("speech.stream", ["speech.stream"]))
     if "batch" in enabled_endpoint_set:
         failures.extend(_batch_coverage_failures(scenarios))
     if "voices" in enabled_endpoint_set:
@@ -481,7 +481,7 @@ def _coverage_matrix(
 
     for endpoint, contract in (
         ("speech", "api.speech"),
-        ("speech_sse", "api.speech_sse"),
+        ("speech_stream", "api.speech_stream"),
         ("batch", "api.batch"),
         ("voices", "api.voices"),
         ("websocket", "api.websocket"),

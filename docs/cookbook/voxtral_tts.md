@@ -88,7 +88,8 @@ with open("output.wav", "wb") as f:
 
 ### Streaming
 
-Set `"stream": true` to receive audio chunks in real time over Server-Sent Events (SSE):
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -96,12 +97,15 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "input": "Get the trust fund to the bank early.",
     "voice": "casual_male",
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
-Each event carries a base64-encoded audio chunk; the stream ends with `data: [DONE]`. See the
-[Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming) for a full Python SSE consumer.
+Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
+the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
+for a full Python raw PCM consumer.
 
 ## Request Parameters
 
@@ -111,7 +115,7 @@ Each event carries a base64-encoded audio chunk; the stream ends with `data: [DO
 | `voice` | `cheerful_female` | Preset voice name from the checkpoint's `voice_embedding/` directory |
 | `max_new_tokens` | `4096` | Maximum number of generated acoustic tokens |
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
-| `stream` | `false` | Stream audio chunks over SSE |
+| `stream` | `false` | Stream raw PCM audio chunks |
 
 > Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so sampling
 > parameters such as `top_p`, `top_k`, and `temperature` are not used. Reference-clip voice

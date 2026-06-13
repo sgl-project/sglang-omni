@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-import json
 import logging
 import shutil
 import tempfile
@@ -92,6 +91,7 @@ def _build_payload(
         payload["seed"] = seed
     if stream:
         payload["stream"] = True
+        payload["response_format"] = "pcm"
 
     # Precedence: if the user supplies both an uploaded file and a URL,
     # the uploaded file wins. Documented in the UI as well.
@@ -216,28 +216,43 @@ def create_app(api_base: str) -> FastAPI:
             stream=True,
         )
 
-        async def proxy_sse():
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST", f"{api_base}/v1/audio/speech", json=payload
-                ) as resp:
-                    if resp.status_code != 200:
-                        err = await resp.aread()
-                        msg = json.dumps({"error": err.decode("utf-8", "replace")})
-                        yield f"data: {msg}\n\n".encode()
-                        return
-                    async for line in resp.aiter_lines():
-                        if line:
-                            yield (line + "\n").encode()
-                        else:
-                            yield b"\n"
+        client = httpx.AsyncClient(timeout=None)
+        try:
+            backend_request = client.build_request(
+                "POST", f"{api_base}/v1/audio/speech", json=payload
+            )
+            resp = await client.send(backend_request, stream=True)
+        except httpx.HTTPError as exc:
+            await client.aclose()
+            raise HTTPException(status_code=502, detail=f"Backend error: {exc}")
+
+        if resp.status_code != 200:
+            err = await resp.aread()
+            await resp.aclose()
+            await client.aclose()
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=err.decode("utf-8", "replace"),
+            )
+
+        async def proxy_audio():
+            try:
+                async for chunk in resp.aiter_raw():
+                    if chunk:
+                        yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
 
         return StreamingResponse(
-            proxy_sse(),
-            media_type="text/event-stream",
+            proxy_audio(),
+            media_type=resp.headers.get("content-type", "audio/pcm"),
             headers={
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-store",
                 "X-Accel-Buffering": "no",
+                "X-Sample-Rate": resp.headers.get("x-sample-rate", "24000"),
+                "X-Channels": resp.headers.get("x-channels", "1"),
+                "X-Bit-Depth": resp.headers.get("x-bit-depth", "16"),
             },
         )
 

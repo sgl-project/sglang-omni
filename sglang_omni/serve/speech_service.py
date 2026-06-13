@@ -380,11 +380,7 @@ def _build_speech_prompt(
 def _build_extra_params(request: CreateSpeechRequest) -> dict[str, Any]:
     extra_params: dict[str, Any] = {}
     initial_codec_chunk_frames = request.initial_codec_chunk_frames
-    if (
-        initial_codec_chunk_frames is None
-        and request.stream
-        and request.stream_format == "audio"
-    ):
+    if initial_codec_chunk_frames is None and request.stream:
         initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
     if initial_codec_chunk_frames is not None:
         extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames

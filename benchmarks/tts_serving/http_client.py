@@ -1,22 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""HTTP and SSE clients for the TTS serving benchmark."""
+"""HTTP clients for the TTS serving benchmark."""
 
 from __future__ import annotations
 
 import asyncio
-import binascii
 import time
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import AsyncIterator
 
 import aiohttp
 
-from benchmarks.tts_serving.audio_validation import (
-    MIN_PCM_AUDIO_BYTES,
-    PCM_CONTENT_TYPES,
-    validate_audio_response,
-    validate_pcm_chunk,
-)
+from benchmarks.tts_serving.audio_validation import validate_audio_response
 from benchmarks.tts_serving.batch_client import handle_batch_success
 from benchmarks.tts_serving.http_contracts import (
     MAX_HTTP_RESPONSE_BYTES,
@@ -27,16 +20,13 @@ from benchmarks.tts_serving.http_contracts import (
     _mark_success,
     _mark_unexpected_success,
     _mark_unsupported_contract,
-    _result_has_terminal_error,
     read_response_body,
 )
 from benchmarks.tts_serving.metrics import (
     PCM_SAMPLE_RATE,
-    SSE_DONE_MARKER,
     ScenarioResult,
     classify_http_status,
     finish_timing,
-    parse_sse_audio_event,
 )
 from benchmarks.tts_serving.scenarios import Scenario
 from benchmarks.tts_serving.spec import BenchmarkSpec
@@ -53,13 +43,6 @@ from benchmarks.tts_serving.voice_client import (
     run_voice_upload_delete_race,
     run_voice_upload_metadata_sequence,
 )
-
-
-@dataclass
-class SseAudioState:
-    total_bytes: int = 0
-    duration_s: float = 0.0
-    has_signal: bool = False
 
 
 async def run_http_scenario(
@@ -113,8 +96,8 @@ async def run_http_scenario(
             )
             result.request_bytes = request_size(scenario)
             async with session.post(url, **kwargs) as response:
-                if scenario.endpoint == "speech_sse":
-                    await _handle_sse_response(
+                if scenario.endpoint == "speech_stream":
+                    await _handle_streaming_audio_response(
                         response,
                         result,
                         start,
@@ -209,6 +192,7 @@ async def _handle_binary_response(
             body,
             response_format=response_format,
             content_type=response.headers.get("Content-Type"),
+            sample_rate=_response_sample_rate(response),
         )
         if not validation.ok:
             _mark_protocol_error(
@@ -231,7 +215,7 @@ async def _handle_binary_response(
     )
 
 
-async def _handle_sse_response(
+async def _handle_streaming_audio_response(
     response: aiohttp.ClientResponse,
     result: ScenarioResult,
     start: float,
@@ -252,115 +236,65 @@ async def _handle_sse_response(
             return
         _classify_http_failure(response.status, body_text, result, scenario)
         return
-    content_type = str(response.headers.get("Content-Type", "")).lower()
-    if "text/event-stream" not in content_type:
+
+    if not scenario.expect_success:
         try:
             body = await read_response_body(response)
         except ResponseBodyTooLarge as exc:
             _mark_response_body_too_large(result, exc)
             return
         result.response_bytes = len(body)
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=(
-                "SSE speech endpoint returned 2xx without text/event-stream "
-                f"content-type: {response.headers.get('Content-Type')!r}"
-            ),
-        )
+        _mark_unexpected_success(result, scenario)
         return
 
-    buffer = bytearray()
-    audio_state = SseAudioState()
+    body = bytearray()
     chunk_times: list[float] = []
-    streamed_response_bytes = 0
-    saw_done = False
-    async for chunk in response.content.iter_any():
-        streamed_response_bytes += len(chunk)
-        if streamed_response_bytes > MAX_HTTP_RESPONSE_BYTES:
+    async for chunk, chunk_time in _iter_response_http_chunks(response):
+        if not chunk_times:
+            result.ttfa_s = chunk_time - start
+            result.first_audio_payload_bytes = len(chunk)
+        chunk_times.append(chunk_time)
+        body.extend(chunk)
+        if len(body) > MAX_HTTP_RESPONSE_BYTES:
             _mark_response_body_too_large(
                 result,
                 ResponseBodyTooLarge(
-                    bytes_read=streamed_response_bytes,
+                    bytes_read=len(body),
                     max_bytes=MAX_HTTP_RESPONSE_BYTES,
                 ),
             )
             return
-        buffer.extend(chunk)
-        while b"\n" in buffer:
-            raw_line, _, rest = buffer.partition(b"\n")
-            buffer = bytearray(rest)
-            saw_done = (
-                _merge_sse_line(
-                    raw_line.decode("utf-8", errors="replace").strip(),
-                    result,
-                    start,
-                    chunk_times,
-                    scenario,
-                    audio_state,
-                )
-                or saw_done
-            )
-            if _result_has_terminal_error(result):
-                break
-        if _result_has_terminal_error(result):
-            break
-    if not _result_has_terminal_error(result) and buffer.strip():
-        saw_done = (
-            _merge_sse_line(
-                bytes(buffer).decode("utf-8", errors="replace").strip(),
-                result,
-                start,
-                chunk_times,
-                scenario,
-                audio_state,
-            )
-            or saw_done
-        )
-    if _result_has_terminal_error(result):
-        result.success = False
-        return
-    if not scenario.expect_success:
-        _mark_unexpected_success(result, scenario)
-        return
-    if result.audio_bytes <= 0:
+
+    if chunk_times:
+        result.inter_chunk_s = [
+            now - prev for prev, now in zip(chunk_times, chunk_times[1:])
+        ]
+    result.audio_chunk_count = len(chunk_times)
+    finish_timing(result, start)
+    result.response_bytes = len(body)
+    response_format = str(scenario.payload.get("response_format", ""))
+    validation = await asyncio.to_thread(
+        validate_audio_response,
+        bytes(body),
+        response_format=response_format,
+        content_type=response.headers.get("Content-Type"),
+        sample_rate=_response_sample_rate(response),
+    )
+    if not validation.ok:
         _mark_protocol_error(
             result,
-            status="empty_stream",
-            error="SSE speech endpoint completed without audio bytes",
-        )
-        result.response_bytes = result.audio_bytes
-        return
-    if not saw_done:
-        _mark_protocol_error(
-            result,
-            status="incomplete_sse_stream",
-            error="SSE speech endpoint completed without terminal data: [DONE]",
-        )
-        result.response_bytes = result.audio_bytes
-        return
-    if audio_state.total_bytes < MIN_PCM_AUDIO_BYTES:
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
+            status="invalid_streaming_audio_response",
             error=(
-                "SSE stream completed before the minimum generated-audio duration "
-                f"(bytes={audio_state.total_bytes}, minimum={MIN_PCM_AUDIO_BYTES})"
+                "speech streaming endpoint returned 2xx without the requested "
+                f"audio contract (format={response_format!r}, "
+                f"content-type={response.headers.get('Content-Type')!r}, "
+                f"bytes={len(body)}, validation_error={validation.error})"
             ),
         )
-        result.response_bytes = result.audio_bytes
         return
-    if not audio_state.has_signal:
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error="SSE stream completed with only zero-amplitude PCM chunks",
-        )
-        result.response_bytes = result.audio_bytes
-        return
-    result.audio_duration_s = audio_state.duration_s
+    result.audio_bytes = len(body)
+    result.audio_duration_s = validation.duration_s
     _mark_success(result)
-    result.response_bytes = result.audio_bytes
 
 
 async def _response_body_and_text(
@@ -385,127 +319,35 @@ def _mark_response_body_too_large(
     )
 
 
-def _merge_sse_line(
-    line: str,
-    result: ScenarioResult,
-    start: float,
-    chunk_times: list[float],
-    scenario: Scenario,
-    audio_state: SseAudioState,
-) -> bool:
-    if not line or line.startswith(":"):
-        return False
-    if line == SSE_DONE_MARKER:
-        return True
+def _response_sample_rate(response: aiohttp.ClientResponse) -> int:
+    value = response.headers.get("X-Sample-Rate")
+    if value is None:
+        return PCM_SAMPLE_RATE
     try:
-        audio_bytes, event = parse_sse_audio_event(line)
-    except (TypeError, ValueError, binascii.Error) as exc:
-        result.status = "failed"
-        result.capability = "fail"
-        result.error_type = exc.__class__.__name__
-        result.error_class = "protocol_error"
-        result.error = f"malformed SSE audio event: {exc}"
-        return False
-    if event is None:
-        return False
-    if audio_bytes is None:
-        if _is_terminal_sse_json_event(event):
-            return False
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=f"SSE event did not include base64 audio payload: {event}",
-        )
-        return False
-    audio = event.get("audio") if isinstance(event, dict) else None
-    if not isinstance(audio, dict):
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=f"SSE audio event has invalid audio metadata: {event}",
-        )
-        return False
-    audio_format = audio.get("format")
-    expected_format = str(scenario.payload.get("response_format", ""))
-    if not isinstance(audio_format, str) or audio_format != expected_format:
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=(
-                "SSE audio.format must match requested response_format "
-                f"(expected={expected_format!r}, observed={audio_format!r})"
-            ),
-        )
-        return False
-    mime_type = audio.get("mime_type")
-    if mime_type is not None and not isinstance(mime_type, str):
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=f"SSE audio.mime_type must be a string when present: {event}",
-        )
-        return False
-    normalized_mime_type = (
-        (mime_type or "application/octet-stream").lower().split(";", 1)[0]
-    )
-    if audio_format != "pcm" or normalized_mime_type not in PCM_CONTENT_TYPES:
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=(
-                "SSE stream=true audio chunks must be PCM "
-                f"(format={audio_format!r}, mime_type={mime_type!r})"
-            ),
-        )
-        return False
-    sample_rate = audio.get("sample_rate", PCM_SAMPLE_RATE)
-    if (
-        not isinstance(sample_rate, int)
-        or isinstance(sample_rate, bool)
-        or sample_rate <= 0
-    ):
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=f"SSE audio.sample_rate must be a positive integer: {event}",
-        )
-        return False
-    chunk_validation = validate_pcm_chunk(
-        audio_bytes,
-        sample_rate=sample_rate,
-    )
-    if not chunk_validation.ok:
-        _mark_protocol_error(
-            result,
-            status="invalid_sse_response",
-            error=(
-                "SSE audio.data must decode to valid 16-bit PCM chunk "
-                f"(decoded_bytes={len(audio_bytes)}, "
-                f"validation_error={chunk_validation.error})"
-            ),
-        )
-        return False
-    now = time.perf_counter()
-    if result.ttfa_s is None:
-        result.ttfa_s = now - start
-    elif chunk_times:
-        result.inter_chunk_s.append(now - chunk_times[-1])
-    chunk_times.append(now)
-    audio_state.total_bytes += len(audio_bytes)
-    audio_state.duration_s += chunk_validation.duration_s
-    audio_state.has_signal = audio_state.has_signal or any(audio_bytes)
-    result.audio_bytes += len(audio_bytes)
-    result.response_bytes += len(audio_bytes)
-    return False
+        sample_rate = int(value)
+    except ValueError:
+        return PCM_SAMPLE_RATE
+    return sample_rate if sample_rate > 0 else PCM_SAMPLE_RATE
 
 
-def _is_terminal_sse_json_event(event: Any) -> bool:
-    if not isinstance(event, dict):
-        return False
-    if event.get("audio") is not None:
-        return False
-    finish_reason = event.get("finish_reason")
-    return isinstance(finish_reason, str) and bool(finish_reason)
+async def _iter_response_http_chunks(
+    response: aiohttp.ClientResponse,
+) -> AsyncIterator[tuple[bytes, float]]:
+    pending = bytearray()
+    pending_start_s: float | None = None
+    async for data, end_of_http_chunk in response.content.iter_chunks():
+        now = time.perf_counter()
+        if data:
+            if not pending:
+                pending_start_s = now
+            pending.extend(data)
+        if end_of_http_chunk and pending:
+            yield bytes(pending), pending_start_s or now
+            pending.clear()
+            pending_start_s = None
+
+    if pending:
+        yield bytes(pending), pending_start_s or time.perf_counter()
 
 
 def _scenario_response_format(scenario: Scenario) -> str | None:

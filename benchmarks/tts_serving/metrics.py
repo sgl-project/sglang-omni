@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import struct
 import time
 from dataclasses import asdict, dataclass, field
@@ -20,8 +18,6 @@ WAV_FORMAT_OFFSET = 8
 WAV_FORMAT_END = 12
 WAV_RIFF_MARKER = b"RIFF"
 WAV_WAVE_MARKER = b"WAVE"
-SSE_DATA_PREFIX = "data: "
-SSE_DONE_MARKER = "data: [DONE]"
 
 
 @dataclass
@@ -52,6 +48,8 @@ class ScenarioResult:
     generator_lag_s: float | None = None
     ttfa_s: float | None = None
     inter_chunk_s: list[float] = field(default_factory=list)
+    audio_chunk_count: int = 0
+    first_audio_payload_bytes: int = 0
     audio_bytes: int = 0
     request_bytes: int = 0
     response_bytes: int = 0
@@ -121,25 +119,6 @@ def _wav_duration(data: bytes) -> float:
     if sample_rate <= 0 or channels <= 0 or bits <= 0 or data_size <= 0:
         return 0.0
     return data_size / float(sample_rate * channels * bits // 8)
-
-
-def parse_sse_audio_event(line: str) -> tuple[bytes | None, dict[str, Any] | None]:
-    if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
-        return None, None
-    event = json.loads(line[len(SSE_DATA_PREFIX) :])
-    if not isinstance(event, dict):
-        raise ValueError("SSE data payload must be a JSON object")
-    audio = event.get("audio")
-    if audio is None:
-        return None, event
-    if not isinstance(audio, dict):
-        raise ValueError("SSE audio field must be a JSON object")
-    audio_data = audio.get("data")
-    if not audio_data:
-        return None, event
-    if not isinstance(audio_data, str):
-        raise ValueError("SSE audio.data field must be a base64 string")
-    return base64.b64decode(audio_data, validate=True), event
 
 
 def finish_timing(result: ScenarioResult, start: float) -> None:

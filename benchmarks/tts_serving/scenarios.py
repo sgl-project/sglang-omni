@@ -74,7 +74,7 @@ PROFILE_MIXES = {
         ("speech_length", 12),
         ("speech_reference", 10),
         ("speech_sdk", 5),
-        ("speech_sse", 12),
+        ("speech_stream", 12),
         ("speech_malformed", 16),
         ("batch", 14),
         ("voices", 12),
@@ -279,11 +279,11 @@ def _required_stage_scenarios(
             speech_edges.append(_speech_malformed(next_index, spec, stage))
             next_index += 1
         groups.append(speech_edges)
-    if "speech_sse" in endpoint_set:
+    if "speech_stream" in endpoint_set:
         groups.append(
             [
-                _speech_sse(next_index, spec, stage),
-                _speech_sse_non_pcm_error(next_index + 1, spec, stage),
+                _speech_raw_pcm_stream(next_index, spec, stage),
+                _speech_stream_non_pcm_error(next_index + 1, spec, stage),
             ]
         )
         next_index += 2
@@ -379,8 +379,8 @@ def _weighted_scenario(
             stage,
             response_format=rng.choice(SDK_RESPONSE_FORMATS),
         )
-    if scenario_type == "speech_sse":
-        return _speech_sse(index, spec, stage)
+    if scenario_type == "speech_stream":
+        return _speech_raw_pcm_stream(index, spec, stage)
     if scenario_type == "speech_malformed":
         return _speech_malformed(index, spec, stage)
     if scenario_type == "batch":
@@ -434,8 +434,8 @@ def _choose_scenario_type(
 
 
 def _scenario_type_enabled(scenario_type: str, endpoint_set: set[str]) -> bool:
-    if scenario_type == "speech_sse":
-        return "speech_sse" in endpoint_set
+    if scenario_type == "speech_stream":
+        return "speech_stream" in endpoint_set
     if scenario_type == "speech_sdk":
         return "speech" in endpoint_set
     if scenario_type == "batch":
@@ -836,7 +836,9 @@ def _speech_reference_failure(
     )
 
 
-def _speech_sse(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scenario:
+def _speech_raw_pcm_stream(
+    index: int, spec: BenchmarkSpec, stage: LoadStage
+) -> Scenario:
     payload = _base_payload(spec, BASE_TEXTS[index % len(BASE_TEXTS)])
     payload.update(
         {
@@ -846,17 +848,17 @@ def _speech_sse(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scenario:
         }
     )
     return Scenario(
-        id=_scenario_id(stage, "speech_sse", index),
-        endpoint="speech_sse",
-        category="speech_sse",
+        id=_scenario_id(stage, "speech_stream", index),
+        endpoint="speech_stream",
+        category="speech_stream",
         stage_id=stage.id,
-        capability_key="speech.sse",
+        capability_key="speech.stream",
         payload=payload,
-        description="REST SSE streaming speech",
+        description="REST raw PCM streaming speech",
     )
 
 
-def _speech_sse_non_pcm_error(
+def _speech_stream_non_pcm_error(
     index: int, spec: BenchmarkSpec, stage: LoadStage
 ) -> Scenario:
     payload = _base_payload(spec, "Streaming must reject non-PCM response formats.")
@@ -868,18 +870,18 @@ def _speech_sse_non_pcm_error(
         }
     )
     return Scenario(
-        id=_scenario_id(stage, "speech_sse_non_pcm", index),
-        endpoint="speech_sse",
-        category="speech_sse",
+        id=_scenario_id(stage, "speech_stream_non_pcm", index),
+        endpoint="speech_stream",
+        category="speech_stream",
         stage_id=stage.id,
-        capability_key="speech.sse.validation",
+        capability_key="speech.stream.validation",
         payload=payload,
         expect_success=False,
         expected_status_class="client_error",
         expected_http_status=400,
         expected_error_type="BadRequestError",
-        description="SSE streaming request with invalid non-PCM response format",
-        planned_metadata={"sse_error_case": "stream_non_pcm"},
+        description="raw PCM streaming request with invalid non-PCM response format",
+        planned_metadata={"stream_error_case": "stream_non_pcm"},
     )
 
 

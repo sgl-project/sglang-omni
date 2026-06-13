@@ -17,7 +17,7 @@ spec.json
   -> spec parser
   -> serving-stress scenario builder
   -> load-stage scheduler
-  -> HTTP/SSE/SDK/WebSocket/voice/batch clients
+  -> HTTP/SDK/WebSocket/voice/batch clients
   -> response classifiers
   -> results.json + manifest.json + raw JSONL + logs
 ```
@@ -65,7 +65,7 @@ The Docker image installs `ffmpeg`.
 benchmark_tts_serving.py       # entry point under benchmarks/eval/
 spec.py                        # spec schema and load-stage defaults
 scenarios.py                   # deterministic scenario matrix
-http_client.py                 # HTTP and SSE request dispatch
+http_client.py                 # HTTP request dispatch
 sdk_client.py                  # OpenAI SDK compatibility path
 ws_client.py                   # WebSocket speech-stream path
 voice_client.py                # uploaded-voice lifecycle and cache pressure
@@ -96,7 +96,7 @@ Common `params` fields:
 | Field | Description |
 |-------|-------------|
 | `profile` | Serving-stress scenario mix. Valid value: `stress`. |
-| `enabled_endpoints` | Endpoint families to exercise: `speech`, `speech_sse`, `voices`, `batch`, `websocket`. |
+| `enabled_endpoints` | Endpoint families to exercise: `speech`, `speech_stream`, `voices`, `batch`, `websocket`. |
 | `total_requests` | Request count used when `load_stages` is not provided. |
 | `max_concurrency` | Concurrency used when `load_stages` is not provided. |
 | `load_stages` | Explicit staged load plan. |
@@ -128,7 +128,7 @@ Load-stage fields:
 | Endpoint family | Contract |
 |-----------------|----------|
 | `speech` | `POST /v1/audio/speech` with response formats, task types, language handling, speed bounds, reference audio, SDK compatibility, and malformed-request classification. |
-| `speech_sse` | `POST /v1/audio/speech` with server-sent event streaming and streaming error cases. |
+| `speech_stream` | `POST /v1/audio/speech` with raw PCM streaming and streaming error cases. |
 | `batch` | `POST /v1/audio/speech/batch` with 1-32 item batches, per-item overrides, item-level success/error records, and oversized batch rejection. |
 | `voices` | `GET`, `POST`, and `DELETE /v1/audio/voices` with upload formats, metadata, overwrite, delete, speaker-cap, cleanup, race, and cache-pressure behavior. |
 | `websocket` | `/v1/audio/speech/stream` with session configuration, incremental text input, binary audio frames, event ordering, client disconnect, malformed JSON, and missing-config errors. |
@@ -216,8 +216,8 @@ benchmark container.
 The matrix is deterministic for a given spec seed. It covers:
 
 - speech success paths across response formats, task types, speed boundaries,
-  reference-audio shapes, allowed `file://` references, SDK calls, and SSE
-  streaming
+  reference-audio shapes, allowed `file://` references, SDK calls, and raw
+  speech streaming
 - malformed speech requests that must return the structured error envelope
 - multilingual and adversarial text payloads
 - batch speech creation and item-level result validation

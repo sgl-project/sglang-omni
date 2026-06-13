@@ -126,7 +126,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Set `"stream": true` to receive audio chunks in real time over Server-Sent Events (SSE):
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -137,12 +138,15 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
       "text": "We asked over twenty different people, and they all said it was his."
     }],
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
-Each event carries a base64-encoded audio chunk; the stream ends with `data: [DONE]`. See the
-[Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming) for a full Python SSE consumer.
+Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
+the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
+for a full Python raw PCM consumer.
 
 ## Generation Parameters
 
@@ -158,7 +162,7 @@ Each event carries a base64-encoded audio chunk; the stream ends with `data: [DO
 | `repetition_penalty` | `1.05` | Repetition penalty |
 | `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream audio chunks over SSE |
+| `stream` | `false` | Stream raw PCM audio chunks |
 
 ## Model Variants
 

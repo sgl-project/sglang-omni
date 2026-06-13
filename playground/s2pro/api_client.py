@@ -8,12 +8,31 @@ from collections.abc import Iterator
 
 import httpx
 
-from playground.s2pro.audio_stream import SpeechStreamEvent, parse_speech_stream_data
+from playground.s2pro.audio_stream import (
+    DEFAULT_S2PRO_SAMPLE_RATE,
+    PcmChunkAssembler,
+    PcmStreamFormat,
+    SpeechStreamEvent,
+)
 from playground.s2pro.models import NonStreamingSpeechResult, SpeechSynthesisRequest
 
 
 class SpeechDemoClientError(RuntimeError):
     """Raised when the playground speech request fails."""
+
+
+def _response_pcm_format(response: httpx.Response) -> PcmStreamFormat:
+    bit_depth = int(response.headers.get("x-bit-depth", "16"))
+    if bit_depth <= 0 or bit_depth % 8 != 0:
+        raise SpeechDemoClientError(f"Unsupported PCM bit depth: {bit_depth}")
+
+    return PcmStreamFormat(
+        sample_rate=int(
+            response.headers.get("x-sample-rate", str(DEFAULT_S2PRO_SAMPLE_RATE))
+        ),
+        channels=int(response.headers.get("x-channels", "1")),
+        sample_width=bit_depth // 8,
+    )
 
 
 class SpeechDemoClient:
@@ -49,8 +68,8 @@ class SpeechDemoClient:
 
         payload = request.to_payload()
         payload["stream"] = True
-        saw_terminal_event = False
-        saw_done_marker = False
+        payload["response_format"] = "pcm"
+        saw_audio = False
 
         try:
             with httpx.stream(
@@ -60,22 +79,22 @@ class SpeechDemoClient:
                 timeout=None,
             ) as response:
                 response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line or not line.startswith("data: "):
+                pcm_format = _response_pcm_format(response)
+                assembler = PcmChunkAssembler(pcm_format)
+                for chunk in response.iter_raw():
+                    aligned_chunk = assembler.add_chunk(chunk)
+                    if not aligned_chunk:
                         continue
-                    event = parse_speech_stream_data(line[len("data: ") :])
-                    if event is None:
-                        continue
-                    if event.is_done:
-                        saw_done_marker = True
-                        break
-                    if event.finish_reason is not None:
-                        saw_terminal_event = True
-                    yield event
+                    saw_audio = True
+                    yield SpeechStreamEvent(
+                        audio_bytes=aligned_chunk,
+                        sample_rate=pcm_format.sample_rate,
+                        channels=pcm_format.channels,
+                        sample_width=pcm_format.sample_width,
+                    )
+                assembler.flush()
         except Exception as exc:
             raise SpeechDemoClientError(str(exc)) from exc
 
-        if not saw_terminal_event or not saw_done_marker:
-            raise SpeechDemoClientError(
-                "Speech stream ended before the terminal completion markers were received."
-            )
+        if not saw_audio:
+            raise SpeechDemoClientError("Speech stream ended without audio bytes.")

@@ -35,8 +35,6 @@ uv pip install --no-deps qwen-tts==0.1.1
 sgl-omni serve \
   --model-path fishaudio/s2-pro \
   --config examples/configs/s2pro_tts.yaml \
-  --allowed-media-domain huggingface.co \
-  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
 
@@ -55,8 +53,6 @@ For Qwen3-TTS Base:
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --config examples/configs/qwen3_tts_0_6b.yaml \
-  --allowed-media-domain huggingface.co \
-  --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
 
@@ -148,9 +144,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 2. Streaming
 
-Enable streaming to receive audio chunks in real time via Server-Sent Events
-(SSE). HTTP streaming uses raw PCM chunks, so set both `"stream": true` and
-`"response_format": "pcm"`:
+Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
+requires both `"stream": true` and `"response_format": "pcm"`:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -163,28 +158,16 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
     }],
     "stream": true,
     "response_format": "pcm"
-  }'
-```
-
-The server returns a stream of SSE events. Each event contains an
-`audio.speech.chunk` object with a base64-encoded PCM chunk. The stream ends
-with `data: [DONE]`.
-
-For clients that want a continuous byte stream instead of SSE framing, request raw PCM explicitly:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "stream": true,
-    "stream_format": "audio",
-    "response_format": "pcm"
   }' \
   --output output.pcm
 ```
 
-Raw audio streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band SSE events, final usage, or a `[DONE]` sentinel. When the client does not set `initial_codec_chunk_frames`, raw PCM requests default to a 1-frame first vocoder chunk for lower first-audio latency. Set `initial_codec_chunk_frames` to `0` to use the model's steady chunk size from the start.
+Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
+in response headers. It does not include in-band JSON events, final usage, or a
+terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
+streaming requests default to a 1-frame first vocoder chunk for lower
+first-audio latency. Set `initial_codec_chunk_frames` to `0` to use the model's
+steady chunk size from the start.
 
 ## Use Python
 
@@ -254,7 +237,7 @@ with open("output.wav", "wb") as f:
 2. Streaming Request
 
 ```python
-import base64, json, wave
+import wave
 
 import requests
 
@@ -266,7 +249,6 @@ payload = {
 }
 
 chunks = []
-sample_rate = None
 with requests.post(
     "http://localhost:8000/v1/audio/speech",
     json=payload,
@@ -274,18 +256,10 @@ with requests.post(
     timeout=600,
 ) as stream:
     stream.raise_for_status()
-    for line in stream.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
-        data = line[len("data:"):].lstrip()
-        if data == "[DONE]":
-            break
-        audio = json.loads(data).get("audio") or {}
-        b64 = audio.get("data")
-        if not b64:
-            continue
-        sample_rate = sample_rate or audio.get("sample_rate")
-        chunks.append(base64.b64decode(b64))
+    sample_rate = int(stream.headers.get("x-sample-rate", 24000))
+    for chunk in stream.iter_content(chunk_size=None):
+        if chunk:
+            chunks.append(chunk)
 
 with wave.open("output_stream.wav", "wb") as w:
     w.setnchannels(1)
@@ -304,8 +278,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `voice` | string | `"default"` | Voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable streaming via SSE. When true, `response_format` must be `pcm` |
-| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes. The response headers declare the stream sample rate, channel count, and bit depth |
+| `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first. Raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
@@ -413,7 +386,7 @@ SGLang-Omni ships with a Gradio-based playground for interactive TTS experimenta
 The playground now exposes two demo modes against the same S2 Pro backend:
 
 - `Non-Streaming` starts a standard request and shows the final WAV after generation finishes.
-- `Streaming` consumes the `/v1/audio/speech` SSE stream, converts incremental PCM chunks for playback, and also writes a final combined WAV artifact for inspection.
+- `Streaming` consumes the `/v1/audio/speech` raw PCM stream, converts incremental chunks for playback, and also writes a final combined WAV artifact for inspection.
 
 The launcher starts the backend first, waits for `/health`, then starts the Gradio UI with:
 

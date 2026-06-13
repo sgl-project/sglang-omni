@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -279,26 +278,6 @@ def parse_sse_event(line: str) -> dict | None:
     if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
         return None
     return json.loads(line[len(SSE_DATA_PREFIX) :])
-
-
-def process_sse_line(
-    line: str,
-    total_duration: float,
-    usage: dict | None,
-) -> tuple[float, dict | None]:
-    """Merge one TTS-style Server-Sent Event (SSE) JSON event with duration and latest usage."""
-    event = parse_sse_event(line)
-    if event is None:
-        return total_duration, usage
-    audio = event.get("audio")
-    if audio is not None:
-        chunk_b64 = audio.get("data")
-        if chunk_b64:
-            total_duration += get_wav_duration(base64.b64decode(chunk_b64))
-    event_usage = event.get("usage")
-    if event_usage is not None:
-        usage = event_usage
-    return total_duration, usage
 
 
 def wait_for_service(

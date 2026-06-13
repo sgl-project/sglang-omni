@@ -96,8 +96,8 @@ URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soun
 
 ### Streaming
 
-Set `"stream": true` to receive Server-Sent Events (SSE). Audio events carry base64-encoded WAV
-bytes in `audio.data`; the final metadata event has `audio: null`, followed by `data: [DONE]`.
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time.
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -106,8 +106,10 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
 ### Duration Control
@@ -147,7 +149,7 @@ to let the model infer from the text):
 | `input` | (required) | Text to synthesize; may carry a `${token:N}` duration prefix and inline markup |
 | `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
-| `stream` | `false` | Enable SSE streaming |
+| `stream` | `false` | Stream raw PCM audio chunks |
 | `language` | `null` | Optional target-language hint; omit to let the model infer |
 | `instructions` / `instruct` | `null` | Optional free-text style directive |
 | `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames; must be `> 0` |

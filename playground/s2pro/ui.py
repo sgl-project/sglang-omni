@@ -13,6 +13,7 @@ import gradio as gr
 from playground.s2pro.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.s2pro.artifacts import ArtifactStore
 from playground.s2pro.audio_stream import (
+    DEFAULT_S2PRO_SAMPLE_RATE,
     BufferedWavChunkEmitter,
     WavChunkAccumulator,
     wav_duration_seconds,
@@ -398,12 +399,20 @@ def make_streaming_handler(api_base: str):
 
         try:
             for event in client.stream_synthesize(request):
-                if event.audio_bytes is None:
-                    continue
-
                 chunk_count += 1
-                accumulator.add_wav_chunk(event.audio_bytes)
-                live_audio = live_emitter.add_wav_chunk(event.audio_bytes)
+                sample_rate = event.sample_rate or DEFAULT_S2PRO_SAMPLE_RATE
+                accumulator.add_pcm_chunk(
+                    event.audio_bytes,
+                    sample_rate=sample_rate,
+                    channels=event.channels,
+                    sample_width=event.sample_width,
+                )
+                live_audio = live_emitter.add_pcm_chunk(
+                    event.audio_bytes,
+                    sample_rate=sample_rate,
+                    channels=event.channels,
+                    sample_width=event.sample_width,
+                )
                 if live_audio is None:
                     yield StreamingUiUpdate(
                         history=in_progress_history,

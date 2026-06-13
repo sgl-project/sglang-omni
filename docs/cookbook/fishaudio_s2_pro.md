@@ -56,8 +56,10 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
       "text": "We asked over twenty different people, and they all said it was his."
     }],
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
 ## Request Parameters
@@ -68,7 +70,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 | `voice` | string | `default` | Voice identifier for non-reference requests |
 | `response_format` | string | `wav` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
-| `stream` | bool | `false` | Stream audio chunks over SSE |
+| `stream` | bool | `false` | Stream raw PCM audio chunks |
 | `references` | list | `null` | Reference clip for voice cloning; each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` and `references[0].text` |
 | `max_new_tokens` | int | `2048` | Maximum generated semantic tokens |

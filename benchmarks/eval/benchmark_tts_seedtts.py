@@ -234,7 +234,6 @@ class TtsSeedttsBenchmarkConfig:
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
-    stream_format: str = "sse"
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     # Transcribe phase
@@ -287,7 +286,6 @@ def _build_results_config(
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
-        "stream_format": config.stream_format if config.stream else None,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
     }
 
@@ -314,7 +312,6 @@ async def run_tts_seedtts_benchmark(
         api_url,
         response_format=config.response_format,
         stream=config.stream,
-        stream_format=config.stream_format,
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
@@ -354,9 +351,7 @@ def run_tts_seedtts_transcribe(
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
-    generation_mode = (
-        f"streaming-{config.stream_format}" if config.stream else "non-streaming"
-    )
+    generation_mode = "streaming-audio" if config.stream else "non-streaming"
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -373,7 +368,6 @@ def run_tts_seedtts_transcribe(
         "temperature": config.temperature,
         "max_samples": config.max_samples,
         "stream": config.stream,
-        "stream_format": config.stream_format if config.stream else None,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
@@ -390,9 +384,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
     # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
-    response_format = (
-        "pcm" if args.stream and args.stream_format == "audio" else args.response_format
-    )
+    response_format = "pcm" if args.stream else args.response_format
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -418,7 +410,6 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         concurrency=args.concurrency,
         request_rate=args.request_rate,
         stream=args.stream,
-        stream_format=args.stream_format,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
@@ -521,8 +512,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="wav",
         help=(
-            "Requested audio payload format. SSE can use wav or pcm; raw "
-            "audio streaming always sends response_format=pcm."
+            "Requested audio payload format. Streaming always sends "
+            "response_format=pcm."
         ),
     )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
@@ -566,15 +557,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--stream",
         action="store_true",
         help="Use streaming for TTS generation.",
-    )
-    parser.add_argument(
-        "--stream-format",
-        choices=["sse", "audio"],
-        default="sse",
-        help=(
-            "Streaming transport. 'sse' reads audio chunks from SSE events; "
-            "'audio' requests raw PCM audio streaming."
-        ),
     )
     parser.add_argument(
         "--initial-codec-chunk-frames",
@@ -679,8 +661,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
-    if args.stream_format == "audio" and not args.stream:
-        parser.error("--stream-format audio requires --stream")
     if (
         args.initial_codec_chunk_frames is not None
         and args.initial_codec_chunk_frames < 0

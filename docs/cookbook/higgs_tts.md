@@ -154,9 +154,13 @@ Reference output:
 
 Unlike a standard request where you wait for the full audio to be generated before receiving anything, streaming lets you start receiving and playing audio **while generation is still in progress**. This significantly reduces time-to-first-audio, which matters for real-time or interactive use cases.
 
-Higgs TTS implements streaming via [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) by default. Each SSE event carries a base64-encoded audio chunk. Your client can decode and play each chunk as it arrives, rather than buffering the entire response.
+Higgs TTS implements streaming as raw PCM bytes. Your client can play or buffer
+each chunk as it arrives, rather than waiting for the full response.
 
-Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in the request body. During generation, the vocoder emits incremental audio chunks. The terminal event is intentionally slim and carries metadata such as `sample_rate` and `usage` instead of repeating the full waveform. Inside the pipeline, audio chunks use the compact `audio_waveform` payload (`bytes` plus `audio_waveform_shape`, `audio_waveform_dtype`, and `sample_rate`), which the HTTP layer encodes into the SSE `audio.data` field.
+Enable streaming by setting `"stream": true` and `"response_format": "pcm"` in
+the request body. During generation, the vocoder emits incremental audio chunks.
+The HTTP response returns `audio/pcm` bytes and exposes sample-rate metadata in
+headers.
 
 1. Use curl
 
@@ -173,38 +177,27 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
     }],
     "stream": true,
     "response_format": "pcm"
-  }'
-```
-The `-N` flag disables curl's output buffering so SSE events are printed as they arrive.
-
-For lowest-friction playback pipelines, request raw PCM bytes instead of SSE:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "docs/_static/audio/male-voice.wav",
-      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
-    }],
-    "stream": true,
-    "stream_format": "audio",
-    "response_format": "pcm",
-    "initial_codec_chunk_frames": 1
   }' \
   --output output.pcm
 ```
 
-`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. The response headers report the actual stream sample rate, channel count, and bit depth. Raw PCM speech requests default `initial_codec_chunk_frames` to `1` for lower first-audio latency. Clients can still set another value, including `0`. The setting controls only the first vocoder chunk for TTFA tuning. Follow-up chunks return to the normal Higgs streaming window.
+The `-N` flag disables curl's output buffering so chunks are written as they arrive.
+
+Streaming returns `audio/pcm` 16-bit mono PCM bytes. It has no in-band JSON
+events, final usage event, or terminal sentinel. The response headers report the
+actual stream sample rate, channel count, and bit depth. Streaming speech
+requests default `initial_codec_chunk_frames` to `1` for lower first-audio
+latency. Clients can still set another value, including `0`. The setting
+controls only the first vocoder chunk for TTFA tuning. Follow-up chunks return
+to the normal Higgs streaming window.
 
 2. Use Python
 
-This example decodes each chunk and writes it to a WAV file incrementally. In a real application, you would pipe the decoded bytes directly to an audio player (e.g., via `pyaudio` or `sounddevice`).
+This example writes streamed PCM bytes to a WAV file. In a real application, you
+would pipe the chunks directly to an audio player (e.g., via `pyaudio` or
+`sounddevice`).
 
 ```python
-import base64
-import json
 import wave
 
 import requests
@@ -225,27 +218,16 @@ with requests.post(
 ) as resp:
     resp.raise_for_status()
     chunks = []
-    for line in resp.iter_lines():
-        if not line or line == b"data: [DONE]":
-            continue
-        if not line.startswith(b"data: "):
-            continue
-
-        event = json.loads(line[len(b"data: "):])
-
-        if event.get("finish_reason") == "stop":
-            break
-
-        audio_data = event.get("audio") or {}
-        if audio_data.get("data"):
-            chunk = base64.b64decode(audio_data["data"])
+    sample_rate = int(resp.headers.get("x-sample-rate", 24000))
+    for chunk in resp.iter_content(chunk_size=None):
+        if chunk:
             chunks.append(chunk)
             # In a real app: feed `chunk` to your audio player here
 
 with wave.open("output_streaming.wav", "wb") as f:
     f.setnchannels(1)
     f.setsampwidth(2)
-    f.setframerate(24000)
+    f.setframerate(sample_rate)
     f.writeframes(b"".join(chunks))
 ```
 
@@ -254,18 +236,6 @@ Reference output:
 <audio controls>
   <source src="../_static/audio/higgs-4.wav" type="audio/wav">
 </audio>
-
-
-#### What the SSE response looks like
-Each default stream event follows the standard SSE format:
-```
-data: {"id": "speech-...", "object": "audio.speech.chunk", "index": 0, "audio": {"data": "<base64-encoded PCM bytes>", "format": "pcm", ...}, "finish_reason": null}
-data: {"id": "speech-...", "object": "audio.speech.chunk", "index": 1, "audio": null, "finish_reason": "stop", "usage": {...}}
-data: [DONE]
-```
-Audio chunks have `"finish_reason": null` and carry audio data in `audio.data`. The final metadata event has `"finish_reason": "stop"` and `"audio": null`, followed by a `[DONE]` sentinel.
-
-
 
 ### Inline Control Tokens
 
@@ -558,7 +528,7 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Voice identifier (ignored when `references` is set) |
 | `response_format` | string | `"wav"` | Output audio format (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
-| `stream` | bool | `false` | Enable streaming via SSE |
+| `stream` | bool | `false` | Enable raw PCM streaming |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path, file URL, data URL, or HTTP URL) and `text` (transcript) |
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |

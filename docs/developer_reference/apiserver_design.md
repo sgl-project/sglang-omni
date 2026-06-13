@@ -79,7 +79,7 @@ The current server exposes these main routes:
 | `GET` | `/health` | Health status from `client.health()` |
 | `GET` | `/v1/models` | Single-model listing for the active pipeline |
 | `POST` | `/v1/chat/completions` | Chat completions, including streaming and optional audio |
-| `POST` | `/v1/audio/speech` | Text-to-speech, raw audio response or SSE chunks when `stream=true` |
+| `POST` | `/v1/audio/speech` | Text-to-speech, raw audio response or raw PCM chunks when `stream=true` |
 | `POST` | `/start_profile` | Torch trace + (optional) request-level events. Added by the built-in launcher |
 | `POST` | `/stop_profile` | Stops both torch trace and request-level events |
 | `POST` | `/start_request_profile` | Request-level event recorder only (no torch trace) |
@@ -196,17 +196,10 @@ The speech route reuses the same internal request path rather than introducing a
 For non-streaming requests, `Client.speech()` collects audio chunks, encodes
 them, and returns raw audio bytes to the HTTP layer.
 
-For `stream=true`, the default route returns SSE events. Each event carries a
-base64-encoded audio chunk and format metadata; the stream ends with a final
-chunk carrying `finish_reason` followed by `data: [DONE]`.
-
-Raw PCM streaming is opt-in through `stream_format="audio"` plus
-`response_format="pcm"`. That path emits `audio/pcm` bytes directly and does
-not carry SSE metadata, usage, or a `[DONE]` sentinel. The HTTP response
+For `stream=true`, the route emits `audio/pcm` bytes directly. The HTTP response
 headers are derived from the first audio chunk and subsequent chunks must keep
 the same sample rate. TTS chunk-timing knobs such as
 `initial_codec_chunk_frames` are forwarded as request params so model schedulers
-can consume them without changing Stage, Coordinator, or Relay. Raw PCM speech
-defaults `initial_codec_chunk_frames` to `1` when the client does not provide a
-value; SSE keeps the model's normal chunking unless the client explicitly sets
-the knob.
+can consume them without changing Stage, Coordinator, or Relay. Streaming
+speech defaults `initial_codec_chunk_frames` to `1` when the client does not
+provide a value.

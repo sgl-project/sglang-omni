@@ -56,8 +56,8 @@ python -m playground.s2pro.app --api-base http://localhost:8000 --port 7899
 ```
 
 Open <http://localhost:7899>. Two tabs: `Non-Streaming` (final WAV after
-generation) and `Streaming` (incremental playback from
-`/v1/audio/speech` SSE chunks).
+generation) and `Streaming` (incremental playback from raw
+`/v1/audio/speech` PCM chunks).
 
 Override ports with `--port` (backend) and `--gradio-port` (UI).
 
@@ -81,7 +81,7 @@ python -m playground.higgs.app --api-base http://localhost:8000 --port 7860
 
 Open <http://localhost:7860>. Features:
 
-- Non-streaming and streaming tabs (incremental playback from SSE chunks).
+- Non-streaming and streaming tabs (incremental playback from raw PCM chunks).
 - Reference audio from **microphone recording**, file upload, or URL for voice cloning.
 - Inline control-token picker (clickable chips for emotion / style / sfx /
   prosody) that inserts `<|category:name|>` tokens at the cursor.
