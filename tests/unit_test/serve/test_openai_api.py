@@ -92,6 +92,7 @@ def _fault_client(model_name: str) -> Client:
 class SuccessfulSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
         self.sample_rate = sample_rate
+        self.speech_requests: list[GenerateRequest] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -117,7 +118,8 @@ class SuccessfulSpeechClient:
     ):
         from sglang_omni.client.types import SpeechResult
 
-        del request, request_id, speed, allow_format_fallback
+        del request_id, speed, allow_format_fallback
+        self.speech_requests.append(request)
         return SpeechResult(
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
@@ -324,6 +326,30 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+
+
+def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="default-tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "tts-1",
+            "voice": "alloy",
+            "input": "hello from an SDK-shaped request",
+            "response_format": "wav",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"RIFF"
+    assert response.headers["content-type"] == "audio/wav"
+    assert (
+        response.headers["content-disposition"] == 'attachment; filename="speech.wav"'
+    )
+    assert speech_client.speech_requests[0].model == "tts-1"
+    assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "alloy"
 
 
 def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
