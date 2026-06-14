@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
+from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 from sglang_omni.serve import create_app
-from sglang_omni.serve.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
+from sglang_omni.serve.openai_api import VoiceUploadBodyLimitMiddleware
 from sglang_omni.serve.speech_errors import SpeechAPIError
-from sglang_omni.serve.speech_service import SpeechService
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 
 
@@ -33,6 +35,71 @@ class RecordingSpeechClient:
             mime_type="audio/wav",
             format="wav",
         )
+
+
+@pytest.mark.asyncio
+async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
+    async def unreachable_app(scope, receive, send) -> None:
+        raise AssertionError("oversized body reached downstream app")
+
+    middleware = VoiceUploadBodyLimitMiddleware(unreachable_app, max_bytes=8)
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/audio/voices",
+            "headers": [(b"content-length", b"9")],
+        },
+        receive,
+        send,
+    )
+
+    assert messages[0]["status"] == 413
+
+
+@pytest.mark.asyncio
+async def test_voice_upload_body_limit_rejects_chunked_body() -> None:
+    async def downstream_app(scope, receive, send) -> None:
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                return
+
+    middleware = VoiceUploadBodyLimitMiddleware(downstream_app, max_bytes=4)
+    messages: list[dict[str, Any]] = []
+    chunks = iter(
+        (
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"de", "more_body": False},
+        )
+    )
+
+    async def receive() -> dict[str, Any]:
+        return next(chunks)
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/audio/voices",
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    assert messages[0]["status"] == 413
 
 
 def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) -> None:
@@ -131,12 +198,40 @@ def test_voice_store_restores_overwrites_and_invalidates_cache(tmp_path: Path) -
 def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=1)
 
-    with pytest.raises(SpeechAPIError, match="name must contain"):
+    for name in ("../bad", ".", "..", "-"):
+        with pytest.raises(SpeechAPIError, match="name must contain"):
+            store.upload(
+                name=name,
+                consent="consent",
+                audio_bytes=_reference_wav(),
+                filename="bad.wav",
+                content_type="audio/wav",
+            )
+
+    with pytest.raises(SpeechAPIError, match="must not be empty"):
         store.upload(
-            name="../bad",
+            name="empty",
             consent="consent",
-            audio_bytes=_reference_wav(),
-            filename="bad.wav",
+            audio_bytes=b"",
+            filename="empty.wav",
+            content_type="audio/wav",
+        )
+
+    with pytest.raises(SpeechAPIError, match="MIME type"):
+        store.upload(
+            name="text",
+            consent="consent",
+            audio_bytes=b"not audio",
+            filename="text.txt",
+            content_type="text/plain",
+        )
+
+    with pytest.raises(SpeechAPIError, match="non-silent"):
+        store.upload(
+            name="silent",
+            consent="consent",
+            audio_bytes=_reference_wav(amplitude=0.0),
+            filename="silent.wav",
             content_type="audio/wav",
         )
 
@@ -179,6 +274,86 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_voice_store_restore_preserves_max_uploaded_cap(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
+    first = store.upload(
+        name="older",
+        consent="consent",
+        audio_bytes=_reference_wav(frequency=220),
+        filename="older.wav",
+        content_type="audio/wav",
+    )
+    second = store.upload(
+        name="newer",
+        consent="consent",
+        audio_bytes=_reference_wav(frequency=330),
+        filename="newer.wav",
+        content_type="audio/wav",
+    )
+
+    restored = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=1)
+    voices = restored.list_response()["uploaded_voices"]
+
+    assert [voice["name"] for voice in voices] == ["newer"]
+    assert voices[0]["created_at"] == second["created_at"]
+    assert second["created_at"] > first["created_at"]
+
+
+def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
+    uploaded = store.upload(
+        name="Guide",
+        consent="consent-new",
+        audio_bytes=_reference_wav(frequency=330),
+        filename="guide.wav",
+        content_type="audio/wav",
+    )
+    duplicate_path = tmp_path / "manual_duplicate.safetensors"
+
+    from safetensors import safe_open
+    from safetensors.numpy import load_file, save_file
+
+    voice_path = tmp_path / "guide.safetensors"
+    with safe_open(str(voice_path), framework="np") as handle:
+        metadata = dict(handle.metadata() or {})
+    duplicate_metadata = {
+        **metadata,
+        "name": "Guide old",
+        "created_at": str(uploaded["created_at"] - 1),
+    }
+    save_file(
+        load_file(str(voice_path)),
+        str(duplicate_path),
+        metadata=duplicate_metadata,
+    )
+
+    restored = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
+    voices = restored.list_response()["uploaded_voices"]
+
+    assert [voice["name"] for voice in voices] == ["Guide"]
+    assert voices[0]["created_at"] == uploaded["created_at"]
+
+
+def test_voice_store_decode_error_uses_stable_client_message(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        store.upload(
+            name="broken",
+            consent="consent",
+            audio_bytes=b"not an audio file",
+            filename="broken.wav",
+            content_type="audio/wav",
+        )
+
+    assert exc_info.value.message == (
+        "audio_sample could not be decoded as a supported audio format"
+    )
+    assert exc_info.value.param == "audio_sample"
+
+
 def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     uploaded = store.upload(
@@ -188,10 +363,10 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
         filename="anchor.wav",
         content_type="application/octet-stream",
     )
-    service = SpeechService(default_model="tts", voice_store=store)
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
 
     request = service.parse_request({"input": "hello", "voice": "ANCHOR"})
-    gen_req = service.build_generate_request(request, validate=False)
+    gen_req = service.build_generate_request(request)
     tts_params = gen_req.metadata["tts_params"]
 
     assert gen_req.prompt["references"][0]["audio_path"].startswith(
@@ -207,25 +382,98 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     assert tts_params["uploaded_voice_created_at"] == uploaded["created_at"]
 
 
+def test_speech_service_explicit_reference_overrides_uploaded_voice(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="anchor.wav",
+        content_type="audio/wav",
+    )
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
+    explicit_ref = "data:audio/wav;base64," + base64.b64encode(
+        _reference_wav(frequency=880)
+    ).decode("ascii")
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "voice": "anchor",
+            "ref_audio": explicit_ref,
+            "response_format": "wav",
+        }
+    )
+    gen_req = service.build_generate_request(request)
+
+    ref = gen_req.prompt["references"][0]
+    assert "uploaded_voice_name" not in ref
+    assert gen_req.metadata["tts_params"]["voice"] == "anchor"
+    assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
+
+
+@pytest.mark.parametrize("task_type", ["CustomVoice", "VoiceDesign"])
+def test_speech_service_rejects_uploaded_voice_with_non_base_task_type(
+    tmp_path: Path,
+    task_type: str,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="anchor.wav",
+        content_type="audio/wav",
+    )
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
+
+    with pytest.raises(SpeechAPIError, match="task_type='Base'") as exc_info:
+        service.parse_request(
+            {"input": "hello", "voice": "anchor", "task_type": task_type}
+        )
+    assert exc_info.value.param == "task_type"
+
+
+def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="anchor.wav",
+        content_type="audio/wav",
+    )
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
+
+    request = service.parse_request(
+        {"input": "hello", "voice": "anchor", "task_type": "Base"}
+    )
+    gen_req = service.build_generate_request(request, validate=False)
+
+    assert gen_req.metadata["tts_params"]["task_type"] == "Base"
+
+
 def test_speech_service_rejects_unknown_required_uploaded_voice(
     tmp_path: Path,
 ) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="public-tts-name",
         requires_uploaded_voice_for_named_voice=True,
         voice_store=store,
     )
 
-    request = service.parse_request({"input": "hello", "voice": "missing"})
-
     with pytest.raises(SpeechAPIError, match="Unknown voice"):
-        service.build_generate_request(request, validate=False)
+        service.parse_request({"input": "hello", "voice": "missing"})
 
 
 def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="preset-voice-model",
         voice_store=store,
     )
@@ -241,8 +489,9 @@ def _reference_wav(
     *,
     duration_s: float = 1.2,
     frequency: float = 440.0,
+    amplitude: float = 0.2,
 ) -> bytes:
     sample_count = int(DEFAULT_SAMPLE_RATE * duration_s)
     t = np.arange(sample_count, dtype=np.float32) / DEFAULT_SAMPLE_RATE
-    audio = 0.2 * np.sin(2.0 * np.pi * frequency * t)
+    audio = amplitude * np.sin(2.0 * np.pi * frequency * t)
     return encode_wav(audio.astype(np.float32), DEFAULT_SAMPLE_RATE)

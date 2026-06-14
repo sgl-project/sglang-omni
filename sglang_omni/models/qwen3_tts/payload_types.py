@@ -21,7 +21,6 @@ class Qwen3TTSState:
     ref_text: str | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None
-    uploaded_voice_fingerprint: str | None = None
     x_vector_only_mode: bool = False
     non_streaming_mode: bool = False
     generation_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -67,8 +66,6 @@ class Qwen3TTSState:
             data["uploaded_voice_name"] = self.uploaded_voice_name
         if self.uploaded_voice_created_at is not None:
             data["uploaded_voice_created_at"] = self.uploaded_voice_created_at
-        if self.uploaded_voice_fingerprint is not None:
-            data["uploaded_voice_fingerprint"] = self.uploaded_voice_fingerprint
         if self.seed is not None:
             data["seed"] = self.seed
         if self.audio_codes is not None:
@@ -101,7 +98,6 @@ class Qwen3TTSState:
             ref_text=data.get("ref_text"),
             uploaded_voice_name=data.get("uploaded_voice_name"),
             uploaded_voice_created_at=data.get("uploaded_voice_created_at"),
-            uploaded_voice_fingerprint=data.get("uploaded_voice_fingerprint"),
             x_vector_only_mode=bool(data.get("x_vector_only_mode", False)),
             non_streaming_mode=bool(data.get("non_streaming_mode", False)),
             generation_kwargs=(

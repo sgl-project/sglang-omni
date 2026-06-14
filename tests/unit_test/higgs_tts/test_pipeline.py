@@ -19,7 +19,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.serve.speaker_cache import get_speaker_artifact_cache
+from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -120,7 +120,6 @@ def test_higgs_reference_code_cache_key_round_trip() -> None:
         reference_code_cache_key="waveform:sr:24000:test",
         uploaded_voice_name="guide",
         uploaded_voice_created_at=7,
-        uploaded_voice_fingerprint="abc",
     )
 
     restored = HiggsTtsState.from_dict(state.to_dict())
@@ -128,7 +127,6 @@ def test_higgs_reference_code_cache_key_round_trip() -> None:
     assert restored.reference_code_cache_key == "waveform:sr:24000:test"
     assert restored.uploaded_voice_name == "guide"
     assert restored.uploaded_voice_created_at == 7
-    assert restored.uploaded_voice_fingerprint == "abc"
 
 
 def test_higgs_reference_source_key_tracks_file_content(tmp_path) -> None:
@@ -329,7 +327,6 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
             reference_text="speaker",
             uploaded_voice_name="guide",
             uploaded_voice_created_at=7,
-            uploaded_voice_fingerprint="abc",
             num_codebooks=2,
         )
         return StagePayload(

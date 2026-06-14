@@ -16,7 +16,10 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQu
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
+from sglang_omni.scheduling.speaker_cache import (
+    SpeakerCacheKey,
+    get_speaker_artifact_cache,
+)
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
@@ -277,9 +280,6 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
             int(tts_params["uploaded_voice_created_at"])
             if tts_params.get("uploaded_voice_created_at") is not None
             else None
-        ),
-        uploaded_voice_fingerprint=resolve_optional_text(
-            tts_params.get("uploaded_voice_fingerprint")
         ),
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=non_streaming_mode,

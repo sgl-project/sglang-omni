@@ -238,6 +238,13 @@ class SpeechRequestValidator:
                 "POST /v1/audio/voices, or use ref_audio + ref_text.",
                 param="voice",
             )
+        if uploaded_voice is not None:
+            task_type = request.task_type
+            if task_type is not None and _normalize_task_type(task_type) != "Base":
+                raise bad_request(
+                    "uploaded voice requests require task_type='Base'",
+                    param="task_type",
+                )
         return uploaded_voice
 
     def _validate_raw_payload(self, payload: dict[str, Any]) -> None:
@@ -386,7 +393,6 @@ def _build_tts_params(
             tts_params["ref_text"] = uploaded_voice.voice.ref_text
         tts_params["uploaded_voice_name"] = uploaded_voice.voice.normalized_name
         tts_params["uploaded_voice_created_at"] = uploaded_voice.voice.created_at
-        tts_params["uploaded_voice_fingerprint"] = uploaded_voice.voice.fingerprint
     if request.x_vector_only_mode is not None:
         tts_params["x_vector_only_mode"] = request.x_vector_only_mode
     if request.initial_codec_chunk_frames is not None:
@@ -523,7 +529,6 @@ def _uploaded_voice_reference_dict(
         "audio_path": uploaded_voice.ref_audio,
         "uploaded_voice_name": uploaded_voice.voice.normalized_name,
         "uploaded_voice_created_at": uploaded_voice.voice.created_at,
-        "uploaded_voice_fingerprint": uploaded_voice.voice.fingerprint,
     }
     parsed = urlparse(uploaded_voice.ref_audio)
     if parsed.scheme == "data" and "," in parsed.path:

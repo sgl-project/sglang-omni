@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +46,7 @@ class StageOutputCache:
         max_size: int | None = None,
         max_bytes: int | None = None,
         cache_device: torch.device | str | None = None,
+        size_fn: Callable[[Any], int] | None = None,
     ) -> None:
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
@@ -53,6 +55,8 @@ class StageOutputCache:
         self.max_bytes = max_bytes
         self.cache_device = cache_device
         self.current_bytes = 0
+        self.eviction_count = 0
+        self._size_fn = size_fn or _value_size_bytes
 
     def get(self, key: str | None) -> Any | None:
         if key is None:
@@ -68,7 +72,7 @@ class StageOutputCache:
         if key is None:
             return
         key = str(key)
-        size_bytes = _value_size_bytes(data)
+        size_bytes = self._size_fn(data)
         old_entry = self._cache.pop(key, None)
         if old_entry is not None:
             self.current_bytes -= old_entry.size_bytes
@@ -86,13 +90,28 @@ class StageOutputCache:
         self._cache.clear()
         self.current_bytes = 0
 
+    def remove_if(self, predicate: Callable[[str], bool]) -> int:
+        removed = 0
+        for key in list(self._cache):
+            if not predicate(key):
+                continue
+            entry = self._cache.pop(key)
+            self.current_bytes -= entry.size_bytes
+            removed += 1
+        return removed
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
     def _evict_over_budget(self) -> None:
         while self.max_size is not None and len(self._cache) > self.max_size:
             _, entry = self._cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes
+            self.eviction_count += 1
         while self.max_bytes is not None and self.current_bytes > self.max_bytes:
             if not self._cache:
                 self.current_bytes = 0
                 return
             _, entry = self._cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes
+            self.eviction_count += 1

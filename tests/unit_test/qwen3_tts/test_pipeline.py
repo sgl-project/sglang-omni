@@ -30,8 +30,11 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.speaker_cache import (
+    SpeakerCacheKey,
+    get_speaker_artifact_cache,
+)
 from sglang_omni.scheduling.types import RequestOutput
-from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,7 +246,6 @@ def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
         ref_text="reference",
         uploaded_voice_name="guide",
         uploaded_voice_created_at=7,
-        uploaded_voice_fingerprint="abc",
         generation_kwargs={"max_new_tokens": 128, "temperature": 0.7},
         audio_codes=[[1, 2], [3, 4]],
         ref_code_len=1,
@@ -261,7 +263,6 @@ def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
     assert restored.ref_text == "reference"
     assert restored.uploaded_voice_name == "guide"
     assert restored.uploaded_voice_created_at == 7
-    assert restored.uploaded_voice_fingerprint == "abc"
     assert restored.generation_kwargs["max_new_tokens"] == 128
     assert restored.audio_codes == [[1, 2], [3, 4]]
     assert restored.ref_code_len == 1
@@ -518,7 +519,6 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
                 "ref_text": "reference",
                 "uploaded_voice_name": "guide",
                 "uploaded_voice_created_at": created_at,
-                "uploaded_voice_fingerprint": "abc",
             },
         )
 
@@ -622,7 +622,6 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
             "ref_audio": "voice.wav",
             "uploaded_voice_name": "guide",
             "uploaded_voice_created_at": 9,
-            "uploaded_voice_fingerprint": "abc",
             "x_vector_only_mode": True,
         },
     )

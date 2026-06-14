@@ -242,7 +242,9 @@ class VoiceListResponse(BaseModel):
 
     voices: list[str]
     uploaded_voices: list[UploadedVoiceMetadata]
-    cache_stats: dict[str, int]
+    cache_stats: dict[str, int] = Field(
+        description="API-process uploaded-voice reference cache counters."
+    )
 
 
 class TranscriptionResponse(BaseModel):

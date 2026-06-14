@@ -64,9 +64,12 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.speaker_cache import (
+    SpeakerCacheKey,
+    get_speaker_artifact_cache,
+)
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +217,6 @@ def create_preprocessing_executor(
         reference_code_cache_key = None
         uploaded_voice_name = None
         uploaded_voice_created_at = None
-        uploaded_voice_fingerprint = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
             speaker_waveform_cache_key = _uploaded_voice_cache_key(
@@ -224,10 +226,6 @@ def create_preprocessing_executor(
             if speaker_waveform_cache_key is not None:
                 uploaded_voice_name = speaker_waveform_cache_key.voice_name
                 uploaded_voice_created_at = speaker_waveform_cache_key.voice_version
-                if isinstance(reference_audio, dict):
-                    uploaded_voice_fingerprint = reference_audio.get(
-                        "uploaded_voice_fingerprint"
-                    )
                 cached_reference = speaker_cache.get(speaker_waveform_cache_key)
                 if cached_reference is not None:
                     waveform_tensor, reference_code_cache_key = cached_reference
@@ -299,7 +297,6 @@ def create_preprocessing_executor(
             reference_text=reference_text_for_encoder,
             uploaded_voice_name=uploaded_voice_name,
             uploaded_voice_created_at=uploaded_voice_created_at,
-            uploaded_voice_fingerprint=uploaded_voice_fingerprint,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             max_new_tokens=int(params.get("max_new_tokens", 2048)),

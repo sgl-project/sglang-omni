@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from sglang_omni.serve.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
+from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 
 
 def test_speaker_cache_tracks_hits_misses_and_voice_invalidation() -> None:
