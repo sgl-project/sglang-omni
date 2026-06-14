@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
@@ -429,6 +430,61 @@ def test_speech_stream_audio_format_rejects_non_pcm_response_format() -> None:
     assert 400 <= response.status_code < 500
     assert "stream_format" in response.text
     assert "pcm" in response.text.lower()
+
+
+def test_speech_endpoint_rejects_unknown_response_format() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "response_format": "ogg",
+        },
+    )
+
+    assert 400 <= response.status_code < 500
+    assert "response_format" in response.text
+
+
+def test_speech_request_normalizes_response_format() -> None:
+    req = CreateSpeechRequest(input="hello", response_format=" WAV ")
+
+    assert req.response_format == "wav"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"input": "hello", "response_format": "ogg"},
+        {"input": "hello", "speed": 0},
+        {"input": "hello", "token_count": 0},
+        {"input": "hello", "duration_tokens": 0},
+        {"input": "hello", "token_count": 1, "duration_tokens": 1},
+        {"input": "hello", "max_new_tokens": 0},
+        {"input": "hello", "top_p": 0},
+        {"input": "hello", "top_p": 1.1},
+        {"input": "hello", "top_k": 0},
+        {"input": "hello", "repetition_penalty": 0},
+        {"input": "hello", "seed": -1},
+        {"input": "hello", "ref_text": "reference"},
+        {"input": "hello", "references": [{}]},
+        {
+            "input": "hello",
+            "references": [{"audio_path": "voice.wav", "vq_codes": [1, 2]}],
+        },
+        {
+            "input": "hello",
+            "references": [{"audio_path": "voice.wav"}],
+            "ref_audio": "other.wav",
+        },
+    ],
+)
+def test_speech_request_rejects_invalid_contract(payload: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        CreateSpeechRequest(**payload)
 
 
 def test_speech_request_carries_initial_codec_chunk_frames() -> None:

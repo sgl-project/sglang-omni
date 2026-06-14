@@ -167,6 +167,20 @@ class SpeechReference(BaseModel):
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
 
+    @model_validator(mode="after")
+    def validate_reference_payload(self) -> "SpeechReference":
+        """Require exactly one model-independent reference audio payload.
+
+        ``text`` is only the optional transcript. The actual audio payload is
+        either raw reference audio via ``audio_path`` or precomputed``vq_codes``.
+        Providing both is ambiguous.
+        """
+        if self.audio_path is None and self.vq_codes is None:
+            raise ValueError("reference requires audio_path or vq_codes")
+        if self.audio_path is not None and self.vq_codes is not None:
+            raise ValueError("reference must not provide both audio_path and vq_codes")
+        return self
+
 
 class CreateSpeechRequest(BaseModel):
     """OpenAI-compatible text-to-speech request.
@@ -182,7 +196,7 @@ class CreateSpeechRequest(BaseModel):
     input: str
     voice: str = "default"
     response_format: str = "wav"
-    speed: float = 1.0
+    speed: float = Field(default=1.0, gt=0)
     stream: bool = False
     stream_format: Literal["sse", "audio"] = "sse"
 
@@ -195,28 +209,49 @@ class CreateSpeechRequest(BaseModel):
     ref_audio: str | None = None  # path or URL to reference audio
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
-    token_count: int | None = None  # MOSS-TTS duration token target
-    duration_tokens: int | None = None  # alias for token_count
+    token_count: int | None = Field(
+        default=None, gt=0
+    )  # MOSS-TTS duration token target
+    duration_tokens: int | None = Field(default=None, gt=0)  # alias for token_count
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
 
     # Generation parameters
-    max_new_tokens: int | None = None
-    temperature: float | None = None
-    top_p: float | None = None
+    max_new_tokens: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, ge=0)
+    top_p: float | None = Field(default=None, gt=0, le=1)
     top_k: int | None = None
-    repetition_penalty: float | None = None
-    seed: int | None = None
+    repetition_penalty: float | None = Field(default=None, gt=0)
+    seed: int | None = Field(default=None, ge=0)
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, Any]] | None = None
 
     @model_validator(mode="after")
-    def validate_stream_format(self) -> "CreateSpeechRequest":
+    def validate_speech_contract(self) -> "CreateSpeechRequest":
+        self.response_format = self.response_format.strip().lower()
+        if self.response_format not in {"aac", "flac", "mp3", "opus", "pcm", "wav"}:
+            raise ValueError("unsupported response_format")
+
+        if self.top_k is not None and self.top_k != -1 and self.top_k < 1:
+            raise ValueError("top_k must be -1 or a positive integer")
+
         if self.stream_format == "audio":
             if not self.stream:
                 raise ValueError('stream_format="audio" requires stream=true')
             if self.response_format.lower() != "pcm":
                 raise ValueError('stream_format="audio" requires response_format="pcm"')
+
+        if self.token_count is not None and self.duration_tokens is not None:
+            raise ValueError(
+                "token_count and duration_tokens are aliases; provide only one"
+            )
+
+        if self.ref_text is not None and self.ref_audio is None:
+            raise ValueError("ref_text requires ref_audio")
+
+        if self.references and self.ref_audio is not None:
+            raise ValueError("do not mix references with ref_audio/ref_text shorthand")
+
         return self
 
 
