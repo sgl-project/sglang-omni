@@ -1,0 +1,3 @@
+config_cls: Zonos2TTSPipelineConfig
+model_path: Zyphra/ZONOS2
+relay_backend: shm

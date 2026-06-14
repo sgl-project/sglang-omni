@@ -519,6 +519,7 @@ def test_speech_request_records_explicit_generation_params() -> None:
         input="hello",
         temperature=0.8,
         top_k=30,
+        min_p=0.05,
         seed=123,
     )
 
@@ -527,8 +528,10 @@ def test_speech_request_records_explicit_generation_params() -> None:
     assert _build_speech_generate_request is build_speech_generate_request
     assert gen_req.sampling.temperature == 0.8
     assert gen_req.sampling.top_k == 30
+    assert gen_req.sampling.min_p == 0.05
     assert gen_req.sampling.seed == 123
     assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
+        "min_p",
         "seed",
         "temperature",
         "top_k",

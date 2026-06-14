@@ -204,6 +204,7 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    min_p: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
 

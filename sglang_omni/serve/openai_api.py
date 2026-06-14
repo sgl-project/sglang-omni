@@ -959,6 +959,7 @@ def build_speech_generate_request(
         "temperature",
         "top_p",
         "top_k",
+        "min_p",
         "repetition_penalty",
         "seed",
     )
@@ -1013,6 +1014,8 @@ def build_speech_generate_request(
         sampling.top_p = req.top_p
     if req.top_k is not None:
         sampling.top_k = req.top_k
+    if req.min_p is not None:
+        sampling.min_p = req.min_p
     if req.repetition_penalty is not None:
         sampling.repetition_penalty = req.repetition_penalty
     if req.seed is not None:
