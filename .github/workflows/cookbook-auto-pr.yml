@@ -1,0 +1,73 @@
+name: Cookbook Auto PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Cookbook file or directory to check before creating PR"
+        required: false
+        default: "docs/cookbook"
+      base:
+        description: "Base branch for the PR"
+        required: false
+        default: "main"
+      title:
+        description: "Pull request title"
+        required: false
+        default: "[Docs] Update cookbook"
+      body:
+        description: "Pull request body"
+        required: false
+        default: "This PR updates cookbook documentation and passes cookbook checks."
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  cookbook-auto-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check branch
+        shell: bash
+        run: |
+          if [ "${{ github.ref_name }}" = "${{ inputs.base }}" ]; then
+            echo "ERROR: Do not run this workflow on the base branch '${{ inputs.base }}'."
+            echo "Run it on a feature branch instead."
+            exit 1
+          fi
+
+      - name: Run cookbook checks
+        shell: bash
+        run: |
+          bash scripts/ci/check_cookbook.sh "${{ inputs.target }}"
+
+      - name: Create pull request if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ inputs.base }}
+          PR_TITLE: ${{ inputs.title }}
+          PR_BODY: ${{ inputs.body }}
+        shell: bash
+        run: |
+          EXISTING_PR="$(gh pr list \
+            --head "${{ github.ref_name }}" \
+            --base "${BASE_BRANCH}" \
+            --json url \
+            --jq '.[0].url')"
+
+          if [ -n "${EXISTING_PR}" ]; then
+            echo "Existing pull request found:"
+            echo "${EXISTING_PR}"
+            exit 0
+          fi
+
+          gh pr create \
+            --base "${BASE_BRANCH}" \
+            --head "${{ github.ref_name }}" \
+            --title "${PR_TITLE}" \
+            --body "${PR_BODY}"
