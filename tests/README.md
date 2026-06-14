@@ -49,6 +49,9 @@ tests/
     ├── ming_omni/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
+    │   ├── test_streaming_decode.py
+    │   ├── test_streaming_e2e_glue.py
+    │   ├── test_streaming_speech_config.py
     │   ├── test_talker.py
     │   ├── test_talker_voice_validation.py
     │   ├── test_thinker.py
@@ -68,6 +71,12 @@ tests/
     │   └── test_request_builders.py
     ├── moss_tts/
     │   └── test_pipeline.py
+    ├── moss_tts_local/
+    │   ├── test_pipeline.py
+    │   ├── test_radix_hash.py
+    │   ├── test_s0_gate.py
+    │   ├── test_state_pool.py
+    │   └── test_streaming_vocoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -288,6 +297,19 @@ that happened to contain an older version of the test.
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
   - vision encoder `patch_embed` numerical equivalence: `nn.Conv3d` vs `F.linear` reshape at the substitution boundary, using synthetic weights without loading real Ming checkpoints.
+  - streaming text decode (`MingStreamingDetokenizeScheduler` /
+    `make_text_stream_output_builder`): per-token detokenization and delta
+    emission with UTF-8 multibyte boundary safety, streaming vs. non-streaming
+    final-result shape, stream-completion ordering races, per-request failure
+    isolation, bounded orphan `_state` eviction with abort cleanup, and
+    text-stream output gating on the `stream` flag, chunked prefill, and
+    text-vs-audio-only output modalities
+  - streaming speech glue and topology: thinker text/combined stream builders
+    fanning token ids to decode and text to the segmenter (audio-only kept off
+    decode), client merge of decode deltas with the talker stream, and
+    `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
+    talker, terminal talker-stream stage, thinker/talker GPU-range collision
+    rejection, streaming variant exposure).
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts
@@ -317,7 +339,9 @@ that happened to contain an older version of the test.
   - pipeline config, request builders, and scheduler adapter contracts
   - decode-state pool acquisition, launch-state gathers, repetition-penalty history, cleanup, and resume/retraction lifecycle
   - chunked prefill feedback/journal suppression and postprocess alignment checks
-  - synchronous frame-decode parity harness and S0 gate coverage.
+  - synchronous frame-decode parity harness and S0 gate coverage
+  - streaming vocoder session lifecycle, per-request chunk-threshold and
+    coalescing contracts, and decode-failure isolation.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

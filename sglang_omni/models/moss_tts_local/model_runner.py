@@ -11,6 +11,7 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 
@@ -27,6 +28,11 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
+        self._outbox: Any | None = None
+        self._vocoder_target = "vocoder"
+
+    def set_stream_outbox(self, outbox: Any) -> None:
+        self._outbox = outbox
 
     def custom_prefill_forward(
         self,
@@ -610,6 +616,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local journal/batch alignment broken: "
                 f"{journal.rids} != {expected_rids}"
             )
+        rows_cpu: torch.Tensor | None = None
         for i, sched_req in enumerate(expected_reqs):
             # Overrun: a request finished or retracted in a PRIOR step is still
             # in this lagged resolve batch; its wasted frame must not reach
@@ -630,3 +637,18 @@ class MossTTSLocalModelRunner(ModelRunner):
             if req_output.data is None or int(req_output.data) == end_id:
                 continue
             sched_req.data.output_rows.append(journal.rows[i])
+            stream_metadata = getattr(sched_req.data, "stream_metadata", None)
+            if self._outbox is None or stream_metadata is None:
+                continue
+            if rows_cpu is None:
+                # One D2H per step regardless of how many requests stream.
+                rows_cpu = journal.rows.detach().to("cpu", torch.long)
+            self._outbox.put(
+                OutgoingMessage(
+                    request_id=sched_req.request_id,
+                    type="stream",
+                    target=self._vocoder_target,
+                    data=rows_cpu[i].clone(),
+                    metadata=stream_metadata,
+                )
+            )

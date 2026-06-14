@@ -21,7 +21,7 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             factory_args={
                 "device": codec_device,
                 "ref_audio_cache": True,
-                "ref_audio_cache_max_items": 256,
+                "ref_audio_cache_max_items": 1024,
                 "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
             },
             gpu=0,
@@ -34,6 +34,7 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             factory_args={"gpu_id": 0, "dtype": "bfloat16"},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -42,6 +43,7 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             factory_args={"device": codec_device},
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

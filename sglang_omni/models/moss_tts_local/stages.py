@@ -19,7 +19,6 @@ from sglang_omni.models.moss_tts.stages import (
     _resolve_checkpoint,
 )
 from sglang_omni.models.moss_tts_local.payload_types import (
-    MossTTSLocalState,
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
@@ -28,13 +27,14 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     preprocess_moss_tts_local_payload,
     set_moss_tts_local_preprocessing_context,
 )
+from sglang_omni.models.moss_tts_local.streaming_vocoder import (
+    MossTTSLocalStreamingVocoderScheduler,
+)
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
-from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
-from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +44,10 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 
-# NOTE: the preprocessing and vocoder stages each load their own processor
-# (and thus their own ~4.3 GB bf16 codec instance). The codec's chunked decode
-# flips module-global streaming state (`model.streaming()`), so a decode on a
-# shared instance corrupts any concurrently running reference encode; with
-# separate instances the encoder side only ever runs stateless forwards and the
-# streaming decode stays confined to the single-threaded vocoder batch loop.
-
-
-def load_state(payload: StagePayload) -> MossTTSLocalState:
-    return MossTTSLocalState.from_dict(payload.data)
-
-
-def store_state(payload: StagePayload, state: MossTTSLocalState) -> StagePayload:
-    payload.data = state.to_dict()
-    return payload
+# NOTE: preprocessing and vocoder stages each load their own processor (and
+# ~4.3 GB bf16 codec instance): `model.streaming()` flips module-global codec
+# state, so a decode on a shared instance would corrupt a concurrent
+# reference encode (see streaming_vocoder.py).
 
 
 def _normalize_processor_config(processor: Any) -> None:
@@ -113,19 +102,6 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
             # would corrupt the quantizer codebooks.
             audio_tokenizer.to(device)
     return processor
-
-
-def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-    usage = {
-        "prompt_tokens": int(state.prompt_tokens),
-        "completion_tokens": int(state.completion_tokens),
-        "total_tokens": int(state.prompt_tokens + state.completion_tokens),
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
 
 
 class _BatchedReferenceEncoder:
@@ -236,8 +212,8 @@ class _BatchedReferenceEncoder:
 class CachedReferenceEncoder:
     """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
 
-    Miss path returns the encoder's tensor unchanged (bit-identical to cache-off).
-    Hit path returns a fresh .clone().to(long) so callers cannot mutate cached state.
+    Every path (miss, hit, follower) returns an independent CPU long tensor, so
+    downstream sees one device/dtype regardless of cache temperature.
     Stores codes as int32 on CPU (lossless for codebook values in [0, 1023]).
     """
 
@@ -294,9 +270,9 @@ class CachedReferenceEncoder:
     ) -> torch.Tensor:
         """Single-flight skeleton shared by encode() and encode_data_uri().
 
-        Hit -> independent .clone().to(long). Miss leader runs encode_fn and returns
-        its tensor unchanged (bit-identical to cache-off). revalidate(), if given, is
-        evaluated outside the lock and gates the put (TOCTOU guard for file paths).
+        All paths return an independent CPU long tensor. revalidate(), if given,
+        is evaluated outside the lock and gates the put (TOCTOU guard for file
+        paths).
         """
         leader_fut: concurrent.futures.Future | None = None
         follower_fut: concurrent.futures.Future | None = None
@@ -348,11 +324,12 @@ class CachedReferenceEncoder:
             self._inflight.pop(key, None)
         leader_fut.set_result(stored)
         self._maybe_log()
-        return result  # original tensor: miss path stays bit-identical to cache-off
+        # CPU long like the hit path.
+        return stored.to(torch.long)
 
     def _maybe_log(self) -> None:
         now = time.monotonic()
-        if now - self._last_log_time < 60.0:
+        if now - self._last_log_time < self.LOG_INTERVAL_S:
             return
         with self._lock:
             if now - self._last_log_time < self.LOG_INTERVAL_S:
@@ -430,7 +407,7 @@ def create_preprocessing_executor(
     encode_batch_size: int = 8,
     encode_batch_wait_ms: int = 4,
     ref_audio_cache: bool = True,
-    ref_audio_cache_max_items: int = 256,
+    ref_audio_cache_max_items: int = 1024,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
 ) -> SimpleScheduler:
     # MOSS_REF_AUDIO_CACHE=0 disables the cache at startup (ops kill switch / A-B
@@ -502,10 +479,8 @@ def create_sglang_tts_engine_executor(
         "enable_torch_compile": False,
         "max_prefill_tokens": 8192,
         "max_running_requests": 16,
-        # Leave headroom for the two ~4.3 GB bf16 codec instances plus their
-        # activations: on multi-GPU hosts the codec lives on the second GPU
-        # (0.6 of an 80 GB card still gives the 4B backbone a ~35 GB KV pool);
-        # on a single GPU everything co-locates, so back off further.
+        # Headroom for the two ~4.3 GB bf16 codec instances; back off further
+        # when everything co-locates on a single GPU.
         "mem_fraction_static": 0.6 if torch.cuda.device_count() > 1 else 0.5,
         "sampling_backend": "pytorch",
         "torch_compile_max_bs": 16,
@@ -566,7 +541,8 @@ def create_sglang_tts_engine_executor(
         cleanup_prepared_moss_tts_local_request(request_id)
         model.reset_request(request_id)
 
-    return OmniScheduler(
+    model_runner = MossTTSLocalModelRunner(model_worker, output_proc)
+    scheduler = OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -575,13 +551,15 @@ def create_sglang_tts_engine_executor(
         model_config=model_config,
         prefill_manager=prefill_mgr,
         decode_manager=decode_mgr,
-        model_runner=MossTTSLocalModelRunner(model_worker, output_proc),
+        model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
         abort_callback=abort_request,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )
+    model_runner.set_stream_outbox(scheduler.outbox)
+    return scheduler
 
 
 def create_tts_engine_executor(*args, **kwargs) -> Any:
@@ -595,79 +573,17 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-) -> SimpleScheduler:
+    stream_slots: int = 8,
+    stream_chunk_frames: int = 25,
+    initial_chunk_frames: int = 5,
+) -> MossTTSLocalStreamingVocoderScheduler:
     device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_tts_local_processor(model_path, device=device)
-
-    def _prepare_codes(
-        payload: StagePayload,
-    ) -> tuple[MossTTSLocalState, torch.Tensor | None]:
-        state = load_state(payload)
-        if state.audio_codes is None:
-            raise RuntimeError("MOSS-TTS Local vocoder requires audio_codes")
-        codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
-        if codes.numel() == 0:
-            # Immediate stop decision: emit no audio so only this request
-            # fails downstream instead of poisoning the whole decode batch.
-            return state, None
-        return state, codes
-
-    def _store_vocoder_result(
-        payload: StagePayload,
-        state: MossTTSLocalState,
-        wav: torch.Tensor,
-        sample_rate: int,
-    ) -> StagePayload:
-        # The v2 codec is natively stereo: keep the [channels, samples]
-        # layout end to end so the client receives a 2-channel waveform.
-        audio_payload = audio_waveform_payload(
-            wav, source_hint="MOSS-TTS Local", keep_channels=True
-        )
-        state.audio_codes = None
-        state.sample_rate = int(sample_rate)
-        payload = store_state(payload, state)
-        payload.data.update(audio_payload)
-        payload.data["sample_rate"] = state.sample_rate
-        payload.data["modality"] = "audio"
-        usage = _build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        return payload
-
-    def _sample_rate() -> int:
-        return int(
-            getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
-            or getattr(
-                getattr(getattr(processor, "audio_tokenizer", None), "config", None),
-                "sampling_rate",
-                0,
-            )
-            or 48000
-        )
-
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        prepared = [_prepare_codes(payload) for payload in payloads]
-        codes_list = [codes for _, codes in prepared if codes is not None]
-        decoded = iter(processor.decode_audio_codes(codes_list))
-        sample_rate = _sample_rate()
-        results = []
-        for payload, (state, codes) in zip(payloads, prepared):
-            if codes is None:
-                # No audio fields: the client surfaces a per-request
-                # "no audio output" error without failing batch peers.
-                state.audio_codes = None
-                results.append(store_state(payload, state))
-                continue
-            wav = torch.as_tensor(next(decoded)).detach().to("cpu")
-            results.append(_store_vocoder_result(payload, state, wav, sample_rate))
-        return results
-
-    def _vocode(payload: StagePayload) -> StagePayload:
-        return _vocode_batch([payload])[0]
-
-    return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=_vocode_batch,
+    return MossTTSLocalStreamingVocoderScheduler(
+        processor,
+        stream_slots=stream_slots,
+        stream_chunk_frames=stream_chunk_frames,
+        initial_chunk_frames=initial_chunk_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )
