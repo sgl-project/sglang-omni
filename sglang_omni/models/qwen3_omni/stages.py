@@ -942,8 +942,23 @@ def create_sglang_thinker_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
 ):
     """Returns OmniScheduler for thinker."""
-
-    overrides: dict[str, Any] = {"disable_cuda_graph": False}
+    # note (luojiaxuan):
+    # The thinker runs prefill XOR decode per scheduler step, so under
+    # concurrent streaming a large fraction of steps are prefill-only while
+    # in-flight decodes stall (measured on Qwen3-Omni-30B TP=2, 32 streams:
+    # ~98% of prefill steps had decode-ready reqs in running_batch passed over,
+    # ~18/step). Mixed-chunk folds those running decodes into the chunk-prefill
+    # (extend) step, restoring the decode duty cycle: +14% throughput and ~6%
+    # lower computation-aware latency at quality parity, with no low-concurrency
+    # regression and robustness to chunked_prefill_size (#760). Defaults here so
+    # the streaming-SST thinker path benefits out of the box; either key can be
+    # overridden via server_args_overrides (set enable_mixed_chunk=False to opt
+    # out). Note: mixed-chunk only engages when chunked_prefill_size > 0.
+    overrides: dict[str, Any] = {
+        "disable_cuda_graph": False,
+        "enable_mixed_chunk": True,
+        "chunked_prefill_size": 8192,
+    }
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size

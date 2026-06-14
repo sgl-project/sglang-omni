@@ -339,6 +339,9 @@ async def _run_server(
             requires_uploaded_voice_for_named_voice=(
                 pipeline_config.requires_uploaded_voice_for_named_voice()
             ),
+            supports_uploaded_voice_references=(
+                pipeline_config.supports_uploaded_voice_references()
+            ),
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,

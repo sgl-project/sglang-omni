@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
+import re
 from typing import ClassVar
 
 from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_tts"
+_QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
+    "custom_voice",
+    "customvoice",
+    "voice_design",
+    "voicedesign",
+)
 
 
 class Qwen3TTSPipelineConfig(PipelineConfig):
@@ -44,10 +51,23 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)
 
+    def supports_uploaded_voice_references(self) -> bool:
+        return _is_qwen3_tts_base_model(self.model_path)
+
 
 def _is_qwen3_tts_base_model(model_path: str) -> bool:
-    normalized = model_path.replace("-", "_").replace("/", "_").casefold()
-    return "qwen3_tts" in normalized and normalized.endswith("_base")
+    qwen3_tts_parts = [
+        part.replace("-", "_").casefold()
+        for part in re.split(r"[/\\]+", model_path.strip())
+        if "qwen3_tts" in part.replace("-", "_").casefold()
+    ]
+    if any(
+        marker in part
+        for part in qwen3_tts_parts
+        for marker in _QWEN3_TTS_CUSTOM_VARIANT_MARKERS
+    ):
+        return False
+    return any(part.endswith("_base") or "_base_" in part for part in qwen3_tts_parts)
 
 
 EntryClass = Qwen3TTSPipelineConfig

@@ -151,8 +151,10 @@ def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
             "1",
             "--gpu-code2wav",
             "1",
+            # note (Yue Yin): 0.40 not 0.55 — GPU 1 co-locates thinker rank-1, talker,
+            # code2wav under TP=2; 0.55 OOMs on concurrency-16 video-prefill (issue #765).
             "--thinker-mem-fraction-static",
-            "0.55",
+            "0.40",
             "--talker-mem-fraction-static",
             "0.20",
         ],

@@ -179,6 +179,8 @@ class SpeakerSampleStore:
         speaker_description: str | None = None,
     ) -> dict[str, Any]:
         normalized_name = normalize_voice_name(name)
+        if normalized_name in DEFAULT_VOICE_PRESETS:
+            raise bad_request("name is reserved for a preset voice", param="name")
         display_name = name.strip()
         consent = _normalize_required_text(consent, "consent")
         ref_text = _normalize_optional_text(ref_text)
@@ -531,21 +533,24 @@ def _voice_from_metadata(metadata: dict[str, str], path: Path) -> UploadedVoice:
     if normalized_name is None or name is None:
         raise bad_request("voice metadata is missing name")
     values: dict[str, Any] = dict(metadata)
-    for key in VOICE_METADATA_INT_FIELDS:
-        if key in values:
-            values[key] = int(values[key])
-    return UploadedVoice(
-        name=name,
-        normalized_name=normalize_voice_name(normalized_name),
-        consent=values.get("consent", ""),
-        created_at=int(values.get("created_at", 0)),
-        file_size=int(values.get("file_size", path.stat().st_size)),
-        mime_type=values.get("mime_type", "audio/wav"),
-        original_filename=values.get("original_filename", ""),
-        sample_rate=int(values.get("sample_rate", DEFAULT_SAMPLE_RATE)),
-        num_samples=int(values.get("num_samples", 0)),
-        fingerprint=values.get("fingerprint", ""),
-        file_path=path,
-        ref_text=values.get("ref_text"),
-        speaker_description=values.get("speaker_description"),
-    )
+    try:
+        for key in VOICE_METADATA_INT_FIELDS:
+            if key in values:
+                values[key] = int(values[key])
+        return UploadedVoice(
+            name=name,
+            normalized_name=normalize_voice_name(normalized_name),
+            consent=values.get("consent", ""),
+            created_at=int(values.get("created_at", 0)),
+            file_size=int(values.get("file_size", path.stat().st_size)),
+            mime_type=values.get("mime_type", "audio/wav"),
+            original_filename=values.get("original_filename", ""),
+            sample_rate=int(values.get("sample_rate", DEFAULT_SAMPLE_RATE)),
+            num_samples=int(values.get("num_samples", 0)),
+            fingerprint=values.get("fingerprint", ""),
+            file_path=path,
+            ref_text=values.get("ref_text"),
+            speaker_description=values.get("speaker_description"),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise bad_request(f"voice metadata is invalid: {path}") from exc

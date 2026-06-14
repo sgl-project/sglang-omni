@@ -176,6 +176,7 @@ def test_pipeline_stage_wiring():
     assert stages["preprocessing"].gpu == 0
     assert stages["preprocessing"].factory_args["device"] == "cuda:1"
     assert stages["preprocessing"].factory_args["ref_audio_cache_max_items"] == 8192
+    assert config.supports_uploaded_voice_references() is True
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
     assert stages["vocoder"].process == "pipeline"

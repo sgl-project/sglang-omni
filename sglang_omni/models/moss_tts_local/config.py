@@ -70,6 +70,9 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         default_factory=lambda: _stages(codec_device="cuda:1")
     )
 
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
+
 
 class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Single-GPU variant that colocates the codec with the AR engine."""

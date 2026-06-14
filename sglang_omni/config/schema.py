@@ -275,6 +275,10 @@ class PipelineConfig(BaseModel):
         """Return whether non-default TTS voice names must be uploaded voices."""
         return False
 
+    def supports_uploaded_voice_references(self) -> bool:
+        """Return whether uploaded voices can be lowered as reference audio."""
+        return False
+
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

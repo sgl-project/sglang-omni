@@ -46,5 +46,8 @@ class S2ProPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
+
 
 EntryClass = S2ProPipelineConfig

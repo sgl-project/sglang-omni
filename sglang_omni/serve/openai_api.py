@@ -157,6 +157,7 @@ def create_app(
     *,
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
+    supports_uploaded_voice_references: bool = True,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -169,6 +170,8 @@ def create_app(
         model_name: Default model name to report in responses and /v1/models.
         requires_uploaded_voice_for_named_voice: Whether non-default TTS voice
             names must resolve to uploaded voices before reaching the model.
+        supports_uploaded_voice_references: Whether uploaded voice names can be
+            lowered into backend reference-audio requests.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` TTS
@@ -203,6 +206,7 @@ def create_app(
         requires_uploaded_voice_for_named_voice=(
             requires_uploaded_voice_for_named_voice
         ),
+        supports_uploaded_voice_references=supports_uploaded_voice_references,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -911,6 +915,7 @@ def _register_speech(app: FastAPI) -> None:
                 req,
                 validate=False,
                 reference_descriptors=prepared.reference_descriptors,
+                uploaded_voice=prepared.uploaded_voice,
             )
         except json.JSONDecodeError as exc:
             return speech_error_response(

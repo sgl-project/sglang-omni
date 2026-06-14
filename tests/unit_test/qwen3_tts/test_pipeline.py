@@ -234,6 +234,31 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("model_path", "expected"),
+    [
+        ("Qwen/Qwen3-TTS-12Hz-0.6B-Base", True),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base/", True),
+        ("/models/Qwen3-TTS-12Hz-0.6B-Base/snapshots/abc123", True),
+        ("/models/qwen3_tts_12hz_1_7b_base/checkpoint", True),
+        ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", False),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", False),
+        ("/models/Qwen3-TTS-12Hz-0.6B-CustomVoice/snapshots/abc123", False),
+        ("/models/qwen3_tts_base/Qwen3-TTS-12Hz-0.6B-CustomVoice", False),
+        ("/models/qwen3_tts_base/Qwen3-TTS-12Hz-1.7B-VoiceDesign", False),
+        ("model", False),
+    ],
+)
+def test_qwen3_tts_base_path_detection_for_uploaded_voice_requirement(
+    model_path: str,
+    expected: bool,
+) -> None:
+    config = Qwen3TTSPipelineConfig(model_path=model_path)
+
+    assert config.requires_uploaded_voice_for_named_voice() is expected
+    assert config.supports_uploaded_voice_references() is expected
+
+
 def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
     state = Qwen3TTSState(
         text="hello",

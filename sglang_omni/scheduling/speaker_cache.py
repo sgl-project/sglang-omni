@@ -58,10 +58,10 @@ class SpeakerArtifactCache:
     def clear_voice(self, voice_name: str) -> None:
         normalized_voice = voice_name.lower()
         with self._lock:
-            self._cache.remove_if(
+            removed_count = self._cache.remove_if(
                 lambda key: _encoded_key_voice_name(key).lower() == normalized_voice
             )
-            self._delete_invalidation_counter += 1
+            self._delete_invalidation_counter += removed_count
 
     def clear(self) -> None:
         with self._lock:

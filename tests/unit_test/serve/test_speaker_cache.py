@@ -29,6 +29,9 @@ def test_speaker_cache_tracks_hits_misses_and_voice_invalidation() -> None:
     assert stats["delete_invalidation_counter"] == 1
     assert stats["entries"] == 0
 
+    cache.clear_voice("SPEAKER-A")
+    assert cache.stats()["delete_invalidation_counter"] == 1
+
 
 def test_speaker_cache_evicts_oldest_entry_under_memory_pressure() -> None:
     cache = SpeakerArtifactCache(max_bytes=64)

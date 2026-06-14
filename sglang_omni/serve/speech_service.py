@@ -51,6 +51,7 @@ RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES = 1
 class PreparedSpeechRequest:
     request: CreateSpeechRequest
     reference_descriptors: list[dict[str, Any]]
+    uploaded_voice: "UploadedVoiceReference | None" = None
 
 
 class SpeechRequestValidator:
@@ -61,6 +62,7 @@ class SpeechRequestValidator:
         *,
         default_model: str,
         requires_uploaded_voice_for_named_voice: bool = False,
+        supports_uploaded_voice_references: bool = True,
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
@@ -68,6 +70,10 @@ class SpeechRequestValidator:
         self.default_model = default_model
         self.requires_uploaded_voice_for_named_voice = (
             requires_uploaded_voice_for_named_voice
+        )
+        self.supports_uploaded_voice_references = (
+            supports_uploaded_voice_references
+            or requires_uploaded_voice_for_named_voice
         )
         self.voice_store = voice_store
         self.reference_connector = MultiModalResourceConnector(
@@ -80,18 +86,14 @@ class SpeechRequestValidator:
     def parse_request(self, payload: Any) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""
 
-        if not isinstance(payload, dict):
-            raise bad_request("speech request body must be a JSON object")
-        self._validate_raw_payload(payload)
-        try:
-            request = CreateSpeechRequest.model_validate(payload)
-        except ValidationError as exc:
-            raise bad_request(_validation_error_message(exc)) from exc
-        return self.prepare_request(request)
+        return self.prepare_request(self._parse_raw_request(payload))
 
     def parse_generation_request(self, payload: Any) -> PreparedSpeechRequest:
         """Parse and prepare a raw HTTP payload for GenerateRequest lowering."""
 
+        return self.prepare_generation_request(self._parse_raw_request(payload))
+
+    def _parse_raw_request(self, payload: Any) -> CreateSpeechRequest:
         if not isinstance(payload, dict):
             raise bad_request("speech request body must be a JSON object")
         self._validate_raw_payload(payload)
@@ -99,7 +101,7 @@ class SpeechRequestValidator:
             request = CreateSpeechRequest.model_validate(payload)
         except ValidationError as exc:
             raise bad_request(_validation_error_message(exc)) from exc
-        return self.prepare_generation_request(request)
+        return request
 
     def prepare_request(self, request: CreateSpeechRequest) -> CreateSpeechRequest:
         """Validate and normalize a request that was already parsed."""
@@ -186,6 +188,7 @@ class SpeechRequestValidator:
         return PreparedSpeechRequest(
             request=prepared_request,
             reference_descriptors=reference_descriptors,
+            uploaded_voice=uploaded_voice,
         )
 
     def build_generate_request(
@@ -194,6 +197,7 @@ class SpeechRequestValidator:
         *,
         validate: bool = True,
         reference_descriptors: list[dict[str, Any]] | None = None,
+        uploaded_voice: "UploadedVoiceReference | None" = None,
     ) -> GenerateRequest:
         """Convert a validated speech request into a client GenerateRequest."""
 
@@ -201,7 +205,9 @@ class SpeechRequestValidator:
             prepared = self.prepare_generation_request(request)
             request = prepared.request
             reference_descriptors = prepared.reference_descriptors
-        uploaded_voice = self._resolve_uploaded_voice_reference(request)
+            uploaded_voice = prepared.uploaded_voice
+        elif uploaded_voice is None and reference_descriptors is None:
+            uploaded_voice = self._resolve_uploaded_voice_reference(request)
 
         return GenerateRequest(
             model=request.model or self.default_model,
@@ -225,6 +231,7 @@ class SpeechRequestValidator:
     ) -> "UploadedVoiceReference | None":
         if (
             self.voice_store is None
+            or not self.supports_uploaded_voice_references
             or request.ref_audio is not None
             or request.references
         ):

@@ -126,6 +126,7 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert config.supports_uploaded_voice_references() is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
         is MossTTSPipelineConfig

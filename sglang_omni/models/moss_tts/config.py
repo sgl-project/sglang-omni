@@ -55,5 +55,8 @@ class MossTTSPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
+
 
 EntryClass = MossTTSPipelineConfig

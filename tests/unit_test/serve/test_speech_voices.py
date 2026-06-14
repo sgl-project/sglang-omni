@@ -208,6 +208,16 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
                 content_type="audio/wav",
             )
 
+    for name in ("default", "Default"):
+        with pytest.raises(SpeechAPIError, match="reserved"):
+            store.upload(
+                name=name,
+                consent="consent",
+                audio_bytes=_reference_wav(),
+                filename="default.wav",
+                content_type="audio/wav",
+            )
+
     with pytest.raises(SpeechAPIError, match="must not be empty"):
         store.upload(
             name="empty",
@@ -327,6 +337,41 @@ def test_voice_store_restore_keeps_newest_duplicate_normalized_name(
         load_file(str(voice_path)),
         str(duplicate_path),
         metadata=duplicate_metadata,
+    )
+
+    restored = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
+    voices = restored.list_response()["uploaded_voices"]
+
+    assert [voice["name"] for voice in voices] == ["Guide"]
+    assert voices[0]["created_at"] == uploaded["created_at"]
+
+
+def test_voice_store_restore_skips_malformed_metadata(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
+    uploaded = store.upload(
+        name="Guide",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="guide.wav",
+        content_type="audio/wav",
+    )
+
+    from safetensors import safe_open
+    from safetensors.numpy import load_file, save_file
+
+    voice_path = tmp_path / "guide.safetensors"
+    bad_path = tmp_path / "bad.safetensors"
+    with safe_open(str(voice_path), framework="np") as handle:
+        metadata = dict(handle.metadata() or {})
+    save_file(
+        load_file(str(voice_path)),
+        str(bad_path),
+        metadata={
+            **metadata,
+            "name": "bad",
+            "normalized_name": "bad",
+            "created_at": "not-an-int",
+        },
     )
 
     restored = SpeakerSampleStore(root_dir=tmp_path, max_uploaded=2)
@@ -457,6 +502,40 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     assert gen_req.metadata["tts_params"]["task_type"] == "Base"
 
 
+def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_params(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    first = store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(frequency=220),
+        filename="anchor.wav",
+        content_type="audio/wav",
+    )
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
+
+    prepared = service.parse_generation_request({"input": "hello", "voice": "anchor"})
+    store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(frequency=330),
+        filename="anchor.wav",
+        content_type="audio/wav",
+    )
+    gen_req = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+        uploaded_voice=prepared.uploaded_voice,
+    )
+
+    ref = gen_req.prompt["references"][0]
+    tts_params = gen_req.metadata["tts_params"]
+    assert ref["uploaded_voice_created_at"] == first["created_at"]
+    assert tts_params["uploaded_voice_created_at"] == first["created_at"]
+
+
 def test_speech_service_rejects_unknown_required_uploaded_voice(
     tmp_path: Path,
 ) -> None:
@@ -483,6 +562,31 @@ def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
 
     assert gen_req.prompt == "hello"
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
+
+
+def test_speech_service_can_disable_uploaded_voice_resolution(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    store.upload(
+        name="Vivian",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="vivian.wav",
+        content_type="audio/wav",
+    )
+    service = SpeechRequestValidator(
+        default_model="qwen3-customvoice",
+        supports_uploaded_voice_references=False,
+        voice_store=store,
+    )
+
+    request = service.parse_request({"input": "hello", "voice": "Vivian"})
+    gen_req = service.build_generate_request(request)
+
+    assert gen_req.prompt == "hello"
+    assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
+    assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
 
 def _reference_wav(
