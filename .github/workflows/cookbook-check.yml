@@ -1,0 +1,39 @@
+name: Cookbook Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Cookbook file or directory to check"
+        required: false
+        default: "docs/cookbook"
+
+  pull_request:
+    paths:
+      - "docs/cookbook/**"
+      - "examples/configs/**"
+      - ".github/workflows/cookbook-check.yml"
+      - "scripts/ci/check_cookbook.sh"
+
+jobs:
+  cookbook-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve target
+        id: target
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=docs/cookbook" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run cookbook checks
+        shell: bash
+        run: |
+          bash scripts/ci/check_cookbook.sh "${{ steps.target.outputs.target }}"
