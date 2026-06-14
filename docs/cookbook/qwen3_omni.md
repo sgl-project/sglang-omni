@@ -79,10 +79,11 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `min_p` | float | `0.0` | Thinker |
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
+| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
 | `stop` | str \| list | `null` | Thinker |
 | `seed` | int | `null` | Thinker |
 | `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Talker (speech output only) — format config, e.g. `{"voice": "default", "format": "wav"}` |
+| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
 | `talker_temperature` | float | `0.9` | Talker (audio output only) |
 | `talker_top_p` | float | `1.0` | Talker (audio output only) |
 | `talker_top_k` | int | `50` | Talker (audio output only) |

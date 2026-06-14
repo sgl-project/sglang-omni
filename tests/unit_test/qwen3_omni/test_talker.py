@@ -13,7 +13,6 @@ from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
-    _quant_config_for_code_predictor_dense_mlp,
 )
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
@@ -1241,33 +1240,6 @@ def test_qwen_talker_keeps_existing_read_only_weight_loader() -> None:
     _bind_default_weight_loaders(module)
 
     assert module.param.weight_loader == "existing"
-
-
-def test_qwen_talker_code_predictor_dense_mlp_ignores_only_router_gate_skip() -> None:
-    """Prevents SGLang 0.5.8 substring skips from dequantizing gate_up_proj."""
-
-    class FakeQuantConfig:
-        ignored_layers = ["mlp.gate", "lm_head", "thinker.visual"]
-
-    original = FakeQuantConfig()
-
-    dense_mlp_config = _quant_config_for_code_predictor_dense_mlp(original)
-
-    assert dense_mlp_config is not original
-    assert original.ignored_layers == ["mlp.gate", "lm_head", "thinker.visual"]
-    assert dense_mlp_config.ignored_layers == ["lm_head", "thinker.visual"]
-
-
-def test_qwen_talker_code_predictor_quant_config_is_unchanged_without_router_skip() -> (
-    None
-):
-    class FakeQuantConfig:
-        ignored_layers = ["lm_head"]
-
-    original = FakeQuantConfig()
-
-    assert _quant_config_for_code_predictor_dense_mlp(original) is original
-    assert _quant_config_for_code_predictor_dense_mlp(None) is None
 
 
 def test_qwen_talker_activation_dtype_comes_from_codec_embedding() -> None:

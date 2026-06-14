@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk
-from sglang_omni.models.ming_omni.bootstrap import make_thinker_stream_output_builder
+from sglang_omni.models.ming_omni.bootstrap import (
+    make_combined_stream_output_builder,
+    make_text_stream_output_builder,
+    make_thinker_stream_output_builder,
+)
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 class _FakeTokenizer:
@@ -31,8 +36,19 @@ def _make_req():
     )
 
 
-def _make_req_data(req):
-    return SimpleNamespace(req=req)
+def _make_req_data(req, *, stream=True, output_modalities=None):
+    metadata = {}
+    if output_modalities is not None:
+        metadata["output_modalities"] = output_modalities
+    request = OmniRequest(
+        inputs={"text": "hi"},
+        params={"stream": stream},
+        metadata=metadata,
+    )
+    return SimpleNamespace(
+        req=req,
+        stage_payload=StagePayload(request_id="req", request=request, data={}),
+    )
 
 
 def _make_req_output(token_id):
@@ -52,6 +68,52 @@ def test_thinker_stream_builder_emits_to_segmenter():
     assert len(msgs) == 1
     assert msgs[0].target == "segmenter"
     assert msgs[0].data.dtype.is_floating_point is False  # uint8 tensor
+    assert bytes(msgs[0].data.tolist()).decode("utf-8") == "Hello"
+
+
+def test_streaming_tts_combined_builder_sends_token_to_decode_and_text_to_segmenter():
+    builder = make_combined_stream_output_builder(
+        make_text_stream_output_builder(),
+        make_thinker_stream_output_builder(
+            tokenizer=_FakeTokenizer(),
+            eos_token_id=None,
+        ),
+    )
+    req = _make_req()
+    req_data = _make_req_data(
+        req,
+        stream=True,
+        output_modalities=["text", "audio"],
+    )
+
+    msgs = builder("req-5", req_data, _make_req_output(5))
+
+    assert [msg.target for msg in msgs] == ["decode", "segmenter"]
+    assert int(msgs[0].data.item()) == 5
+    assert msgs[0].metadata == {"token_id": 5}
+    assert bytes(msgs[1].data.tolist()).decode("utf-8") == "Hello"
+    assert msgs[1].metadata["token_id"] == 5
+    assert msgs[1].metadata["text_len"] == len("Hello".encode("utf-8"))
+
+
+def test_streaming_tts_combined_builder_keeps_audio_only_off_decode():
+    builder = make_combined_stream_output_builder(
+        make_text_stream_output_builder(),
+        make_thinker_stream_output_builder(
+            tokenizer=_FakeTokenizer(),
+            eos_token_id=None,
+        ),
+    )
+    req = _make_req()
+    req_data = _make_req_data(
+        req,
+        stream=True,
+        output_modalities=["audio"],
+    )
+
+    msgs = builder("req-6", req_data, _make_req_output(5))
+
+    assert [msg.target for msg in msgs] == ["segmenter"]
     assert bytes(msgs[0].data.tolist()).decode("utf-8") == "Hello"
 
 

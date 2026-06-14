@@ -42,6 +42,7 @@ from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
     format_bytes_gib,
@@ -294,6 +295,7 @@ async def _run_server(
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
+    allowed_media_domains: list[str] | None = None,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
 
@@ -339,6 +341,7 @@ async def _run_server(
             ),
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
+            allowed_media_domains=allowed_media_domains,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
@@ -407,6 +410,7 @@ def launch_server(
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
+    allowed_media_domains: list[str] | None = None,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
 
@@ -423,7 +427,9 @@ def launch_server(
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` media
             references in TTS requests.
+        allowed_media_domains: Domains allowed for remote TTS reference audio.
     """
+    apply_gpu_compat_env_defaults()
     asyncio.run(
         _run_server(
             pipeline_config,
@@ -434,5 +440,6 @@ def launch_server(
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
+            allowed_media_domains=allowed_media_domains,
         )
     )

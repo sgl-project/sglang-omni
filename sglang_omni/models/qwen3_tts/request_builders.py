@@ -17,6 +17,7 @@ from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
+from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
 QWEN3_TTS_TASK_BASE = "Base"
@@ -311,6 +312,7 @@ def resolve_voice_clone_reference(
         reference.get("audio_path")
         or reference.get("ref_audio")
         or reference.get("audio")
+        or audio_data_uri_from_reference(reference)
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")
@@ -337,7 +339,7 @@ def references_contain_audio(references: list[dict[str, Any]]) -> bool:
     return any(
         reference.get(key) is not None
         for reference in references
-        for key in ("audio_path", "ref_audio", "audio")
+        for key in ("audio_path", "ref_audio", "audio", "data")
     )
 
 

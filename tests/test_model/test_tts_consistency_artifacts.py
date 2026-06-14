@@ -74,8 +74,7 @@ def _selected_concurrency() -> int:
 @pytest.mark.benchmark
 def test_tts_streaming_consistency_from_artifacts() -> None:
     """Validate stage-1 (non-stream) vs stage-2 (stream) speed_results.json
-    artifacts agree on structural invariants: prompt token counts, completion
-    token counts, and audio duration within tolerance."""
+    artifacts agree on request coverage and audio duration within tolerance."""
     concurrency = _selected_concurrency()
     non_stream_results = _load_speed_results(
         TTS_STAGE1_SPEED_RESULTS_DIR_ENV,

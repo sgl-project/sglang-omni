@@ -104,11 +104,11 @@ const historyList = $("#history");
 
 // --- Web Audio plumbing for live streaming playback ----
 //
-// Setting <audio>.src to a new blob URL on every incoming WAV chunk reloads
+// Setting <audio>.src to a new blob URL on every incoming chunk reloads
 // the element, which never finishes loading before the next chunk arrives —
-// so playback only kicks in once the stream completes. Instead we decode
-// each chunk into an AudioBuffer and schedule it on the AudioContext
-// timeline, which gives seamless real-time playback.
+// so playback only kicks in once the stream completes. Instead we convert
+// each PCM chunk into an AudioBuffer and schedule it on the AudioContext
+// timeline.
 
 let audioCtx = null;
 let muteGain = null;
@@ -118,6 +118,11 @@ let playbackGeneration = 0;
 let playbackQueue = Promise.resolve();
 let muted = false;
 let synthesisInFlight = false;
+
+const PCM_DEFAULT_SAMPLE_RATE = 24000;
+const PCM_DEFAULT_CHANNELS = 1;
+const PCM_DEFAULT_BIT_DEPTH = 16;
+const WAV_FORMAT_PCM = 1;
 
 function ensureAudioCtx() {
   if (!audioCtx) {
@@ -147,26 +152,40 @@ function beginPlaybackSession() {
   return playbackGeneration;
 }
 
-function enqueueWavChunk(wavBytes, generation) {
+function enqueuePcmChunk(pcmBytes, format, generation) {
   playbackQueue = playbackQueue
     .catch(() => {})
-    .then(() => scheduleWavChunk(wavBytes, generation));
+    .then(() => schedulePcmChunk(pcmBytes, format, generation));
 }
 
-async function scheduleWavChunk(wavBytes, generation) {
+function pcmBytesToAudioBuffer(ctx, pcmBytes, format) {
+  const sampleWidth = format.bitsPerSample / 8;
+  const frameCount = Math.floor(pcmBytes.length / format.blockAlign);
+  const audioBuffer = ctx.createBuffer(
+    format.channels,
+    frameCount,
+    format.sampleRate,
+  );
+  const view = new DataView(
+    pcmBytes.buffer,
+    pcmBytes.byteOffset,
+    pcmBytes.byteLength,
+  );
+
+  for (let frame = 0; frame < frameCount; frame++) {
+    const frameOffset = frame * format.blockAlign;
+    for (let channel = 0; channel < format.channels; channel++) {
+      const offset = frameOffset + channel * sampleWidth;
+      audioBuffer.getChannelData(channel)[frame] = view.getInt16(offset, true) / 32768;
+    }
+  }
+  return audioBuffer;
+}
+
+async function schedulePcmChunk(pcmBytes, format, generation) {
   if (generation !== playbackGeneration) return;
   const ctx = ensureAudioCtx();
-  // decodeAudioData wants a standalone ArrayBuffer.
-  const arrayBuffer = wavBytes.buffer.slice(
-    wavBytes.byteOffset,
-    wavBytes.byteOffset + wavBytes.byteLength,
-  );
-  let audioBuffer;
-  try {
-    audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-  } catch {
-    return; // skip unparseable chunk rather than blow up the stream
-  }
+  const audioBuffer = pcmBytesToAudioBuffer(ctx, pcmBytes, format);
   if (generation !== playbackGeneration) return;
 
   const source = ctx.createBufferSource();
@@ -726,7 +745,8 @@ async function runStreaming() {
   const started = performance.now();
   let chunkCount = 0;
   let firstAudioAt = null;
-  const wavChunks = [];
+  const pcmChunks = [];
+  let pendingBytes = new Uint8Array(0);
 
   try {
     const resp = await fetch("/api/synthesize/stream", {
@@ -739,61 +759,51 @@ async function runStreaming() {
     }
 
     const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const streamFormat = pcmFormatFromHeaders(resp.headers);
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let idx;
-      while ((idx = buffer.indexOf("\n")) !== -1) {
-        const rawLine = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        const line = rawLine.replace(/\r$/, "");
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6).trim();
-        if (!payload || payload === "[DONE]") continue;
-
-        let event;
-        try {
-          event = JSON.parse(payload);
-        } catch {
-          continue;
-        }
-        if (event.error) throw new Error(event.error);
-
-        const audio = event.audio;
-        if (!audio || !audio.data) continue;
-
-        chunkCount += 1;
-        const wavBytes = base64ToUint8Array(audio.data);
-        wavChunks.push(wavBytes);
-
-        if (firstAudioAt === null) {
-          firstAudioAt = (performance.now() - started) / 1000;
-        }
-
-        // Keep the SSE loop draining, but serialize decode/scheduling so chunks
-        // play in stream order and stale callbacks cannot leak into a new run.
-        enqueueWavChunk(wavBytes, playbackRun);
-
-        setStatus(
-          `Streaming · chunk ${chunkCount} · first audio ${firstAudioAt.toFixed(2)}s`,
-          "busy",
-        );
+      const aligned = alignPcmChunk(
+        value,
+        pendingBytes,
+        streamFormat.blockAlign,
+      );
+      pendingBytes = aligned.pending;
+      if (aligned.chunk.length === 0) {
+        continue;
       }
+
+      chunkCount += 1;
+      pcmChunks.push(aligned.chunk);
+
+      if (firstAudioAt === null) {
+        firstAudioAt = (performance.now() - started) / 1000;
+      }
+
+      enqueuePcmChunk(aligned.chunk, streamFormat, playbackRun);
+
+      setStatus(
+        `Streaming · chunk ${chunkCount} · first audio ${firstAudioAt.toFixed(2)}s`,
+        "busy",
+      );
     }
 
-    if (wavChunks.length === 0) {
+    if (pendingBytes.length !== 0) {
+      throw new Error("PCM stream ended with a partial audio frame.");
+    }
+    if (pcmChunks.length === 0) {
       throw new Error("No audio was returned.");
     }
 
     // Provide the full combined WAV in the Final audio bar so the user can
     // scrub / re-listen / download. The live playback is already happening
     // in the Web Audio graph and continues independently.
-    const finalBytes = combineWavChunks(wavChunks);
+    const finalBytes = writeWav(
+      streamFormat,
+      pcmChunks,
+      pcmChunks.reduce((total, chunk) => total + chunk.length, 0),
+    );
     const finalUrl = URL.createObjectURL(
       new Blob([finalBytes], { type: "audio/wav" }),
     );
@@ -816,65 +826,38 @@ async function runStreaming() {
 }
 
 // ---------------------------------------------------------------------------
-// WAV utilities (browser-side)
+// PCM / WAV utilities (browser-side)
 // ---------------------------------------------------------------------------
 
-function base64ToUint8Array(b64) {
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
+function pcmFormatFromHeaders(headers) {
+  const sampleRate = Number(headers.get("x-sample-rate")) || PCM_DEFAULT_SAMPLE_RATE;
+  const channels = Number(headers.get("x-channels")) || PCM_DEFAULT_CHANNELS;
+  const bitsPerSample =
+    Number(headers.get("x-bit-depth")) || PCM_DEFAULT_BIT_DEPTH;
+  const sampleWidth = bitsPerSample / 8;
+  return {
+    audioFormat: WAV_FORMAT_PCM,
+    channels,
+    sampleRate,
+    byteRate: sampleRate * channels * sampleWidth,
+    blockAlign: channels * sampleWidth,
+    bitsPerSample,
+  };
 }
 
-// Parse a WAV chunk into its header and PCM data so we can splice multiple
-// streamed WAV chunks into a single re-headered WAV blob the browser can play.
-function parseWav(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  // RIFF header: 12 bytes
-  // Walk subchunks to find "fmt " and "data".
-  let offset = 12;
-  let fmt = null;
-  let dataOffset = null;
-  let dataSize = 0;
-  while (offset + 8 <= bytes.length) {
-    const id = String.fromCharCode(
-      bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
-    );
-    const size = view.getUint32(offset + 4, true);
-    if (id === "fmt ") {
-      fmt = {
-        audioFormat: view.getUint16(offset + 8, true),
-        channels: view.getUint16(offset + 10, true),
-        sampleRate: view.getUint32(offset + 12, true),
-        byteRate: view.getUint32(offset + 16, true),
-        blockAlign: view.getUint16(offset + 20, true),
-        bitsPerSample: view.getUint16(offset + 22, true),
-      };
-    } else if (id === "data") {
-      dataOffset = offset + 8;
-      dataSize = size;
-      break;
-    }
-    offset += 8 + size + (size % 2);
+function alignPcmChunk(chunk, pendingBytes, blockAlign) {
+  let merged = chunk;
+  if (pendingBytes.length !== 0) {
+    merged = new Uint8Array(pendingBytes.length + chunk.length);
+    merged.set(pendingBytes, 0);
+    merged.set(chunk, pendingBytes.length);
   }
-  if (!fmt || dataOffset === null) {
-    throw new Error("Invalid WAV chunk");
-  }
-  const pcm = bytes.subarray(dataOffset, dataOffset + dataSize);
-  return { fmt, pcm };
-}
 
-function combineWavChunks(chunks) {
-  let fmt = null;
-  const pcms = [];
-  let total = 0;
-  for (const c of chunks) {
-    const parsed = parseWav(c);
-    if (!fmt) fmt = parsed.fmt;
-    pcms.push(parsed.pcm);
-    total += parsed.pcm.length;
-  }
-  return writeWav(fmt, pcms, total);
+  const alignedLength = merged.length - (merged.length % blockAlign);
+  return {
+    chunk: merged.subarray(0, alignedLength),
+    pending: merged.subarray(alignedLength),
+  };
 }
 
 function writeWav(fmt, pcms, total) {

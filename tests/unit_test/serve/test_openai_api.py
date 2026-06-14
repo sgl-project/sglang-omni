@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sglang_omni.client import Client, ClientError, GenerateChunk
+from sglang_omni.client import Client, GenerateChunk
+from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
@@ -17,11 +17,11 @@ from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _await_speech_response,
     _chat_stream,
-    _speech_stream,
-    build_speech_generate_request,
+    _speech_audio_response,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -90,6 +90,10 @@ def _fault_client(model_name: str) -> Client:
 
 
 class SuccessfulSpeechClient:
+    def __init__(self, *, sample_rate: int = 24000) -> None:
+        self.sample_rate = sample_rate
+        self.speech_requests: list[GenerateRequest] = []
+
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
@@ -99,7 +103,7 @@ class SuccessfulSpeechClient:
             request_id=request_id or "speech-1",
             modality="audio",
             audio_data=[0.0, 0.1, -0.1, 0.0],
-            sample_rate=24000,
+            sample_rate=self.sample_rate,
             finish_reason="stop",
         )
 
@@ -114,7 +118,8 @@ class SuccessfulSpeechClient:
     ):
         from sglang_omni.client.types import SpeechResult
 
-        del request, request_id, speed, allow_format_fallback
+        del request_id, speed, allow_format_fallback
+        self.speech_requests.append(request)
         return SpeechResult(
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
@@ -137,9 +142,30 @@ class EmptyStreamingSpeechClient:
         )
 
 
-class BlockingStreamingSpeechClient:
+class EmptyDeltaStreamingSpeechClient:
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[],
+            sample_rate=24000,
+            finish_reason=None,
+        )
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=None,
+            sample_rate=24000,
+            finish_reason="stop",
+        )
+
+
+class PrefetchedBlockingStreamingSpeechClient:
     def __init__(self) -> None:
-        self.started = asyncio.Event()
         self.aborted: list[str] = []
 
     def health(self) -> dict[str, Any]:
@@ -147,9 +173,14 @@ class BlockingStreamingSpeechClient:
 
     async def generate(self, request: Any, request_id: str | None = None):
         del request
-        self.started.set()
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[0.0, 0.1, -0.1, 0.0],
+            sample_rate=24000,
+            finish_reason=None,
+        )
         await asyncio.Future()
-        yield GenerateChunk(request_id=request_id or "speech-1")
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -188,6 +219,11 @@ class DisconnectingRequest:
         return self.disconnected.is_set()
 
 
+class ConnectedRequest:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
 class SuccessfulTranscriptionClient:
     def __init__(self) -> None:
         self.requests: list[GenerateRequest] = []
@@ -207,6 +243,89 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+
+class AdminClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], list[str] | None, float]] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def model_info(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("model_info", {}, stages, timeout_s))
+        return {
+            "success": True,
+            "message": "ok",
+            "results": [
+                {
+                    "stage": "decode",
+                    "success": True,
+                    "message": "ok",
+                    "data": {
+                        "model_path": "/tmp/current-model",
+                        "load_format": "safetensors",
+                        "weight_version": "v1",
+                    },
+                }
+            ],
+        }
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("pause_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("continue_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("update_weights_from_disk", payload, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append((action, payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("weights_checker", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
 
 
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
@@ -234,7 +353,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
         },
     )
     assert speech_resp.status_code == 500
-    assert speech_resp.json()["error"]["type"] == "InternalServerError"
+    assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
 
 
@@ -274,6 +393,30 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["content-type"] == "audio/wav"
 
 
+def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="default-tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "tts-1",
+            "voice": "alloy",
+            "input": "hello from an SDK-shaped request",
+            "response_format": "wav",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"RIFF"
+    assert response.headers["content-type"] == "audio/wav"
+    assert (
+        response.headers["content-disposition"] == 'attachment; filename="speech.wav"'
+    )
+    assert speech_client.speech_requests[0].model == "tts-1"
+    assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "alloy"
+
+
 def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -285,6 +428,7 @@ def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["type"] == "BadRequestError"
+    assert response.json()["error"]["code"] == 400
 
 
 def test_speech_endpoint_stream_without_audio_returns_error() -> None:
@@ -296,8 +440,73 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
     )
 
     assert response.status_code == 500
-    assert response.json()["error"]["type"] == "InternalServerError"
+    assert response.json()["error"]["type"] == "server_error"
     assert "No audio output generated" in response.json()["error"]["message"]
+
+
+def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
+    client = TestClient(create_app(EmptyDeltaStreamingSpeechClient(), model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "hello", "stream": True, "response_format": "pcm"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "server_error"
+    assert "No audio output generated" in response.json()["error"]["message"]
+
+
+def test_admin_routes_forward_to_client() -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    info = client.get("/model_info")
+    pause = client.post(
+        "/pause_generation",
+        json={"mode": "in_place", "stages": ["decode"], "timeout_s": 5},
+    )
+    update = client.post(
+        "/update_weights_from_disk",
+        json={
+            "model_path": "/tmp/new-model",
+            "load_format": "safetensors",
+            "weight_version": "v2",
+            "abort_all_requests": True,
+        },
+    )
+    checksum = client.post("/weights_checker", json={"action": "checksum"})
+
+    assert info.status_code == 200
+    assert info.json()["weight_version"] == "v1"
+    assert info.json()["model_path"] == "/tmp/current-model"
+    assert info.json()["load_format"] == "safetensors"
+    assert info.json()["stages"][0]["stage"] == "decode"
+    assert pause.status_code == 200
+    assert update.status_code == 200
+    assert checksum.status_code == 200
+    assert admin.calls == [
+        ("model_info", {}, None, 30.0),
+        ("pause_generation", {"mode": "in_place"}, ["decode"], 5),
+        (
+            "update_weights_from_disk",
+            {
+                "model_path": "/tmp/new-model",
+                "load_format": "safetensors",
+                "abort_all_requests": True,
+                "weight_version": "v2",
+                "is_async": False,
+                "torch_empty_cache": False,
+                "keep_pause": False,
+                "recapture_cuda_graph": False,
+                "token_step": 0,
+                "flush_cache": True,
+            },
+            None,
+            120.0,
+        ),
+        ("weights_checker", {"action": "checksum"}, None, 120.0),
+    ]
 
 
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:
@@ -329,83 +538,130 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
 
 
-async def _collect_speech_stream(client: Any) -> list[str]:
-    chunks: list[str] = []
-    async for chunk in _speech_stream(
-        client=client,
-        gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
-        request_id="req-1",
-        response_format="wav",
-        speed=1.0,
-    ):
-        chunks.append(chunk)
-    return chunks
+def test_speech_stream_defaults_to_raw_pcm() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "response_format": "pcm",
+        },
+    )
+
+    expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["x-sample-rate"] == "24000"
+    assert response.headers["x-channels"] == "1"
+    assert response.headers["x-bit-depth"] == "16"
+    assert response.content == expected
 
 
-def test_speech_stream_success_emits_done_sentinel() -> None:
-    chunks = asyncio.run(_collect_speech_stream(SuccessfulSpeechClient()))
+def test_speech_stream_headers_use_chunk_sample_rate() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(sample_rate=44100), model_name="s2-pro")
+    )
 
-    assert chunks[-1] == "data: [DONE]\n\n"
-    payload = json.loads(chunks[-2][len("data: ") :])
-    assert payload["audio"] is None
-    assert payload["finish_reason"] == "stop"
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "response_format": "pcm",
+        },
+    )
+
+    expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=44100)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["x-sample-rate"] == "44100"
+    assert response.headers["x-channels"] == "1"
+    assert response.headers["x-bit-depth"] == "16"
+    assert response.content == expected
 
 
-def test_speech_stream_without_audio_fails_without_done_sentinel() -> None:
-    with pytest.raises(ClientError, match="No audio output generated"):
-        asyncio.run(_collect_speech_stream(EmptyStreamingSpeechClient()))
-
-
-def test_speech_stream_cancellation_aborts_active_request() -> None:
+def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
     async def _drive() -> None:
-        client = BlockingStreamingSpeechClient()
-        stream = _speech_stream(
+        client = PrefetchedBlockingStreamingSpeechClient()
+        response = await _speech_audio_response(
             client=client,
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
-            response_format="pcm",
             speed=1.0,
         )
-        task = asyncio.create_task(anext(stream))
-        await client.started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await stream.aclose()
+        body = response.body_iterator
+        assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
+        await body.aclose()
         assert client.aborted == ["req-1"]
 
     asyncio.run(_drive())
 
 
-def test_speech_stream_failure_closes_without_done_sentinel() -> None:
-    """A mid-stream failure must not be reported as a successful SSE finish."""
+def test_speech_stream_rejects_non_pcm_response_format() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
 
-    chunks: list[str] = []
-    client = _fault_client("s2-pro")
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "response_format": "wav",
+        },
+    )
 
-    async def _drive() -> None:
-        async for chunk in _speech_stream(
-            client=client,
-            gen_req=GenerateRequest(
-                model="s2-pro",
-                prompt="hello",
-                stream=True,
-                metadata={"tts_params": {}},
-            ),
-            request_id="req-1",
-            response_format="wav",
-            speed=1.0,
-        ):
-            chunks.append(chunk)
+    assert 400 <= response.status_code < 500
+    assert "response_format" in response.text
+    assert "pcm" in response.text.lower()
 
-    with pytest.raises(RuntimeError, match="cuda out of memory"):
-        asyncio.run(_drive())
 
-    assert chunks
-    assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
-    payload = json.loads(chunks[0][len("data: ") :])
-    assert payload["audio"] is not None
-    assert payload["finish_reason"] is None
+def test_speech_request_carries_initial_codec_chunk_frames() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        response_format="pcm",
+        initial_codec_chunk_frames=4,
+    )
+
+    gen_req = SpeechRequestValidator(
+        default_model="higgs-audio-v2"
+    ).build_generate_request(req)
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
+
+
+def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        response_format="pcm",
+    )
+
+    gen_req = SpeechRequestValidator(
+        default_model="higgs-audio-v2"
+    ).build_generate_request(req)
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 1
+
+
+def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        response_format="pcm",
+        initial_codec_chunk_frames=0,
+    )
+
+    gen_req = SpeechRequestValidator(
+        default_model="higgs-audio-v2"
+    ).build_generate_request(req)
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 0
 
 
 def test_speech_response_disconnect_aborts_active_request() -> None:
@@ -431,6 +687,21 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
     asyncio.run(_drive())
 
 
+def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
+    async def _drive() -> None:
+        result = await _await_speech_response(
+            request=ConnectedRequest(),
+            client=SuccessfulSpeechClient(),
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello"),
+            request_id="req-1",
+            response_format="wav",
+            speed=1.0,
+        )
+        assert result.audio_bytes == b"RIFF"
+
+    asyncio.run(_drive())
+
+
 def test_speech_request_records_explicit_generation_params() -> None:
     req = CreateSpeechRequest(
         input="hello",
@@ -439,7 +710,9 @@ def test_speech_request_records_explicit_generation_params() -> None:
         seed=123,
     )
 
-    gen_req = build_speech_generate_request(req, "qwen3-tts")
+    gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
+        req
+    )
 
     assert gen_req.sampling.temperature == 0.8
     assert gen_req.sampling.top_k == 30
@@ -460,7 +733,9 @@ def test_speech_request_passes_streaming_control_fields() -> None:
         stream=True,
     )
 
-    gen_req = build_speech_generate_request(req, "qwen3-tts")
+    gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
+        req
+    )
     tts_params = gen_req.metadata["tts_params"]
 
     assert tts_params["initial_codec_chunk_frames"] == 8
@@ -516,6 +791,148 @@ def test_transcription_endpoint_returns_text_json() -> None:
 def test_speech_request_passes_moss_token_count() -> None:
     req = CreateSpeechRequest(input="hello", token_count=180)
 
-    gen_req = build_speech_generate_request(req, "moss-tts")
+    gen_req = SpeechRequestValidator(default_model="moss-tts").build_generate_request(
+        req
+    )
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
+
+
+# ---------------------------------------------------------------------------
+# Admin auth tests
+# ---------------------------------------------------------------------------
+
+_ADMIN_PATHS_THAT_NEED_AUTH = [
+    ("GET", "/model_info"),
+    ("POST", "/model_info"),
+    ("POST", "/pause_generation"),
+    ("POST", "/continue_generation"),
+    ("POST", "/update_weights_from_disk"),
+    ("POST", "/update_weights_from_tensor"),
+    ("POST", "/update_weights_from_distributed"),
+    ("GET", "/weights_checker"),
+    ("POST", "/weights_checker"),
+]
+
+_ADMIN_API_KEY = "secret-key"
+
+
+def _admin_headers(
+    key: str = _ADMIN_API_KEY,
+    *,
+    scheme: str = "Bearer",
+) -> dict[str, str]:
+    return {"Authorization": f"{scheme} {key}"}
+
+
+def test_admin_routes_open_when_no_key_configured() -> None:
+    """Without a key, all admin routes are accessible with no auth header."""
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 200
+
+    resp = client.post("/pause_generation", json={})
+    assert resp.status_code == 200
+
+
+def test_admin_routes_require_bearer_token_when_key_configured() -> None:
+    """When admin_api_key is set, requests without the header are rejected."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(method, path, json={})
+        assert (
+            resp.status_code == 401
+        ), f"{method} {path} should be 401, got {resp.status_code}"
+        assert "WWW-Authenticate" in resp.headers
+
+
+def test_admin_routes_reject_wrong_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
+        resp = client.request(
+            method, path, json={}, headers=_admin_headers("wrong-key")
+        )
+        assert (
+            resp.status_code == 403
+        ), f"{method} {path} should be 403, got {resp.status_code}"
+
+
+def test_admin_routes_accept_correct_bearer_token() -> None:
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    resp = client.get("/model_info", headers=_admin_headers(scheme="bearer"))
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/pause_generation",
+        json={},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200
+
+
+def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-key")
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.get("/model_info")
+    assert resp.status_code == 401
+
+    resp = client.get("/model_info", headers=_admin_headers("env-key"))
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Stub endpoint 501 tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/update_weights_from_tensor", {}),
+        (
+            "/update_weights_from_distributed",
+            {"names": [], "dtypes": [], "shapes": []},
+        ),
+    ],
+)
+def test_unimplemented_weight_update_endpoints_return_501(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    resp = client.post(path, json=payload)
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+    assert "update_weights_from_disk" in resp.json()["error"]["message"]
+
+
+def test_stub_endpoints_also_check_auth_before_501() -> None:
+    """Auth check fires before the 501 body."""
+    admin = AdminClient()
+    client = TestClient(
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
+    )
+
+    resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 401
+
+    resp = client.post("/update_weights_from_distributed", json={})
+    assert resp.status_code == 401

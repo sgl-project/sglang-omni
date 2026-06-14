@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import statistics
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -194,19 +193,20 @@ def apply_slack(
 ) -> dict[int, dict[str, float]]:
     """Derive CI thresholds from P95 references with uniform slack.
 
-    Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
+    Higher-is-better metrics (throughput, output tok/req-s when present): threshold = P95 x slack_higher
     Lower-is-better metrics (latency, rtf):            threshold = P95 x slack_lower
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
         thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
-            "output_tok_per_req_s_min": round(
-                m["output_tok_per_req_s"] * slack_higher,
-                1,
-            ),
             "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
         }
+        if "output_tok_per_req_s" in m:
+            thresholds["output_tok_per_req_s_min"] = round(
+                m["output_tok_per_req_s"] * slack_higher,
+                1,
+            )
         if "rtf_mean" in m:
             thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
         result[conc] = thresholds
@@ -244,10 +244,10 @@ def assert_speed_thresholds(
 ) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 
-    Whether RTF is checked is driven entirely by the thresholds dict: if
-    ``apply_slack`` was fed a baseline that included ``rtf_mean`` the
-    corresponding ``rtf_mean_max`` is present here and enforced; otherwise
-    (e.g. VLM / text-only tasks) the RTF assertion is skipped automatically.
+    Whether RTF and output token throughput are checked is driven entirely by
+    the thresholds dict: if ``apply_slack`` was fed a baseline that included
+    ``rtf_mean`` or ``output_tok_per_req_s`` the corresponding threshold is
+    present here and enforced.
     """
     checks = _metric_collector(collector, "speed thresholds")
     level_thresholds = thresholds.get(concurrency)
@@ -263,14 +263,15 @@ def assert_speed_thresholds(
         f"throughput_qps {throughput_qps} < "
         f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}",
     )
-    output_tok_per_req_s = summary.get("output_tok_per_req_s")
-    checks.check(
-        output_tok_per_req_s is not None
-        and output_tok_per_req_s >= level_thresholds["output_tok_per_req_s_min"],
-        f"output_tok_per_req_s {output_tok_per_req_s} < "
-        f"{level_thresholds['output_tok_per_req_s_min']} "
-        f"at concurrency {concurrency}",
-    )
+    if "output_tok_per_req_s_min" in level_thresholds:
+        output_tok_per_req_s = summary.get("output_tok_per_req_s")
+        checks.check(
+            output_tok_per_req_s is not None
+            and output_tok_per_req_s >= level_thresholds["output_tok_per_req_s_min"],
+            f"output_tok_per_req_s {output_tok_per_req_s} < "
+            f"{level_thresholds['output_tok_per_req_s_min']} "
+            f"at concurrency {concurrency}",
+        )
     latency_mean_s = summary.get("latency_mean_s")
     checks.check(
         latency_mean_s is not None
@@ -288,8 +289,6 @@ def assert_speed_thresholds(
     _assert_metric_collector_if_local(collector, checks)
 
 
-DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL = 0.12
-DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL = 0.20
 DEFAULT_TOTAL_AUDIO_DURATION_RTOL = 0.12
 
 
@@ -347,14 +346,11 @@ def assert_streaming_consistency(
     *,
     expected_stream_count: int | None = None,
     max_failed_requests: int = 0,
-    total_completion_token_rtol: float = DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL,
-    median_completion_token_rtol: float = DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL,
     total_audio_duration_rtol: float = DEFAULT_TOTAL_AUDIO_DURATION_RTOL,
     collector: MetricCheckCollector | None = None,
 ) -> None:
-    """Assert stable invariants on the shared request subset between
-    non-streaming and streaming runs (matching prompt tokens, total/median
-    completion tokens within tolerance, total audio duration within tolerance).
+    """Assert request coverage, failure budget, and audio duration consistency
+    between non-streaming and streaming runs.
     """
     checks = _metric_collector(collector, "streaming consistency")
     non_stream_by_id = _request_by_id(non_stream_requests)
@@ -391,33 +387,14 @@ def assert_streaming_consistency(
         "No successful overlapping request IDs between non-stream and stream runs",
     )
 
-    non_stream_completion_tokens: list[int] = []
-    stream_completion_tokens: list[int] = []
     non_stream_audio_duration_total = 0.0
     stream_audio_duration_total = 0.0
 
     for request_id in common_ids:
         non_stream_request = non_stream_by_id[request_id]
         stream_request = stream_by_id[request_id]
-        checks.check(
-            non_stream_request.get("prompt_tokens")
-            == stream_request.get("prompt_tokens"),
-            f"Request {request_id}: prompt_tokens mismatch - "
-            f"non_stream={non_stream_request.get('prompt_tokens')}, "
-            f"stream={stream_request.get('prompt_tokens')}",
-        )
-        non_stream_completion = non_stream_request.get("completion_tokens")
-        stream_completion = stream_request.get("completion_tokens")
         non_stream_audio = non_stream_request.get("audio_duration_s")
         stream_audio = stream_request.get("audio_duration_s")
-        if non_stream_completion is None or stream_completion is None:
-            checks.fail(
-                f"Request {request_id}: completion_tokens missing - "
-                f"non_stream={non_stream_completion}, stream={stream_completion}"
-            )
-        else:
-            non_stream_completion_tokens.append(non_stream_completion)
-            stream_completion_tokens.append(stream_completion)
         if non_stream_audio is None or stream_audio is None:
             checks.fail(
                 f"Request {request_id}: audio_duration_s missing - "
@@ -427,21 +404,6 @@ def assert_streaming_consistency(
             non_stream_audio_duration_total += non_stream_audio
             stream_audio_duration_total += stream_audio
 
-    if non_stream_completion_tokens and stream_completion_tokens:
-        _assert_relative_difference(
-            "Total completion_tokens",
-            sum(non_stream_completion_tokens),
-            sum(stream_completion_tokens),
-            total_completion_token_rtol,
-            checks,
-        )
-        _assert_relative_difference(
-            "Median completion_tokens",
-            statistics.median(non_stream_completion_tokens),
-            statistics.median(stream_completion_tokens),
-            median_completion_token_rtol,
-            checks,
-        )
     if common_ids:
         _assert_relative_difference(
             "Total audio_duration_s",

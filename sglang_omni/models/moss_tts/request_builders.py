@@ -19,6 +19,7 @@ import torch
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.types import ARRequestData
+from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
 _MOSS_TTS_PREPARED_MARKER = "_moss_tts_prepared_request"
@@ -201,6 +202,7 @@ def resolve_moss_reference(
         reference.get("audio_path")
         or reference.get("ref_audio")
         or reference.get("audio")
+        or audio_data_uri_from_reference(reference)
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")

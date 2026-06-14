@@ -5,8 +5,6 @@ tests/
 ├── __init__.py
 ├── utils.py
 ├── data/
-├── docs/
-│   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
@@ -51,6 +49,9 @@ tests/
     ├── ming_omni/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
+    │   ├── test_streaming_decode.py
+    │   ├── test_streaming_e2e_glue.py
+    │   ├── test_streaming_speech_config.py
     │   ├── test_talker.py
     │   ├── test_talker_voice_validation.py
     │   ├── test_thinker.py
@@ -65,9 +66,17 @@ tests/
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
-    │   ├── test_cli_async_decode.py
+    │   ├── test_cli_decode_mode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── moss_tts/
+    │   └── test_pipeline.py
+    ├── moss_tts_local/
+    │   ├── test_pipeline.py
+    │   ├── test_radix_hash.py
+    │   ├── test_s0_gate.py
+    │   ├── test_state_pool.py
+    │   └── test_streaming_vocoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -108,8 +117,6 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 - `benchmark`: GPU performance / parity tests in `test_model/`. May require a
   populated HF cache and tens of GB of GPU memory; per-test docstrings call
   out hardware needs.
-- `docs`: documented-example tests in `docs/`. Verify documented request
-  shapes and CLI snippets still work.
 - `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
   Combined with `--tts-stage` (see `test_model/conftest.py`).
 
@@ -118,33 +125,13 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 
 - `README.md`: This file. It explains test ownership and where new tests belong.
 - `__init__.py`: Keeps `tests` importable as a package.
-- `utils.py`: Shared helpers used by docs and model CI tests.
+- `utils.py`: Shared helpers used by model CI tests.
 
 ## `data/`
 
 Small static fixtures shared by tests, such as images, audio, and short videos.
 Keep these files small and deterministic. Large model artifacts, generated
 outputs, and benchmark datasets should live outside the unit test tree.
-
-## `docs/`
-
-Documentation/example tests. These verify that documented user-facing examples
-still work.
-
-Use this lane when the test protects:
-
-- install/docs snippets,
-- client examples,
-- documented request/response shapes,
-- examples that may need optional docs dependencies.
-
-These tests are not the default fast unit lane.
-
-Expected command:
-
-```bash
-pytest tests/docs -m docs -v
-```
 
 ## `test_model/`
 
@@ -310,6 +297,19 @@ that happened to contain an older version of the test.
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
   - vision encoder `patch_embed` numerical equivalence: `nn.Conv3d` vs `F.linear` reshape at the substitution boundary, using synthetic weights without loading real Ming checkpoints.
+  - streaming text decode (`MingStreamingDetokenizeScheduler` /
+    `make_text_stream_output_builder`): per-token detokenization and delta
+    emission with UTF-8 multibyte boundary safety, streaming vs. non-streaming
+    final-result shape, stream-completion ordering races, per-request failure
+    isolation, bounded orphan `_state` eviction with abort cleanup, and
+    text-stream output gating on the `stream` flag, chunked prefill, and
+    text-vs-audio-only output modalities
+  - streaming speech glue and topology: thinker text/combined stream builders
+    fanning token ids to decode and text to the segmenter (audio-only kept off
+    decode), client merge of decode deltas with the talker stream, and
+    `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
+    talker, terminal talker-stream stage, thinker/talker GPU-range collision
+    rejection, streaming variant exposure).
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts
@@ -326,7 +326,22 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--async-decode` tri-state CLI override.
+  - async-decode default-on config + `--decode-mode async|sync` CLI override.
+
+- `unit_test/moss_tts/`: MOSS-TTS unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR/vocoder stage factory wiring
+  - request mapping for `ref_audio`, `references`, and `token_count`
+  - preprocessing handoff and abort cleanup behavior
+  - delay-pattern runner, codec splitting, and seeded sampling contracts.
+
+- `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
+  - pipeline config, request builders, and scheduler adapter contracts
+  - decode-state pool acquisition, launch-state gathers, repetition-penalty history, cleanup, and resume/retraction lifecycle
+  - chunked prefill feedback/journal suppression and postprocess alignment checks
+  - synchronous frame-decode parity harness and S0 gate coverage
+  - streaming vocoder session lifecycle, per-request chunk-threshold and
+    coalescing contracts, and decode-failure isolation.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

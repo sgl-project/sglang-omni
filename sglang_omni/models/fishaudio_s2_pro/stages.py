@@ -115,10 +115,9 @@ def create_preprocessing_executor(
     adapter = S2ProTokenizerAdapter(tokenizer)
     codec = _load_codec(checkpoint_dir, "cpu")
 
-    def _encode_reference_audio(audio_path: str) -> torch.Tensor:
+    def _encode_reference_waveform(audio: torch.Tensor, sr: int) -> torch.Tensor:
         import torchaudio
 
-        audio, sr = torchaudio.load(audio_path)
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
         audio = torchaudio.functional.resample(audio, sr, codec.sample_rate)
@@ -129,6 +128,29 @@ def create_preprocessing_executor(
             if indices.ndim == 3:
                 indices = indices[0]
         return indices.cpu()
+
+    def _encode_reference_audio(audio_path: str) -> torch.Tensor:
+        import torchaudio
+
+        audio, sr = torchaudio.load(audio_path)
+        return _encode_reference_waveform(audio, int(sr))
+
+    def _encode_reference_data(ref_data: dict[str, Any]) -> torch.Tensor | None:
+        data = ref_data.get("base64") or ref_data.get("data")
+        if data is None and ref_data.get("bytes") is None:
+            return None
+
+        from sglang_omni.preprocessing.audio import AudioMediaIO
+
+        audio_io = AudioMediaIO(target_sr=codec.sample_rate)
+        if ref_data.get("bytes") is not None:
+            audio, sr = audio_io.load_bytes(ref_data["bytes"])
+        else:
+            audio, sr = audio_io.load_base64(
+                ref_data.get("media_type") or "audio/wav", data
+            )
+        audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
+        return _encode_reference_waveform(audio_tensor, int(sr))
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -150,6 +172,8 @@ def create_preprocessing_executor(
                     vq_codes = torch.tensor(vq_codes)
                 if vq_codes is None and ref_data.get("audio_path"):
                     vq_codes = _encode_reference_audio(ref_data["audio_path"])
+                if vq_codes is None:
+                    vq_codes = _encode_reference_data(ref_data)
                 references.append(
                     Reference(
                         audio_bytes=b"",

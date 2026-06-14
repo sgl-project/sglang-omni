@@ -25,7 +25,6 @@ def _runner(*, total_gpu_memory_fraction: float | None):
     runner.mem_fraction_static = 0.9
     runner._total_gpu_memory_fraction = total_gpu_memory_fraction
     runner.is_draft_worker = False
-    runner.num_effective_layers = 32
     return runner
 
 
@@ -84,47 +83,6 @@ def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:
     assert available == 10 * 1024**3
 
 
-def test_colocated_ar_token_profile_uses_process_scoped_budget(monkeypatch) -> None:
-    runner = _runner(total_gpu_memory_fraction=0.4)
-    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
-
-    monkeypatch.setattr(
-        runner_mod,
-        "get_process_gpu_memory_bytes",
-        lambda gpu_id: 30 * 1024**3,
-    )
-    monkeypatch.setattr(
-        runner_mod,
-        "get_gpu_device_info",
-        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
-    )
-
-    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 95.0)
-
-    assert max_tokens == (10 * 1024**3) // (32 * 1024**2)
-
-
-def test_colocated_ar_token_profile_passes_preload_sample_to_budget_profile(
-    monkeypatch,
-) -> None:
-    runner = _runner(total_gpu_memory_fraction=0.4)
-    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
-
-    def _fake_profile(self, pre_model_load_memory):
-        assert pre_model_load_memory == 95.0
-        return 7 * 1024**3
-
-    monkeypatch.setattr(
-        runner_mod.SGLModelRunner,
-        "_profile_available_bytes",
-        _fake_profile,
-    )
-
-    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 95.0)
-
-    assert max_tokens == (7 * 1024**3) // (32 * 1024**2)
-
-
 @pytest.mark.parametrize("process_memory", [None, 0])
 def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailable(
     monkeypatch,
@@ -158,24 +116,19 @@ def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailab
     )
 
 
-def test_non_colocated_ar_uses_free_memory_delta_when_upstream_hook_is_absent(
+def test_non_colocated_ar_delegates_to_upstream_available_bytes(
     monkeypatch,
 ) -> None:
     runner = _runner(total_gpu_memory_fraction=None)
 
-    def _fake_free_memory_delta(self, pre_model_load_memory):
+    def _fake_upstream_profile(self, pre_model_load_memory):
         assert pre_model_load_memory == 123
         return 456
 
-    monkeypatch.delattr(
+    monkeypatch.setattr(
         ModelRunnerKVCacheMixin,
         "_profile_available_bytes",
-        raising=False,
-    )
-    monkeypatch.setattr(
-        runner_mod.SGLModelRunner,
-        "_profile_available_bytes_from_free_memory_delta",
-        _fake_free_memory_delta,
+        _fake_upstream_profile,
     )
 
     assert runner_mod.SGLModelRunner._profile_available_bytes(runner, 123) == 456

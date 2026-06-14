@@ -22,19 +22,22 @@ class _PendingStep:
     """One decode step launched on the GPU but not yet consumed on the host.
 
     Async-decode (one-step lookahead) bookkeeping: a launched step has its
-    forward + on-GPU sample enqueued, its collect-staging buffer async-copied
-    (D2H) into ``host_buf``, and ``event`` recorded right after that copy.
-    ``execute_resolve`` later waits on ``event`` and reads ``host_buf``.
+    forward + on-GPU sample + collect enqueued and ``event`` recorded right
+    after, so ``event.query()`` true means the launched step's GPU work is
+    published. ``launch_buf`` is whatever ``post_decode_launch`` returns for
+    resolve to consume: a device-side correctness snapshot of the published ids
+    (MOSS-TTS-Local, no host copy), or a pinned host staging buffer an async host
+    copy filled (Higgs); only the latter provides host-D2H overlap.
+    ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
 
     Invariant: at most one ``_PendingStep`` is live at a time (see
-    ``ModelRunner._pending``). ``host_buf`` is pinned and ping-ponged between
-    two buffers so resolve(N) can read one while launch(N+1)'s D2H writes the
-    other (a CPU-read vs GPU-write race not covered by stream ordering —
-    design.md §1.4).
+    ``ModelRunner._pending``). When the launch uses host staging it is pinned
+    and ping-ponged between two buffers so resolve(N) reads one while
+    launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: Any  # torch.cuda.Event, recorded right after the async D2H copy
-    host_buf: Any  # pinned host tensor holding this step's staging snapshot
+    event: Any  # torch.cuda.Event, recorded after post_decode_launch publishes
+    launch_buf: Any  # post_decode_launch return: device snapshot or host staging
     scheduler_output: Any  # this step's SchedulerOutput (routing + output proc)
     forward_batch: Any  # for resolve-time finalize sampling
     schedule_batch: Any  # to set .output_ids during resolve
@@ -61,18 +64,23 @@ class ModelRunner:
         self._async_enabled: bool = False
         self._staging_slot: int = 0
         self._host_staging_buffers: list[torch.Tensor] = []
-        # Observability: how often resolve found the event already done
-        # (overlap worked) vs had to block on synchronize().
+        # Observability: how often resolve found the launched step's event
+        # already done (no blocking) vs had to block on synchronize(). This
+        # counts whether the launched step's GPU work was published in time; it
+        # does NOT measure host-D2H overlap (only host-staging runners like Higgs
+        # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
-        """Return a pinned host buffer mirroring ``device_staging``'s full
-        shape, ping-ponging between two buffers on each call.
+        """Return a pinned host staging buffer mirroring ``device_staging``'s
+        full shape, ping-ponging between two buffers on each call. Only runners
+        that stage the collect to host (Higgs) call this; device-snapshot
+        runners (MOSS-TTS-Local) never do.
 
         Two buffers are required: resolve(N) reads one on the host while
-        launch(N+1)'s async D2H writes the other. That CPU-read vs GPU-write
-        overlap is not protected by single-stream ordering (design.md §1.4).
+        launch(N+1)'s async host copy writes the other. That CPU-read vs
+        GPU-write overlap is not protected by single-stream ordering.
         Buffers are allocated lazily on first use (the base runner does not
         know the model-specific staging shape at construction time).
         """
@@ -124,10 +132,14 @@ class ModelRunner:
         )
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, snapshot its
-        collect state into a pinned host buffer (``post_decode_launch``), and
-        record a CUDA event right after that async D2H. Does NOT wait on the
-        GPU. Decode batches only.
+        """Enqueue a decode step's forward + on-GPU sample, call
+        ``post_decode_launch`` to publish a model-specific resolve payload
+        (returned as ``launch_buf``), and record a CUDA event right after
+        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
+        is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
+        staging (Higgs); only the latter overlaps a host copy with the next
+        forward, and ``event.query()`` proves the launched step's GPU work is
+        done, not that any host overlap happened.
 
         Returns the ``_PendingStep`` handle (or None if there was no batch).
         The CALLER owns the handle and passes it to ``execute_resolve`` later.
@@ -147,22 +159,23 @@ class ModelRunner:
             is_prefill,
             is_lookahead=True,
         )
-        host_buf = self.post_decode_launch(
+        launch_buf = self.post_decode_launch(
             batch_result, forward_batch, scheduler_output.requests
         )
         # Publish this step's output token ids now (post_decode_launch set them
         # from GPU state without a host sync) so the NEXT decode step's
-        # get_next_batch_to_run / prepare_for_decode can build its input_ids —
+        # get_next_batch_to_run / prepare_for_decode can build its input_ids;
         # under lookahead the host collect (resolve) lags by one step.
         if batch_result.next_token_ids is not None:
             schedule_batch.output_ids = batch_result.next_token_ids
         event = torch.cuda.Event()
-        # Recorded AFTER the async D2H enqueued by post_decode_launch, so
-        # event.query()==True means the host buffer is ready (design.md §3).
+        # Recorded after post_decode_launch publishes this step, so
+        # event.query()==True means the launched step's GPU work is done and
+        # launch_buf is ready (design.md section 3).
         event.record()
         return _PendingStep(
             event=event,
-            host_buf=host_buf,
+            launch_buf=launch_buf,
             scheduler_output=scheduler_output,
             forward_batch=forward_batch,
             schedule_batch=schedule_batch,
@@ -175,8 +188,9 @@ class ModelRunner:
         self, pending: "_PendingStep | None"
     ) -> ModelRunnerOutput | None:
         """Consume a launched decode step: wait on its event (non-blocking
-        ``query()``, else ``synchronize()``), read the pinned host buffer and
-        run the per-request collect loop (``post_decode_resolve``), then
+        ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
+        snapshot or pinned host staging) and run the per-request collect loop
+        (``post_decode_resolve``), then
         finalize sampling/output. Returns that step's ``ModelRunnerOutput``,
         or None if ``pending`` is None (first iteration / after a drain).
         """
@@ -187,13 +201,16 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
+        # Skip reqs finished or retracted in a prior (lagged) step so _finalize
+        # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
             if req.data.req.finished()
+            or bool(getattr(req.data.req, "is_retracted", False))
         }
         self.post_decode_resolve(
-            pending.host_buf,
+            pending.launch_buf,
             pending.batch_result,
             pending.forward_batch,
             pending.schedule_batch,
@@ -293,6 +310,33 @@ class ModelRunner:
             schedule_batch.output_ids = batch_result.next_token_ids
         return batch_result
 
+    def finalize_skip_rids(self, scheduler_output) -> set[str]:
+        """Request ids whose ``generation_steps`` must NOT advance this step.
+
+        Default empty. A model overrides this when a batch contains rows that
+        are sampled but must not count as a generated step — e.g. non-final
+        chunked-prefill rows, whose spurious step would shift the final chunk's
+        sampling position off the no-chunk path. Unioned into ``skip_rids``
+        inside ``_finalize`` so it covers the sync, async-resolve, and
+        prefill-only paths alike. Additive and behaviour-neutral for any model
+        that does not override it.
+        """
+        return set()
+
+    def on_generation_step_advanced(
+        self, sched_req: Any, generation_steps: int
+    ) -> None:
+        """Hook after ``generation_steps`` is committed on request data."""
+        return None
+
+    def on_generation_steps_advanced(
+        self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
+    ) -> None:
+        """Batch hook after ``generation_steps`` are committed on request data."""
+        del forward_batch
+        for sched_req, generation_steps in advanced_steps:
+            self.on_generation_step_advanced(sched_req, generation_steps)
+
     def _finalize(
         self,
         batch_result,
@@ -335,16 +379,20 @@ class ModelRunner:
 
         outputs = self.output_processor.process(batch_result, scheduler_output)
         self.post_process_outputs(batch_result, scheduler_output, outputs)
-        skip_rids = skip_rids or set()
+        skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
+        advanced_steps = []
         for sched_req in scheduler_output.requests:
             if sched_req.request_id in skip_rids:
                 continue
             data = sched_req.data
             data.generation_steps = int(data.generation_steps) + 1
+            advanced_steps.append((sched_req, data.generation_steps))
             req_output = outputs[sched_req.request_id]
             extra = req_output.extra
             if isinstance(extra, dict) and extra:
                 data.extra_model_outputs.update(extra)
+        if advanced_steps:
+            self.on_generation_steps_advanced(advanced_steps, forward_batch)
         req_ids = [req.request_id for req in scheduler_output.requests]
         req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
 
@@ -405,6 +453,16 @@ class ModelRunner:
     ) -> None:
         """Called after decode forward."""
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        """Whether this batch may use one-step async-decode lookahead.
+
+        Default True. A runner whose collect has a sync-only fallback (one that
+        would diverge from sync under a one-step lag) overrides this to route
+        those batches synchronously. The scheduler's async gate consults it.
+        """
+        del batch
+        return True
+
     def post_process_outputs(
         self,
         result: Any,
@@ -416,10 +474,12 @@ class ModelRunner:
     def post_decode_launch(
         self, result: Any, forward_batch: Any, requests: list
     ) -> Any:
-        """Async-decode GPU half of ``post_decode``: scatter GPU state, pack
-        the collect tensors, enqueue a non-blocking D2H into a pinned host
-        buffer (obtained via ``self._next_host_staging``), and return that
-        buffer. The caller records a CUDA event immediately after.
+        """Async-decode GPU half of ``post_decode``: run the step's collect,
+        publish ``result.next_token_ids``, and return the resolve payload
+        (``launch_buf``), either a device-side correctness snapshot of the
+        published state (no host copy) or a pinned host staging buffer an async
+        host copy filled; only the latter provides host-D2H overlap. The caller
+        records a CUDA event immediately after publication.
 
         Default raises: a model must implement this together with
         ``post_decode_resolve`` to be async-decode-safe. The synchronous
@@ -433,15 +493,15 @@ class ModelRunner:
 
     def post_decode_resolve(
         self,
-        host_buf: Any,
+        launch_buf: Any,
         result: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half of ``post_decode``: read the pinned
-        ``host_buf`` (populated by the launch-time D2H) and run the
-        per-request collect loop, setting ``result.next_token_ids``.
+        """Async-decode host half of ``post_decode``: read ``launch_buf`` (the
+        launch's published collect, a device snapshot or pinned host staging)
+        and run the per-request collect loop, setting ``result.next_token_ids``.
         Default raises (see ``post_decode_launch``).
         """
         raise NotImplementedError(

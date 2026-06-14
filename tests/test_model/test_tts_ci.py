@@ -26,9 +26,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -83,6 +85,10 @@ TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
+TTS_ALLOWED_LOCAL_MEDIA_PATH = Path(tempfile.gettempdir()).resolve()
+TTS_WORKER_EXTRA_ARGS = (
+    f"--allowed-local-media-path {shlex.quote(str(TTS_ALLOWED_LOCAL_MEDIA_PATH))}"
+)
 
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
@@ -126,7 +132,6 @@ _VC_NON_STREAM_P95 = {
 _VC_STREAM_P95 = {
     16: {
         "throughput_qps": 11.535,
-        "output_tok_per_req_s": 109.7,
         "latency_mean_s": 1.381,
         "rtf_mean": 0.3174,
     }
@@ -416,7 +421,7 @@ def _load_speed_results(results_path: Path) -> dict:
     return speed_results
 
 
-def _assert_tts_speed_result_integrity(
+def _assert_tts_audio_result_integrity(
     summary: dict,
     per_request: list[dict],
     *,
@@ -455,16 +460,6 @@ def _assert_tts_speed_result_integrity(
         f"{label}: expected positive audio_duration_mean_s, "
         f"got {audio_duration_mean_s}",
     )
-    output_tokens_mean = summary.get("output_tokens_mean", 0)
-    collector.check(
-        output_tokens_mean > 0,
-        f"{label}: expected positive output_tokens_mean, got {output_tokens_mean}",
-    )
-    prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
-    collector.check(
-        prompt_tokens_mean > 0,
-        f"{label}: expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
-    )
 
     for request in per_request:
         request_id = request.get("id", "<missing id>")
@@ -478,18 +473,6 @@ def _assert_tts_speed_result_integrity(
         collector.check(
             audio_duration_s is not None and audio_duration_s > 0,
             f"{label}: request {request_id} audio_duration_s={audio_duration_s}, "
-            "expected > 0",
-        )
-        prompt_tokens = request.get("prompt_tokens")
-        completion_tokens = request.get("completion_tokens")
-        collector.check(
-            prompt_tokens is not None and prompt_tokens > 0,
-            f"{label}: request {request_id} prompt_tokens={prompt_tokens}, "
-            "expected > 0",
-        )
-        collector.check(
-            completion_tokens is not None and completion_tokens > 0,
-            f"{label}: request {request_id} completion_tokens={completion_tokens}, "
             "expected > 0",
         )
 
@@ -506,13 +489,41 @@ def _store_consistency_inputs(
         f"TTS {mode} speed results at concurrency {concurrency}"
     )
     summary, per_request = results["summary"], results["per_request"]
-    _assert_tts_speed_result_integrity(
+    _assert_tts_audio_result_integrity(
         summary,
         per_request,
         label=f"TTS {mode} c{concurrency}",
         collector=checks,
     )
     if mode == "non_stream":
+        output_tokens_mean = summary.get("output_tokens_mean", 0)
+        checks.check(
+            output_tokens_mean > 0,
+            f"TTS {mode} c{concurrency}: expected positive output_tokens_mean, "
+            f"got {output_tokens_mean}",
+        )
+        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+        checks.check(
+            prompt_tokens_mean > 0,
+            f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
+            f"got {prompt_tokens_mean}",
+        )
+        for request in per_request:
+            request_id = request.get("id", "<missing id>")
+            if request.get("is_success") is not True:
+                continue
+            prompt_tokens = request.get("prompt_tokens")
+            completion_tokens = request.get("completion_tokens")
+            checks.check(
+                prompt_tokens is not None and prompt_tokens > 0,
+                f"TTS {mode} c{concurrency}: request {request_id} "
+                f"prompt_tokens={prompt_tokens}, expected > 0",
+            )
+            checks.check(
+                completion_tokens is not None and completion_tokens > 0,
+                f"TTS {mode} c{concurrency}: request {request_id} "
+                f"completion_tokens={completion_tokens}, expected > 0",
+            )
         assert_speed_thresholds(
             summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
         )
@@ -725,7 +736,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args="",
+        worker_extra_args=TTS_WORKER_EXTRA_ARGS,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:

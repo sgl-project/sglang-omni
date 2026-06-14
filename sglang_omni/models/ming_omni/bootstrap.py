@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 
 logger = logging.getLogger(__name__)
+
+StreamOutputBuilder = Callable[[str, Any, Any], list[Any]]
 
 
 def create_thinker_scheduler(
@@ -82,13 +84,11 @@ def create_thinker_scheduler(
         video_token_id=video_token_id,
     )
 
-    stream_output_builder = None
-    if enable_streaming_tts:
-        eos_token_id = getattr(tokenizer, "eos_token_id", None)
-        stream_output_builder = make_thinker_stream_output_builder(
-            tokenizer=tokenizer,
-            eos_token_id=eos_token_id,
-        )
+    stream_output_builder = _select_stream_output_builder(
+        enable_streaming_tts,
+        tokenizer=tokenizer,
+        eos_token_id=getattr(tokenizer, "eos_token_id", None),
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -246,6 +246,90 @@ def make_thinker_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
+
+def make_combined_stream_output_builder(
+    *builders: StreamOutputBuilder,
+) -> StreamOutputBuilder:
+    """Run multiple per-token stream builders for the same thinker token."""
+
+    def _build_stream_output(request_id, req_data, req_output):
+        messages: list[Any] = []
+        for builder in builders:
+            messages.extend(builder(request_id, req_data, req_output))
+        return messages
+
+    return _build_stream_output
+
+
+def _select_stream_output_builder(
+    enable_streaming_tts: bool,
+    *,
+    tokenizer: Any,
+    eos_token_id: int | None,
+) -> StreamOutputBuilder:
+    if enable_streaming_tts:
+        return make_combined_stream_output_builder(
+            make_text_stream_output_builder(),
+            make_thinker_stream_output_builder(
+                tokenizer=tokenizer,
+                eos_token_id=eos_token_id,
+            ),
+        )
+    return make_text_stream_output_builder()
+
+
+def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
+    """Per-token stream callback for text-only pipelines.
+
+    Sends the raw token_id to the decode stage on every thinker step when
+    stream=true AND text output is requested. The decode stage
+    (MingStreamingDetokenizeScheduler) does incremental detokenization and
+    emits text deltas to the Coordinator.
+    """
+    import torch
+
+    from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
+        text_output_requested,
+    )
+    from sglang_omni.scheduling.messages import OutgoingMessage
+
+    def _build_stream_output(request_id, req_data, req_output):
+        req = getattr(req_data, "req", None)
+        if req is None or req_output.data is None:
+            return []
+        if int(getattr(req, "is_chunked", 0) or 0) > 0:
+            return []
+        try:
+            token_id = int(req_output.data)
+        except (TypeError, ValueError):
+            return []
+
+        stage_payload = getattr(req_data, "stage_payload", None)
+        if stage_payload is None:
+            return []
+
+        is_streaming = bool((stage_payload.request.params or {}).get("stream", False))
+        if not is_streaming:
+            return []
+
+        # Only emit text deltas when text output is actually requested.
+        # Mirrors the output_modalities check in talker_executor.py.
+        if not text_output_requested(stage_payload.request):
+            return []
+
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                # Wrap int — relay_io.write_blob is tensor-only.
+                data=torch.tensor([token_id], dtype=torch.long),
+                target=text_decode_stage,
+                metadata={"token_id": token_id},
+            )
+        ]
+
+    return _build_stream_output
 
 
 def make_thinker_stream_output_builder(

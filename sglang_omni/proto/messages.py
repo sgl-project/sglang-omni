@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from sglang_omni.proto.admin import AdminOperation, AdminResult
 from sglang_omni.proto.request import StagePayload
 
 
@@ -283,10 +284,40 @@ class ProfilerStopMessage:
         return cls(run_id=d.get("run_id"))
 
 
+@dataclass
+class AdminMessage:
+    """Send an administrative operation to a stage."""
+
+    operation: AdminOperation
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "admin", "operation": self.operation.to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "AdminMessage":
+        return cls(operation=AdminOperation.from_dict(d["operation"]))
+
+
+@dataclass
+class AdminResultMessage:
+    """Return an administrative result to the coordinator."""
+
+    result: AdminResult
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "admin_result", "result": self.result.to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "AdminResultMessage":
+        return cls(result=AdminResult.from_dict(d["result"]))
+
+
 def parse_message(
     d: dict[str, Any],
 ) -> (
-    DataReadyMessage
+    AdminMessage
+    | AdminResultMessage
+    | DataReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -313,5 +344,9 @@ def parse_message(
         return ProfilerStartMessage.from_dict(d)
     elif msg_type == "profiler_stop":
         return ProfilerStopMessage.from_dict(d)
+    elif msg_type == "admin":
+        return AdminMessage.from_dict(d)
+    elif msg_type == "admin_result":
+        return AdminResultMessage.from_dict(d)
     else:
         raise ValueError(f"Unknown message type: {msg_type}")

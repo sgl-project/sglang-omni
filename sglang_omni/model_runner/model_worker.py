@@ -4,7 +4,8 @@ import logging
 import os
 import socket
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -28,6 +29,7 @@ _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "Qwen3ASRForConditionalGeneration": ("thinker_config", "text_config"),
     "Qwen3TTSTalker": ("talker_config", None),
     "MossTTSDelaySGLangModel": ("language_config", None),
+    "MossTTSLocalSGLangModel": ("language_config", None),
 }
 
 
@@ -218,6 +220,90 @@ class ModelWorker:
         )
         return batch_result
 
+    def model_info(self) -> dict[str, Any]:
+        return {
+            "model_path": getattr(self.server_args, "model_path", None),
+            "load_format": getattr(self.server_args, "load_format", None),
+            "weight_version": getattr(self.server_args, "weight_version", None),
+            "tp_rank": self.tp_rank,
+            "tp_size": getattr(self.server_args, "tp_size", 1),
+            "model_arch_override": self.model_arch_override,
+            "supports_weight_update": hasattr(
+                self.model_runner, "update_weights_from_disk"
+            ),
+            "supports_weight_checker": True,
+        }
+
+    def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        model_path = payload.get("model_path")
+        if not model_path:
+            return False, "model_path is required"
+        update = getattr(self.model_runner, "update_weights_from_disk", None)
+        if update is None:
+            return False, "model runner does not support update_weights_from_disk"
+        load_format = payload.get("load_format") or getattr(
+            self.server_args, "load_format", None
+        )
+        success, message = update(
+            model_path,
+            load_format,
+            recapture_cuda_graph=bool(payload.get("recapture_cuda_graph", False)),
+        )
+        if success:
+            runner_args = getattr(self.model_runner, "server_args", None)
+            setattr(self.server_args, "model_path", model_path)
+            setattr(self.server_args, "load_format", load_format)
+            if runner_args is not None:
+                setattr(runner_args, "model_path", model_path)
+                setattr(runner_args, "load_format", load_format)
+            model_config = getattr(self.model_runner, "model_config", None)
+            if model_config is not None:
+                setattr(model_config, "model_path", model_path)
+
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                setattr(self.server_args, "weight_version", weight_version)
+                if runner_args is not None:
+                    setattr(runner_args, "weight_version", weight_version)
+        return bool(success), str(message)
+
+    def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        if payload.get("serialized_named_tensors") is not None:
+            return (
+                False,
+                "update_weights_from_tensor requires a tensor data plane; "
+                "Omni admin control plane only carries metadata",
+            )
+        return self._call_optional_weight_method("update_weights_from_tensor", payload)
+
+    def update_weights_from_distributed(
+        self, payload: dict[str, Any]
+    ) -> tuple[bool, str]:
+        return self._call_optional_weight_method(
+            "update_weights_from_distributed", payload
+        )
+
+    def weights_checker(self, action: str) -> dict[str, Any]:
+        checker = getattr(self, "_strict_weight_checker", None)
+        if checker is None:
+            from sglang_omni.model_runner.weight_checker import StrictWeightChecker
+
+            checker = StrictWeightChecker(self.model_runner)
+            self._strict_weight_checker = checker
+        return checker.run(action)
+
+    def _call_optional_weight_method(
+        self,
+        method_name: str,
+        payload: dict[str, Any],
+    ) -> tuple[bool, str]:
+        method = getattr(self.model_runner, method_name, None)
+        if method is None:
+            return False, f"model runner does not support {method_name}"
+        recv_req = SimpleNamespace(**payload)
+        success, message = method(recv_req)
+        return bool(success), str(message)
+
 
 def _resolve_nccl_port() -> int:
     master_port = os.environ.get("MASTER_PORT")
@@ -273,7 +359,11 @@ def _apply_model_worker_backend_policy(
         and effective_quantization is None
         and moe_runner_backend == "auto"
     ):
-        server_args.moe_runner_backend = "flashinfer_cutlass"
+        # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
+        # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
+        server_args.moe_runner_backend = (
+            "triton" if _is_h20_device() else "flashinfer_cutlass"
+        )
         moe_runner_backend = server_args.moe_runner_backend
 
     if (
@@ -374,8 +464,22 @@ def _get_config_value(config: object, key: str) -> object | None:
     return getattr(config, key, None)
 
 
+def _is_h20_device() -> bool:
+    """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
+    try:
+        import re
+
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        return bool(re.search(r"\bH20\b", torch.cuda.get_device_name(0)))
+    except Exception:
+        return False
+
+
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror pinned SGLang 0.5.8 FP8 CUTLASS MoE assertions."""
+    """Mirror pinned SGLang 0.5.12.post1 FP8 CUTLASS MoE assertions."""
     try:
         from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
         from sglang.srt.utils import is_sm90_supported, is_sm100_supported

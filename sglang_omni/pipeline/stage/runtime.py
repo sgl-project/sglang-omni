@@ -9,6 +9,7 @@ Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import queue as _queue_mod
@@ -25,6 +26,9 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
+    AdminMessage,
+    AdminResult,
+    AdminResultMessage,
     CompleteMessage,
     DataReadyMessage,
     ProfilerStartMessage,
@@ -217,7 +221,12 @@ class Stage:
                     and self._tp_fanout is not None
                     and isinstance(
                         msg,
-                        (ShutdownMessage, ProfilerStartMessage, ProfilerStopMessage),
+                        (
+                            ShutdownMessage,
+                            ProfilerStartMessage,
+                            ProfilerStopMessage,
+                            AdminMessage,
+                        ),
                     )
                 ):
                     await self._tp_fanout.fanout_control(msg)
@@ -261,6 +270,8 @@ class Stage:
             self._on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
             self._on_profiler_stop(msg)
+        elif isinstance(msg, AdminMessage):
+            await self._on_admin(msg)
 
     async def _on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
@@ -651,6 +662,119 @@ class Stage:
             self._tp_fanout.fanout_work(payload)
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
+        )
+
+    async def _on_admin(self, msg: AdminMessage) -> None:
+        operation = msg.operation
+        if self.role == "leader" and self._tp_fanout is not None:
+            local = await self._run_admin_operation(operation)
+            try:
+                follower_msgs = await self._tp_fanout.collect_admin_results(
+                    operation.op_id,
+                    timeout_s=float(operation.timeout_s or 60.0),
+                )
+            except Exception as exc:
+                local.success = False
+                local.error = str(exc)
+                local.message = "failed to collect TP follower admin results"
+                follower_msgs = []
+
+            rank_results = [local] + [item.result for item in follower_msgs]
+            success = all(item.success for item in rank_results)
+            errors = [item.error for item in rank_results if item.error]
+            data = dict(local.data)
+            data["tp_size"] = len(rank_results)
+            data["rank_results"] = [item.to_dict() for item in rank_results]
+            result = AdminResult(
+                op_id=operation.op_id,
+                stage=self.name,
+                action=operation.action,
+                success=success,
+                message=(
+                    local.message if success else "; ".join(errors) or local.message
+                ),
+                data=data,
+                error=None if success else "; ".join(errors) or local.error,
+                rank=0,
+                role=self.role,
+            )
+            await self.control_plane.send_admin_result(AdminResultMessage(result))
+            return
+
+        result = await self._run_admin_operation(operation)
+        await self.control_plane.send_admin_result(AdminResultMessage(result))
+
+    async def _run_admin_operation(self, operation: Any) -> AdminResult:
+        try:
+            handler = getattr(self.scheduler, "admin", None)
+            if handler is None:
+                return self._admin_result(
+                    operation,
+                    success=True,
+                    message="stage does not support admin operations",
+                    data={"skipped": True, "unsupported": True},
+                )
+            action = operation.action
+            payload = dict(operation.payload)
+            loop = asyncio.get_running_loop()
+            outcome = await loop.run_in_executor(None, lambda: handler(action, payload))
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+            return self._admin_result_from_outcome(operation, outcome)
+        except Exception as exc:
+            logger.exception(
+                "Stage %s admin operation failed: action=%s",
+                self.name,
+                getattr(operation, "action", None),
+            )
+            return self._admin_result(
+                operation,
+                success=False,
+                message=str(exc),
+                error=str(exc),
+            )
+
+    def _admin_result_from_outcome(self, operation: Any, outcome: Any) -> AdminResult:
+        if isinstance(outcome, AdminResult):
+            return outcome
+        if isinstance(outcome, dict):
+            data = dict(outcome.get("data") or {})
+            for key, value in outcome.items():
+                if key not in {"success", "message", "data", "error"}:
+                    data.setdefault(key, value)
+            return self._admin_result(
+                operation,
+                success=bool(outcome.get("success", True)),
+                message=str(outcome.get("message") or "ok"),
+                data=data,
+                error=outcome.get("error"),
+            )
+        return self._admin_result(
+            operation,
+            success=True,
+            message="ok",
+            data={"result": outcome},
+        )
+
+    def _admin_result(
+        self,
+        operation: Any,
+        *,
+        success: bool,
+        message: str = "",
+        data: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> AdminResult:
+        return AdminResult(
+            op_id=operation.op_id,
+            stage=self.name,
+            action=operation.action,
+            success=success,
+            message=message,
+            data=dict(data or {}),
+            error=error,
+            rank=getattr(self.scheduler, "tp_rank", None),
+            role=self.role,
         )
 
     # ------------------------------------------------------------------

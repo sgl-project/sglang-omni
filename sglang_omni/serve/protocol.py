@@ -7,10 +7,6 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-# ---------------------------------------------------------------------------
-# Shared / Common
-# ---------------------------------------------------------------------------
-
 
 class UsageResponse(BaseModel):
     """Token usage statistics."""
@@ -18,11 +14,6 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Chat Completion
-# ---------------------------------------------------------------------------
 
 
 class ChatMessage(BaseModel):
@@ -155,10 +146,6 @@ class ChatCompletionStreamResponse(BaseModel):
     usage: UsageResponse | None = None
 
 
-# ---------------------------------------------------------------------------
-# Speech (TTS)
-# ---------------------------------------------------------------------------
-
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})
 SUPPORTED_TTS_LANGUAGES = frozenset(
     {
@@ -186,6 +173,8 @@ class SpeechReference(BaseModel):
     audio_path: str | None = None
     ref_audio: str | None = None
     audio: str | None = None
+    data: str | None = None
+    media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
 
@@ -222,10 +211,10 @@ class CreateSpeechRequest(BaseModel):
     x_vector_only_mode: bool | None = None
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
+    initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
 
     # Generation parameters
     max_new_tokens: int | None = None
-    initial_codec_chunk_frames: int | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -256,20 +245,10 @@ class VoiceListResponse(BaseModel):
     cache_stats: dict[str, int]
 
 
-# ---------------------------------------------------------------------------
-# Audio transcription (ASR)
-# ---------------------------------------------------------------------------
-
-
 class TranscriptionResponse(BaseModel):
     """OpenAI-compatible transcription response."""
 
     text: str
-
-
-# ---------------------------------------------------------------------------
-# Model listing
-# ---------------------------------------------------------------------------
 
 
 class ModelPermission(BaseModel):
@@ -300,3 +279,63 @@ class ModelList(BaseModel):
 
     object: str = "list"
     data: list[ModelCard] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Administrative APIs
+# ---------------------------------------------------------------------------
+
+
+class AdminRequestBase(BaseModel):
+    """Common admin request routing controls."""
+
+    stages: list[str] | None = None
+    timeout_s: float | None = None
+
+
+class PauseGenerationRequest(AdminRequestBase):
+    mode: str = "abort"
+
+
+class ContinueGenerationRequest(AdminRequestBase):
+    torch_empty_cache: bool = True
+
+
+class UpdateWeightFromDiskRequest(AdminRequestBase):
+    model_path: str
+    load_format: str | None = None
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    is_async: bool = False
+    torch_empty_cache: bool = False
+    keep_pause: bool = False
+    recapture_cuda_graph: bool = False
+    token_step: int = 0
+    flush_cache: bool = True
+    manifest: dict[str, Any] | None = None
+
+
+class UpdateWeightsFromTensorRequest(AdminRequestBase):
+    serialized_named_tensors: list[Any] | None = None
+    load_format: str | None = None
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    disable_draft_model: bool | None = None
+    torch_empty_cache: bool = False
+
+
+class UpdateWeightsFromDistributedRequest(AdminRequestBase):
+    names: list[str]
+    dtypes: list[str]
+    shapes: list[list[int]]
+    group_name: str = "weight_update_group"
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    weight_version: str | None = None
+    load_format: str | None = None
+    torch_empty_cache: bool = False
+
+
+class WeightsCheckerRequest(AdminRequestBase):
+    action: str = "checksum"
