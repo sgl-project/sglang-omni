@@ -26,6 +26,9 @@ class MossTTSLocalModelRunner(ModelRunner):
     CUDA-graph-replayable (decode input_ids are row indices).
     """
 
+    _outbox: Any | None = None
+    _vocoder_target = "vocoder"
+
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
         self._outbox: Any | None = None
@@ -638,7 +641,9 @@ class MossTTSLocalModelRunner(ModelRunner):
                 continue
             sched_req.data.output_rows.append(journal.rows[i])
             stream_metadata = getattr(sched_req.data, "stream_metadata", None)
-            if self._outbox is None or stream_metadata is None:
+            if stream_metadata is None:
+                continue
+            if self._outbox is None:
                 continue
             if rows_cpu is None:
                 # One D2H per step regardless of how many requests stream.
