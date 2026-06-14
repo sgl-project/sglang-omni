@@ -26,9 +26,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -83,6 +85,10 @@ TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
+TTS_ALLOWED_LOCAL_MEDIA_PATH = Path(tempfile.gettempdir()).resolve()
+TTS_WORKER_EXTRA_ARGS = (
+    f"--allowed-local-media-path {shlex.quote(str(TTS_ALLOWED_LOCAL_MEDIA_PATH))}"
+)
 
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
@@ -725,7 +731,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args="",
+        worker_extra_args=TTS_WORKER_EXTRA_ARGS,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:
