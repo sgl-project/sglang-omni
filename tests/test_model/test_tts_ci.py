@@ -80,6 +80,7 @@ class TtsCiModelPreset:
     worker_extra_args: str = ""
     startup_timeout: int = 180
     gate_thresholds: bool = True
+    num_gpus_per_worker: int = 1
 
 
 TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
@@ -87,10 +88,11 @@ TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
         model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
     ),
     "moss": TtsCiModelPreset(
-        model_path="OpenMOSS-Team/MOSS-TTS-v1.5",
+        model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
         ref_format="references",
         token_count="auto",
         gate_thresholds=False,
+        num_gpus_per_worker=2,
     ),
 }
 
@@ -767,6 +769,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
         worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip(),
+        num_gpus_per_worker=_PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:
