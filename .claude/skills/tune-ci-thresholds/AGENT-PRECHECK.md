@@ -203,10 +203,12 @@ host profile. Do not re-download when `.complete` exists and warm-cache HITs.
 Skip for TTS-only calibration.
 
 ```bash
-grep -qi cap_sys_ptrace /proc/self/status && echo PASS ptrace || echo FAIL ptrace
+# /proc/self/status lists capabilities as hex bitmasks — never grep for
+# the string "cap_sys_ptrace" there (always false). Use capsh instead:
+capsh --print 2>/dev/null | rg -qi 'cap_sys_ptrace' && echo PASS ptrace || echo FAIL ptrace
 ```
 
-**Pass:** `PASS ptrace`.
+**Pass:** `PASS ptrace` (output includes `cap_sys_ptrace=ep` or `cap_sys_ptrace` in Current).
 
 **Fail → report**; stage `videoamme_talker_tp2` will fail. Calibrate other
 stages only if user accepts partial scope.
@@ -253,6 +255,7 @@ precheck OK
 
 | Symptom | Likely cause | Agent action |
 |---------|--------------|--------------|
+| Gate 7 FAIL ptrace but Docker has `--cap-add=SYS_PTRACE` | Used `grep cap_sys_ptrace /proc/self/status` (hex bitmasks only — always false) | Re-check with `capsh --print \| rg sys_ptrace` |
 | HF ✗ but files under `/root/.cache/huggingface` | Host profile not loaded | `--host` / `$TUNE_HOST` |
 | Wrong `HF_HOME` in `auto env` | Same | Same |
 | speaker_sim ✗ | Gate 6 incomplete | Fix per Gate 6 or report |

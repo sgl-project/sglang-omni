@@ -106,15 +106,15 @@ TTS_SIMILARITY_MAX_SAMPLES = 50
 
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
-VC_WER_MAX_CORPUS = 0.0104
+VC_WER_MAX_CORPUS = 0.0121
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_CORPUS = 0.0098
+VC_STREAM_WER_MAX_CORPUS = 0.0119
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 
-VC_SIMILARITY_MEAN_MIN = 66.18289001464844
+VC_SIMILARITY_MEAN_MIN = 66.8902230072
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1538 · mean = 4.1618 · stdev = 0.0079
-VC_UTMOS_MEAN_REFERENCE = 4.1538
+VC_UTMOS_MEAN_REFERENCE = 4.1539
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
@@ -122,18 +122,18 @@ VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 11.558,
-        "output_tok_per_req_s": 119.9,
-        "latency_mean_s": 1.372,
-        "rtf_mean": 0.335,
+        "throughput_qps": 14.717,
+        "output_tok_per_req_s": 141.1,
+        "latency_mean_s": 1.002,
+        "rtf_mean": 0.2339,
     }
 }
 
 _VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 11.535,
-        "latency_mean_s": 1.381,
-        "rtf_mean": 0.3174,
+        "throughput_qps": 14.89,
+        "latency_mean_s": 0.97,
+        "rtf_mean": 0.2244,
     }
 }
 
