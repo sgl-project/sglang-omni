@@ -32,6 +32,7 @@ hf_datasets:
 # Calibration uses a fixed slice with the same layout (no PR number).
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
+  - "/data/chenyang/.python/omni/bin/python"
   - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/calibration/omni/bin/python"
   - "/github/home/omni/bin/python"
@@ -46,7 +47,8 @@ auto_env:
   XDG_CACHE_HOME: "/github/home/calibration/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
   HF_HUB_DISABLE_XET: "1"
-  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
+  UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"
   UV_CACHE_DIR: "/github/home/.cache/uv"
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
@@ -68,7 +70,14 @@ gpus_per_test:
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
 # Per-test extra env vars. Key is the test filename (basename).
-extra_env: {}
+# FP8 Thinker TP=2 (stage 11): GPU 1 co-locates thinker rank-1 + talker +
+# code2wav; expandable_segments reduces allocator fragmentation (issue #765),
+# matching the CI workflow env. NOTE: the relay also needs CAP_SYS_PTRACE, which
+# must be granted when the container is started (--cap-add=SYS_PTRACE) — env
+# alone cannot supply it.
+extra_env:
+  test_qwen3_omni_videoamme_talker_tp2_ci.py:
+    PYTORCH_ALLOC_CONF: "expandable_segments:True"
 # Stage-key base derivation: strip prefix + strip suffix from the test stem.
 stage_base_strip_prefix: "test_qwen3_omni_"
 stage_base_strip_suffix: "_ci"

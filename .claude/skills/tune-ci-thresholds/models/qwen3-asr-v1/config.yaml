@@ -7,6 +7,7 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
+  - "/data/chenyang/.python/omni/bin/python"
   - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/calibration/omni/bin/python"
   - "/github/home/omni/bin/python"
@@ -18,7 +19,8 @@ auto_env:
   XDG_CACHE_HOME: "/github/home/calibration/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
   HF_HUB_DISABLE_XET: "1"
-  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
+  UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"
   UV_CACHE_DIR: "/github/home/.cache/uv"
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"

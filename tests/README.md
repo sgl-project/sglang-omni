@@ -160,7 +160,7 @@ Relevant model CI ownership:
   summary style as the other benchmark stages: `ASR WER Benchmark Result`
   followed by `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
-  stops the upstream model server, runs `ensure_gpus_idle.sh`, then launches
+  stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
   (`QWEN3_ASR_WER_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
   and TTS WER tests instead of the in-process transformers Whisper pipeline.
@@ -176,7 +176,7 @@ Relevant model CI ownership:
   an earlier suite does not skip later ones; only a failed setup blocks the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
-- GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan
+- GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
   spawn/router workers, waits for VRAM below threshold).
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
   init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark

@@ -37,7 +37,7 @@ ensure_gpus_idle() {
     OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB=2048 \
     OMNI_CI_GPU_CLEAN_WAIT_SECONDS=600 \
     OMNI_CI_GPU_CLEAN_POLL_SECONDS=5 \
-    bash .github/scripts/ensure_gpus_idle.sh >> "${log_path}" 2>&1 || return 1
+    bash .github/scripts/delete_gpu_process.sh --kill-orphans >> "${log_path}" 2>&1 || return 1
     sleep 3
 }
 

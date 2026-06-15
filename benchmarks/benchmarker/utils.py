@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 STARTUP_TIMEOUT = 600
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/ensure_gpus_idle.sh"
+GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/delete_gpu_process.sh"
 GPU_IDLE_THRESHOLD_MB = 2048
 GPU_IDLE_WAIT_SECONDS = 600
 GPU_IDLE_POLL_SECONDS = 5
@@ -115,14 +115,14 @@ def wait_for_gpu_memory_release(
         flush=True,
     )
     result = subprocess.run(
-        ["bash", str(GPU_CLEANUP_SCRIPT)],
+        ["bash", str(GPU_CLEANUP_SCRIPT), "--kill-orphans"],
         env=env,
         check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
             "GPU memory was not released after stopping the inference server. "
-            f"ensure_gpus_idle.sh exit={result.returncode}"
+            f"delete_gpu_process.sh exit={result.returncode}"
         )
 
 

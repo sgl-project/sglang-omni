@@ -34,11 +34,11 @@ if [ -f "${DEPS_HASH_FILE}" ] \
 fi
 
 if [ "${reuse_venv}" = true ]; then
-  echo "Reusing ${HOST} (pyproject.toml unchanged); refreshing editable install only"
+  echo "Reusing ${HOST} (pyproject.toml unchanged); refreshing editable install and dependency versions"
   rm -rf "./${VENV_NAME}"
   ln -sfn "${HOST}" "./${VENV_NAME}"
   source "${VENV_NAME}/bin/activate"
-  uv pip install -e .
+  uv pip install --upgrade -e .
   exit 0
 fi
 

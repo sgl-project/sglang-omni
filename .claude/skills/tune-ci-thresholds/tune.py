@@ -11,11 +11,13 @@ import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signa
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
+HOSTS_DIR = SKILL_DIR / "hosts"
 DEFAULT_MODEL = "qwen3-omni-v1"
+_SPEAKER_SIM_MIN_BYTES = 100 * 1024 * 1024
 REPO_ROOT = Path("/sgl-workspace/sglang-omni")
 if not REPO_ROOT.exists():
     REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -28,7 +30,7 @@ _GPU_LAUNCH_RECHECK_S = 3
 _GPU_WAIT_POLL_S = 5
 _GPU_WAIT_TIMEOUT_S = 600
 _PYTEST_POLL_S = 30
-_MAX_RUN_ATTEMPTS = 4
+_MAX_RUN_ATTEMPTS = 4  # infra-failure retries (OOM/crash/GPU-not-clear) to obtain one clean repeat; calibration-specific, unrelated to CI's per-test failure retry
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
 _CI_HOME = Path("/github/home")
@@ -71,24 +73,12 @@ def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
 
 
 def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
-    # Runtime JIT dirs only — never remove the host wheel cache under
-    # /github/home/.cache/flashinfer-jit-cache/ (see install_flashinfer_jit_cache.sh).
+    # Wipe the runtime FlashInfer JIT dirs so kernels recompile cleanly on the
+    # next cold start. Matches CI, which wipes the same dir before every pytest
+    # attempt (omni-setup at job start + run_flaky_pytest.sh before each retry).
     for cache_dir in _flashinfer_cache_dirs(env):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
-
-def _venv_has_flashinfer_jit_cache(py: str) -> bool:
-    r = subprocess.run(
-        [
-            py,
-            "-c",
-            "import importlib.util, sys;"
-            "sys.exit(0 if importlib.util.find_spec('flashinfer_jit_cache') else 1)",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode == 0
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -199,6 +189,73 @@ def available_models():
                   if d.is_dir() and (d / "config.yaml").exists())
 
 
+def available_hosts():
+    if not HOSTS_DIR.exists():
+        return []
+    return sorted(p.stem for p in HOSTS_DIR.glob("*.yaml"))
+
+
+def load_host_profile(name: str | None = None) -> dict | None:
+    """Load hosts/<name>.yaml, or autodetect by socket.gethostname()."""
+    import socket
+
+    if name is None:
+        name = os.environ.get("TUNE_HOST")
+    if name:
+        path = HOSTS_DIR / f"{name}.yaml"
+        if not path.exists():
+            raise SystemExit(
+                f"host profile not found: {path} "
+                f"(known: {', '.join(available_hosts()) or 'none'})")
+        return _load_yaml(path, top_is_dict=True)
+    if not HOSTS_DIR.exists():
+        return None
+    hostname = socket.gethostname()
+    for path in HOSTS_DIR.glob("*.yaml"):
+        profile = _load_yaml(path, top_is_dict=True)
+        if profile.get("hostname") == hostname:
+            return profile
+    return None
+
+
+def resolve_repo_root(host: dict | None) -> Path:
+    if os.environ.get("TUNE_REPO_ROOT"):
+        return Path(os.environ["TUNE_REPO_ROOT"])
+    if host and host.get("repo_root"):
+        return Path(host["repo_root"])
+    default = Path("/sgl-workspace/sglang-omni")
+    if default.exists():
+        return default
+    return Path(__file__).resolve().parents[3]
+
+
+def apply_host_profile(cfg: dict, host: dict) -> None:
+    """Map host physical paths onto tune.py auto_env (no symlinks required)."""
+    physical = host.get("physical") or {}
+    auto = cfg.setdefault("auto_env", {})
+    if physical.get("hf_hub"):
+        auto["HF_HOME"] = str(physical["hf_hub"])
+    if physical.get("speaker_sim"):
+        auto["SEEDTTS_SIM_CACHE_DIR"] = str(physical["speaker_sim"])
+    if physical.get("omni_ci_home"):
+        cfg["omni_ci_home"] = str(physical["omni_ci_home"])
+    cfg["_host"] = host
+
+
+def _speaker_sim_assets_ok(cache_dir: Path) -> tuple[bool, str]:
+    marker = cache_dir / ".complete"
+    base = cache_dir / "wavlm_large.pt"
+    finetune = cache_dir / "wavlm_large_finetune.pth"
+    if not marker.is_file():
+        return False, "missing .complete — run speaker_similarity_assets --warm-cache"
+    for path in (base, finetune):
+        if not path.is_file():
+            return False, f"missing {path.name}"
+        if path.stat().st_size < _SPEAKER_SIM_MIN_BYTES:
+            return False, f"{path.name} too small (truncated?)"
+    return True, "wavlm_large.pt + wavlm_large_finetune.pth"
+
+
 def model_dir(name):  return MODELS_DIR / name
 def stages_path(name): return model_dir(name) / "stages.yaml"
 
@@ -219,7 +276,7 @@ def _apply_auto_env(cfg: dict) -> None:
         os.environ[key] = str(value)
 
 
-def load_model_config(name):
+def load_model_config(name, host: dict | None = None):
     p = model_dir(name) / "config.yaml"
     if not p.exists():
         raise SystemExit(f"model config not found: {p}. "
@@ -229,8 +286,10 @@ def load_model_config(name):
     cfg.setdefault("auto_env", {})
     cfg.setdefault("metric_sources", {})
     cfg.setdefault("hf_model_ids_by_test", {})
+    if host:
+        apply_host_profile(cfg, host)
     # Auto-apply env vars so the user doesn't need to export them
-    # manually. Overrides any pre-existing value to match CI.
+    # manually. Overrides any pre-existing value to match CI / host profile.
     _apply_auto_env(cfg)
     return cfg
 
@@ -632,9 +691,8 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     print(f"venv_python: {py} ({src})")
     if src == "default" and tried and len(tried) > 1:
         print(f"  (tried in order: {', '.join(tried)})")
-    # Container-name / hostname checks removed deliberately — they were
-    # fragile heuristics. Equivalence with CI is established by: same
-    # image's venv + pinned sglang/torch + cached assets + clean GPUs.
+    # Equivalence with CI is established by: same image's venv + pinned
+    # sglang/torch + cached assets + clean GPUs.
     if not (REPO_ROOT / "pyproject.toml").exists():
         errs.append(f"repo not found at {REPO_ROOT}")
         return _summary(errs, warns)
@@ -668,19 +726,6 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
-    if not _venv_has_flashinfer_jit_cache(py):
-        venv_root = Path(py).resolve().parent.parent
-        venv_name = venv_root.name
-        errs.append(
-            "flashinfer-jit-cache missing from venv (CI MoE graph capture needs it).\n"
-            f"  From repo root with OMNI_CI_HOME={cfg['auto_env'].get('OMNI_CI_HOME', '<set>')}:\n"
-            f"    ln -sfn {venv_root} ./{venv_name}\n"
-            f"    bash .github/scripts/install_flashinfer_jit_cache.sh {venv_name}\n"
-            "  Host wheel cache: /github/home/.cache/flashinfer-jit-cache/ (shared across PRs)."
-        )
-    # WER normalizer check removed — the user manages venv contents
-    # explicitly and the warning was producing noise without changing
-    # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
     def _cached(repo_id, kind):
         if kind == "dataset":
             r = subprocess.run(
@@ -764,6 +809,25 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
                 f"huggingface-cli download {repo_id}{flag}"
             )
         errs.append("\n".join(lines))
+    sim_dir = cfg["auto_env"].get("SEEDTTS_SIM_CACHE_DIR")
+    needs_speaker_sim = bool(cfg.get("_host")) or cfg["name"] in (
+        "tts", "qwen3-omni-v1")
+    if sim_dir and needs_speaker_sim:
+        sim_ok, sim_detail = _speaker_sim_assets_ok(Path(sim_dir))
+        mark = "✓" if sim_ok else "✗"
+        print(f"    {mark} speaker_sim: {sim_dir} ({sim_detail})")
+        if not sim_ok:
+            bootstrap = ((cfg.get("_host") or {}).get("speaker_similarity_bootstrap")
+                         or {})
+            cmd = (bootstrap.get("warm_cache") or {}).get("command", "").strip()
+            hint = (
+                f"speaker_sim incomplete at {sim_dir}: {sim_detail}. "
+                "Run benchmarks.metrics.speaker_similarity_assets --warm-cache "
+                f"with SEEDTTS_SIM_CACHE_DIR={sim_dir}."
+            )
+            if cmd:
+                hint += f" See hosts profile warm_cache.command."
+            errs.append(hint)
     smi = nvidia_smi_L()
     if not smi:
         errs.append("nvidia-smi -L returned no GPUs")
@@ -784,7 +848,7 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             errs.append(f"need {gpu_required} free GPU(s); only {free_count} free "
                         f"(busy: {sorted(busy)}) — "
                         "free them yourself (e.g. stop your own jobs); "
-                        "this skill no longer kills GPU processes")
+                        "precheck does not kill GPU processes")
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "precheck.json").write_text(json.dumps(dict(
@@ -1243,7 +1307,7 @@ def stages_list(cfg):
 
 
 def run_cmd(args):
-    cfg = load_model_config(args.model)
+    cfg = load_model_config(args.model, host=getattr(args, "host_profile", None))
     py, src, _ = resolve_venv(args.venv_python, cfg)
     out = Path(args.output_dir) if args.output_dir \
         else DEFAULT_RUN_ROOT / f"{cfg['name']}-{ts_dir()}"
@@ -1971,10 +2035,9 @@ def report(run_dir):
             v = min(vals[k]) if worst[k] == "min" else max(vals[k])
             wc.append(f"**{_fmt(v, disp[k])}**")
         L += [f"| **Worst-of-{N}** | " + " | ".join(wc) + " |", ""]
-        # `Threshold: ...` lines were removed — what actually got written
-        # into the test files (if anything) is recorded in the
-        # "Applied changes" table appended after mode-smart/mode-full
-        # apply (see SKILL.md step 9).
+        # What actually got written into the test files (if anything) is
+        # recorded in the "Applied changes" table appended after
+        # mode-smart/mode-full apply (see SKILL.md step 9).
         for k in nulls:
             L.append(f"> ⚠ {disp[k]['label']}: no `json_path` in stages.yaml "
                      "(config.yaml `metric_sources` missing this metric)")
@@ -2161,14 +2224,30 @@ def apply_plan(run_dir):
     return 0
 
 
+def _bootstrap_from_host(host: dict | None) -> None:
+    global REPO_ROOT
+    if not host:
+        return
+    REPO_ROOT = resolve_repo_root(host)
+    venv = host.get("venv_python")
+    if venv and not os.environ.get("TUNE_VENV_PYTHON"):
+        os.environ.setdefault("TUNE_VENV_PYTHON", str(venv))
+
+
 def main(argv=None):
+    global REPO_ROOT
     p = argparse.ArgumentParser(prog="tune.py")
     p.add_argument("--venv-python")
     p.add_argument("--skip-version-check", action="store_true")
+    p.add_argument(
+        "--host",
+        help="host profile under hosts/ (default: $TUNE_HOST or autodetect by hostname)",
+    )
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"model config name under models/ (default: {DEFAULT_MODEL})")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("models-list")
+    sub.add_parser("hosts-list")
     sub.add_parser("stages-list")
     sa = sub.add_parser("precheck"); sa.add_argument("--output-dir")
     sb = sub.add_parser("discover"); sb.add_argument("--output")
@@ -2189,13 +2268,23 @@ def main(argv=None):
     if args.cmd == "models-list":
         for m in available_models(): print(m)
         return 0
+    if args.cmd == "hosts-list":
+        for h in available_hosts():
+            print(h)
+        return 0
+    host = load_host_profile(args.host)
+    _bootstrap_from_host(host)
+    args.host_profile = host
+    if host:
+        print(f"host: {host.get('name', args.host or 'autodetect')} "
+              f"(repo={REPO_ROOT})")
     if args.cmd == "report":
         return report(Path(args.run_dir))
     if args.cmd == "apply-plan":
         return apply_plan(Path(args.run_dir))
     if args.cmd == "status":
         return status_cmd(Path(args.run_dir))
-    cfg = load_model_config(args.model)
+    cfg = load_model_config(args.model, host=host)
     if args.cmd == "stages-list":
         return stages_list(cfg)
     py, src, tried = resolve_venv(args.venv_python, cfg)

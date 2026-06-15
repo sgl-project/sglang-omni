@@ -7,8 +7,8 @@ qwen3_asr_wer:
     QWEN3_ASR_CI_CONCURRENCY: "2"
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: 0944030fdac83196617fad413021839b820e26c40431ee8b5d75e9c46ddabba5
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: 0b3222e94bd31686e5d76e6595cfd82c1f670922a31aa42849758daa85905e3c
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "qwen3_asr_results.json"
@@ -45,8 +45,8 @@ qwen3_asr_speed:
     QWEN3_ASR_CI_CONCURRENCY: "2"
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: 0944030fdac83196617fad413021839b820e26c40431ee8b5d75e9c46ddabba5
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: 0b3222e94bd31686e5d76e6595cfd82c1f670922a31aa42849758daa85905e3c
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "qwen3_asr_results.json"
@@ -112,8 +112,8 @@ tts_nonstream_wer:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
@@ -139,8 +139,8 @@ tts_nonstream_similarity:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
@@ -166,8 +166,8 @@ tts_nonstream_utmos:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
@@ -193,8 +193,8 @@ tts_nonstream_speed:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
@@ -250,8 +250,8 @@ tts_stream_wer:
   extra_env: {}
   context_vars: []
   variant: "stream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
@@ -277,8 +277,8 @@ tts_stream_speed:
   extra_env: {}
   context_vars: []
   variant: "stream"
-  test_file_sha256: cd8b74fb7c3edc876c0d3753b294dfe24bb8e9f6f25a177476fd7436775a0a57
-  last_discovered_at: 2026-06-01T18:24:18Z
+  test_file_sha256: a5852e506c9d2cdfb94a83311a9e768ca24d3f5d73ab1c2e48db591e86593eba
+  last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
@@ -296,16 +296,6 @@ tts_stream_speed:
         label: "Throughput (req/s)"
         scale: 1
         digits: 3
-      status: OK
-    output_tok_per_req_s:
-      source: "_VC_STREAM_P95['output_tok_per_req_s']"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
-      json_path: "summary.output_tok_per_req_s"
-      worst: min
-      display:
-        label: "Output tok/req-s"
-        scale: 1
-        digits: 1
       status: OK
     latency_mean_s:
       source: "_VC_STREAM_P95['latency_mean_s']"

@@ -13,9 +13,59 @@ selected_gpu_ids() {
     fi
 }
 
+# note (Yue Yin): kill orphan processes that hold /dev/nvidia* fds but are
+# invisible to nvidia-smi (e.g. multiprocessing.spawn workers after a crash).
+_kill_orphan_gpu_processes() {
+    local patterns=(
+        "multiprocessing.spawn"
+        "sglang_omni_router.serve"
+        "sgl-omni serve"
+        "stage_process"
+    )
+    for pattern in "${patterns[@]}"; do
+        pkill -9 -f "${pattern}" 2>/dev/null || true
+    done
+    rm -f /tmp/sglang_omni_gpu_*_startup.lock
+
+    local pid cmdline gpu_regex fd_target
+    if [ -n "${target_gpu_ids}" ] && [ "${target_gpu_ids}" != "all" ]; then
+        gpu_regex="$(echo "${target_gpu_ids}" | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | sed -n '/^[0-9][0-9]*$/p' | paste -sd'|' -)"
+    else
+        gpu_regex=""
+    fi
+
+    for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' || true); do
+        if [ -n "${gpu_regex}" ]; then
+            fd_target="$(find "/proc/${pid}/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null || true)"
+            if ! echo "${fd_target}" | grep -Eq "/dev/nvidia(${gpu_regex})$"; then
+                continue
+            fi
+        elif ! ls -l "/proc/${pid}/fd" 2>/dev/null | grep -q nvidia; then
+            continue
+        fi
+        cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+        if [ -n "${cmdline}" ]; then
+            echo "  killing orphan GPU PID ${pid}: ${cmdline}"
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+    done
+}
+
+kill_orphans=0
+for arg in "$@"; do
+    [ "${arg}" = "--kill-orphans" ] && kill_orphans=1
+done
+
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "nvidia-smi not found; skipping GPU cleanup."
     exit 0
+fi
+
+if [ "${kill_orphans}" = "1" ]; then
+    _kill_orphan_gpu_processes
+    sleep 2
 fi
 
 echo "=== Checking GPU Utilization ==="

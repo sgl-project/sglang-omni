@@ -42,7 +42,7 @@ should_retry() {
 
 cleanup_between_attempts() {
   echo "Cleaning GPU state before retry..."
-  if ! bash .github/scripts/delete_gpu_process.sh; then
+  if ! bash .github/scripts/delete_gpu_process.sh --kill-orphans; then
     echo "::error::GPU cleanup failed before retry; not retrying with dirty GPU state"
     return 1
   fi
