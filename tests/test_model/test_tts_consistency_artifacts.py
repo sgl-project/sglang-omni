@@ -43,7 +43,22 @@ TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
 DEFAULT_CONSISTENCY_CONCURRENCY = 16
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
-_GATE_THRESHOLDS = os.environ.get("TTS_CI_MODEL", "higgs") == "higgs"
+_STRICT_CONSISTENCY_MODELS = {"higgs"}
+_REPORT_ONLY_CONSISTENCY_MODELS = {"moss"}
+
+
+def _selected_tts_ci_model() -> str:
+    model_name = os.environ.get("TTS_CI_MODEL", "higgs")
+    allowed = _STRICT_CONSISTENCY_MODELS | _REPORT_ONLY_CONSISTENCY_MODELS
+    if model_name not in allowed:
+        raise ValueError(
+            f"Unsupported TTS_CI_MODEL={model_name!r}; expected one of: "
+            f"{', '.join(sorted(allowed))}"
+        )
+    return model_name
+
+
+_GATE_STRICT_CONSISTENCY = _selected_tts_ci_model() in _STRICT_CONSISTENCY_MODELS
 
 
 def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
@@ -97,7 +112,7 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
         f"stream artifact has {len(stream_results['per_request'])}/"
         f"{SEEDTTS_EN_FULLSET_SAMPLES} SeedTTS EN samples",
     )
-    if _GATE_THRESHOLDS:
+    if _GATE_STRICT_CONSISTENCY:
         assert_streaming_consistency(
             non_stream_results["per_request"],
             stream_results["per_request"],

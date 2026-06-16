@@ -75,8 +75,8 @@ SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 @dataclass
 class TtsCiModelPreset:
     model_path: str
-    ref_format: str = "flat"
-    token_count: str | int | None = None
+    ref_format: Literal["flat", "references"] = "flat"
+    token_count: int | Literal["auto"] | None = None
     worker_extra_args: str = ""
     startup_timeout: int = 180
     gate_thresholds: bool = True
@@ -95,8 +95,19 @@ TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
     ),
 }
 
-_MODEL_NAME = os.environ.get("TTS_CI_MODEL", "higgs")
-_PRESET = TTS_CI_MODEL_PRESETS[_MODEL_NAME]
+
+def _select_tts_ci_model_preset() -> tuple[str, TtsCiModelPreset]:
+    model_name = os.environ.get("TTS_CI_MODEL", "higgs")
+    preset = TTS_CI_MODEL_PRESETS.get(model_name)
+    if preset is None:
+        allowed = ", ".join(sorted(TTS_CI_MODEL_PRESETS))
+        raise ValueError(
+            f"Unsupported TTS_CI_MODEL={model_name!r}; expected one of: {allowed}"
+        )
+    return model_name, preset
+
+
+_MODEL_NAME, _PRESET = _select_tts_ci_model_preset()
 TTS_MODEL_PATH = _PRESET.model_path
 
 STARTUP_TIMEOUT = _PRESET.startup_timeout
@@ -175,12 +186,12 @@ WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
 
 
 def _validate_speed_results_keys(speed_results: dict) -> None:
-    assert (
-        "summary" in speed_results
-    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    assert (
-        "per_request" in speed_results
-    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    assert "summary" in speed_results, (
+        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    )
+    assert "per_request" in speed_results, (
+        f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    )
 
 
 def _print_saved_tts_speed_summary(
@@ -272,12 +283,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert (
-        "summary" in wer_results
-    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    assert (
-        "per_sample" in wer_results
-    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    assert "summary" in wer_results, (
+        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    )
+    assert "per_sample" in wer_results, (
+        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    )
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
@@ -600,9 +611,9 @@ def _find_downloaded_speed_results(
 ) -> tuple[str, dict]:
     root = Path(artifact_root)
     matches = sorted(root.rglob(f"{output_dir_name}/speed_results.json"))
-    assert (
-        matches
-    ), f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    assert matches, (
+        f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    )
     results_path = matches[0]
     return str(results_path.parent), _load_speed_results(results_path)
 
