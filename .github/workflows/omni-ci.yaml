@@ -11,6 +11,12 @@ on:
     branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      tts_ci_model:
+        description: "Optional TTS CI model preset to run (higgs or moss). Leave empty for random."
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
@@ -138,9 +144,28 @@ jobs:
       tts_ci_model: ${{ steps.pick.outputs.tts_ci_model }}
     steps:
       - id: pick
+        env:
+          TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
         run: |
           models=(higgs moss)
-          echo "tts_ci_model=${models[$((RANDOM % ${#models[@]}))]}" >> "$GITHUB_OUTPUT"
+          selected=""
+          override="${TTS_CI_MODEL_OVERRIDE,,}"
+          if [[ -n "${override}" ]]; then
+            for model in "${models[@]}"; do
+              if [[ "${override}" == "${model}" ]]; then
+                selected="${model}"
+                break
+              fi
+            done
+            if [[ -z "${selected}" ]]; then
+              echo "::error::Unsupported tts_ci_model='${TTS_CI_MODEL_OVERRIDE}'. Expected one of: ${models[*]}"
+              exit 1
+            fi
+          else
+            selected="${models[$((RANDOM % ${#models[@]}))]}"
+          fi
+          echo "Selected TTS CI model: ${selected}"
+          echo "tts_ci_model=${selected}" >> "$GITHUB_OUTPUT"
 
   tts-ci:
     name: TTS CI

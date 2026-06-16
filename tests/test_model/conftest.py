@@ -31,6 +31,7 @@ TTS_CONCURRENCY_OPTION = "--concurrency"
 SELECTED_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
 TTS_STAGE_OPTION = "--tts-stage"
 SELECTED_TTS_CI_STAGE = pytest.StashKey[str]()
+TTS_CI_MODEL_OPTION = "--tts-ci-model"
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Single source of truth for the model path used by Qwen3-Omni vision-encoder
 # benchmarks and the SGLang state they bring up. Honors
@@ -355,8 +356,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=TTS_STAGE_ALL,
         help=(
-            "Select the TTS CI stage. "
-            f"Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
+            f"Select the TTS CI stage. Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
+        ),
+    )
+    parser.addoption(
+        TTS_CI_MODEL_OPTION,
+        action="store",
+        default="",
+        help=(
+            "Select the TTS CI model preset. "
+            "Use one of the presets in tests/test_model/tts_ci_config.py. "
+            "If omitted, use TTS_CI_MODEL from the environment."
         ),
     )
 
@@ -366,6 +376,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
     stage_value = config.getoption(TTS_STAGE_OPTION)
     config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
+    model_value = config.getoption(TTS_CI_MODEL_OPTION)
+    if model_value:
+        os.environ["TTS_CI_MODEL"] = _parse_tts_ci_model(model_value)
 
 
 @pytest.fixture(scope="session")
@@ -389,7 +402,7 @@ def _parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
         concurrency = int(normalized_value)
     except ValueError as exc:
         raise pytest.UsageError(
-            "Invalid value for --concurrency. " "Use one of {1,2,4,8,16} or 'all'."
+            "Invalid value for --concurrency. Use one of {1,2,4,8,16} or 'all'."
         ) from exc
 
     if concurrency not in TTS_ALLOWED_CONCURRENCIES:
@@ -408,6 +421,19 @@ def _parse_tts_ci_stage(option_value: str) -> str:
         raise pytest.UsageError(
             f"Unsupported value for {TTS_STAGE_OPTION}: {option_value!r}. "
             f"Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
+        )
+    return normalized_value
+
+
+def _parse_tts_ci_model(option_value: str) -> str:
+    from tests.test_model.tts_ci_config import TTS_CI_PRESETS
+
+    normalized_value = option_value.strip().lower()
+    if normalized_value not in TTS_CI_PRESETS:
+        allowed = tuple(sorted(TTS_CI_PRESETS))
+        raise pytest.UsageError(
+            f"Unsupported value for {TTS_CI_MODEL_OPTION}: {option_value!r}. "
+            f"Use one of {allowed}."
         )
     return normalized_value
 
