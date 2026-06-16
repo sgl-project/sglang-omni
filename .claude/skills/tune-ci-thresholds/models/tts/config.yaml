@@ -29,8 +29,9 @@
 #   SKILL.md § TTS stage 3.
 # - Concurrency: TTS generation CI uses --concurrency 16 for every preset.
 #   Qwen3-ASR router/transcribe fan-out for WER uses 32 at DP=2.
-# - GPU topology is per preset. Higgs needs 2 GPUs total (2 workers × 1 GPU);
-#   MOSS local-transformer needs 4 GPUs total (2 workers × 2 GPUs).
+# - GPU topology is per preset. Higgs and MOSS each need 2 GPUs total
+#   (2 router workers × 1 complete single-GPU server). The MOSS CI preset uses
+#   the colocated local config so codec/vocoder stay on each worker's cuda:0.
 # - Venv: CI uses omni under OMNI_CI_HOME (see omni_ci_home below).
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
 #   weights are already present in the configured HF cache.
@@ -109,7 +110,7 @@ metric_sources:
       moss:
         extra_env:
           TTS_CI_MODEL: "moss"
-        gpus: 4
+        gpus: 2
         hf_model_ids:
           - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
           - "Qwen/Qwen3-ASR-1.7B"

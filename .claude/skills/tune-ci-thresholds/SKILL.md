@@ -610,8 +610,9 @@ CI and calibration intentionally have different sampling policies:
   scaffold preset are allowed only as a temporary report-only state; do not
   silently reuse Higgs literals for MOSS.
 - **GPU topology:** calibration stages can declare per-preset GPU needs.
-  Higgs currently uses 2 GPUs total; MOSS local-transformer uses 4 GPUs total
-  because each of the two router workers needs 2 visible GPUs.
+  Higgs and MOSS currently use 2 GPUs total: the router launches two complete
+  single-GPU workers. The MOSS CI preset uses the colocated local config so
+  its codec/vocoder run on each worker's visible `cuda:0`.
 
 The generated stage aliases reflect this:
 

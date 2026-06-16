@@ -91,8 +91,8 @@ TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
         model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
         ref_format="references",
         token_count="auto",
+        worker_extra_args="--config examples/configs/moss_tts_local_colocated.yaml",
         gate_thresholds=False,
-        num_gpus_per_worker=2,
     ),
 }
 
