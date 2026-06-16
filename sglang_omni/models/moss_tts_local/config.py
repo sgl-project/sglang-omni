@@ -7,7 +7,12 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    SGLangServerArgsConfig,
+    StageConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.moss_tts_local"
 
@@ -32,6 +37,9 @@ def _stages(*, codec_device: str) -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"gpu_id": 0, "dtype": "bfloat16"},
+            runtime=StageRuntimeConfig(
+                sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.85),
+            ),
             gpu=0,
             next="vocoder",
             stream_to=["vocoder"],

@@ -179,6 +179,10 @@ def test_pipeline_stage_wiring():
     assert config.supports_uploaded_voice_references() is True
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
+    tts_engine_runtime = stages["tts_engine"].runtime
+    assert tts_engine_runtime.sglang_server_args.mem_fraction_static == pytest.approx(
+        0.85
+    )
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
@@ -1595,3 +1599,4 @@ def test_async_decode_cli_accepts_moss_local():
     args = resolve_stage_factory_args(stage, config)
     assert args["enable_async_decode"] is True
     assert args["async_decode_min_batch_size"] == 4
+    assert args["server_args_overrides"]["mem_fraction_static"] == pytest.approx(0.85)
