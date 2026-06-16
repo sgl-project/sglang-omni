@@ -83,6 +83,16 @@ class TtsCiModelPreset:
     num_gpus_per_worker: int = 1
 
 
+@dataclass(frozen=True)
+class TtsCiThresholdPreset:
+    non_stream_speed: dict[int, dict[str, float]]
+    stream_speed: dict[int, dict[str, float]]
+    wer_corpus: float
+    stream_wer_corpus: float
+    similarity_mean_min: float
+    utmos_mean_min: float
+
+
 TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
     "higgs": TtsCiModelPreset(
         model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
@@ -212,40 +222,38 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 )
 
 
-def _non_stream_speed_thresholds() -> dict[int, dict[str, float]]:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_NON_STREAM_THRESHOLDS
-    return VC_NON_STREAM_THRESHOLDS
+TTS_CI_THRESHOLD_PRESETS: dict[str, TtsCiThresholdPreset] = {
+    "higgs": TtsCiThresholdPreset(
+        non_stream_speed=VC_NON_STREAM_THRESHOLDS,
+        stream_speed=VC_STREAM_THRESHOLDS,
+        wer_corpus=VC_WER_CORPUS_THRESHOLD,
+        stream_wer_corpus=VC_STREAM_WER_CORPUS_THRESHOLD,
+        similarity_mean_min=VC_SIMILARITY_MEAN_MIN,
+        utmos_mean_min=VC_UTMOS_MEAN_MIN,
+    ),
+    "moss": TtsCiThresholdPreset(
+        non_stream_speed=MOSS_VC_NON_STREAM_THRESHOLDS,
+        stream_speed=MOSS_VC_STREAM_THRESHOLDS,
+        wer_corpus=MOSS_VC_WER_CORPUS_THRESHOLD,
+        stream_wer_corpus=MOSS_VC_STREAM_WER_CORPUS_THRESHOLD,
+        similarity_mean_min=MOSS_VC_SIMILARITY_MEAN_MIN,
+        utmos_mean_min=MOSS_VC_UTMOS_MEAN_MIN,
+    ),
+}
 
 
-def _stream_speed_thresholds() -> dict[int, dict[str, float]]:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_STREAM_THRESHOLDS
-    return VC_STREAM_THRESHOLDS
+def _select_tts_ci_threshold_preset() -> TtsCiThresholdPreset:
+    thresholds = TTS_CI_THRESHOLD_PRESETS.get(_MODEL_NAME)
+    if thresholds is None:
+        allowed = ", ".join(sorted(TTS_CI_THRESHOLD_PRESETS))
+        raise ValueError(
+            f"No TTS CI thresholds configured for TTS_CI_MODEL={_MODEL_NAME!r}; "
+            f"expected one of: {allowed}"
+        )
+    return thresholds
 
 
-def _wer_corpus_threshold() -> float:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_WER_CORPUS_THRESHOLD
-    return VC_WER_CORPUS_THRESHOLD
-
-
-def _stream_wer_corpus_threshold() -> float:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_STREAM_WER_CORPUS_THRESHOLD
-    return VC_STREAM_WER_CORPUS_THRESHOLD
-
-
-def _similarity_mean_min() -> float:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_SIMILARITY_MEAN_MIN
-    return VC_SIMILARITY_MEAN_MIN
-
-
-def _utmos_mean_min() -> float:
-    if _MODEL_NAME == "moss":
-        return MOSS_VC_UTMOS_MEAN_MIN
-    return VC_UTMOS_MEAN_MIN
+_THRESHOLDS = _select_tts_ci_threshold_preset()
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -253,12 +261,12 @@ WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
 
 
 def _validate_speed_results_keys(speed_results: dict) -> None:
-    assert (
-        "summary" in speed_results
-    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    assert (
-        "per_request" in speed_results
-    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    assert "summary" in speed_results, (
+        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    )
+    assert "per_request" in speed_results, (
+        f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    )
 
 
 def _print_saved_tts_speed_summary(
@@ -350,12 +358,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert (
-        "summary" in wer_results
-    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    assert (
-        "per_sample" in wer_results
-    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    assert "summary" in wer_results, (
+        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    )
+    assert "per_sample" in wer_results, (
+        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    )
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
@@ -634,7 +642,7 @@ def _store_consistency_inputs(
         if _PRESET.gate_thresholds:
             assert_speed_thresholds(
                 summary,
-                _non_stream_speed_thresholds(),
+                _THRESHOLDS.non_stream_speed,
                 concurrency,
                 collector=checks,
             )
@@ -642,7 +650,7 @@ def _store_consistency_inputs(
     else:
         if _PRESET.gate_thresholds:
             assert_speed_thresholds(
-                summary, _stream_speed_thresholds(), concurrency, collector=checks
+                summary, _THRESHOLDS.stream_speed, concurrency, collector=checks
             )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
@@ -681,9 +689,9 @@ def _find_downloaded_speed_results(
 ) -> tuple[str, dict]:
     root = Path(artifact_root)
     matches = sorted(root.rglob(f"{output_dir_name}/speed_results.json"))
-    assert (
-        matches
-    ), f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    assert matches, (
+        f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    )
     results_path = matches[0]
     return str(results_path.parent), _load_speed_results(results_path)
 
@@ -1053,7 +1061,7 @@ def test_voice_cloning_wer(
         if _PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                _wer_corpus_threshold(),
+                _THRESHOLDS.wer_corpus,
                 collector=checks,
             )
     checks.assert_all()
@@ -1083,7 +1091,7 @@ def test_voice_cloning_similarity(
         )
         if _PRESET.gate_thresholds:
             _assert_similarity_results(
-                results, _similarity_mean_min(), collector=checks
+                results, _THRESHOLDS.similarity_mean_min, collector=checks
             )
     checks.assert_all()
 
@@ -1099,7 +1107,7 @@ def test_voice_cloning_utmos(
         _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
         if _PRESET.gate_thresholds:
-            _assert_utmos_results(results, _utmos_mean_min(), collector=checks)
+            _assert_utmos_results(results, _THRESHOLDS.utmos_mean_min, collector=checks)
     checks.assert_all()
 
 
@@ -1136,7 +1144,7 @@ def test_voice_cloning_streaming_wer(
         if _PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                _stream_wer_corpus_threshold(),
+                _THRESHOLDS.stream_wer_corpus,
                 collector=checks,
             )
     checks.assert_all()
