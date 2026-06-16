@@ -1188,18 +1188,35 @@ def discover(out, only, cfg):
                 v_sc_default = _build_sample_counts(
                     vcfg.get("sample_counts") or {}, v_default)
                 sc_by_group = vcfg.get("sample_counts_by_group") or {}
-                v_groups = _emit_groups(claimed, v_paths, v_default, counters)
-                for g, metrics in v_groups.items():
-                    if g in sc_by_group:
-                        group_sc = _build_sample_counts(sc_by_group[g], v_default)
+                for (
+                    preset_name,
+                    preset_env,
+                    preset_gpus,
+                    preset_model_ids,
+                ) in _calibration_presets(ms, extra):
+                    preset_raw = (ms.get("calibration_presets") or {}).get(
+                        preset_name, {}
+                    ) or {}
+                    preset_filter = preset_raw.get("constant_filter")
+                    if preset_filter:
+                        ppat = re.compile(preset_filter)
+                        preset_claimed = [
+                            (n, k)
+                            for (n, k) in claimed
+                            if ppat.match(n.lstrip("_"))
+                        ]
                     else:
-                        group_sc = v_sc_default
-                    for (
-                        preset_name,
-                        preset_env,
-                        preset_gpus,
-                        preset_model_ids,
-                    ) in _calibration_presets(ms, extra):
+                        preset_claimed = claimed
+                    v_groups = _emit_groups(
+                        preset_claimed, v_paths, v_default, counters
+                    )
+                    for g, metrics in v_groups.items():
+                        if g in sc_by_group:
+                            group_sc = _build_sample_counts(
+                                sc_by_group[g], v_default
+                            )
+                        else:
+                            group_sc = v_sc_default
                         key = _stage_key(
                             base,
                             g,

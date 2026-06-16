@@ -22,9 +22,10 @@
 # - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
 #   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
 #   similarity_results.json and utmos_results.json for nonstream).
-# - WER thresholds are corpus-level only (`VC_WER_MAX_CORPUS` /
-#   `VC_STREAM_WER_MAX_CORPUS`); per-sample WER caps and generation failure
-#   budgets are not calibrated.
+# - WER thresholds are corpus-level only; each TTS preset has its own symbol
+#   namespace in test_tts_ci.py (Higgs: VC_* / _VC_*; MOSS: MOSS_VC_* /
+#   _MOSS_VC_*). Per-sample WER caps and generation failure budgets are not
+#   calibrated.
 # - Stage 3 (streaming consistency) has no numeric threshold in tune.py; see
 #   SKILL.md § TTS stage 3.
 # - Concurrency: TTS generation CI uses --concurrency 16 for every preset.
@@ -104,6 +105,8 @@ metric_sources:
         extra_env:
           TTS_CI_MODEL: "higgs"
         gpus: 2
+        # discover: only Higgs VC_* constants (never MOSS_VC_*)
+        constant_filter: "^VC_"
         hf_model_ids:
           - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
           - "Qwen/Qwen3-ASR-1.7B"
@@ -111,6 +114,8 @@ metric_sources:
         extra_env:
           TTS_CI_MODEL: "moss"
         gpus: 2
+        # discover: only MOSS_VC_* constants (never shared VC_*)
+        constant_filter: "^MOSS_VC_"
         hf_model_ids:
           - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
           - "Qwen/Qwen3-ASR-1.7B"
@@ -121,8 +126,9 @@ metric_sources:
     # tts_nonstream_similarity.
     variants:
       nonstream:
-        # VC_* (not VC_STREAM_*), _VC_NON_STREAM_*
-        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*$"
+        # Higgs VC_* (not VC_STREAM_*), _VC_NON_STREAM_*; MOSS uses MOSS_VC_*
+        # via calibration_presets.<preset>.constant_filter in discover.
+        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*$|^MOSS_VC_(?!STREAM_).*|^MOSS_VC_NON_STREAM.*$"
         json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -146,7 +152,7 @@ metric_sources:
           similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
           utmos_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json::summary.utmos_mean"
       stream:
-        constant_filter: "^VC_STREAM_.*$"
+        constant_filter: "^VC_STREAM_.*$|^MOSS_VC_STREAM_.*$"
         json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"

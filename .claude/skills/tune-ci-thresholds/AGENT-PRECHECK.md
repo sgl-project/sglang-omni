@@ -37,6 +37,17 @@ in `models/tts/config.yaml` (currently Higgs and MOSS). Calibration must produce
 worst-of-5 for each preset independently even though CI samples one preset per
 commit.
 
+**Threshold symbols (do not cross-apply):**
+
+| Preset | WER (non-stream / stream) | Similarity | UTMOS | Speed P95 dict |
+|--------|---------------------------|------------|-------|----------------|
+| `higgs` | `VC_WER_MAX_CORPUS` / `VC_STREAM_WER_MAX_CORPUS` | `VC_SIMILARITY_MEAN_MIN` | `VC_UTMOS_MEAN_REFERENCE` | `_VC_NON_STREAM_P95` / `_VC_STREAM_P95` |
+| `moss` | `MOSS_VC_WER_MAX_CORPUS` / `MOSS_VC_STREAM_WER_MAX_CORPUS` | `MOSS_VC_SIMILARITY_MEAN_MIN` | `MOSS_VC_UTMOS_MEAN_REFERENCE` | `_MOSS_VC_NON_STREAM_P95` / `_MOSS_VC_STREAM_P95` |
+
+After changing threshold literals in `test_tts_ci.py`, run
+`tune.py --model tts discover` so `stages.yaml` sources stay aligned with
+`calibration_presets.*.constant_filter`.
+
 ---
 
 ## Gate 1 — Host profile loaded

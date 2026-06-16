@@ -634,29 +634,40 @@ samples CI runs; tune.py only uses them indirectly for strict-audit sample count
 Generation concurrency is **16** for both non-streaming and streaming TTS stages;
 the Qwen3-ASR WER transcribe phase remains **32**.
 
-**Calibrated thresholds** (worst-of-N → `apply-plan` → test file) are the
-same for every TTS model preset except for the numeric values:
+**Calibrated thresholds** (worst-of-N → `apply-plan` → test file) use the
+**same metric groups** for every TTS preset, but **different Python symbols**
+per preset. Never write MOSS worst-of-N into Higgs `VC_*` literals or vice
+versa.
 
-| Stage key | Group | What gets written | Test constant(s) |
-|-----------|-------|-------------------|------------------|
-| `tts_<preset>_nonstream_speed` | speed | P95 speed slack | per-preset non-stream speed reference |
-| `tts_<preset>_stream_speed` | speed | same | per-preset stream speed reference |
-| `tts_<preset>_nonstream_wer` | wer | corpus WER ref | per-preset non-stream WER reference |
-| `tts_<preset>_stream_wer` | wer | same | per-preset stream WER reference |
-| `tts_<preset>_nonstream_similarity` | similarity | min mean score (50-sample eval) | per-preset similarity reference |
-| `tts_<preset>_nonstream_utmos` | utmos | MOS reference score | per-preset UTMOS reference |
+| Stage key | Group | Higgs symbol(s) | MOSS symbol(s) |
+|-----------|-------|-----------------|----------------|
+| `tts_<preset>_nonstream_speed` | speed | `_VC_NON_STREAM_P95[...]` | `_MOSS_VC_NON_STREAM_P95[...]` |
+| `tts_<preset>_stream_speed` | speed | `_VC_STREAM_P95[...]` | `_MOSS_VC_STREAM_P95[...]` |
+| `tts_<preset>_nonstream_wer` | wer | `VC_WER_MAX_CORPUS` | `MOSS_VC_WER_MAX_CORPUS` |
+| `tts_<preset>_stream_wer` | wer | `VC_STREAM_WER_MAX_CORPUS` | `MOSS_VC_STREAM_WER_MAX_CORPUS` |
+| `tts_<preset>_nonstream_similarity` | similarity | `VC_SIMILARITY_MEAN_MIN` | `MOSS_VC_SIMILARITY_MEAN_MIN` |
+| `tts_<preset>_nonstream_utmos` | utmos | `VC_UTMOS_MEAN_REFERENCE` | `MOSS_VC_UTMOS_MEAN_REFERENCE` |
+
+`stages.yaml` `metrics.*.source` must point at the preset-specific symbol
+(e.g. `tts_moss_nonstream_wer` → `MOSS_VC_WER_MAX_CORPUS`). `discover` enforces
+this via `calibration_presets.<preset>.constant_filter` in
+`models/tts/config.yaml` (`^VC_` for higgs, `^MOSS_VC_` for moss).
 
 Notes:
-- **WER** calibrates corpus reference only (`VC_*_WER_MAX_CORPUS`); CI asserts
-  via `apply_wer_slack()`. Per-sample WER caps and generation failure budgets
-  are not calibrated.
-- **Similarity** calibrates **`VC_SIMILARITY_MEAN_MIN`**, not `TTS_SIMILARITY_MAX_SAMPLES`.
-- **UTMOS** calibrates **`VC_UTMOS_MEAN_REFERENCE`**; CI derives the assertion
+- **WER** calibrates corpus reference only (`*_WER_MAX_CORPUS`); CI asserts via
+  `apply_wer_slack()`. Per-sample WER caps and generation failure budgets are
+  not calibrated.
+- **Similarity** calibrates `*_SIMILARITY_MEAN_MIN`, not
+  `TTS_SIMILARITY_MAX_SAMPLES`.
+- **UTMOS** calibrates `*_UTMOS_MEAN_REFERENCE`; CI derives the assertion
   threshold with `apply_mos_slack()`.
-- On this scaffold branch, MOSS has `gate_thresholds=False`, so its calibration
-  stages are valid metric-observation/report stages but not yet final threshold
-  apply targets. Before enabling MOSS gates, split the test-file threshold
-  literals by preset while keeping the same metric set and slack semantics.
+- Both presets have `gate_thresholds=True`. Apply worst-of-N **per preset** using
+  the symbols above; a MOSS calibration run must not modify any `VC_*` /
+  `_VC_*` literal, and a Higgs run must not modify any `MOSS_VC_*` /
+  `_MOSS_VC_*` literal.
+- When applying from a run dir, use each stage's `calibration_preset` and
+  `metrics.*.source` from `apply-plan` — do not infer cross-preset symbols from
+  stage titles alone.
 - **Stage 4 (consistency)** is a separate CI job that runs
   `tests/test_model/test_tts_consistency_artifacts.py` (not `test_tts_ci.py`),
   comparing the stage-2/stage-3 speed artifacts with `TTS_CONSISTENCY_CONCURRENCY=16`.
@@ -1240,6 +1251,11 @@ weights checklist for agents).
    path, and after the user accepts in interactive prompts):
      - Write **`write_value`** from `apply-plan` — never `worst_rounded`
        directly, and never re-format with `display.digits`.
+     - **TTS preset isolation:** each stage's `calibration_preset` and
+       `metrics.*.source` / `symbol` from apply-plan identify the exact
+       literal to edit (`VC_*` for higgs, `MOSS_VC_*` for moss). Never
+       substitute one preset's symbol for another, even when metric groups
+       match.
      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
        replace the RHS literal of `MMMU_MIN_ACCURACY = <old>` with
        `write_value`.
@@ -1364,8 +1380,8 @@ weights checklist for agents).
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    ├── tts/                             # TTS CI pipeline (stage 1 Qwen3-ASR + Higgs)
-    │   ├── config.yaml                  #   qwen3-asr + test_tts_ci.py; variants for Higgs
+    ├── tts/                             # TTS CI pipeline (stage 1 Qwen3-ASR + Higgs/MOSS)
+    │   ├── config.yaml                  #   per-preset constant_filter for discover/apply
     │   └── stages.yaml
     └── qwen3-asr-v1/                    # Isolated Qwen3-ASR only
         ├── config.yaml

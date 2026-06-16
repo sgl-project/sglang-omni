@@ -8,7 +8,7 @@ qwen3_asr_wer:
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
   test_file_sha256: e6a360a039864aeba2f6309ae54c2276227d71dbf6c2fe649e8b69809b1cba88
-  last_discovered_at: 2026-06-16T01:40:57Z
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "qwen3_asr_results.json"
@@ -46,7 +46,7 @@ qwen3_asr_speed:
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
   test_file_sha256: e6a360a039864aeba2f6309ae54c2276227d71dbf6c2fe649e8b69809b1cba88
-  last_discovered_at: 2026-06-16T01:40:57Z
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "qwen3_asr_results.json"
@@ -118,8 +118,8 @@ tts_higgs_nonstream_wer:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
@@ -130,39 +130,6 @@ tts_higgs_nonstream_wer:
   metrics:
     corpus_wer:
       source: "VC_WER_MAX_CORPUS"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
-      json_path: "summary.wer_corpus"
-      worst: max
-      display:
-        label: "Corpus WER (%)"
-        scale: 100
-        digits: 2
-      status: OK
-tts_moss_nonstream_wer:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS MOSS NONSTREAM Wer"
-  group: wer
-  extra_env:
-    TTS_CI_MODEL: "moss"
-  context_vars: []
-  variant: "nonstream"
-  calibration_preset: "moss"
-  gpus: 2
-  hf_model_ids:
-    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
-      json_path: "summary.total_samples"
-    ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
-      json_path: "summary.evaluated"
-  metrics:
-    corpus_wer:
-      source: "MOSS_VC_WER_MAX_CORPUS"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
@@ -184,8 +151,8 @@ tts_higgs_nonstream_similarity:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
@@ -196,39 +163,6 @@ tts_higgs_nonstream_similarity:
   metrics:
     similarity_mean:
       source: "VC_SIMILARITY_MEAN_MIN"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
-      json_path: "summary.speaker_similarity_mean"
-      worst: min
-      display:
-        label: "Speaker sim mean"
-        scale: 1
-        digits: 4
-      status: OK
-tts_moss_nonstream_similarity:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS MOSS NONSTREAM Similarity"
-  group: similarity
-  extra_env:
-    TTS_CI_MODEL: "moss"
-  context_vars: []
-  variant: "nonstream"
-  calibration_preset: "moss"
-  gpus: 2
-  hf_model_ids:
-    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
-      json_path: "summary.total_samples"
-    ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
-      json_path: "summary.evaluated"
-  metrics:
-    similarity_mean:
-      source: "MOSS_VC_SIMILARITY_MEAN_MIN"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
       json_path: "summary.speaker_similarity_mean"
       worst: min
@@ -250,8 +184,8 @@ tts_higgs_nonstream_utmos:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
@@ -262,39 +196,6 @@ tts_higgs_nonstream_utmos:
   metrics:
     utmos_mean:
       source: "VC_UTMOS_MEAN_REFERENCE"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
-      json_path: "summary.utmos_mean"
-      worst: min
-      display:
-        label: "UTMOS mean"
-        scale: 1
-        digits: 4
-      status: OK
-tts_moss_nonstream_utmos:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS MOSS NONSTREAM Utmos"
-  group: utmos
-  extra_env:
-    TTS_CI_MODEL: "moss"
-  context_vars: []
-  variant: "nonstream"
-  calibration_preset: "moss"
-  gpus: 2
-  hf_model_ids:
-    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
-      json_path: "summary.total_samples"
-    ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
-      json_path: "summary.evaluated"
-  metrics:
-    utmos_mean:
-      source: "MOSS_VC_UTMOS_MEAN_REFERENCE"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
       json_path: "summary.utmos_mean"
       worst: min
@@ -316,8 +217,8 @@ tts_higgs_nonstream_speed:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
@@ -366,6 +267,105 @@ tts_higgs_nonstream_speed:
         scale: 1
         digits: 4
       status: OK
+tts_moss_nonstream_wer:
+  test: tests/test_model/test_tts_ci.py
+  title: "TTS MOSS NONSTREAM Wer"
+  group: wer
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars: []
+  variant: "nonstream"
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
+  sample_counts:
+    total:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "MOSS_VC_WER_MAX_CORPUS"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
+      json_path: "summary.wer_corpus"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+tts_moss_nonstream_similarity:
+  test: tests/test_model/test_tts_ci.py
+  title: "TTS MOSS NONSTREAM Similarity"
+  group: similarity
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars: []
+  variant: "nonstream"
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
+  sample_counts:
+    total:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    similarity_mean:
+      source: "MOSS_VC_SIMILARITY_MEAN_MIN"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
+      json_path: "summary.speaker_similarity_mean"
+      worst: min
+      display:
+        label: "Speaker sim mean"
+        scale: 1
+        digits: 4
+      status: OK
+tts_moss_nonstream_utmos:
+  test: tests/test_model/test_tts_ci.py
+  title: "TTS MOSS NONSTREAM Utmos"
+  group: utmos
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars: []
+  variant: "nonstream"
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
+  sample_counts:
+    total:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    utmos_mean:
+      source: "MOSS_VC_UTMOS_MEAN_REFERENCE"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
+      json_path: "summary.utmos_mean"
+      worst: min
+      display:
+        label: "UTMOS mean"
+        scale: 1
+        digits: 4
+      status: OK
 tts_moss_nonstream_speed:
   test: tests/test_model/test_tts_ci.py
   title: "TTS MOSS NONSTREAM Speed"
@@ -379,8 +379,8 @@ tts_moss_nonstream_speed:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
@@ -442,8 +442,8 @@ tts_higgs_stream_wer:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
@@ -454,39 +454,6 @@ tts_higgs_stream_wer:
   metrics:
     corpus_wer:
       source: "VC_STREAM_WER_MAX_CORPUS"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
-      json_path: "summary.wer_corpus"
-      worst: max
-      display:
-        label: "Corpus WER (%)"
-        scale: 100
-        digits: 2
-      status: OK
-tts_moss_stream_wer:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS MOSS STREAM Wer"
-  group: wer
-  extra_env:
-    TTS_CI_MODEL: "moss"
-  context_vars: []
-  variant: "stream"
-  calibration_preset: "moss"
-  gpus: 2
-  hf_model_ids:
-    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
-      json_path: "summary.total_samples"
-    ok:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
-      json_path: "summary.evaluated"
-  metrics:
-    corpus_wer:
-      source: "MOSS_VC_STREAM_WER_MAX_CORPUS"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
@@ -508,8 +475,8 @@ tts_higgs_stream_speed:
   hf_model_ids:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
@@ -548,6 +515,39 @@ tts_higgs_stream_speed:
         scale: 1
         digits: 4
       status: OK
+tts_moss_stream_wer:
+  test: tests/test_model/test_tts_ci.py
+  title: "TTS MOSS STREAM Wer"
+  group: wer
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars: []
+  variant: "stream"
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
+  sample_counts:
+    total:
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "MOSS_VC_STREAM_WER_MAX_CORPUS"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
+      json_path: "summary.wer_corpus"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
 tts_moss_stream_speed:
   test: tests/test_model/test_tts_ci.py
   title: "TTS MOSS STREAM Speed"
@@ -561,8 +561,8 @@ tts_moss_stream_speed:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: a45634c18305039ccb8b122fa96c7a9cbe1dc7b4ee0392c6d26913e13dcc5367
-  last_discovered_at: 2026-06-16T01:40:57Z
+  test_file_sha256: 8ba0e046076e51686e4221151dd67ddbe586843b15eb078113b19c9ef5f0df18
+  last_discovered_at: 2026-06-16T04:59:25Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
