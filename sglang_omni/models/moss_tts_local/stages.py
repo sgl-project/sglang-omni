@@ -9,6 +9,7 @@ import os
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -48,6 +49,66 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
 # ~4.3 GB bf16 codec instance): `model.streaming()` flips module-global codec
 # state, so a decode on a shared instance would corrupt a concurrent
 # reference encode (see streaming_vocoder.py).
+
+
+@dataclass(frozen=True)
+class _ArMemoryBudget:
+    effective_total_gpu_memory_fraction: float | None
+    applied_codec_mem_reserve: float
+
+
+def _apply_colocated_ar_memory_budget(
+    overrides: dict[str, Any],
+    *,
+    total_gpu_memory_fraction: float | None,
+    codec_mem_reserve: float,
+) -> _ArMemoryBudget:
+    if total_gpu_memory_fraction is None:
+        return _ArMemoryBudget(
+            effective_total_gpu_memory_fraction=None,
+            applied_codec_mem_reserve=0.0,
+        )
+    if not 0.0 <= codec_mem_reserve < 1.0:
+        raise ValueError("codec_mem_reserve must be in [0, 1)")
+
+    effective_total_gpu_memory_fraction = round(
+        total_gpu_memory_fraction - codec_mem_reserve,
+        3,
+    )
+    if effective_total_gpu_memory_fraction < 0.1:
+        raise ValueError(
+            f"colocated total_gpu_memory_fraction {total_gpu_memory_fraction:.3f} "
+            f"minus codec_mem_reserve {codec_mem_reserve:.3f} = "
+            f"{effective_total_gpu_memory_fraction:.3f} is below the safe floor "
+            f"0.1; lower codec_mem_reserve or increase the tts_engine stage budget."
+        )
+
+    explicit_mem_fraction = overrides.get("mem_fraction_static")
+    applied_codec_mem_reserve = codec_mem_reserve
+    if explicit_mem_fraction is not None:
+        explicit_mem_fraction = float(explicit_mem_fraction)
+        if not 0.0 < explicit_mem_fraction < 1.0:
+            raise ValueError(
+                f"mem_fraction_static must be > 0 and < 1, got {explicit_mem_fraction}"
+            )
+        if explicit_mem_fraction > total_gpu_memory_fraction:
+            raise ValueError(
+                f"MOSS-TTS Local tts_engine mem_fraction_static cannot exceed "
+                f"runtime.resources.total_gpu_memory_fraction: "
+                f"{explicit_mem_fraction:.3f} > {total_gpu_memory_fraction:.3f}"
+            )
+        effective_total_gpu_memory_fraction = explicit_mem_fraction
+        applied_codec_mem_reserve = round(
+            total_gpu_memory_fraction - effective_total_gpu_memory_fraction,
+            3,
+        )
+    else:
+        overrides["mem_fraction_static"] = effective_total_gpu_memory_fraction
+
+    return _ArMemoryBudget(
+        effective_total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        applied_codec_mem_reserve=applied_codec_mem_reserve,
+    )
 
 
 def _normalize_processor_config(processor: Any) -> None:
@@ -456,6 +517,8 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
+    total_gpu_memory_fraction: float | None = None,
+    codec_mem_reserve: float = 0.0,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
@@ -479,15 +542,35 @@ def create_sglang_tts_engine_executor(
         "enable_torch_compile": False,
         "max_prefill_tokens": 8192,
         "max_running_requests": 16,
-        # Headroom for the two ~4.3 GB bf16 codec instances; back off further
-        # when everything co-locates on a single GPU.
-        "mem_fraction_static": 0.6 if torch.cuda.device_count() > 1 else 0.5,
         "sampling_backend": "pytorch",
         "torch_compile_max_bs": 16,
         "trust_remote_code": True,
     }
+    if total_gpu_memory_fraction is None:
+        # without a typed stage budget, this path cannot use process-scoped
+        # colocated profiling
+        # keep the legacy static fraction for split/custom deployments
+        overrides["mem_fraction_static"] = 0.6 if torch.cuda.device_count() > 1 else 0.5
     if server_args_overrides:
         overrides.update(server_args_overrides)
+    memory_budget = _apply_colocated_ar_memory_budget(
+        overrides,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        codec_mem_reserve=codec_mem_reserve,
+    )
+    profile_total_gpu_memory_fraction = (
+        memory_budget.effective_total_gpu_memory_fraction
+    )
+    if profile_total_gpu_memory_fraction is not None:
+        from sglang_omni.utils.gpu_memory import get_process_gpu_memory_bytes
+
+        if get_process_gpu_memory_bytes(gpu_id) is None:
+            logger.warning(
+                f"MOSS-TTS Local colocated process memory accounting is unavailable; "
+                f"falling back to upstream SGLang free-memory profiling. "
+                f"effective_total_gpu_memory_fraction={profile_total_gpu_memory_fraction}"
+            )
+            profile_total_gpu_memory_fraction = None
 
     server_args = build_sglang_server_args(
         checkpoint_dir,
@@ -498,6 +581,16 @@ def create_sglang_tts_engine_executor(
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
     if want_cuda_graph:
         server_args.disable_cuda_graph = True
+
+    logger.info(
+        f"MOSS-TTS Local SGLang startup: gpu_id={gpu_id} "
+        f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
+        f"effective_total_gpu_memory_fraction="
+        f"{memory_budget.effective_total_gpu_memory_fraction} "
+        f"codec_mem_reserve={memory_budget.applied_codec_mem_reserve:.3f} "
+        f"mem_fraction_static={server_args.mem_fraction_static} "
+        f"profile_total_gpu_memory_fraction={profile_total_gpu_memory_fraction}"
+    )
 
     (
         model_worker,
@@ -511,6 +604,7 @@ def create_sglang_tts_engine_executor(
         server_args,
         gpu_id,
         model_arch_override="MossTTSLocalSGLangModel",
+        total_gpu_memory_fraction=profile_total_gpu_memory_fraction,
     )
 
     if want_cuda_graph:

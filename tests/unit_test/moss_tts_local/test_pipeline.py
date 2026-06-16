@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import struct
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -166,6 +168,11 @@ def test_registry_resolves_local_architecture():
 
 def test_pipeline_stage_wiring():
     config = MossTTSLocalPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
+    assert [stage.name for stage in config.stages] == [
+        "preprocessing",
+        "tts_engine",
+        "vocoder",
+    ]
     stages = {stage.name: stage for stage in config.stages}
     assert set(stages) == {"preprocessing", "tts_engine", "vocoder"}
     assert stages["preprocessing"].next == "tts_engine"
@@ -181,9 +188,9 @@ def test_pipeline_stage_wiring():
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
     tts_engine_runtime = stages["tts_engine"].runtime
-    assert tts_engine_runtime.sglang_server_args.mem_fraction_static == pytest.approx(
-        0.85
-    )
+    assert tts_engine_runtime.resources.total_gpu_memory_fraction == pytest.approx(0.90)
+    assert tts_engine_runtime.sglang_server_args.mem_fraction_static is None
+    assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.05)
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
@@ -208,7 +215,185 @@ def test_pipeline_stage_wiring():
     split_stages = {stage.name: stage for stage in split.stages}
     assert split_stages["preprocessing"].factory_args["device"] == "cuda:1"
     assert split_stages["tts_engine"].factory_args["gpu_id"] == 0
+    split_runtime = split_stages["tts_engine"].runtime
+    assert split_runtime.resources.total_gpu_memory_fraction is None
+    assert split_runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)
     assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
+
+
+def _install_fake_moss_ar_factory(
+    monkeypatch,
+    *,
+    process_memory_bytes: int | None,
+):
+    pytest.importorskip("PIL")
+
+    from sglang_omni.models.moss_tts_local import stages
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+    from sglang_omni.scheduling import omni_scheduler, sglang_backend
+    from sglang_omni.utils import gpu_memory as gpu_memory_utils
+
+    infrastructure_calls = []
+    process_memory_queries = []
+
+    def fake_build_sglang_server_args(model_path, context_length, **kwargs):
+        return types.SimpleNamespace(
+            model_path=model_path,
+            context_length=context_length,
+            **kwargs,
+        )
+
+    class FakeModelRunner:
+        model = object()
+
+    model_worker = types.SimpleNamespace(
+        model_runner=FakeModelRunner(),
+        model_config=types.SimpleNamespace(),
+    )
+
+    def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
+        infrastructure_calls.append(
+            {
+                "mem_fraction_static": server_args.mem_fraction_static,
+                "gpu_id": gpu_id,
+                "total_gpu_memory_fraction": kwargs.get("total_gpu_memory_fraction"),
+            }
+        )
+        return (
+            model_worker,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            model_worker.model_config,
+        )
+
+    class FakeMossRunner:
+        def __init__(self, *args, **kwargs):
+            self.stream_outbox = None
+
+        def set_stream_outbox(self, outbox):
+            self.stream_outbox = outbox
+
+    class FakeScheduler:
+        def __init__(self, **kwargs):
+            self.outbox = object()
+            self.kwargs = kwargs
+
+    fake_runner_module = types.SimpleNamespace(MossTTSLocalModelRunner=FakeMossRunner)
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.moss_tts_local.model_runner",
+        fake_runner_module,
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "build_sglang_server_args",
+        fake_build_sglang_server_args,
+    )
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_sglang_infrastructure,
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        stages,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
+
+    def fake_get_process_gpu_memory_bytes(gpu_id):
+        process_memory_queries.append(gpu_id)
+        return process_memory_bytes
+
+    monkeypatch.setattr(
+        gpu_memory_utils,
+        "get_process_gpu_memory_bytes",
+        fake_get_process_gpu_memory_bytes,
+    )
+
+    return stages, infrastructure_calls, process_memory_queries
+
+
+def test_colocated_moss_ar_factory_threads_effective_budget(monkeypatch):
+    stages, infrastructure_calls, process_memory_queries = (
+        _install_fake_moss_ar_factory(
+            monkeypatch,
+            process_memory_bytes=1024,
+        )
+    )
+
+    stages.create_sglang_tts_engine_executor(
+        "dummy",
+        server_args_overrides={"disable_cuda_graph": True},
+        total_gpu_memory_fraction=0.90,
+        codec_mem_reserve=0.05,
+    )
+
+    assert infrastructure_calls == [
+        {
+            "mem_fraction_static": pytest.approx(0.85),
+            "gpu_id": 0,
+            "total_gpu_memory_fraction": pytest.approx(0.85),
+        }
+    ]
+    assert process_memory_queries == [0]
+
+
+def test_colocated_moss_ar_factory_uses_upstream_profile_without_process_accounting(
+    monkeypatch,
+):
+    stages, infrastructure_calls, process_memory_queries = (
+        _install_fake_moss_ar_factory(
+            monkeypatch,
+            process_memory_bytes=None,
+        )
+    )
+
+    stages.create_sglang_tts_engine_executor(
+        "dummy",
+        server_args_overrides={"disable_cuda_graph": True},
+        total_gpu_memory_fraction=0.90,
+        codec_mem_reserve=0.05,
+    )
+
+    assert infrastructure_calls == [
+        {
+            "mem_fraction_static": pytest.approx(0.85),
+            "gpu_id": 0,
+            "total_gpu_memory_fraction": None,
+        }
+    ]
+    assert process_memory_queries == [0]
+
+
+def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():
+    pytest.importorskip("PIL")
+
+    from sglang_omni.models.moss_tts_local import stages
+
+    budget = stages._apply_colocated_ar_memory_budget(
+        {"mem_fraction_static": 0.70},
+        total_gpu_memory_fraction=0.90,
+        codec_mem_reserve=0.05,
+    )
+    assert budget.effective_total_gpu_memory_fraction == pytest.approx(0.70)
+    assert budget.applied_codec_mem_reserve == pytest.approx(0.20)
+
+    with pytest.raises(ValueError, match="cannot exceed"):
+        stages._apply_colocated_ar_memory_budget(
+            {"mem_fraction_static": 0.95},
+            total_gpu_memory_fraction=0.90,
+            codec_mem_reserve=0.05,
+        )
 
 
 def test_special_token_defaults_match_v15_checkpoint():
@@ -1600,4 +1785,5 @@ def test_async_decode_cli_accepts_moss_local():
     args = resolve_stage_factory_args(stage, config)
     assert args["enable_async_decode"] is True
     assert args["async_decode_min_batch_size"] == 4
-    assert args["server_args_overrides"]["mem_fraction_static"] == pytest.approx(0.85)
+    assert args["total_gpu_memory_fraction"] == pytest.approx(0.90)
+    assert args["codec_mem_reserve"] == pytest.approx(0.05)
