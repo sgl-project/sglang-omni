@@ -183,6 +183,15 @@ class MossTTSLocalTransformer(nn.Module):
         ]
         self._kv_capacity = capacity
 
+    def reserve_and_freeze_kv_cache(
+        self, batch_size: int, device: torch.device, dtype: torch.dtype
+    ) -> None:
+        """Size the KV cache for ``batch_size`` then freeze it. Single
+        pre-capture entry point, so the ensure-then-freeze ordering lives here
+        rather than in callers."""
+        self._ensure_kv_cache(batch_size, device, dtype)
+        self.freeze_kv_cache()
+
     def step(self, hidden_states: torch.Tensor, position: int) -> torch.Tensor:
         """One micro-step for the whole batch."""
         if not 0 <= position < self.max_positions:

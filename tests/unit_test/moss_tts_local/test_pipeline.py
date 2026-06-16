@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 import struct
+import types
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -207,6 +210,160 @@ def test_special_token_defaults_match_v15_checkpoint():
     assert defaults["audio_user_slot_token_id"] == 151654
     assert defaults["audio_assistant_slot_token_id"] == 151656
     assert defaults["audio_pad_code"] == 1024
+
+
+def test_engine_init_sets_local_decode_cuda_graph_buckets(monkeypatch):
+    from sglang_omni.models.moss_tts_local import stages
+
+    captured: dict[str, object] = {
+        "models": [],
+        "frame_decode_graph_bs": [],
+        "build_kwargs": [],
+    }
+
+    def fake_build_sglang_server_args(model_path, context_length, **kwargs):
+        captured["model_path"] = model_path
+        captured["context_length"] = context_length
+        captured["build_kwargs"].append(dict(kwargs))
+        server_args = SimpleNamespace(disable_cuda_graph=kwargs["disable_cuda_graph"])
+        if "disable_cuda_graph_padding" in kwargs:
+            server_args.disable_cuda_graph_padding = kwargs[
+                "disable_cuda_graph_padding"
+            ]
+        return server_args
+
+    def fake_create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        *,
+        model_arch_override=None,
+    ):
+        captured["gpu_id"] = gpu_id
+        captured["model_arch_override"] = model_arch_override
+
+        class FakeModel:
+            def __init__(self):
+                self.prepared_frame_decode_bs = None
+
+            def init_frame_decode_graphs(self, batch_sizes):
+                captured["frame_decode_graph_bs"].append(batch_sizes)
+
+            def prepare_frame_decode_for_capture(self, batch_sizes):
+                self.prepared_frame_decode_bs = list(batch_sizes)
+
+            def reset_request(self, request_id):
+                del request_id
+
+        model = FakeModel()
+        captured["models"].append(model)
+
+        def init_device_graphs():
+            captured["graph_inits"] = int(captured.get("graph_inits", 0)) + 1
+
+        model_worker = SimpleNamespace(
+            model_runner=SimpleNamespace(
+                model=model,
+                init_device_graphs=init_device_graphs,
+            )
+        )
+        return (
+            model_worker,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+        )
+
+    class FakeOutputProcessor:
+        def __init__(self, **kwargs) -> None:
+            captured["output_processor_kwargs"] = kwargs
+
+    class FakeMossTTSLocalModelRunner:
+        def __init__(self, model_worker, output_proc) -> None:
+            captured["model_runner_args"] = (model_worker, output_proc)
+
+        def set_stream_outbox(self, outbox) -> None:
+            captured["stream_outbox"] = outbox
+
+    class FakeOmniScheduler:
+        def __init__(self, **kwargs) -> None:
+            captured["scheduler_kwargs"] = kwargs
+            self.outbox = None
+
+    fake_model_runner_module = types.ModuleType(
+        "sglang_omni.models.moss_tts_local.model_runner"
+    )
+    fake_model_runner_module.MossTTSLocalModelRunner = FakeMossTTSLocalModelRunner
+
+    fake_backend_module = types.ModuleType("sglang_omni.scheduling.sglang_backend")
+    fake_backend_module.build_sglang_server_args = fake_build_sglang_server_args
+    fake_backend_module.SGLangOutputProcessor = FakeOutputProcessor
+
+    fake_bootstrap_module = types.ModuleType("sglang_omni.scheduling.bootstrap")
+    fake_bootstrap_module.create_sglang_infrastructure = (
+        fake_create_sglang_infrastructure
+    )
+
+    fake_omni_scheduler_module = types.ModuleType(
+        "sglang_omni.scheduling.omni_scheduler"
+    )
+    fake_omni_scheduler_module.OmniScheduler = FakeOmniScheduler
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda model: (lambda payload: payload, lambda data: data),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.moss_tts_local.model_runner",
+        fake_model_runner_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.sglang_backend",
+        fake_backend_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.bootstrap",
+        fake_bootstrap_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.omni_scheduler",
+        fake_omni_scheduler_module,
+    )
+
+    stages.create_sglang_tts_engine_executor("OpenMOSS-Team/moss-local-test")
+    stages.create_sglang_tts_engine_executor(
+        "OpenMOSS-Team/moss-local-test",
+        server_args_overrides={
+            "cuda_graph_bs": [1, 4],
+        },
+        forward_native_decode_enabled=True,
+    )
+
+    default_model, override_model = captured["models"]
+    default_graph_bs, override_graph_bs = captured["frame_decode_graph_bs"]
+
+    # Native in-forward decode defaults to off; the frame-decode graphs are still
+    # captured so the runner's standalone path stays graphed.
+    assert default_model._moss_local_forward_native_decode_active is False
+    assert default_model.prepared_frame_decode_bs == [1, 2, 4, 8, 16]
+    assert default_graph_bs == [1, 2, 4, 8, 16]
+
+    # Opt-in flag arms the native in-forward decode path.
+    assert override_model._moss_local_forward_native_decode_active is True
+    assert override_model.prepared_frame_decode_bs == [1, 4]
+    assert override_graph_bs == [1, 4]
+
+    assert captured["graph_inits"] == 2
+    assert captured["context_length"] == 8192
+    assert captured["model_arch_override"] == "MossTTSLocalSGLangModel"
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +605,6 @@ def test_row_radix_token_ids_hash_rows_and_keep_eos():
 
 
 def test_audio_history_presence_mask_excludes_prompt_rows():
-    from types import SimpleNamespace
-
     from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
     model = SimpleNamespace(
@@ -1318,7 +1473,8 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
 
 def test_async_launch_resolve_matches_sync_collect():
     """post_decode_launch + post_decode_resolve must yield the same published
-    next_token_ids and the same output_rows append as synchronous _collect_frame.
+    next_token_ids and the same output_rows append as synchronous
+    _collect_frame_in_runner.
     The launch hands resolve a device snapshot of the published ids so they
     survive the next step clobbering the aliased output_ids tensor in place; CPU
     stub: eager decode (no CUDA graph).
@@ -1382,7 +1538,7 @@ def test_async_launch_resolve_matches_sync_collect():
     # Synchronous collect.
     rs = _make_runner()
     req_s, res_s, sb_s = _sched_req(), _result(), types.SimpleNamespace()
-    rs._collect_frame(res_s, None, sb_s, [req_s])
+    rs._collect_frame_in_runner(res_s, None, sb_s, [req_s])
 
     # Async launch + resolve (separate runner/pool to avoid cross-overwrite).
     ra = _make_runner()

@@ -18,6 +18,12 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     make_moss_tts_local_scheduler_adapters,
 )
 from sglang_omni.models.moss_tts_local.state_pool import (
+    DEFAULT_AUDIO_REPETITION_PENALTY,
+    DEFAULT_AUDIO_TOP_K,
+    DEFAULT_SAMPLING_SEED,
+    DEFAULT_SAMPLING_TEMPERATURE,
+    DEFAULT_TEXT_TOP_K,
+    DEFAULT_TOP_P,
     MossTTSLocalDecodeJournal,
     MossTTSLocalDecodeStatePool,
 )
@@ -33,6 +39,78 @@ def _model(max_running_requests: int = 4) -> SimpleNamespace:
     return SimpleNamespace(
         _decode_input_embedding=embedding,
         config=SimpleNamespace(n_vq=12, audio_vocab_size=1024),
+    )
+
+
+def _init_active_decode_buffers(model: SimpleNamespace) -> None:
+    weight = model._decode_input_embedding.weight
+    max_running_requests = int(weight.shape[0])
+    hidden_size = int(weight.shape[1])
+    device = weight.device
+    dtype = weight.dtype
+    n_vq = int(getattr(model.config, "n_vq", 12))
+    padding_row = getattr(getattr(model, "_state_pool", None), "padding_row", None)
+    if padding_row is None:
+        padding_row = max_running_requests
+    model._cg_pool_rows = torch.full(
+        (max_running_requests,),
+        int(padding_row),
+        dtype=torch.int64,
+        device=device,
+    )
+    model._cg_active_feedback_embeds = torch.zeros(
+        max_running_requests, hidden_size, dtype=dtype, device=device
+    )
+    model._cg_active_text_temp = torch.full(
+        (max_running_requests,),
+        DEFAULT_SAMPLING_TEMPERATURE,
+        dtype=torch.float32,
+        device=device,
+    )
+    model._cg_active_text_top_p = torch.full(
+        (max_running_requests,), DEFAULT_TOP_P, dtype=torch.float32, device=device
+    )
+    model._cg_active_audio_temp = torch.full(
+        (max_running_requests,),
+        DEFAULT_SAMPLING_TEMPERATURE,
+        dtype=torch.float32,
+        device=device,
+    )
+    model._cg_active_audio_top_p = torch.full(
+        (max_running_requests,), DEFAULT_TOP_P, dtype=torch.float32, device=device
+    )
+    model._cg_active_text_top_k = torch.full(
+        (max_running_requests,), DEFAULT_TEXT_TOP_K, dtype=torch.int64, device=device
+    )
+    model._cg_active_audio_top_k = torch.full(
+        (max_running_requests,), DEFAULT_AUDIO_TOP_K, dtype=torch.int64, device=device
+    )
+    model._cg_active_seeds = torch.full(
+        (max_running_requests,),
+        DEFAULT_SAMPLING_SEED,
+        dtype=torch.int64,
+        device=device,
+    )
+    model._cg_active_sampling_steps = torch.zeros(
+        max_running_requests, dtype=torch.int64, device=device
+    )
+    model._cg_active_audio_repetition_penalty = torch.full(
+        (max_running_requests,),
+        DEFAULT_AUDIO_REPETITION_PENALTY,
+        dtype=torch.float32,
+        device=device,
+    )
+    model._cg_active_next_feedback_embeds = torch.zeros(
+        max_running_requests, hidden_size, dtype=dtype, device=device
+    )
+    model._cg_active_next_sampling_steps = torch.zeros(
+        max_running_requests, dtype=torch.int64, device=device
+    )
+    model._cg_step_rows = torch.zeros(
+        max_running_requests, n_vq + 1, dtype=torch.int64, device=device
+    )
+    model._cg_step_next_token_ids = torch.zeros(
+        max_running_requests, dtype=torch.int64, device=device
     )
 
 
@@ -57,12 +135,12 @@ def test_pool_dims_derive_from_embedding_weight():
     assert pool.hidden_size == _HIDDEN
     assert pool.feedback_embeds.shape == (5, _HIDDEN)
     assert pool.feedback_embeds.dtype == torch.bfloat16
-    for field in (pool.text_temp, pool.text_top_p, pool.audio_temp, pool.audio_top_p):
-        assert field.shape == (5,)
-        assert field.dtype == torch.float32
-    for field in (pool.text_top_k, pool.audio_top_k, pool.seeds):
-        assert field.shape == (5,)
-        assert field.dtype == torch.int64
+    for name in ("text_temp", "text_top_p", "audio_temp", "audio_top_p"):
+        assert getattr(pool, name).shape == (5,)
+        assert getattr(pool, name).dtype == torch.float32
+    for name in ("text_top_k", "audio_top_k", "seeds"):
+        assert getattr(pool, name).shape == (5,)
+        assert getattr(pool, name).dtype == torch.int64
     assert pool.generation_steps.shape == (5,)
     assert pool.generation_steps.dtype == torch.int64
     assert pool.sampling_steps.shape == (5,)
@@ -71,6 +149,37 @@ def test_pool_dims_derive_from_embedding_weight():
     assert pool.audio_repetition_penalty.dtype == torch.float32
     assert pool.audio_token_presence.shape == (5, 12, 1024)
     assert pool.audio_token_presence.dtype == torch.bool
+    for removed in (
+        "base_positions",
+        "stop_choice",
+        "codes",
+        "rows",
+        "sample_feedback_embeds",
+        "step_stop_choice",
+        "step_codes",
+        "step_rows",
+        "step_next_token_ids",
+    ):
+        assert not hasattr(pool, removed)
+
+
+def test_padding_row_has_safe_sampling_defaults():
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=4))
+    row = pool.padding_row
+    assert pool.text_temp[row].item() == DEFAULT_SAMPLING_TEMPERATURE
+    assert pool.text_top_p[row].item() == DEFAULT_TOP_P
+    assert int(pool.text_top_k[row]) == DEFAULT_TEXT_TOP_K
+    assert pool.audio_temp[row].item() == DEFAULT_SAMPLING_TEMPERATURE
+    assert pool.audio_top_p[row].item() == DEFAULT_TOP_P
+    assert int(pool.audio_top_k[row]) == DEFAULT_AUDIO_TOP_K
+    assert int(pool.seeds[row]) == DEFAULT_SAMPLING_SEED
+    assert pool.audio_repetition_penalty[row].item() == DEFAULT_AUDIO_REPETITION_PENALTY
+
+    pool.text_temp[row] = 0.0
+    pool.text_top_k[row] = 0
+    pool.reset_row(row)
+    assert pool.text_temp[row].item() == DEFAULT_SAMPLING_TEMPERATURE
+    assert int(pool.text_top_k[row]) == DEFAULT_TEXT_TOP_K
 
 
 def test_acquire_is_idempotent_by_rid():
@@ -146,19 +255,19 @@ def test_reset_row_zeroes_all_fields():
     pool.feedback_embeds[row].fill_(2.0)
     pool.reset_row(row)
     assert torch.all(pool.feedback_embeds[row] == 0)
-    for field in (
-        pool.text_temp,
-        pool.text_top_p,
-        pool.audio_temp,
-        pool.audio_top_p,
-        pool.text_top_k,
-        pool.audio_top_k,
-        pool.seeds,
-        pool.generation_steps,
-        pool.sampling_steps,
-        pool.audio_repetition_penalty,
+    for name in (
+        "text_temp",
+        "text_top_p",
+        "audio_temp",
+        "audio_top_p",
+        "text_top_k",
+        "audio_top_k",
+        "seeds",
+        "generation_steps",
+        "sampling_steps",
+        "audio_repetition_penalty",
     ):
-        assert field[row] == 0
+        assert getattr(pool, name)[row] == 0
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
 
@@ -337,47 +446,278 @@ def test_journal_holds_fields():
     assert torch.equal(journal.rows, rows)
 
 
-def test_feedback_gather_equals_old_popleft():
-    model = _model(max_running_requests=4)
-    pool = MossTTSLocalDecodeStatePool(model)
-    model._state_pool = pool
+def test_before_decode_stages_pool_rows_instead_of_copying_feedback():
+    model = _forward_sample_model(max_running_requests=4)
+    pool = model._state_pool
     rows = [pool.acquire_row("a"), pool.acquire_row("b")]
-    expected = torch.stack(
+    feedback = torch.stack(
         [
             torch.arange(_HIDDEN, dtype=torch.bfloat16),
             torch.arange(_HIDDEN, dtype=torch.bfloat16) + 10,
         ],
         dim=0,
     )
-    pool.feedback_embeds[torch.tensor(rows, dtype=torch.long)] = expected
+    pool.feedback_embeds[torch.tensor(rows, dtype=torch.long)] = feedback
 
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = model
     forward_batch = SimpleNamespace(input_ids=torch.full((2,), -1, dtype=torch.long))
     requests = [
-        SimpleNamespace(request_id="a", data=_params(seed=1)),
-        SimpleNamespace(request_id="b", data=_params(seed=2)),
+        SimpleNamespace(request_id="a", data=_decode_data(seed=1, generation_steps=0)),
+        SimpleNamespace(request_id="b", data=_decode_data(seed=2, generation_steps=0)),
     ]
+    original_weight = model._decode_input_embedding.weight.clone()
 
-    runner._write_decode_input_embedding(forward_batch, requests)
+    runner._prepare_forward_sample_inputs(forward_batch, requests)
 
-    assert torch.equal(model._decode_input_embedding.weight[:2], expected)
+    assert torch.equal(model._decode_input_embedding.weight, original_weight)
     assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1]))
+    assert torch.equal(
+        model._cg_pool_rows[:2],
+        torch.tensor(rows, dtype=torch.long),
+    )
+    assert torch.equal(model._cg_active_feedback_embeds[:2], feedback)
+
+
+def _forward_sample_model(max_running_requests: int = 4) -> SimpleNamespace:
+    model = _model(max_running_requests=max_running_requests)
+    model.config = SimpleNamespace(
+        n_vq=12,
+        audio_assistant_slot_token_id=1000,
+        audio_end_token_id=1001,
+    )
+    model.device = torch.device("cpu")
+    model._moss_local_forward_native_decode_active = False
+    model._moss_local_native_decode_enabled = True
+    model._state_pool = MossTTSLocalDecodeStatePool(model)
+    _init_active_decode_buffers(model)
+    return model
+
+
+def _decode_data(
+    *,
+    seed: int,
+    generation_steps: int,
+    audio_top_k: int = 25,
+    audio_repetition_penalty: float = 1.0,
+    is_chunked: int = 0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        req=SimpleNamespace(is_chunked=is_chunked),
+        text_temperature=0.5 + seed / 100,
+        text_top_p=0.9,
+        text_top_k=40 + seed,
+        audio_temperature=1.7,
+        audio_top_p=0.8,
+        audio_top_k=audio_top_k,
+        sampling_seed=seed,
+        generation_steps=generation_steps,
+        audio_repetition_penalty=audio_repetition_penalty,
+        output_rows=[],
+    )
+
+
+def test_before_decode_stages_forward_sample_buffers_and_padding():
+    model = _forward_sample_model(max_running_requests=4)
+    pool = model._state_pool
+    row_a = pool.acquire_row("a")
+    row_b = pool.acquire_row("b")
+    pool.feedback_embeds[row_a] = torch.arange(_HIDDEN, dtype=torch.bfloat16)
+    pool.feedback_embeds[row_b] = torch.arange(_HIDDEN, dtype=torch.bfloat16) + 10
+    pool.sampling_steps[row_a] = 2
+    pool.sampling_steps[row_b] = 4
+    pool.feedback_embeds[pool.padding_row] = torch.full(
+        (_HIDDEN,), 99, dtype=torch.bfloat16
+    )
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    requests = [
+        SimpleNamespace(request_id="a", data=_decode_data(seed=3, generation_steps=2)),
+        SimpleNamespace(
+            request_id="b",
+            data=_decode_data(seed=5, generation_steps=4, audio_top_k=17),
+        ),
+    ]
+    forward_batch = SimpleNamespace(
+        batch_size=4,
+        input_ids=torch.full((4,), -1, dtype=torch.long),
+    )
+    original_weight = model._decode_input_embedding.weight.clone()
+
+    runner.before_decode(forward_batch, SimpleNamespace(), requests)
+
+    assert torch.equal(model._decode_input_embedding.weight, original_weight)
+    assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1, 2, 3]))
+    assert torch.equal(
+        model._cg_pool_rows[:4],
+        torch.tensor([row_a, row_b, pool.padding_row, pool.padding_row]),
+    )
+    torch.testing.assert_close(
+        model._cg_active_feedback_embeds[:4],
+        pool.feedback_embeds[
+            torch.tensor([row_a, row_b, pool.padding_row, pool.padding_row])
+        ],
+    )
+    torch.testing.assert_close(
+        pool.text_temp[torch.tensor([row_a, row_b])],
+        torch.tensor(
+            [
+                0.53,
+                0.55,
+            ],
+            dtype=torch.float32,
+        ),
+    )
+    assert torch.equal(
+        model._cg_active_sampling_steps[:4],
+        torch.tensor([2, 4, 0, 0], dtype=torch.long),
+    )
+    assert torch.equal(
+        pool.audio_top_k[torch.tensor([row_a, row_b])], torch.tensor([25, 17])
+    )
+    assert torch.equal(pool.seeds[torch.tensor([row_a, row_b])], torch.tensor([3, 5]))
+    assert pool.text_temp[pool.padding_row].item() == DEFAULT_SAMPLING_TEMPERATURE
+    assert pool.audio_top_p[pool.padding_row].item() == DEFAULT_TOP_P
+    assert int(pool.text_top_k[pool.padding_row]) == DEFAULT_TEXT_TOP_K
+    assert int(pool.audio_top_k[pool.padding_row]) == DEFAULT_AUDIO_TOP_K
+    assert int(pool.seeds[pool.padding_row]) == DEFAULT_SAMPLING_SEED
+    assert (
+        pool.audio_repetition_penalty[pool.padding_row].item()
+        == DEFAULT_AUDIO_REPETITION_PENALTY
+    )
+    assert runner._forward_sample_pool_rows == [row_a, row_b]
+    assert torch.equal(runner._forward_sample_pool_row_t, torch.tensor([row_a, row_b]))
+    assert runner._forward_sample_rids == ["a", "b"]
+    assert runner._forward_sample_native_decode is False
+    assert model._moss_local_forward_native_decode_active is False
+
+
+def test_before_decode_pads_scheduler_slots_to_padding_row():
+    model = _forward_sample_model(max_running_requests=4)
+    model.frame_graph_max_bs = 4
+    pool = model._state_pool
+    row = pool.acquire_row("a")
+    pool.feedback_embeds[row] = torch.arange(_HIDDEN, dtype=torch.bfloat16)
+    pool.feedback_embeds[pool.padding_row] = torch.full(
+        (_HIDDEN,), 11, dtype=torch.bfloat16
+    )
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    request = SimpleNamespace(
+        request_id="a", data=_decode_data(seed=3, generation_steps=2)
+    )
+    forward_batch = SimpleNamespace(
+        batch_size=3,
+        input_ids=torch.full((3,), -1, dtype=torch.long),
+    )
+    original_weight = model._decode_input_embedding.weight.clone()
+
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
+
+    assert torch.equal(model._decode_input_embedding.weight, original_weight)
+    assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1, 2]))
+    assert torch.equal(
+        model._cg_pool_rows[:3],
+        torch.tensor([row, pool.padding_row, pool.padding_row]),
+    )
+    assert pool.text_temp[pool.padding_row].item() == DEFAULT_SAMPLING_TEMPERATURE
+    assert int(pool.text_top_k[pool.padding_row]) == DEFAULT_TEXT_TOP_K
+    assert int(pool.audio_top_k[pool.padding_row]) == DEFAULT_AUDIO_TOP_K
+    assert int(pool.seeds[pool.padding_row]) == DEFAULT_SAMPLING_SEED
+    assert (
+        pool.audio_repetition_penalty[pool.padding_row].item()
+        == DEFAULT_AUDIO_REPETITION_PENALTY
+    )
+    assert torch.equal(
+        model._cg_active_feedback_embeds[:3],
+        pool.feedback_embeds[
+            torch.tensor([row, pool.padding_row, pool.padding_row])
+        ],
+    )
+    assert torch.equal(model._cg_active_sampling_steps[:3], torch.tensor([0, 0, 0]))
+
+
+def test_forward_native_stages_static_sampling_params_every_step():
+    model = _forward_sample_model(max_running_requests=2)
+    model.frame_graph_max_bs = 2
+    pool = model._state_pool
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    request = SimpleNamespace(
+        request_id="rid", data=_decode_data(seed=3, generation_steps=0)
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.full((1,), -1, dtype=torch.long))
+
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
+
+    row = pool.row_for("rid")
+    assert row is not None
+    assert runner._forward_sample_native_decode is True
+    assert model._moss_local_forward_native_decode_active is True
+    assert float(model._cg_active_text_temp[0]) == float(pool.text_temp[row])
+    assert int(model._cg_active_seeds[0]) == 3
+
+    # No version cache: every step re-stages the static params straight from the
+    # pool, so a later param edit shows up on the next before_decode.
+    pool.write_params(row, _decode_data(seed=9, generation_steps=0))
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
+
+    assert int(model._cg_active_seeds[0]) == 9
+
+
+def test_forward_native_gate_falls_back_for_penalty_and_oversized_batch():
+    model = _forward_sample_model(max_running_requests=4)
+    model.frame_graph_max_bs = 4
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(
+        batch_size=1, input_ids=torch.full((1,), -1, dtype=torch.long)
+    )
+
+    request = SimpleNamespace(
+        request_id="penalty",
+        data=_decode_data(seed=1, generation_steps=0, audio_repetition_penalty=1.2),
+    )
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
+
+    assert runner._forward_sample_native_decode is False
+    assert model._moss_local_forward_native_decode_active is False
+
+    model = _forward_sample_model(max_running_requests=4)
+    model.frame_graph_max_bs = 1
+    runner.model = model
+    requests = [
+        SimpleNamespace(request_id="a", data=_decode_data(seed=1, generation_steps=0)),
+        SimpleNamespace(request_id="b", data=_decode_data(seed=2, generation_steps=0)),
+    ]
+    forward_batch = SimpleNamespace(
+        batch_size=2, input_ids=torch.full((2,), -1, dtype=torch.long)
+    )
+    runner.before_decode(forward_batch, SimpleNamespace(), requests)
+
+    assert runner._forward_sample_native_decode is False
+    assert model._moss_local_forward_native_decode_active is False
 
 
 def test_fresh_row_zeros_feedback():
-    model = _model(max_running_requests=2)
-    pool = MossTTSLocalDecodeStatePool(model)
-    model._state_pool = pool
+    model = _forward_sample_model(max_running_requests=2)
+    pool = model._state_pool
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = model
     forward_batch = SimpleNamespace(input_ids=torch.full((1,), -1, dtype=torch.long))
-    requests = [SimpleNamespace(request_id="fresh", data=_params(seed=1))]
+    requests = [
+        SimpleNamespace(
+            request_id="fresh", data=_decode_data(seed=1, generation_steps=0)
+        )
+    ]
 
-    runner._write_decode_input_embedding(forward_batch, requests)
+    runner._prepare_forward_sample_inputs(forward_batch, requests)
 
+    assert torch.equal(model._cg_pool_rows[:1], torch.tensor([pool.row_for("fresh")]))
     assert torch.equal(
-        model._decode_input_embedding.weight[:1],
+        model._cg_active_feedback_embeds[:1],
         torch.zeros((1, _HIDDEN), dtype=torch.bfloat16),
     )
 
@@ -440,7 +780,7 @@ def test_double_collect_overwrites_feedback():
             logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
         )
         schedule_batch = SimpleNamespace()
-        runner._collect_frame(result, None, schedule_batch, [request])
+        runner._collect_frame_in_runner(result, None, schedule_batch, [request])
 
     row = pool.row_for("rid")
     assert row is not None
@@ -503,7 +843,7 @@ def test_collect_frame_reads_generation_steps_from_pool():
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
 
-    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner._collect_frame_in_runner(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
     assert int(pool.sampling_steps[row]) == 5
@@ -559,8 +899,8 @@ def test_pool_sampling_position_leads_unresolved_lookahead_launches():
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
 
-    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
-    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner._collect_frame_in_runner(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner._collect_frame_in_runner(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     row = pool.row_for("rid")
     assert row is not None
@@ -651,7 +991,7 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
 
-    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner._collect_frame_in_runner(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     assert called["eager"] is True
     assert len(sampled_audio_logits) == 1
@@ -681,6 +1021,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     )
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
+    _init_active_decode_buffers(model)
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = model
     runner.output_processor = SimpleNamespace(
@@ -712,7 +1053,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     ]
 
     forward_batch = SimpleNamespace(input_ids=torch.full((2,), -1, dtype=torch.long))
-    runner._write_decode_input_embedding(forward_batch, requests)
+    runner._prepare_forward_sample_inputs(forward_batch, requests)
 
     row_t = forward_batch.moss_pool_row_t.clone()
     row_a, row_b = int(row_t[0]), int(row_t[1])
@@ -754,7 +1095,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     schedule_batch = SimpleNamespace(is_prefill_only=False, output_ids=None)
     scheduler_output = SimpleNamespace(requests=requests)
 
-    runner._collect_frame(result, forward_batch, schedule_batch, requests)
+    runner._collect_frame_in_runner(result, forward_batch, schedule_batch, requests)
 
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13, 8 * 13]))
     assert result.moss_journal.pool_rows == [row_a, row_b]
@@ -934,7 +1275,7 @@ def test_collect_frame_skips_chunked_feedback_and_journal():
     )
     schedule_batch = SimpleNamespace()
 
-    runner._collect_frame(result, None, schedule_batch, requests)
+    runner._collect_frame_in_runner(result, None, schedule_batch, requests)
 
     chunked_row = pool.row_for("chunked")
     normal_row = pool.row_for("normal")
@@ -1061,6 +1402,313 @@ def test_resume_with_empty_output_rows_still_resets_sampling_steps():
     # The next collect then samples the resumed frame at position 0, not stale 1.
     assert MossTTSLocalModelRunner._advance_sampling_position(data) == 0
     assert data.sampling_steps == 1
+
+
+def test_forward_sample_collect_matches_eager_graph_collect():
+    def make_runner_and_model():
+        model = _forward_sample_model(max_running_requests=4)
+        model.frame_graph_max_bs = 4
+        model.acquire_row = model._state_pool.acquire_row
+        runner = object.__new__(MossTTSLocalModelRunner)
+        runner.model = model
+        return runner, model
+
+    codes = torch.stack(
+        [torch.arange(12, dtype=torch.long), torch.arange(12, dtype=torch.long) + 20],
+        dim=0,
+    )
+    stop_choice = torch.tensor([0, 1], dtype=torch.long)
+    feedback = torch.tensor(
+        [[3, 3, 3, 3, 3, 3, 3, 3], [7, 7, 7, 7, 7, 7, 7, 7]],
+        dtype=torch.bfloat16,
+    )
+    rows = torch.empty((2, 13), dtype=torch.long)
+    rows[:, 0] = torch.tensor([1000, 1001], dtype=torch.long)
+    rows[:, 1:] = codes
+
+    def requests():
+        return [
+            SimpleNamespace(
+                request_id="chunked",
+                data=_decode_data(seed=1, generation_steps=0, is_chunked=1),
+            ),
+            SimpleNamespace(
+                request_id="normal",
+                data=_decode_data(seed=2, generation_steps=0, is_chunked=0),
+            ),
+        ]
+
+    eager_runner, eager_model = make_runner_and_model()
+
+    def decode_frame_graphed(hidden_states, **kwargs):
+        del hidden_states, kwargs
+        return stop_choice, codes, feedback
+
+    eager_model.decode_frame_graphed = decode_frame_graphed
+    eager_result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(2, _HIDDEN))
+    )
+    eager_batch = SimpleNamespace()
+    eager_requests = requests()
+
+    eager_runner._collect_frame_in_runner(
+        eager_result, SimpleNamespace(), eager_batch, eager_requests
+    )
+
+    new_runner, new_model = make_runner_and_model()
+    new_requests = requests()
+    forward_batch = SimpleNamespace(
+        batch_size=2,
+        input_ids=torch.full((2,), -1, dtype=torch.long),
+    )
+    new_runner.before_decode(forward_batch, SimpleNamespace(), new_requests)
+    new_pool = new_model._state_pool
+    new_model._cg_step_rows[:2] = rows
+    new_model._cg_step_next_token_ids[:2] = eager_result.next_token_ids
+    new_model._cg_active_next_feedback_embeds[:2] = feedback
+    new_model._cg_active_next_sampling_steps[:2] = torch.tensor([1, 1])
+    new_result = SimpleNamespace(logits_output=SimpleNamespace())
+    new_batch = SimpleNamespace()
+
+    new_runner._collect_frame_from_forward_sample(new_result, new_batch, new_requests)
+
+    assert torch.equal(new_result.next_token_ids, eager_result.next_token_ids)
+    assert torch.equal(new_batch.output_ids, eager_batch.output_ids)
+    assert new_result.moss_journal.rids == eager_result.moss_journal.rids
+    assert new_result.moss_journal.pool_rows == eager_result.moss_journal.pool_rows
+    assert torch.equal(new_result.moss_journal.rows, eager_result.moss_journal.rows)
+    assert torch.equal(
+        new_model._state_pool.feedback_embeds[new_model._state_pool.row_for("normal")],
+        eager_model._state_pool.feedback_embeds[
+            eager_model._state_pool.row_for("normal")
+        ],
+    )
+    assert torch.equal(
+        new_model._state_pool.feedback_embeds[new_model._state_pool.row_for("chunked")],
+        torch.zeros(_HIDDEN, dtype=torch.bfloat16),
+    )
+
+
+def test_decode_collect_routes_repetition_penalty_to_eager_fallback():
+    model = _forward_sample_model(max_running_requests=2)
+    pool = model._state_pool
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    calls = []
+    runner._collect_frame_in_runner = lambda *args: calls.append("eager")
+    runner._collect_frame_from_forward_sample = lambda *args: calls.append("pool")
+    request = SimpleNamespace(
+        request_id="rid",
+        data=_decode_data(seed=1, generation_steps=0, audio_repetition_penalty=1.2),
+    )
+    row = pool.acquire_row("rid")
+    pool.feedback_embeds[row] = torch.arange(_HIDDEN, dtype=torch.bfloat16)
+    original_feedback = pool.feedback_embeds[row].clone()
+    original_sampling_steps = pool.sampling_steps[row].clone()
+    runner._forward_sample_pool_rows = [row]
+    runner._forward_sample_pool_row_t = torch.tensor([row], dtype=torch.long)
+    runner._forward_sample_rids = ["rid"]
+    runner._forward_sample_native_decode = False
+    model._cg_step_rows[0] = torch.arange(13, dtype=torch.long)
+    model._cg_step_next_token_ids[0] = 123
+    model._cg_active_next_feedback_embeds[0] = torch.full(
+        (_HIDDEN,), 9, dtype=torch.bfloat16
+    )
+    model._cg_active_next_sampling_steps[0] = 77
+    result = SimpleNamespace(logits_output=SimpleNamespace())
+
+    runner.post_decode(
+        result,
+        SimpleNamespace(moss_has_audio_repetition_penalty=True),
+        SimpleNamespace(),
+        [request],
+    )
+
+    assert calls == ["eager"]
+    assert torch.equal(pool.feedback_embeds[row], original_feedback)
+    assert torch.equal(pool.sampling_steps[row], original_sampling_steps)
+
+
+def test_native_decode_forward_uses_active_buffers_without_pool_writes():
+    from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+
+    model = object.__new__(MossTTSLocalSGLangModel)
+    torch.nn.Module.__init__(model)
+    model.pp_group = SimpleNamespace(is_first_rank=True, is_last_rank=True)
+    model.config = SimpleNamespace(
+        n_vq=12,
+        audio_assistant_slot_token_id=1000,
+        audio_end_token_id=1001,
+    )
+    model.n_vq = 12
+    model._decode_input_embedding = SimpleNamespace(
+        weight=torch.zeros(2, _HIDDEN, dtype=torch.bfloat16)
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    _init_active_decode_buffers(model)
+    model._moss_local_forward_native_decode_active = True
+
+    row = pool.acquire_row("rid")
+    pool.write_params(row, _params(seed=7))
+    pool.sampling_steps[row] = 4
+    feedback_in = torch.arange(_HIDDEN, dtype=torch.bfloat16)
+    pool.feedback_embeds[row] = feedback_in
+    model._cg_pool_rows[0] = row
+    model._cg_active_feedback_embeds[0] = feedback_in
+    model._cg_active_text_temp[0] = pool.text_temp[row]
+    model._cg_active_text_top_p[0] = pool.text_top_p[row]
+    model._cg_active_text_top_k[0] = pool.text_top_k[row]
+    model._cg_active_audio_temp[0] = pool.audio_temp[row]
+    model._cg_active_audio_top_p[0] = pool.audio_top_p[row]
+    model._cg_active_audio_top_k[0] = pool.audio_top_k[row]
+    model._cg_active_seeds[0] = pool.seeds[row]
+    model._cg_active_sampling_steps[0] = pool.sampling_steps[row]
+    model._cg_active_audio_repetition_penalty[0] = pool.audio_repetition_penalty[row]
+    original_feedback = pool.feedback_embeds[row].clone()
+    original_sampling_steps = pool.sampling_steps[row].clone()
+
+    captured = {}
+
+    class _Backbone:
+        def __call__(self, **kwargs):
+            captured["input_embeds"] = kwargs["input_embeds"].detach().clone()
+            return torch.ones((1, _HIDDEN), dtype=torch.bfloat16)
+
+    def _decode_frame_graphable(hidden_states, **kwargs):
+        captured["base_positions"] = kwargs["base_positions"].detach().clone()
+        assert torch.equal(kwargs["seeds"], torch.tensor([7]))
+        assert hidden_states.shape == (1, _HIDDEN)
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.arange(12, dtype=torch.long).reshape(1, 12),
+            torch.full((1, _HIDDEN), 3, dtype=torch.bfloat16),
+        )
+
+    model.model = _Backbone()
+    model._decode_frame_graphable = _decode_frame_graphable
+    model._select_sample_hidden_states = (
+        lambda hidden_states, forward_batch: hidden_states
+    )
+
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True)
+    )
+    result = model.forward(
+        torch.zeros(1, dtype=torch.long),
+        torch.zeros(1, dtype=torch.long),
+        forward_batch,
+    )
+
+    assert torch.equal(captured["input_embeds"], feedback_in.reshape(1, _HIDDEN))
+    assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
+    assert torch.equal(
+        model._cg_step_rows[0],
+        torch.cat([torch.tensor([1000]), torch.arange(12, dtype=torch.long)]),
+    )
+    assert torch.equal(pool.feedback_embeds[row], original_feedback)
+    assert torch.equal(pool.sampling_steps[row], original_sampling_steps)
+    assert torch.equal(
+        model._cg_active_next_feedback_embeds[0],
+        torch.full((_HIDDEN,), 3).bfloat16(),
+    )
+    assert int(model._cg_active_next_sampling_steps[0]) == 5
+    assert torch.equal(result.hidden_states, torch.ones((1, _HIDDEN)).bfloat16())
+    assert result.next_token_logits.shape == torch.Size([1, 1])
+    assert int(model._cg_step_next_token_ids[0]) != 1000
+    assert int(model._cg_step_next_token_ids[0]) < 151643
+
+
+def test_native_decode_forward_outputs_active_buffers_for_fallback_without_pool_writes():
+    from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+
+    model = object.__new__(MossTTSLocalSGLangModel)
+    torch.nn.Module.__init__(model)
+    model.pp_group = SimpleNamespace(is_first_rank=True, is_last_rank=True)
+    model.config = SimpleNamespace(
+        n_vq=12,
+        audio_assistant_slot_token_id=1000,
+        audio_end_token_id=1001,
+    )
+    model.n_vq = 12
+    model._decode_input_embedding = SimpleNamespace(
+        weight=torch.zeros(1, _HIDDEN, dtype=torch.bfloat16)
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    _init_active_decode_buffers(model)
+    model._moss_local_forward_native_decode_active = False
+
+    row = pool.acquire_row("rid")
+    pool.write_params(row, _params(seed=7, audio_repetition_penalty=1.2))
+    pool.sampling_steps[row] = 4
+    original_feedback = torch.arange(_HIDDEN, dtype=torch.bfloat16)
+    pool.feedback_embeds[row] = original_feedback
+    model._cg_pool_rows[0] = row
+    model._cg_active_feedback_embeds[0] = original_feedback
+    model._cg_active_text_temp[0] = pool.text_temp[row]
+    model._cg_active_text_top_p[0] = pool.text_top_p[row]
+    model._cg_active_text_top_k[0] = pool.text_top_k[row]
+    model._cg_active_audio_temp[0] = pool.audio_temp[row]
+    model._cg_active_audio_top_p[0] = pool.audio_top_p[row]
+    model._cg_active_audio_top_k[0] = pool.audio_top_k[row]
+    model._cg_active_seeds[0] = pool.seeds[row]
+    model._cg_active_sampling_steps[0] = pool.sampling_steps[row]
+    model._cg_active_audio_repetition_penalty[0] = pool.audio_repetition_penalty[row]
+
+    class _Backbone:
+        def __call__(self, **kwargs):
+            return torch.ones((1, _HIDDEN), dtype=torch.bfloat16)
+
+    model.model = _Backbone()
+    def fail_decode_frame_graphable(hidden_states, **kwargs):
+        del hidden_states, kwargs
+        raise AssertionError("fallback forward must not run native frame decode")
+
+    model._decode_frame_graphable = fail_decode_frame_graphable
+    model._select_sample_hidden_states = (
+        lambda hidden_states, forward_batch: hidden_states
+    )
+
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True)
+    )
+    result = model.forward(
+        torch.zeros(1, dtype=torch.long),
+        torch.zeros(1, dtype=torch.long),
+        forward_batch,
+    )
+
+    assert torch.equal(pool.feedback_embeds[row], original_feedback)
+    assert int(pool.sampling_steps[row]) == 4
+    assert torch.equal(model._cg_step_rows[0], torch.zeros(13, dtype=torch.long))
+    assert torch.equal(
+        model._cg_active_next_feedback_embeds[0],
+        torch.zeros(_HIDDEN, dtype=torch.bfloat16),
+    )
+    assert int(model._cg_active_next_sampling_steps[0]) == 0
+    assert torch.equal(result.hidden_states, torch.ones((1, _HIDDEN)).bfloat16())
+
+
+def test_post_prefill_collection_remains_eager_for_forward_sample_path():
+    model = _forward_sample_model(max_running_requests=2)
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    calls = []
+    runner._collect_frame_in_runner = lambda *args: calls.append("eager")
+    runner._collect_frame_from_forward_sample = lambda *args: calls.append("pool")
+    request = SimpleNamespace(
+        request_id="rid",
+        data=_decode_data(seed=1, generation_steps=0),
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: False),
+    )
+    result = SimpleNamespace(logits_output=SimpleNamespace())
+
+    runner.post_prefill(result, forward_batch, SimpleNamespace(), [request])
+
+    assert calls == ["eager"]
 
 
 def test_journal_rid_assertion_fires():

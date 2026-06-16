@@ -87,6 +87,7 @@ def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
             processor = processor_cls.from_pretrained(
                 checkpoint_dir,
                 trust_remote_code=True,
+                codec_weight_dtype=None,
             )
     except Exception as exc:
         raise RuntimeError(_MOSS_TTS_LOCAL_INSTALL_HINT) from exc
@@ -456,6 +457,9 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
+    # Note(yichi): default to False for now since we don't see very good
+    # improvement on performance from the native in-forward decode CUDA graph.
+    forward_native_decode_enabled: bool = False,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
@@ -517,14 +521,21 @@ def create_sglang_tts_engine_executor(
         server_args.disable_cuda_graph = False
 
     model = model_worker.model_runner.model
+    model._moss_local_forward_native_decode_active = False
+    model._moss_local_native_decode_enabled = bool(forward_native_decode_enabled)
     if want_cuda_graph:
+        cuda_graph_bs = list(overrides.get("cuda_graph_bs") or [1, 2, 4, 8, 16])
+        model.prepare_frame_decode_for_capture(cuda_graph_bs)
+        # Only bake the native in-forward sampling into the backbone graph when
+        # the flag is on; otherwise capture the plain decode and let the runner
+        # use the standalone frame-decode graphs.
+        if model._moss_local_native_decode_enabled:
+            model._moss_local_forward_native_decode_active = True
         model_worker.model_runner.init_device_graphs()
         # Also graph the per-frame local-transformer decode (1 + n_vq
         # micro-steps and 13 seeded sampling passes per frame): eager it is
         # kernel-launch-bound at ~22 ms/frame independent of batch size.
-        model.init_frame_decode_graphs(
-            list(overrides.get("cuda_graph_bs") or [1, 2, 4, 8, 16])
-        )
+        model.init_frame_decode_graphs(cuda_graph_bs)
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
