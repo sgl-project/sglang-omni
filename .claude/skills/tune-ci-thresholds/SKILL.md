@@ -611,8 +611,8 @@ CI and calibration intentionally have different sampling policies:
   silently reuse Higgs literals for MOSS.
 - **GPU topology:** calibration stages can declare per-preset GPU needs.
   Higgs and MOSS currently use 2 GPUs total: the router launches two complete
-  single-GPU workers. The MOSS CI preset uses the colocated local config so
-  its codec/vocoder run on each worker's visible `cuda:0`.
+  single-GPU workers. MOSS Local's default pipeline config is colocated, so its
+  codec/vocoder run on each worker's visible `cuda:0`.
 
 The generated stage aliases reflect this:
 

@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import struct
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
     MossTTSLocalPipelineConfig,
+    MossTTSLocalSplitPipelineConfig,
 )
 from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
@@ -38,7 +36,6 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 N_VQ = 12
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +174,14 @@ def test_pipeline_stage_wiring():
         assert "moss_tts_local" in stage.factory
     assert stages["preprocessing"].process == "pipeline"
     assert stages["preprocessing"].gpu == 0
-    assert stages["preprocessing"].factory_args["device"] == "cuda:1"
+    assert stages["preprocessing"].factory_args["device"] == "cuda:0"
     assert stages["preprocessing"].factory_args["ref_audio_cache_max_items"] == 8192
     assert config.supports_uploaded_voice_references() is True
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
-    assert stages["vocoder"].factory_args["device"] == "cuda:1"
+    assert stages["vocoder"].factory_args["device"] == "cuda:0"
 
     placement = build_stage_placement_plan(config)
     assert placement.stages["tts_engine"].gpu_ids == (0,)
@@ -202,17 +199,11 @@ def test_pipeline_stage_wiring():
     )
     assert colocated_stages["vocoder"].factory_args["device"] == "cuda:0"
 
-
-def test_colocated_example_config_uses_one_visible_gpu_per_worker():
-    config_path = _REPO_ROOT / "examples" / "configs" / "moss_tts_local_colocated.yaml"
-
-    config = ConfigManager.from_file(str(config_path)).config
-    stages = {stage.name: stage for stage in config.stages}
-
-    assert isinstance(config, MossTTSLocalColocatedPipelineConfig)
-    assert stages["preprocessing"].factory_args["device"] == "cuda:0"
-    assert stages["tts_engine"].factory_args["gpu_id"] == 0
-    assert stages["vocoder"].factory_args["device"] == "cuda:0"
+    split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
+    split_stages = {stage.name: stage for stage in split.stages}
+    assert split_stages["preprocessing"].factory_args["device"] == "cuda:1"
+    assert split_stages["tts_engine"].factory_args["gpu_id"] == 0
+    assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
 
 
 def test_special_token_defaults_match_v15_checkpoint():

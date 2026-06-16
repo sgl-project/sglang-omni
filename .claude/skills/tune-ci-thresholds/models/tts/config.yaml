@@ -30,8 +30,8 @@
 # - Concurrency: TTS generation CI uses --concurrency 16 for every preset.
 #   Qwen3-ASR router/transcribe fan-out for WER uses 32 at DP=2.
 # - GPU topology is per preset. Higgs and MOSS each need 2 GPUs total
-#   (2 router workers × 1 complete single-GPU server). The MOSS CI preset uses
-#   the colocated local config so codec/vocoder stay on each worker's cuda:0.
+#   (2 router workers × 1 complete single-GPU server). MOSS Local's default
+#   pipeline config is colocated, so codec/vocoder stay on each worker's cuda:0.
 # - Venv: CI uses omni under OMNI_CI_HOME (see omni_ci_home below).
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
 #   weights are already present in the configured HF cache.
