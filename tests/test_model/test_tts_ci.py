@@ -15,6 +15,8 @@ Author:
     Yuan Luo https://github.com/yuan-luo
     Yitong Guan https://github.com/minleminzui
     Xuesong Ye https://github.com/yxs
+    Yue Yin https://github.com/MelodyyyYin
+    Yijiang Tian https://github.com/yijiangt
 
 The benchmark supports one selected concurrency per test run. It defaults to
 concurrency 16 for CI; pass --concurrency all to sweep all supported
@@ -31,7 +33,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +49,7 @@ from tests.test_model.conftest import (
     TTS_STAGE_NONSTREAM,
     TTS_STAGE_STREAM,
 )
+from tests.test_model.tts_ci_config import select_tts_ci_preset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     assert_workers_served_requests_since,
@@ -58,9 +60,6 @@ from tests.test_model.omni_router_utils import (
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
-    apply_mos_slack,
-    apply_slack,
-    apply_wer_slack,
     assert_speed_thresholds,
     assert_streaming_consistency,
     assert_wer_results,
@@ -72,52 +71,9 @@ PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
 
-@dataclass
-class TtsCiModelPreset:
-    model_path: str
-    ref_format: Literal["flat", "references"] = "flat"
-    token_count: int | Literal["auto"] | None = None
-    worker_extra_args: str = ""
-    startup_timeout: int = 180
-    gate_thresholds: bool = True
-    num_gpus_per_worker: int = 1
-
-
-@dataclass(frozen=True)
-class TtsCiThresholdPreset:
-    non_stream_speed: dict[int, dict[str, float]]
-    stream_speed: dict[int, dict[str, float]]
-    wer_corpus: float
-    stream_wer_corpus: float
-    similarity_mean_min: float
-    utmos_mean_min: float
-
-
-TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
-    "higgs": TtsCiModelPreset(
-        model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
-    ),
-    "moss": TtsCiModelPreset(
-        model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-        ref_format="references",
-        token_count="auto",
-        gate_thresholds=True,
-    ),
-}
-
-
-def _select_tts_ci_model_preset() -> tuple[str, TtsCiModelPreset]:
-    model_name = os.environ.get("TTS_CI_MODEL", "higgs")
-    preset = TTS_CI_MODEL_PRESETS.get(model_name)
-    if preset is None:
-        allowed = ", ".join(sorted(TTS_CI_MODEL_PRESETS))
-        raise ValueError(
-            f"Unsupported TTS_CI_MODEL={model_name!r}; expected one of: {allowed}"
-        )
-    return model_name, preset
-
-
-_MODEL_NAME, _PRESET = _select_tts_ci_model_preset()
+_MODEL_NAME, _TTS_CI_PRESET = select_tts_ci_preset()
+_PRESET = _TTS_CI_PRESET.model
+_THRESHOLDS = _TTS_CI_PRESET.thresholds
 TTS_MODEL_PATH = _PRESET.model_path
 
 STARTUP_TIMEOUT = _PRESET.startup_timeout
@@ -145,116 +101,6 @@ TTS_SIMILARITY_MAX_SAMPLES = 50
 
 # Note (Ratish, Chenyang): We evalute the performance of TTS CI on our H20
 # CI machines and compute the thresholds based on the results.
-
-# Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 × slack_higher
-# Lower-is-better metrics (latency, rtf): threshold = P95 × slack_lower
-
-THRESHOLD_SLACK_HIGHER = 0.75
-THRESHOLD_SLACK_LOWER = 1.25
-VC_WER_MAX_CORPUS = 0.0121
-VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_CORPUS = 0.0119
-VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-
-VC_SIMILARITY_MEAN_MIN = 66.8902230072
-# Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
-# worst-of-5 = 4.1538 · mean = 4.1618 · stdev = 0.0079
-VC_UTMOS_MEAN_REFERENCE = 4.1539
-VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
-
-# Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
-# others may not pass the CI.
-
-_VC_NON_STREAM_P95 = {
-    16: {
-        "throughput_qps": 14.717,
-        "output_tok_per_req_s": 141.1,
-        "latency_mean_s": 1.002,
-        "rtf_mean": 0.2339,
-    }
-}
-
-_VC_STREAM_P95 = {
-    16: {
-        "throughput_qps": 14.89,
-        "latency_mean_s": 0.97,
-        "rtf_mean": 0.2244,
-    }
-}
-
-VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
-VC_STREAM_THRESHOLDS = apply_slack(
-    _VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
-
-# MOSS Local thresholds (worst-of-5, H20 CI, mem_fraction_static=0.85).
-# Separate symbol names so calibration apply never overwrites Higgs VC_* literals.
-MOSS_VC_WER_MAX_CORPUS = 0.0288
-MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0262
-MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 63.618772201538086
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9534
-MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
-_MOSS_VC_NON_STREAM_P95 = {
-    16: {
-        "throughput_qps": 6.185,
-        "output_tok_per_req_s": 76.3,
-        "latency_mean_s": 2.576,
-        "rtf_mean": 0.6218,
-    }
-}
-_MOSS_VC_STREAM_P95 = {
-    16: {
-        "throughput_qps": 2.676,
-        "latency_mean_s": 5.951,
-        "rtf_mean": 1.4367,
-    }
-}
-MOSS_VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _MOSS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
-MOSS_VC_STREAM_THRESHOLDS = apply_slack(
-    _MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
-
-
-TTS_CI_THRESHOLD_PRESETS: dict[str, TtsCiThresholdPreset] = {
-    "higgs": TtsCiThresholdPreset(
-        non_stream_speed=VC_NON_STREAM_THRESHOLDS,
-        stream_speed=VC_STREAM_THRESHOLDS,
-        wer_corpus=VC_WER_CORPUS_THRESHOLD,
-        stream_wer_corpus=VC_STREAM_WER_CORPUS_THRESHOLD,
-        similarity_mean_min=VC_SIMILARITY_MEAN_MIN,
-        utmos_mean_min=VC_UTMOS_MEAN_MIN,
-    ),
-    "moss": TtsCiThresholdPreset(
-        non_stream_speed=MOSS_VC_NON_STREAM_THRESHOLDS,
-        stream_speed=MOSS_VC_STREAM_THRESHOLDS,
-        wer_corpus=MOSS_VC_WER_CORPUS_THRESHOLD,
-        stream_wer_corpus=MOSS_VC_STREAM_WER_CORPUS_THRESHOLD,
-        similarity_mean_min=MOSS_VC_SIMILARITY_MEAN_MIN,
-        utmos_mean_min=MOSS_VC_UTMOS_MEAN_MIN,
-    ),
-}
-
-
-def _select_tts_ci_threshold_preset() -> TtsCiThresholdPreset:
-    thresholds = TTS_CI_THRESHOLD_PRESETS.get(_MODEL_NAME)
-    if thresholds is None:
-        allowed = ", ".join(sorted(TTS_CI_THRESHOLD_PRESETS))
-        raise ValueError(
-            f"No TTS CI thresholds configured for TTS_CI_MODEL={_MODEL_NAME!r}; "
-            f"expected one of: {allowed}"
-        )
-    return thresholds
-
-
-_THRESHOLDS = _select_tts_ci_threshold_preset()
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"

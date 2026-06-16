@@ -996,6 +996,8 @@ def _stage_entry(
     calibration_preset=None,
     gpus=None,
     hf_model_ids=None,
+    threshold_file=None,
+    threshold_file_sha256=None,
 ):
     entry = dict(
         test=rel,
@@ -1016,6 +1018,9 @@ def _stage_entry(
         entry["gpus"] = int(gpus)
     if hf_model_ids:
         entry["hf_model_ids"] = hf_model_ids
+    if threshold_file:
+        entry["threshold_file"] = threshold_file
+        entry["threshold_file_sha256"] = threshold_file_sha256
     return entry
 
 
@@ -1169,9 +1174,14 @@ def discover(out, only, cfg):
             print(f"  [warn] {tp.name}: no auto-inference available, "
                   f"needs metric_sources in config.yaml")
         ms = _merge_metric_sources(inferred, ms)
+        threshold_rel = ms.get("threshold_file")
+        threshold_tp = REPO_ROOT / threshold_rel if threshold_rel else tp
+        threshold_tree = ast.parse(threshold_tp.read_text())
+        threshold_sha = sha256(threshold_tp)
+        threshold_file_sha = threshold_sha if threshold_rel else None
         ignored_constants = set(ms.get("ignored_constants") or [])
         all_constants = [
-            (n, k) for (n, k) in _constants(tree)
+            (n, k) for (n, k) in _constants(threshold_tree)
             if n not in ignored_constants
         ]
         variants = ms.get("variants") or {}
@@ -1241,6 +1251,8 @@ def discover(out, only, cfg):
                             calibration_preset=preset_name,
                             gpus=preset_gpus,
                             hf_model_ids=preset_model_ids,
+                            threshold_file=threshold_rel,
+                            threshold_file_sha256=threshold_file_sha,
                         )
         else:
             # Single-source flow (one result-JSON tree per test file).
@@ -1282,6 +1294,8 @@ def discover(out, only, cfg):
                         calibration_preset=preset_name,
                         gpus=preset_gpus,
                         hf_model_ids=preset_model_ids,
+                        threshold_file=threshold_rel,
+                        threshold_file_sha256=threshold_file_sha,
                     )
     if only: stages = {k: v for k, v in stages.items() if k == only}
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1320,6 +1334,9 @@ def _write_yaml(stages, path):
             L += [f"    - {_yq(v)}" for v in e["hf_model_ids"]]
         L += [f"  test_file_sha256: {e['test_file_sha256']}",
               f"  last_discovered_at: {e['last_discovered_at']}"]
+        if e.get("threshold_file"):
+            L += [f"  threshold_file: {_yq(e['threshold_file'])}",
+                  f"  threshold_file_sha256: {e['threshold_file_sha256']}"]
         sc = e.get("sample_counts") or {}
         if sc:
             L.append("  sample_counts:")
@@ -1563,6 +1580,15 @@ def _run_cmd_inner(args, cfg, py, src, out):
         if sha256(tf) != all_stages[s].get("test_file_sha256"):
             print(f"warning: {s} test sha mismatch — "
                   f"run `tune.py discover --model {cfg['name']}`")
+        threshold_file = all_stages[s].get("threshold_file")
+        if threshold_file:
+            th = REPO_ROOT / threshold_file
+            if not th.exists():
+                print(f"error: threshold file missing for {s}: {th}")
+                return 2
+            if sha256(th) != all_stages[s].get("threshold_file_sha256"):
+                print(f"warning: {s} threshold sha mismatch — "
+                      f"run `tune.py discover --model {cfg['name']}`")
     # Which datasets do the selected tests actually reference?
     # Each test uses DATASETS["key"]; resolve key → repo_id via the
     # canonical benchmarks/dataset/prepare.py:DATASETS dict so we don't
@@ -2319,7 +2345,7 @@ def _read_bare_value(text, symbol):
 
 def _read_nested_value(text, symbol, conc, subkey):
     m = re.search(rf"^{re.escape(symbol)}\s*=\s*\{{", text, re.M)
-    if not m or conc is None: return None
+    if not m: return None
     # Walk braces from the opening `{` to find the matching close.
     i, depth, end = m.end() - 1, 0, None
     while i < len(text):
@@ -2332,6 +2358,16 @@ def _read_nested_value(text, symbol, conc, subkey):
         i += 1
     if end is None: return None
     block = text[m.start():end]
+    if conc is None:
+        keys = sorted(
+            set(
+                int(k)
+                for k in re.findall(r"^\s*(\d+)\s*:\s*\{", block, re.M)
+            )
+        )
+        if len(keys) != 1:
+            return None
+        conc = keys[0]
     sub = re.search(rf"\b{conc}\s*:\s*\{{(.*?)\}}", block, re.S)
     if not sub: return None
     val = re.search(
@@ -2393,8 +2429,10 @@ def apply_plan(run_dir):
         if not s["metrics"]:  # docs stage
             continue
         test_path = REPO_ROOT / s["test"]
-        text = test_path.read_text()
-        conc = _read_concurrency(text)
+        test_text = test_path.read_text()
+        threshold_path = REPO_ROOT / s.get("threshold_file", s["test"])
+        threshold_text = threshold_path.read_text()
+        conc = _read_concurrency(test_text) or _read_concurrency(threshold_text)
         per_run = []
         for k in range(1, N + 1):
             p = run_dir / sk / f"run{k}.json"
@@ -2402,6 +2440,7 @@ def apply_plan(run_dir):
         sg = {
             "stage_key": sk,
             "test": str(test_path),
+            "threshold_file": str(threshold_path),
             "title": s["title"],
             "stage_group": s.get("group"),
             "variant": s.get("variant"),
@@ -2428,9 +2467,9 @@ def apply_plan(run_dir):
             write_value = _apply_write_value(
                 worst_op, worst, worst_rounded, s.get("group"))
             if kind == "bare":
-                cur = _read_bare_value(text, sym)
+                cur = _read_bare_value(threshold_text, sym)
             elif kind == "nested":
-                cur = _read_nested_value(text, sym, conc, sub)
+                cur = _read_nested_value(threshold_text, sym, conc, sub)
             else:
                 cur = None
             direction = _classify_direction(worst_op, cur, write_value)

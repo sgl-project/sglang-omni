@@ -626,7 +626,7 @@ The generated stage aliases reflect this:
 
 ### TTS model calibration targets (stages 2–4)
 
-**Fixed presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
+**Fixed sample presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
 `SEEDTTS_EN_FULLSET_SAMPLES` (=1088), `TTS_SIMILARITY_MAX_SAMPLES` (=50),
 `STREAMING_BENCHMARK_MAX_SAMPLES` (=None → full 1088). These define *how many*
 samples CI runs; tune.py only uses them indirectly for strict-audit sample counts
@@ -634,24 +634,27 @@ samples CI runs; tune.py only uses them indirectly for strict-audit sample count
 Generation concurrency is **16** for both non-streaming and streaming TTS stages;
 the Qwen3-ASR WER transcribe phase remains **32**.
 
-**Calibrated thresholds** (worst-of-N → `apply-plan` → test file) use the
+**Calibrated thresholds** (worst-of-N → `apply-plan` → `tts_ci_config.py`) use the
 **same metric groups** for every TTS preset, but **different Python symbols**
-per preset. Never write MOSS worst-of-N into Higgs `VC_*` literals or vice
+per preset. Never write MOSS worst-of-N into Higgs `HIGGS_VC_*` literals or vice
 versa.
 
 | Stage key | Group | Higgs symbol(s) | MOSS symbol(s) |
 |-----------|-------|-----------------|----------------|
-| `tts_<preset>_nonstream_speed` | speed | `_VC_NON_STREAM_P95[...]` | `_MOSS_VC_NON_STREAM_P95[...]` |
-| `tts_<preset>_stream_speed` | speed | `_VC_STREAM_P95[...]` | `_MOSS_VC_STREAM_P95[...]` |
-| `tts_<preset>_nonstream_wer` | wer | `VC_WER_MAX_CORPUS` | `MOSS_VC_WER_MAX_CORPUS` |
-| `tts_<preset>_stream_wer` | wer | `VC_STREAM_WER_MAX_CORPUS` | `MOSS_VC_STREAM_WER_MAX_CORPUS` |
-| `tts_<preset>_nonstream_similarity` | similarity | `VC_SIMILARITY_MEAN_MIN` | `MOSS_VC_SIMILARITY_MEAN_MIN` |
-| `tts_<preset>_nonstream_utmos` | utmos | `VC_UTMOS_MEAN_REFERENCE` | `MOSS_VC_UTMOS_MEAN_REFERENCE` |
+| `tts_<preset>_nonstream_speed` | speed | `_HIGGS_VC_NON_STREAM_P95[...]` | `_MOSS_VC_NON_STREAM_P95[...]` |
+| `tts_<preset>_stream_speed` | speed | `_HIGGS_VC_STREAM_P95[...]` | `_MOSS_VC_STREAM_P95[...]` |
+| `tts_<preset>_nonstream_wer` | wer | `HIGGS_VC_WER_MAX_CORPUS` | `MOSS_VC_WER_MAX_CORPUS` |
+| `tts_<preset>_stream_wer` | wer | `HIGGS_VC_STREAM_WER_MAX_CORPUS` | `MOSS_VC_STREAM_WER_MAX_CORPUS` |
+| `tts_<preset>_nonstream_similarity` | similarity | `HIGGS_VC_SIMILARITY_MEAN_MIN` | `MOSS_VC_SIMILARITY_MEAN_MIN` |
+| `tts_<preset>_nonstream_utmos` | utmos | `HIGGS_VC_UTMOS_MEAN_REFERENCE` | `MOSS_VC_UTMOS_MEAN_REFERENCE` |
 
 `stages.yaml` `metrics.*.source` must point at the preset-specific symbol
 (e.g. `tts_moss_nonstream_wer` → `MOSS_VC_WER_MAX_CORPUS`). `discover` enforces
 this via `calibration_presets.<preset>.constant_filter` in
-`models/tts/config.yaml` (`^VC_` for higgs, `^MOSS_VC_` for moss).
+`models/tts/config.yaml` (`^HIGGS_VC_` for higgs, `^MOSS_VC_` for moss), and
+reads/writes threshold literals through
+`models/tts/config.yaml::metric_sources.test_tts_ci.py.threshold_file`
+(`tests/test_model/tts_ci_config.py`).
 
 Notes:
 - **WER** calibrates corpus reference only (`*_WER_MAX_CORPUS`); CI asserts via
@@ -662,8 +665,8 @@ Notes:
 - **UTMOS** calibrates `*_UTMOS_MEAN_REFERENCE`; CI derives the assertion
   threshold with `apply_mos_slack()`.
 - Both presets have `gate_thresholds=True`. Apply worst-of-N **per preset** using
-  the symbols above; a MOSS calibration run must not modify any `VC_*` /
-  `_VC_*` literal, and a Higgs run must not modify any `MOSS_VC_*` /
+  the symbols above; a MOSS calibration run must not modify any `HIGGS_VC_*` /
+  `_HIGGS_VC_*` literal, and a Higgs run must not modify any `MOSS_VC_*` /
   `_MOSS_VC_*` literal.
 - When applying from a run dir, use each stage's `calibration_preset` and
   `metrics.*.source` from `apply-plan` — do not infer cross-preset symbols from
@@ -1253,7 +1256,7 @@ weights checklist for agents).
        directly, and never re-format with `display.digits`.
      - **TTS preset isolation:** each stage's `calibration_preset` and
        `metrics.*.source` / `symbol` from apply-plan identify the exact
-       literal to edit (`VC_*` for higgs, `MOSS_VC_*` for moss). Never
+       literal to edit (`HIGGS_VC_*` for higgs, `MOSS_VC_*` for moss). Never
        substitute one preset's symbol for another, even when metric groups
        match.
      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
