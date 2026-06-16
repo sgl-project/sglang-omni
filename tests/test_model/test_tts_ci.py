@@ -49,7 +49,6 @@ from tests.test_model.conftest import (
     TTS_STAGE_NONSTREAM,
     TTS_STAGE_STREAM,
 )
-from tests.test_model.tts_ci_config import select_tts_ci_preset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     assert_workers_served_requests_since,
@@ -57,6 +56,7 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
+from tests.test_model.tts_ci_config import select_tts_ci_preset
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
@@ -107,12 +107,12 @@ WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
 
 
 def _validate_speed_results_keys(speed_results: dict) -> None:
-    assert "summary" in speed_results, (
-        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    )
-    assert "per_request" in speed_results, (
-        f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
-    )
+    assert (
+        "summary" in speed_results
+    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    assert (
+        "per_request" in speed_results
+    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
 
 
 def _print_saved_tts_speed_summary(
@@ -204,12 +204,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert "summary" in wer_results, (
-        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    )
-    assert "per_sample" in wer_results, (
-        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
-    )
+    assert (
+        "summary" in wer_results
+    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    assert (
+        "per_sample" in wer_results
+    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
@@ -535,9 +535,9 @@ def _find_downloaded_speed_results(
 ) -> tuple[str, dict]:
     root = Path(artifact_root)
     matches = sorted(root.rglob(f"{output_dir_name}/speed_results.json"))
-    assert matches, (
-        f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
-    )
+    assert (
+        matches
+    ), f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
     results_path = matches[0]
     return str(results_path.parent), _load_speed_results(results_path)
 
