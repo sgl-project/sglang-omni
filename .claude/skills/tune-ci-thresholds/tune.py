@@ -11,7 +11,7 @@ import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signa
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
@@ -364,6 +364,20 @@ def _required_model_ids_for_tests(cfg, test_names):
     model_ids = []
     for test_name in sorted(set(test_names)):
         model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
+    return _unique_ordered(model_ids)
+
+
+def _required_model_ids_for_stages(cfg, all_stages, stage_keys):
+    by_test = cfg.get("hf_model_ids_by_test") or {}
+    model_ids = []
+    for sk in stage_keys:
+        stage = all_stages[sk]
+        stage_model_ids = stage.get("hf_model_ids")
+        if stage_model_ids:
+            model_ids.extend(stage_model_ids)
+        else:
+            test_name = Path(stage["test"]).name
+            model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
     return _unique_ordered(model_ids)
 
 
@@ -928,6 +942,83 @@ def _build_sample_counts(sc_raw, default_file):
     return out
 
 
+def _calibration_presets(ms, base_extra):
+    """Return stage env/GPU overlays for non-random calibration presets.
+
+    CI may randomly pick one runtime preset, but calibration must observe
+    every configured preset. A metric_source can therefore declare
+    `calibration_presets`, and discover expands one stage set per preset.
+    """
+    presets = ms.get("calibration_presets") or {}
+    if not presets:
+        return [(None, base_extra, None, None)]
+    out = []
+    for name, raw in presets.items():
+        raw = raw or {}
+        env = dict(base_extra)
+        env.update(raw.get("extra_env") or {})
+        gpus = raw.get("gpus")
+        model_ids = raw.get("hf_model_ids")
+        out.append((name, env, gpus, model_ids))
+    return out
+
+
+def _stage_key(base, group, variant=None, calibration_preset=None):
+    parts = [base]
+    if calibration_preset:
+        parts.append(str(calibration_preset))
+    if variant:
+        parts.append(str(variant))
+    parts.append(group)
+    return "_".join(parts)
+
+
+def _stage_title(base, group, variant=None, calibration_preset=None):
+    parts = [base.replace("_", " ").upper()]
+    if calibration_preset:
+        parts.append(str(calibration_preset).upper())
+    if variant:
+        parts.append(str(variant).upper())
+    parts.append(group.capitalize())
+    return " ".join(parts)
+
+
+def _stage_entry(
+    rel,
+    title,
+    group,
+    extra_env,
+    context_vars,
+    test_file_sha256,
+    metrics,
+    sample_counts,
+    variant=None,
+    calibration_preset=None,
+    gpus=None,
+    hf_model_ids=None,
+):
+    entry = dict(
+        test=rel,
+        title=title,
+        group=group,
+        extra_env=extra_env,
+        context_vars=context_vars,
+        test_file_sha256=test_file_sha256,
+        last_discovered_at=now_iso(),
+        metrics=metrics,
+        sample_counts=sample_counts,
+    )
+    if variant:
+        entry["variant"] = variant
+    if calibration_preset:
+        entry["calibration_preset"] = calibration_preset
+    if gpus:
+        entry["gpus"] = int(gpus)
+    if hf_model_ids:
+        entry["hf_model_ids"] = hf_model_ids
+    return entry
+
+
 def _emit_groups(constants, cfg_paths, default_file, counters):
     """Build {group: {metric_kind: metric_dict}} from a constant list."""
     groups = {}
@@ -1103,13 +1194,37 @@ def discover(out, only, cfg):
                         group_sc = _build_sample_counts(sc_by_group[g], v_default)
                     else:
                         group_sc = v_sc_default
-                    key = f"{base}_{vname}_{g}"
-                    title = (f"{base.replace('_', ' ').upper()} "
-                             f"{vname.upper()} {g.capitalize()}")
-                    stages[key] = dict(test=rel, title=title, group=g,
-                        variant=vname, extra_env=extra, context_vars=ctx,
-                        test_file_sha256=sha, last_discovered_at=now_iso(),
-                        metrics=metrics, sample_counts=group_sc)
+                    for (
+                        preset_name,
+                        preset_env,
+                        preset_gpus,
+                        preset_model_ids,
+                    ) in _calibration_presets(ms, extra):
+                        key = _stage_key(
+                            base,
+                            g,
+                            variant=vname,
+                            calibration_preset=preset_name,
+                        )
+                        stages[key] = _stage_entry(
+                            rel,
+                            _stage_title(
+                                base,
+                                g,
+                                variant=vname,
+                                calibration_preset=preset_name,
+                            ),
+                            g,
+                            preset_env,
+                            ctx,
+                            sha,
+                            metrics,
+                            group_sc,
+                            variant=vname,
+                            calibration_preset=preset_name,
+                            gpus=preset_gpus,
+                            hf_model_ids=preset_model_ids,
+                        )
         else:
             # Single-source flow (one result-JSON tree per test file).
             default_file = ms.get("json_file")
@@ -1123,12 +1238,34 @@ def discover(out, only, cfg):
                     sample_counts = _build_sample_counts(sc_by_group[g], default_file)
                 else:
                     sample_counts = default_sample_counts
-                key = f"{base}_{g}"
-                title = f"{base.replace('_', ' ').upper()} {g.capitalize()}"
-                stages[key] = dict(test=rel, title=title, group=g,
-                    extra_env=extra, context_vars=ctx, test_file_sha256=sha,
-                    last_discovered_at=now_iso(), metrics=metrics,
-                    sample_counts=sample_counts)
+                for (
+                    preset_name,
+                    preset_env,
+                    preset_gpus,
+                    preset_model_ids,
+                ) in _calibration_presets(ms, extra):
+                    key = _stage_key(
+                        base,
+                        g,
+                        calibration_preset=preset_name,
+                    )
+                    stages[key] = _stage_entry(
+                        rel,
+                        _stage_title(
+                            base,
+                            g,
+                            calibration_preset=preset_name,
+                        ),
+                        g,
+                        preset_env,
+                        ctx,
+                        sha,
+                        metrics,
+                        sample_counts,
+                        calibration_preset=preset_name,
+                        gpus=preset_gpus,
+                        hf_model_ids=preset_model_ids,
+                    )
     if only: stages = {k: v for k, v in stages.items() if k == only}
     out.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml(stages, out)
@@ -1157,6 +1294,13 @@ def _write_yaml(stages, path):
             L.append("  context_vars: []")
         if e.get("variant"):
             L.append(f"  variant: {_yq(e['variant'])}")
+        if e.get("calibration_preset"):
+            L.append(f"  calibration_preset: {_yq(e['calibration_preset'])}")
+        if e.get("gpus"):
+            L.append(f"  gpus: {int(e['gpus'])}")
+        if e.get("hf_model_ids"):
+            L.append("  hf_model_ids:")
+            L += [f"    - {_yq(v)}" for v in e["hf_model_ids"]]
         L += [f"  test_file_sha256: {e['test_file_sha256']}",
               f"  last_discovered_at: {e['last_discovered_at']}"]
         sc = e.get("sample_counts") or {}
@@ -1249,14 +1393,35 @@ def _stage_meta_base(sk, stage):
     return None
 
 
+def _stage_alias_bases(sk, stage):
+    """Return every base token that should expand to this stage.
+
+    Example: `tts_moss_nonstream_speed` advertises:
+    `tts_moss_nonstream`, `tts_moss`, and `tts`.
+    """
+    bases = []
+
+    def add(value):
+        if value and value not in bases:
+            bases.append(value)
+
+    base = _stage_base_of(sk, stage)
+    add(base)
+    v = stage.get("variant")
+    if v and base.endswith(f"_{v}"):
+        add(base[:-len(v) - 1])
+    p = stage.get("calibration_preset")
+    for candidate in list(bases):
+        if p and candidate.endswith(f"_{p}"):
+            add(candidate[:-len(p) - 1])
+    return bases
+
+
 def _build_aliases(all_stages):
     by_base, by_group = {}, {}
     for sk, v in all_stages.items():
-        b = _stage_base_of(sk, v)
-        by_base.setdefault(b, []).append(sk)
-        meta = _stage_meta_base(sk, v)
-        if meta and meta != b:
-            by_base.setdefault(meta, []).append(sk)
+        for b in _stage_alias_bases(sk, v):
+            by_base.setdefault(b, []).append(sk)
         by_group.setdefault(v.get("group", ""), []).append(sk)
     return by_base, by_group
 
@@ -1283,6 +1448,30 @@ def _expand_stages(tokens, all_stages):
     return out
 
 
+def _stage_gpus(stage, gpus_per_test):
+    if stage.get("gpus"):
+        return int(stage["gpus"])
+    return gpus_per_test.get(Path(stage["test"]).name, 2)
+
+
+def _stage_env_key(stage):
+    return tuple(sorted((stage.get("extra_env") or {}).items()))
+
+
+def _run_namespace(test_path, stage_keys, all_stages):
+    test_base = Path(test_path).stem
+    presets = sorted({
+        str(all_stages[sk].get("calibration_preset"))
+        for sk in stage_keys
+        if all_stages[sk].get("calibration_preset")
+    })
+    if presets:
+        suffix = "__" + "_".join(presets)
+    else:
+        suffix = ""
+    return f"{test_base}{suffix}"
+
+
 def stages_list(cfg):
     sy = stages_path(cfg["name"])
     if not sy.exists():
@@ -1298,7 +1487,12 @@ def stages_list(cfg):
         print(f"  {base}  ({tp})")
         for sk in keys:
             g = all_stages[sk].get("group", "")
-            print(f"    {sk}  [{g}]")
+            details = [g]
+            if all_stages[sk].get("calibration_preset"):
+                details.append(f"preset={all_stages[sk]['calibration_preset']}")
+            if all_stages[sk].get("gpus"):
+                details.append(f"gpus={all_stages[sk]['gpus']}")
+            print(f"    {sk}  [{', '.join(details)}]")
     print("groups:")
     for g in sorted(by_group):
         if not g: continue
@@ -1372,11 +1566,10 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
-    selected_tests = [Path(all_stages[s]["test"]).name for s in sel]
-    required_models = _required_model_ids_for_tests(cfg, selected_tests)
+    required_models = _required_model_ids_for_stages(cfg, all_stages, sel)
     gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     selected_gpu_requirement = max(
-        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
         default=1,
     )
     if not args.skip_precheck:
@@ -1402,24 +1595,26 @@ def _run_cmd_inner(args, cfg, py, src, out):
         d = subprocess.run(["git", "diff", "HEAD"], cwd=REPO_ROOT,
                            capture_output=True, text=True, check=False).stdout
         (out / "workspace.diff").write_text(d)
-    # Group stages by test file so one pytest invocation covers all stages
-    # tied to that file (e.g. mmmu_accuracy + mmmu_speed come from a single
-    # `test_mmmu_accuracy_and_speed` function — run it once per repeat,
-    # extract both metric groups from the same result JSON).
+    # Group stages by test file and env so one pytest invocation covers all
+    # compatible stages tied to that file. Multi-preset TTS stages deliberately
+    # do not share a pytest invocation: `TTS_CI_MODEL=higgs` and
+    # `TTS_CI_MODEL=moss` must each run their own full observation.
     by_test = {}
     for sk in sel:
-        by_test.setdefault(all_stages[sk]["test"], []).append(sk)
+        stage = all_stages[sk]
+        key = (stage["test"], _stage_env_key(stage))
+        by_test.setdefault(key, []).append(sk)
     for sk in sel:
         (out / sk).mkdir(parents=True, exist_ok=True)
     max_passes = getattr(args, "max_passes", _DEFAULT_CALIBRATION_PASSES)
     max_gpus = max(
-        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
         default=2,
     )
     for pass_num in range(1, max_passes + 1):
         ran_any = False
         for k in range(1, args.repeats + 1):
-            for test_path, stage_keys in by_test.items():
+            for (test_path, _env_key), stage_keys in by_test.items():
                 if all(_run_json_ok(out / sk / f"run{k}.json", all_stages[sk])
                        for sk in stage_keys):
                     if pass_num == 1 and args.resume:
@@ -1427,7 +1622,10 @@ def _run_cmd_inner(args, cfg, py, src, out):
                               f"skipped (complete, {len(stage_keys)} stage(s))")
                     continue
                 _purge_incomplete_run(out, stage_keys, all_stages, k)
-                needed = gpus_per_test.get(Path(test_path).name, 2)
+                needed = max(
+                    (_stage_gpus(all_stages[s], gpus_per_test) for s in stage_keys),
+                    default=2,
+                )
                 extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
                     Path(test_path).name, []) or []
                 if pass_num > 1:
@@ -1588,7 +1786,8 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     the result JSONs written under the fresh pytest basetemp.
     """
     test_base = Path(test_path).stem
-    shared = out / "_pytest" / test_base
+    run_namespace = _run_namespace(test_path, stage_keys, all_stages)
+    shared = out / "_pytest" / run_namespace
     shared.mkdir(parents=True, exist_ok=True)
     log = shared / f"run{k}.log"
     basetemp = shared / f"basetemp_run{k}"
@@ -1629,8 +1828,17 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     )
     env["NO_PROXY"] = merged
     env["no_proxy"] = merged
-    env.update(all_stages[stage_keys[0]].get("extra_env") or {})
-    label = f"[{test_base}] run {k}/{total} ({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
+    stage_env = _stage_env_key(all_stages[stage_keys[0]])
+    for sk in stage_keys[1:]:
+        if _stage_env_key(all_stages[sk]) != stage_env:
+            raise RuntimeError(
+                f"internal grouping error: {test_path} stages have different env"
+            )
+    env.update(dict(stage_env))
+    label = (
+        f"[{run_namespace}] run {k}/{total} "
+        f"({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
+    )
     _print_run_banner(label, test_path, stage_keys, all_stages)
     attempts, status, reason, dur, text, pytest_rc = 0, "ok", "", 0.0, "", 0
     while attempts < _MAX_RUN_ATTEMPTS:
@@ -2174,9 +2382,17 @@ def apply_plan(run_dir):
         for k in range(1, N + 1):
             p = run_dir / sk / f"run{k}.json"
             per_run.append(json.loads(p.read_text()) if p.exists() else None)
-        sg = {"stage_key": sk, "test": str(test_path), "title": s["title"],
-              "stage_group": s.get("group"), "concurrency": conc,
-              "metrics": []}
+        sg = {
+            "stage_key": sk,
+            "test": str(test_path),
+            "title": s["title"],
+            "stage_group": s.get("group"),
+            "variant": s.get("variant"),
+            "calibration_preset": s.get("calibration_preset"),
+            "gpus": s.get("gpus"),
+            "concurrency": conc,
+            "metrics": [],
+        }
         for mk, m in s["metrics"].items():
             kind, sym, sub = _parse_source(m["source"])
             display = m.get("display", {})

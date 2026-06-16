@@ -27,11 +27,15 @@ Read `handoff:` in the active host profile and confirm with the user if unclear.
 
 | Scope | `--model` | Stages | Repeats | Order |
 |-------|-----------|--------|---------|-------|
-| TTS CI | `tts` | `ALL` | 5 | — |
+| TTS CI | `tts` | `ALL` | 5 | Runs Qwen3-ASR plus every configured TTS `calibration_preset`; do not use CI random pick |
 | Qwen3-Omni CI | `qwen3-omni-v1` | `ALL` | 5 | — |
 | Full CI | both | each `ALL` | 5 each | **TTS first**, then Qwen3-Omni |
 
 Run precheck for **every** model you will calibrate before `tune.py run`.
+For `--model tts`, the `tts` alias expands to every TTS model preset declared
+in `models/tts/config.yaml` (currently Higgs and MOSS). Calibration must produce
+worst-of-5 for each preset independently even though CI samples one preset per
+commit.
 
 ---
 
