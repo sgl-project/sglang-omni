@@ -91,7 +91,7 @@ TTS_CI_MODEL_PRESETS: dict[str, TtsCiModelPreset] = {
         model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
         ref_format="references",
         token_count="auto",
-        gate_thresholds=False,
+        gate_thresholds=True,
     ),
 }
 
@@ -173,13 +173,79 @@ _VC_STREAM_P95 = {
     }
 }
 
-
 VC_NON_STREAM_THRESHOLDS = apply_slack(
     _VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 VC_STREAM_THRESHOLDS = apply_slack(
     _VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
+
+# MOSS Local thresholds (worst-of-5, H20 CI, mem_fraction_static=0.85).
+# Separate symbol names so calibration apply never overwrites Higgs VC_* literals.
+MOSS_VC_WER_MAX_CORPUS = 0.0288
+MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0262
+MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
+MOSS_VC_SIMILARITY_MEAN_MIN = 63.618772201538086
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9534
+MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
+_MOSS_VC_NON_STREAM_P95 = {
+    16: {
+        "throughput_qps": 6.185,
+        "output_tok_per_req_s": 76.3,
+        "latency_mean_s": 2.576,
+        "rtf_mean": 0.6218,
+    }
+}
+_MOSS_VC_STREAM_P95 = {
+    16: {
+        "throughput_qps": 2.676,
+        "latency_mean_s": 5.951,
+        "rtf_mean": 1.4367,
+    }
+}
+MOSS_VC_NON_STREAM_THRESHOLDS = apply_slack(
+    _MOSS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+MOSS_VC_STREAM_THRESHOLDS = apply_slack(
+    _MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+
+
+def _non_stream_speed_thresholds() -> dict[int, dict[str, float]]:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_NON_STREAM_THRESHOLDS
+    return VC_NON_STREAM_THRESHOLDS
+
+
+def _stream_speed_thresholds() -> dict[int, dict[str, float]]:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_STREAM_THRESHOLDS
+    return VC_STREAM_THRESHOLDS
+
+
+def _wer_corpus_threshold() -> float:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_WER_CORPUS_THRESHOLD
+    return VC_WER_CORPUS_THRESHOLD
+
+
+def _stream_wer_corpus_threshold() -> float:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_STREAM_WER_CORPUS_THRESHOLD
+    return VC_STREAM_WER_CORPUS_THRESHOLD
+
+
+def _similarity_mean_min() -> float:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_SIMILARITY_MEAN_MIN
+    return VC_SIMILARITY_MEAN_MIN
+
+
+def _utmos_mean_min() -> float:
+    if _MODEL_NAME == "moss":
+        return MOSS_VC_UTMOS_MEAN_MIN
+    return VC_UTMOS_MEAN_MIN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
@@ -566,13 +632,16 @@ def _store_consistency_inputs(
             )
         if _PRESET.gate_thresholds:
             assert_speed_thresholds(
-                summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
+                summary,
+                _non_stream_speed_thresholds(),
+                concurrency,
+                collector=checks,
             )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
         if _PRESET.gate_thresholds:
             assert_speed_thresholds(
-                summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
+                summary, _stream_speed_thresholds(), concurrency, collector=checks
             )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
@@ -983,7 +1052,7 @@ def test_voice_cloning_wer(
         if _PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                VC_WER_CORPUS_THRESHOLD,
+                _wer_corpus_threshold(),
                 collector=checks,
             )
     checks.assert_all()
@@ -1013,7 +1082,7 @@ def test_voice_cloning_similarity(
         )
         if _PRESET.gate_thresholds:
             _assert_similarity_results(
-                results, VC_SIMILARITY_MEAN_MIN, collector=checks
+                results, _similarity_mean_min(), collector=checks
             )
     checks.assert_all()
 
@@ -1029,7 +1098,7 @@ def test_voice_cloning_utmos(
         _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
         if _PRESET.gate_thresholds:
-            _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+            _assert_utmos_results(results, _utmos_mean_min(), collector=checks)
     checks.assert_all()
 
 
@@ -1066,7 +1135,7 @@ def test_voice_cloning_streaming_wer(
         if _PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                VC_STREAM_WER_CORPUS_THRESHOLD,
+                _stream_wer_corpus_threshold(),
                 collector=checks,
             )
     checks.assert_all()

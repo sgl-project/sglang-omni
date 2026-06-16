@@ -162,7 +162,7 @@ tts_moss_nonstream_wer:
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
-      source: "VC_WER_MAX_CORPUS"
+      source: "MOSS_VC_WER_MAX_CORPUS"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
@@ -228,7 +228,7 @@ tts_moss_nonstream_similarity:
       json_path: "summary.evaluated"
   metrics:
     similarity_mean:
-      source: "VC_SIMILARITY_MEAN_MIN"
+      source: "MOSS_VC_SIMILARITY_MEAN_MIN"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json"
       json_path: "summary.speaker_similarity_mean"
       worst: min
@@ -294,7 +294,7 @@ tts_moss_nonstream_utmos:
       json_path: "summary.evaluated"
   metrics:
     utmos_mean:
-      source: "VC_UTMOS_MEAN_REFERENCE"
+      source: "MOSS_VC_UTMOS_MEAN_REFERENCE"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json"
       json_path: "summary.utmos_mean"
       worst: min
@@ -390,7 +390,7 @@ tts_moss_nonstream_speed:
       json_path: "summary.completed_requests"
   metrics:
     throughput_qps:
-      source: "_VC_NON_STREAM_P95['throughput_qps']"
+      source: "_MOSS_VC_NON_STREAM_P95['throughput_qps']"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.throughput_qps"
       worst: min
@@ -400,7 +400,7 @@ tts_moss_nonstream_speed:
         digits: 3
       status: OK
     output_tok_per_req_s:
-      source: "_VC_NON_STREAM_P95['output_tok_per_req_s']"
+      source: "_MOSS_VC_NON_STREAM_P95['output_tok_per_req_s']"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.output_tok_per_req_s"
       worst: min
@@ -410,7 +410,7 @@ tts_moss_nonstream_speed:
         digits: 1
       status: OK
     latency_mean_s:
-      source: "_VC_NON_STREAM_P95['latency_mean_s']"
+      source: "_MOSS_VC_NON_STREAM_P95['latency_mean_s']"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.latency_mean_s"
       worst: max
@@ -420,7 +420,7 @@ tts_moss_nonstream_speed:
         digits: 3
       status: OK
     rtf_mean:
-      source: "_VC_NON_STREAM_P95['rtf_mean']"
+      source: "_MOSS_VC_NON_STREAM_P95['rtf_mean']"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.rtf_mean"
       worst: max
@@ -486,7 +486,7 @@ tts_moss_stream_wer:
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
-      source: "VC_STREAM_WER_MAX_CORPUS"
+      source: "MOSS_VC_STREAM_WER_MAX_CORPUS"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
@@ -572,7 +572,7 @@ tts_moss_stream_speed:
       json_path: "summary.completed_requests"
   metrics:
     throughput_qps:
-      source: "_VC_STREAM_P95['throughput_qps']"
+      source: "_MOSS_VC_STREAM_P95['throughput_qps']"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.throughput_qps"
       worst: min
@@ -582,7 +582,7 @@ tts_moss_stream_speed:
         digits: 3
       status: OK
     latency_mean_s:
-      source: "_VC_STREAM_P95['latency_mean_s']"
+      source: "_MOSS_VC_STREAM_P95['latency_mean_s']"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.latency_mean_s"
       worst: max
@@ -592,7 +592,7 @@ tts_moss_stream_speed:
         digits: 3
       status: OK
     rtf_mean:
-      source: "_VC_STREAM_P95['rtf_mean']"
+      source: "_MOSS_VC_STREAM_P95['rtf_mean']"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.rtf_mean"
       worst: max
