@@ -824,19 +824,9 @@ def apply_torch_compile_cli_overrides(
 
 def serve(
     ctx: typer.Context,
-    model_path_arg: Annotated[
-        str | None,
-        typer.Argument(
-            help=(
-                "The Hugging Face model ID or local model directory. "
-                "Optional when --config provides model_path."
-            )
-        ),
-    ] = None,
     model_path: Annotated[
         str | None,
         typer.Option(
-            "--model-path",
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
                 "Required unless --config provides model_path."
@@ -1110,42 +1100,25 @@ def serve(
         config=config,
         text_only=text_only,
     )
-    if (
-        model_path is not None
-        and model_path_arg is not None
-        and model_path != model_path_arg
-    ):
-        raise typer.BadParameter(
-            "Use either positional model path or --model-path, not both."
-        )
-    resolved_model_path = model_path if model_path is not None else model_path_arg
 
     # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
     elif text_only:
-        if resolved_model_path is None:
-            raise typer.BadParameter(
-                "--model-path or positional model path is required unless --config is set"
-            )
-        config_manager = ConfigManager.from_model_path(
-            resolved_model_path, variant="text"
-        )
+        if model_path is None:
+            raise typer.BadParameter("--model-path is required unless --config is set")
+        config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
-        if resolved_model_path is None:
-            raise typer.BadParameter(
-                "--model-path or positional model path is required unless --config is set"
-            )
-        config_manager = ConfigManager.from_model_path(resolved_model_path)
+        if model_path is None:
+            raise typer.BadParameter("--model-path is required unless --config is set")
+        config_manager = ConfigManager.from_model_path(model_path)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
-    if resolved_model_path is not None:
-        merged_config = merged_config.model_copy(
-            update={"model_path": resolved_model_path}
-        )
+    if model_path is not None:
+        merged_config = merged_config.model_copy(update={"model_path": model_path})
     if colocate:
         _validate_colocate_config(merged_config)
     merged_config = apply_mem_fraction_cli_overrides(
