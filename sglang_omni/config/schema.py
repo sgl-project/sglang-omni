@@ -262,6 +262,20 @@ class PipelineConfig(BaseModel):
         return None
 
     @classmethod
+    def global_tp_stage_config(cls, tp: int) -> dict[str, int] | None:
+        """Return per-stage TP mapping for a global ``--tp`` value.
+
+        Override in model-specific configs to define how a high-level TP
+        intent expands into explicit stage TP sizes.  Return ``None`` to
+        indicate that the model does not support global TP expansion.
+
+        Example return value for ``--tp 2``::
+
+            {"thinker": 2, "image_encoder": 2, "audio_encoder": 1}
+        """
+        return None
+
+    @classmethod
     def tensor_parallel_server_args_overrides(
         cls,
         *,

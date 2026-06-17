@@ -250,6 +250,21 @@ _SPEECH_DEFAULT_PROCESSES = {
 }
 
 
+def _qwen3_global_tp_mapping(tp: int) -> dict[str, int]:
+    """Shared TP mapping for Qwen3-Omni stages.
+
+    Encoders are included in the mapping but will fall back to tp_size=1 at
+    expansion time if their factories don't yet accept TP kwargs (see #615).
+    """
+    if tp < 1:
+        raise ValueError(f"global tp must be >= 1, got {tp}")
+    return {
+        "thinker": tp,
+        "image_encoder": tp,
+        "audio_encoder": max(1, tp // 2),
+    }
+
+
 class Qwen3OmniPipelineConfig(PipelineConfig):
     """6-stage text-only pipeline."""
 
@@ -261,6 +276,10 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker"}
+
+    @classmethod
+    def global_tp_stage_config(cls, tp: int) -> dict[str, int] | None:
+        return _qwen3_global_tp_mapping(tp)
 
     @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
@@ -287,6 +306,12 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker", "talker": "talker_ar"}
+
+    @classmethod
+    def global_tp_stage_config(cls, tp: int) -> dict[str, int] | None:
+        mapping = _qwen3_global_tp_mapping(tp)
+        mapping["talker_ar"] = tp
+        return mapping
 
     @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:

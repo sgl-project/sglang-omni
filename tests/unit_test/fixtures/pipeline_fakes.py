@@ -194,6 +194,17 @@ def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
 
+def dummy_tp_factory(
+    *,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Fake factory that accepts TP kwargs, simulating a TP-capable stage."""
+    return {"tp_rank": tp_rank, "tp_size": tp_size, "nccl_port": nccl_port, **kwargs}
+
+
 def runtime_factory(
     *,
     model_path: str,

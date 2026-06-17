@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib
+import inspect
 import logging
+import warnings
 from typing import Annotated, Literal, NoReturn
 
 import typer
@@ -517,6 +520,60 @@ def apply_thinker_server_args_cli_overrides(
     return pipeline_config
 
 
+def _factory_supports_tp(factory_path: str) -> bool:
+    """Check if a stage factory accepts ``tp_rank`` in its signature."""
+    try:
+        module_path, func_name = factory_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        func = getattr(module, func_name)
+        return "tp_rank" in inspect.signature(func).parameters
+    except Exception:
+        return False
+
+
+def apply_global_tp_expansion(
+    pipeline_config: PipelineConfig,
+    *,
+    global_tp: int | None,
+) -> PipelineConfig:
+    """Expand a global ``--tp N`` into model-specific per-stage TP sizes.
+
+    The mapping is defined by each model config's
+    :meth:`PipelineConfig.global_tp_stage_config` classmethod.  For each
+    stage in the mapping, the factory signature is probed for ``tp_rank``
+    support — stages whose factories don't accept TP kwargs fall back to
+    ``tp_size=1`` with a warning.  Per-stage CLI overrides applied later
+    take precedence.
+    """
+    if global_tp is None:
+        return pipeline_config
+
+    try:
+        stage_tp_map = type(pipeline_config).global_tp_stage_config(global_tp)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if stage_tp_map is None:
+        raise typer.BadParameter(
+            f"--tp is not supported by {type(pipeline_config).__name__}"
+        )
+
+    for stage in pipeline_config.stages:
+        if stage.name not in stage_tp_map:
+            continue
+        tp = stage_tp_map[stage.name]
+        if tp > 1 and not _factory_supports_tp(stage.factory):
+            warnings.warn(
+                f"Stage '{stage.name}' factory does not support TP kwargs; "
+                f"keeping tp_size=1. Encoder TP support is in progress "
+                f"(see https://github.com/sgl-project/sglang-omni/pull/615).",
+                stacklevel=2,
+            )
+            continue
+        stage.tp_size = tp
+        stage.parallelism.tp = tp
+    return pipeline_config
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -940,6 +997,17 @@ def serve(
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
+    global_tp: Annotated[
+        int | None,
+        typer.Option(
+            "--tp",
+            help=(
+                "Global tensor parallel size. Expands to model-specific per-stage "
+                "TP sizes (e.g. for Qwen3-Omni: thinker=tp, image_encoder=tp, "
+                "audio_encoder=max(1,tp//2)). Per-stage overrides take precedence."
+            ),
+        ),
+    ] = None,
     thinker_tp_size: Annotated[
         int | None,
         typer.Option(
@@ -1137,6 +1205,10 @@ def serve(
         merged_config,
         cpu_offload_gb=cpu_offload_gb,
         quantization=quantization,
+    )
+    merged_config = apply_global_tp_expansion(
+        merged_config,
+        global_tp=global_tp,
     )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
