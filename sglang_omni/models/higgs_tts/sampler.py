@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
+from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
 
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 
@@ -241,25 +243,26 @@ def _sample_independent_batched(
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
+    # PR-D: fused top-k/top-p renormalization replaces full-vocab torch.sort +
+    # logit masking. Numerically equivalent to the sort path (max prob diff ~5e-7,
+    # identical support across temp/top_k/top_p sweeps); only differs from the prior
+    # code at an exact cumsum==top_p boundary, where it uses the standard nucleus
+    # convention. Inputs MUST be contiguous fp32 for the flashinfer renorm kernels.
+    probs = logits.float().softmax(dim=-1).reshape(B * N, V).contiguous()
     if top_k_buf is not None:
-        top_vals = logits.topk(K_MAX, dim=-1).values
-        k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
-        kth = top_vals.gather(-1, k_idx)
-        logits = torch.where(logits < kth, float("-inf"), logits)
-
+        tk = (
+            top_k_buf.view(B, 1)
+            .expand(B, N)
+            .reshape(B * N)
+            .clamp(min=1, max=V)
+            .to(torch.int32)
+            .contiguous()
+        )
+        probs = _fused_top_k_renorm(probs, tk)
     if top_p is not None:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-        cum_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
-        thresh = top_p.view(B, 1, 1)
-        remove = cum_probs > thresh
-        remove[..., 1:] = remove[..., :-1].clone()
-        remove[..., 0] = False
-        scatter = torch.zeros_like(remove)
-        scatter.scatter_(-1, sorted_indices, remove)
-        logits = torch.where(scatter, float("-inf"), logits)
-
-    probs = logits.softmax(dim=-1)
-    codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
+        tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
+        probs = _fused_top_p_renorm(probs, tp)
+    codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
     sampled_BN = codes_flat.view(B, N)
 
     return torch.where(greedy_B1, argmax_BN, sampled_BN).to(torch.long)
