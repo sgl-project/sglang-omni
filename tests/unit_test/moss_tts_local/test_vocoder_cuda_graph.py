@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
+
 import pytest
 import torch
 
@@ -87,6 +91,36 @@ def test_some_graphs_captured(session_bundle):
     assert (
         captured
     ), "no codec-decode CUDA graphs captured (all shapes fell back to eager)"
+
+
+def test_cuda_graph_capture_uses_thread_local_error_mode():
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        MossVocoderCudaGraphRunner,
+    )
+
+    source = textwrap.dedent(
+        inspect.getsource(MossVocoderCudaGraphRunner._capture_frame_count)
+    )
+    tree = ast.parse(source)
+    graph_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "graph"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "cuda"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "torch"
+    ]
+    assert graph_calls, "MOSS vocoder CUDA graph capture call not found"
+    assert any(
+        keyword.arg == "capture_error_mode"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value == "thread_local"
+        for call in graph_calls
+        for keyword in call.keywords
+    ), "MOSS vocoder CUDA graph capture must use thread-local error mode"
 
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")

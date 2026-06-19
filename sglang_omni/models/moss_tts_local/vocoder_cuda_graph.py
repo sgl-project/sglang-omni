@@ -158,7 +158,9 @@ class MossVocoderCudaGraphRunner:
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool=self._pool):
+        with torch.cuda.graph(
+            graph, pool=self._pool, capture_error_mode="thread_local"
+        ):
             result = self._codec._decode_frame(static_codes, static_lengths)
             static_audio = result.audio
             static_audio_lengths = result.audio_lengths
