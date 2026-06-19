@@ -120,12 +120,24 @@ def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms, react_on_success=Tr
 
     runs = gh_repo.get_workflow_runs(head_sha=head_sha)
 
+    rerun_candidates = [
+        run
+        for run in runs
+        if run.status == "completed" and run.conclusion in ("failure", "skipped")
+    ]
+    rerun_candidates.sort(key=lambda run: (run.created_at, run.id), reverse=True)
+
     rerun_count = 0
-    for run in runs:
-        if run.status != "completed":
+    seen_workflows = set()
+    for run in rerun_candidates:
+        workflow_key = (run.workflow_id, run.event)
+        if workflow_key in seen_workflows:
+            print(
+                f"Skipping older {run.conclusion} workflow: "
+                f"{run.name} (ID: {run.id})"
+            )
             continue
-        if run.conclusion not in ("failure", "skipped"):
-            continue
+        seen_workflows.add(workflow_key)
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
