@@ -7,40 +7,50 @@
 #   to match the stable stage-1 baseline; standalone qwen3-asr-v1 calibration
 #   keeps the test default of 32.
 #   Calibrate via `--model tts --stages qwen3_asr` or full `--stages ALL`.
-# - test_tts_ci.py runs stages 2–4 internal stages (nonstream / stream /
-#   consistency) controlled by --tts-stage. tune.py runs the full file once
-#   per repeat (all pytest functions that match the selected stage filter).
-# Fixed CI presets in test_tts_ci.py — NEVER written by apply; used only to
-# validate strict sample coverage during a run:
+# - test_tts_ci.py runs the model-dependent TTS stages (nonstream / stream /
+#   in-file consistency) controlled by --tts-stage in CI. Calibration does not
+#   use CI's random model pick. It expands every calibration_preset below and
+#   runs the full test file once per preset per repeat.
+# - CI random-pick coverage and calibration coverage are intentionally
+#   different: CI samples one TTS model per commit; calibration must run every
+#   TTS model preset and compute worst-of-N for each.
+# Fixed CI presets in test_tts_ci.py / tts_ci_config.py — NEVER written by
+# apply except the explicit threshold literals in tts_ci_config.py:
 #   SEEDTTS_EN_FULLSET_SAMPLES = 1088
 #   TTS_SIMILARITY_MAX_SAMPLES = 50
 #   STREAMING_BENCHMARK_MAX_SAMPLES = None  (full 1088 for streaming too)
 # - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
 #   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
 #   similarity_results.json and utmos_results.json for nonstream).
-# - WER thresholds are corpus-level only (`VC_WER_MAX_CORPUS` /
-#   `VC_STREAM_WER_MAX_CORPUS`); per-sample WER caps and generation failure
+# - WER thresholds are corpus-level only; each TTS preset has its own symbol
+#   namespace in tts_ci_config.py (Higgs: HIGGS_VC_* / _HIGGS_VC_*; MOSS:
+#   MOSS_VC_* / _MOSS_VC_*). Per-sample WER caps and generation failure
 #   budgets are not calibrated.
 # - Stage 3 (streaming consistency) has no numeric threshold in tune.py; see
 #   SKILL.md § TTS stage 3.
-# - Concurrency: Higgs/TTS generation CI uses --concurrency 16. Qwen3-ASR
-#   router/transcribe fan-out for WER uses 32 at DP=2.
+# - Concurrency: TTS generation CI uses --concurrency 16 for every preset.
+#   Qwen3-ASR router/transcribe fan-out for WER uses 32 at DP=2.
+# - GPU topology is per preset. Higgs and MOSS each need 2 GPUs total
+#   (2 router workers × 1 complete single-GPU server). MOSS Local's default
+#   pipeline config is colocated, so codec/vocoder stay on each worker's cuda:0.
 # - Venv: CI uses omni under OMNI_CI_HOME (see omni_ci_home below).
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
 #   weights are already present in the configured HF cache.
 name: tts
-description: "TTS CI (Higgs / SeedTTS EN)"
+description: "TTS CI (Qwen3-ASR + Higgs/MOSS SeedTTS EN)"
 hf_model_id: "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
 hf_model_ids_by_test:
   test_qwen3_asr_ci.py:
     - "Qwen/Qwen3-ASR-1.7B"
   test_tts_ci.py:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
+  - "/data/chenyang/.python/omni/bin/python"
   - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/calibration/omni/bin/python"
   - "/github/home/omni/bin/python"
@@ -52,12 +62,13 @@ auto_env:
   XDG_CACHE_HOME: "/github/home/calibration/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
   HF_HUB_DISABLE_XET: "1"
-  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
+  UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"
   UV_CACHE_DIR: "/github/home/.cache/uv"
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
-# TTS CI stage 1 (Qwen3-ASR) + stages 2–4 (Higgs voice clone) share omni venv.
+# TTS CI stage 1 (Qwen3-ASR) + model-dependent stages share omni venv.
 gpus_per_test:
   test_qwen3_asr_ci.py: 2
   test_tts_ci.py: 2
@@ -89,6 +100,26 @@ metric_sources:
       rtf_mean: "speed.rtf_mean"
       rtf_p95: "speed.rtf_p95"
   test_tts_ci.py:
+    threshold_file: "tests/test_model/tts_ci_config.py"
+    calibration_presets:
+      higgs:
+        extra_env:
+          TTS_CI_MODEL: "higgs"
+        gpus: 2
+        # discover: only Higgs HIGGS_VC_* constants (never MOSS_VC_*)
+        constant_filter: "^HIGGS_VC_"
+        hf_model_ids:
+          - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+          - "Qwen/Qwen3-ASR-1.7B"
+      moss:
+        extra_env:
+          TTS_CI_MODEL: "moss"
+        gpus: 2
+        # discover: only MOSS_VC_* constants (never HIGGS_VC_*)
+        constant_filter: "^MOSS_VC_"
+        hf_model_ids:
+          - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+          - "Qwen/Qwen3-ASR-1.7B"
     # Per-variant routing: each variant claims constants matching its
     # `constant_filter` regex (matched against the bare constant name with
     # any leading underscore stripped). Stage keys become
@@ -96,8 +127,9 @@ metric_sources:
     # tts_nonstream_similarity.
     variants:
       nonstream:
-        # VC_* (not VC_STREAM_*), _VC_NON_STREAM_*
-        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*$"
+        # Higgs HIGGS_VC_* (not HIGGS_VC_STREAM_*); MOSS uses MOSS_VC_*.
+        # via calibration_presets.<preset>.constant_filter in discover.
+        constant_filter: "^HIGGS_VC_(?!STREAM_).*|^MOSS_VC_(?!STREAM_).*"
         json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -121,7 +153,7 @@ metric_sources:
           similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
           utmos_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json::summary.utmos_mean"
       stream:
-        constant_filter: "^VC_STREAM_.*$"
+        constant_filter: "^HIGGS_VC_STREAM_.*$|^MOSS_VC_STREAM_.*$"
         json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"

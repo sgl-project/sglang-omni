@@ -1,0 +1,54 @@
+# In-container calibration layout — sglang-h20-ci
+#
+# Used by tune.py inside an already-running repro container (hostname match
+# or --host sglang-h20-ci). User starts the container; this file only records
+# paths and env overrides for calibration — not how to launch Docker.
+
+name: sglang-h20-ci
+hostname: sglang-h20-ci
+
+repo_root: /data/chenyang/sglang-omni
+venv_python: /data/chenyang/.python/omni/bin/python
+
+physical:
+  hf_hub: /root/.cache/huggingface
+  speaker_sim: /root/.cache/huggingface/speaker_sim
+  omni_ci_home: /github/home/calibration
+
+# tune.py maps physical.* → auto_env (HF_HOME, SEEDTTS_SIM_CACHE_DIR, …).
+# No symlinks. precheck reads these paths directly.
+# Full agent checklist: ../AGENT-PRECHECK.md
+
+precheck_checklist:
+  repo_root_exists: /data/chenyang/sglang-omni/pyproject.toml
+  venv_exists: /data/chenyang/.python/omni/bin/python
+  hf_hub: /root/.cache/huggingface
+  speaker_sim:
+    dir: /root/.cache/huggingface/speaker_sim
+    files: [wavlm_large.pt, wavlm_large_finetune.pth, .complete]
+  omni_ci_home: /github/home/calibration
+  tune_py:
+    - "python .claude/skills/tune-ci-thresholds/tune.py --model tts precheck --output-dir /tmp/precheck_tts"
+    - "python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck --output-dir /tmp/precheck_qwen3"
+
+speaker_similarity_bootstrap:
+  warm_cache:
+    env:
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      SEEDTTS_SIM_CACHE_DIR: /root/.cache/huggingface/speaker_sim
+    hf_token: "source ~/.zshrc"
+    command: |
+      cd /data/chenyang/sglang-omni
+      /data/chenyang/.python/omni/bin/python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+
+agent_policy:
+  env_check: report_missing_first
+  poll_interval_max_s: 120
+
+handoff:
+  goal: "Full CI calibration — tts ALL r5, then qwen3-omni-v1 ALL r5"
+  speaker_sim_complete: true
+  calibration_started: false
+  run_dirs: []

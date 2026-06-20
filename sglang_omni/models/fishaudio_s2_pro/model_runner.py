@@ -8,6 +8,8 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
+from sglang_omni.sampling.seed import resolve_row_seed
 
 
 def collect_s2pro_step_outputs(
@@ -132,6 +134,11 @@ class FishS2ProModelRunner(ModelRunner):
         self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
         self.model._ras_temperature[row_idx] = data.ras_temperature
         self.model._ras_top_p[row_idx] = data.ras_top_p
+        self.model._sampling_seeds[row_idx] = (
+            _NO_SEED if data.seed is None else resolve_row_seed(data.seed)
+        )
+        # semantic_history_count is the uncapped per-request AR step (pre-step).
+        self.model._step_count[row_idx] = int(data.semantic_history_count)
 
         history_len = self.model._rep_history_len
         history = data.semantic_history_tokens

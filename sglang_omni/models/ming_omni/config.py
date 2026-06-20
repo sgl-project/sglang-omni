@@ -110,15 +110,16 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_args={"thinker_max_seq_len": 8192},
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
+        stream_to=[DECODE_STAGE],
     )
 
 
 def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
     """Thinker stage variant for streaming TTS.
 
-    Fans out to decode + segmenter (final payload) AND streams per-token text
-    deltas to the segmenter via stream_to. Sets enable_streaming_tts=True
-    on the factory so the thinker installs the per-token stream callback.
+    Fans out to decode + segmenter and streams completion to both. The
+    segmenter consumes TTS text chunks; decode needs stream_done to finalize
+    stream=true requests.
     """
     return StageConfig(
         name=THINKER_STAGE,
@@ -127,7 +128,7 @@ def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
         factory_args={"thinker_max_seq_len": 8192, "enable_streaming_tts": True},
         gpu=gpu,
         next=[DECODE_STAGE, SEGMENTER_STAGE],
-        stream_to=[SEGMENTER_STAGE],
+        stream_to=[DECODE_STAGE, SEGMENTER_STAGE],
     )
 
 
@@ -160,6 +161,7 @@ def _decode_stage(*, process: str) -> StageConfig:
         process=process,
         factory=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
+        can_accept_stream_before_payload=True,
     )
 
 

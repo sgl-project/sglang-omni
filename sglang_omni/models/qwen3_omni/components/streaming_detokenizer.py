@@ -272,6 +272,13 @@ class StreamingDetokenizeScheduler:
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
 
+        output_token_logprobs = thinker_out.get("output_token_logprobs")
+        if output_token_logprobs is not None:
+            result.setdefault("output_token_logprobs", output_token_logprobs)
+        weight_version = thinker_out.get("weight_version")
+        if weight_version is not None:
+            result.setdefault("weight_version", weight_version)
+
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
         )

@@ -172,3 +172,43 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     ]
     assert output.can_run_cuda_graph is False
     assert not hasattr(ModelRunner, "prepare_prefill")
+
+
+def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
+    calls: list[tuple[str, int]] = []
+
+    class RecordingRunner(ModelRunner):
+        def on_generation_step_advanced(self, sched_req, generation_steps):
+            calls.append((sched_req.request_id, generation_steps))
+
+    runner = object.__new__(RecordingRunner)
+    runner.output_processor = SimpleNamespace(
+        process=lambda result, scheduler_output: {
+            req.request_id: SimpleNamespace(extra={})
+            for req in scheduler_output.requests
+        },
+    )
+    requests = [
+        SimpleNamespace(
+            request_id="req-1",
+            data=SimpleNamespace(generation_steps=0, extra_model_outputs={}),
+        ),
+        SimpleNamespace(
+            request_id="req-2",
+            data=SimpleNamespace(generation_steps=4, extra_model_outputs={}),
+        ),
+    ]
+
+    runner._finalize(
+        SimpleNamespace(
+            next_token_ids=torch.tensor([1, 2]),
+            logits_output=None,
+            can_run_cuda_graph=False,
+        ),
+        SimpleNamespace(),
+        SimpleNamespace(is_prefill_only=False, output_ids=None),
+        SimpleNamespace(seq_lens=[1, 1], input_ids=torch.zeros(2, dtype=torch.long)),
+        SimpleNamespace(requests=requests),
+    )
+
+    assert calls == [("req-1", 1), ("req-2", 5)]

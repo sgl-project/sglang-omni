@@ -29,6 +29,7 @@ class S2ProState:
     ras_window: int = 16
     ras_temperature: float = 1.0
     ras_top_p: float = 0.9
+    seed: int | None = None
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any | None = None  # [num_codebooks+1, T] as nested list
@@ -67,6 +68,8 @@ class S2ProState:
         data["ras_window"] = self.ras_window
         data["ras_temperature"] = self.ras_temperature
         data["ras_top_p"] = self.ras_top_p
+        if self.seed is not None:
+            data["seed"] = self.seed
         if self.output_codes is not None:
             data["output_codes"] = self._tensor_to_list(self.output_codes)
         if self.prompt_tokens:
@@ -101,6 +104,7 @@ class S2ProState:
             ras_window=data.get("ras_window", 16),
             ras_temperature=data.get("ras_temperature", 1.0),
             ras_top_p=data.get("ras_top_p", 0.9),
+            seed=data.get("seed"),
             output_codes=(
                 torch.tensor(data["output_codes"]) if "output_codes" in data else None
             ),

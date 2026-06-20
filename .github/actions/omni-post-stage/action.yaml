@@ -118,4 +118,7 @@ runs:
     - name: Kill GPU processes
       shell: bash
       run: |
-        bash .github/scripts/delete_gpu_process.sh
+        # note (Yue Yin): post-stage runs after the test in an isolated --rm
+        # container, so reap nvidia-invisible orphans (spawn workers) that would
+        # otherwise hold VRAM and time out the cleanup wait. setup must NOT.
+        bash .github/scripts/delete_gpu_process.sh --kill-orphans

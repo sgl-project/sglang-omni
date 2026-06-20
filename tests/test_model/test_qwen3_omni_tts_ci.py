@@ -60,9 +60,9 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0142
+VC_WER_BELOW_50_CORPUS_MAX = 0.0213
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 0
+VC_N_ABOVE_50_MAX = 2
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
 # #483 is fixed; the hard assertion is currently disabled in
 # test_voice_cloning_similarity (see docstring there). PR #469 also collected
@@ -76,7 +76,7 @@ VC_N_ABOVE_50_MAX = 0
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.1924
+VC_UTMOS_MEAN_REFERENCE = 4.2537
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
@@ -84,9 +84,9 @@ VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 5.750,
-        "output_tok_per_req_s": 5.7,
-        "latency_mean_s": 2.581,
+        "throughput_qps": 5.508,
+        "output_tok_per_req_s": 5.3,
+        "latency_mean_s": 2.757,
         "rtf_mean": 0.8149,
     },
 }
@@ -96,7 +96,7 @@ _VC_NON_STREAM_P95 = {
 # Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
-QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.95
+QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9078
 VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],

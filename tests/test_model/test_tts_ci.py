@@ -15,6 +15,8 @@ Author:
     Yuan Luo https://github.com/yuan-luo
     Yitong Guan https://github.com/minleminzui
     Xuesong Ye https://github.com/yxs
+    Yue Yin https://github.com/MelodyyyYin
+    Yijiang Tian https://github.com/yijiangt
 
 The benchmark supports one selected concurrency per test run. It defaults to
 concurrency 16 for CI; pass --concurrency all to sweep all supported
@@ -26,9 +28,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -52,12 +56,10 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
+from tests.test_model.tts_ci_config import select_tts_ci_preset
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
-    apply_mos_slack,
-    apply_slack,
-    apply_wer_slack,
     assert_speed_thresholds,
     assert_streaming_consistency,
     assert_wer_results,
@@ -68,11 +70,13 @@ from tests.utils import (
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
-TTS_MODEL_PATH = os.environ.get(
-    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
-)
 
-STARTUP_TIMEOUT = 180
+_MODEL_NAME, _TTS_CI_PRESET = select_tts_ci_preset()
+_PRESET = _TTS_CI_PRESET.model
+_THRESHOLDS = _TTS_CI_PRESET.thresholds
+TTS_MODEL_PATH = _PRESET.model_path
+
+STARTUP_TIMEOUT = _PRESET.startup_timeout
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
@@ -83,6 +87,10 @@ TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
+TTS_ALLOWED_LOCAL_MEDIA_PATH = Path(tempfile.gettempdir()).resolve()
+TTS_WORKER_EXTRA_ARGS = (
+    f"--allowed-local-media-path {shlex.quote(str(TTS_ALLOWED_LOCAL_MEDIA_PATH))}"
+)
 
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
@@ -93,52 +101,6 @@ TTS_SIMILARITY_MAX_SAMPLES = 50
 
 # Note (Ratish, Chenyang): We evalute the performance of TTS CI on our H20
 # CI machines and compute the thresholds based on the results.
-
-# Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 × slack_higher
-# Lower-is-better metrics (latency, rtf): threshold = P95 × slack_lower
-
-THRESHOLD_SLACK_HIGHER = 0.75
-THRESHOLD_SLACK_LOWER = 1.25
-VC_WER_MAX_CORPUS = 0.0104
-VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_CORPUS = 0.0098
-VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-
-VC_SIMILARITY_MEAN_MIN = 66.18289001464844
-# Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
-# worst-of-5 = 4.1538 · mean = 4.1618 · stdev = 0.0079
-VC_UTMOS_MEAN_REFERENCE = 4.1538
-VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
-
-# Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
-# others may not pass the CI.
-
-_VC_NON_STREAM_P95 = {
-    16: {
-        "throughput_qps": 11.558,
-        "output_tok_per_req_s": 119.9,
-        "latency_mean_s": 1.372,
-        "rtf_mean": 0.335,
-    }
-}
-
-_VC_STREAM_P95 = {
-    16: {
-        "throughput_qps": 11.535,
-        "output_tok_per_req_s": 109.7,
-        "latency_mean_s": 1.381,
-        "rtf_mean": 0.3174,
-    }
-}
-
-
-VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
-VC_STREAM_THRESHOLDS = apply_slack(
-    _VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
@@ -191,6 +153,8 @@ def _run_benchmark(
         concurrency=concurrency,
         max_samples=max_samples,
         stream=stream,
+        ref_format=_PRESET.ref_format,
+        token_count=_PRESET.token_count,
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     _validate_speed_results_keys(speed_results)
@@ -227,6 +191,8 @@ def _run_wer_transcribe(
         stream=stream,
         concurrency=concurrency,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
+        ref_format=_PRESET.ref_format,
+        token_count=_PRESET.token_count,
     )
     run_tts_seedtts_transcribe(
         config,
@@ -416,7 +382,7 @@ def _load_speed_results(results_path: Path) -> dict:
     return speed_results
 
 
-def _assert_tts_speed_result_integrity(
+def _assert_tts_audio_result_integrity(
     summary: dict,
     per_request: list[dict],
     *,
@@ -455,16 +421,6 @@ def _assert_tts_speed_result_integrity(
         f"{label}: expected positive audio_duration_mean_s, "
         f"got {audio_duration_mean_s}",
     )
-    output_tokens_mean = summary.get("output_tokens_mean", 0)
-    collector.check(
-        output_tokens_mean > 0,
-        f"{label}: expected positive output_tokens_mean, got {output_tokens_mean}",
-    )
-    prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
-    collector.check(
-        prompt_tokens_mean > 0,
-        f"{label}: expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
-    )
 
     for request in per_request:
         request_id = request.get("id", "<missing id>")
@@ -478,18 +434,6 @@ def _assert_tts_speed_result_integrity(
         collector.check(
             audio_duration_s is not None and audio_duration_s > 0,
             f"{label}: request {request_id} audio_duration_s={audio_duration_s}, "
-            "expected > 0",
-        )
-        prompt_tokens = request.get("prompt_tokens")
-        completion_tokens = request.get("completion_tokens")
-        collector.check(
-            prompt_tokens is not None and prompt_tokens > 0,
-            f"{label}: request {request_id} prompt_tokens={prompt_tokens}, "
-            "expected > 0",
-        )
-        collector.check(
-            completion_tokens is not None and completion_tokens > 0,
-            f"{label}: request {request_id} completion_tokens={completion_tokens}, "
             "expected > 0",
         )
 
@@ -506,21 +450,54 @@ def _store_consistency_inputs(
         f"TTS {mode} speed results at concurrency {concurrency}"
     )
     summary, per_request = results["summary"], results["per_request"]
-    _assert_tts_speed_result_integrity(
+    _assert_tts_audio_result_integrity(
         summary,
         per_request,
         label=f"TTS {mode} c{concurrency}",
         collector=checks,
     )
     if mode == "non_stream":
-        assert_speed_thresholds(
-            summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
+        output_tokens_mean = summary.get("output_tokens_mean", 0)
+        checks.check(
+            output_tokens_mean > 0,
+            f"TTS {mode} c{concurrency}: expected positive output_tokens_mean, "
+            f"got {output_tokens_mean}",
         )
+        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+        checks.check(
+            prompt_tokens_mean > 0,
+            f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
+            f"got {prompt_tokens_mean}",
+        )
+        for request in per_request:
+            request_id = request.get("id", "<missing id>")
+            if request.get("is_success") is not True:
+                continue
+            prompt_tokens = request.get("prompt_tokens")
+            completion_tokens = request.get("completion_tokens")
+            checks.check(
+                prompt_tokens is not None and prompt_tokens > 0,
+                f"TTS {mode} c{concurrency}: request {request_id} "
+                f"prompt_tokens={prompt_tokens}, expected > 0",
+            )
+            checks.check(
+                completion_tokens is not None and completion_tokens > 0,
+                f"TTS {mode} c{concurrency}: request {request_id} "
+                f"completion_tokens={completion_tokens}, expected > 0",
+            )
+        if _PRESET.gate_thresholds:
+            assert_speed_thresholds(
+                summary,
+                _THRESHOLDS.non_stream_speed,
+                concurrency,
+                collector=checks,
+            )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
-        assert_speed_thresholds(
-            summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
-        )
+        if _PRESET.gate_thresholds:
+            assert_speed_thresholds(
+                summary, _THRESHOLDS.stream_speed, concurrency, collector=checks
+            )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
     SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
@@ -725,7 +702,8 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args="",
+        worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip(),
+        num_gpus_per_worker=_PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:
@@ -887,13 +865,14 @@ def test_voice_cloning_streaming_consistency(
             checks.fail(f"vc_stream_c{concurrency} results missing")
         if ns is None or st is None:
             continue
-        assert_streaming_consistency(
-            ns,
-            st,
-            expected_stream_count=len(ns),
-            max_failed_requests=0,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_streaming_consistency(
+                ns,
+                st,
+                expected_stream_count=len(ns),
+                max_failed_requests=0,
+                collector=checks,
+            )
     checks.assert_all()
 
 
@@ -925,11 +904,12 @@ def test_voice_cloning_wer(
             label=f"TTS non-stream c{concurrency}",
             collector=checks,
         )
-        assert_wer_results(
-            results,
-            VC_WER_CORPUS_THRESHOLD,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_wer_results(
+                results,
+                _THRESHOLDS.wer_corpus,
+                collector=checks,
+            )
     checks.assert_all()
 
 
@@ -955,7 +935,10 @@ def test_voice_cloning_similarity(
             similarity_checkpoint,
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
-        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
+        if _PRESET.gate_thresholds:
+            _assert_similarity_results(
+                results, _THRESHOLDS.similarity_mean_min, collector=checks
+            )
     checks.assert_all()
 
 
@@ -969,7 +952,8 @@ def test_voice_cloning_utmos(
     for concurrency in selected_tts_concurrencies:
         _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
-        _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+        if _PRESET.gate_thresholds:
+            _assert_utmos_results(results, _THRESHOLDS.utmos_mean_min, collector=checks)
     checks.assert_all()
 
 
@@ -1003,11 +987,12 @@ def test_voice_cloning_streaming_wer(
             label=f"TTS stream c{concurrency}",
             collector=checks,
         )
-        assert_wer_results(
-            results,
-            VC_STREAM_WER_CORPUS_THRESHOLD,
-            collector=checks,
-        )
+        if _PRESET.gate_thresholds:
+            assert_wer_results(
+                results,
+                _THRESHOLDS.stream_wer_corpus,
+                collector=checks,
+            )
     checks.assert_all()
 
 

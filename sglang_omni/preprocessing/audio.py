@@ -14,7 +14,6 @@ import numpy.typing as npt
 import torch
 
 from .base import MediaIO, _is_url
-from .cache_key import compute_media_cache_key
 
 
 def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
@@ -304,4 +303,6 @@ def compute_audio_cache_key(audios: Any) -> str | None:
     This should be called BEFORE ensure_audio_list() to capture original
     paths which are much cheaper to hash than audio data.
     """
+    from .cache_key import compute_media_cache_key
+
     return compute_media_cache_key(audios, prefix="audio")

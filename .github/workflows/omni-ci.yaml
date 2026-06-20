@@ -1,16 +1,22 @@
 name: Omni CI
 
 # DAG:
-#   preflight ──► setup ──► tts-ci ──► qwen3-omni-ci ──► pr-test
-#                    │          │              │              │
-#                    └──────────┴──────────────┴──────────────┴──► cleanup
+#   preflight ──► setup ──► pr-test ──► tts-ci ──► qwen3-omni-ci
+#                    │           │          │              │
+#                    └───────────┴──────────┴──────────────┴──► cleanup
 
 
 on:
   pull_request:
     branches: [main]
-    types: [labeled, synchronize, reopened, ready_for_review]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      tts_ci_model:
+        description: "Optional TTS CI model preset to run (higgs or moss). Leave empty for random."
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
@@ -27,23 +33,60 @@ env:
         && format('/github/home/pr-{0}', github.event.pull_request.number)
         || format('/github/home/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+  MOSS_TTS_MODEL_PATH: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
 
 
 jobs:
   preflight:
-    name: preflight - lint and mergeability
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    name: omni-ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      labels: ${{ steps.pr.outputs.labels || '[]' }}
     steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Reruns reuse the original pull_request event payload, so fetch
+            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+
+      - name: Log PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          echo "PR labels: ${{ steps.pr.outputs.labels }}"
+          echo "PR draft: ${{ steps.pr.outputs.draft }}"
+
+      - name: Block draft PR
+        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        run: |
+          echo "PR is draft. Blocking Omni CI."
+          exit 1
+
+      - name: Require run-ci label
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
+            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into Omni CI."
+            exit 1
+          fi
+
       - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Check PR lint and mergeability
         if: ${{ github.event_name == 'pull_request' }}
@@ -58,14 +101,11 @@ jobs:
   setup:
     name: setup - omni venv
     needs: preflight
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    if: needs.preflight.result == 'success'
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -94,16 +134,68 @@ jobs:
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${QWEN3_ASR_MODEL_PATH}" \
-            "${TTS_MODEL_PATH}"
+            "${TTS_MODEL_PATH}" \
+            "${MOSS_TTS_MODEL_PATH}"
+
+  pick-tts-model:
+    name: pick TTS model
+    needs: [preflight, setup]
+    if: needs.preflight.result == 'success' && needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tts_ci_model: ${{ steps.pick.outputs.tts_ci_model }}
+    steps:
+      - id: pick
+        env:
+          PR_LABELS: ${{ needs.preflight.outputs.labels || '[]' }}
+          RUN_HIGGS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-higgs') }}
+          RUN_MOSS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-moss') }}
+          TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
+        run: |
+          models=(higgs moss)
+          selected=""
+          override="${TTS_CI_MODEL_OVERRIDE,,}"
+          if [[ -n "${override}" ]]; then
+            for model in "${models[@]}"; do
+              if [[ "${override}" == "${model}" ]]; then
+                selected="${model}"
+                break
+              fi
+            done
+            if [[ -z "${selected}" ]]; then
+              echo "::error::Unsupported tts_ci_model='${TTS_CI_MODEL_OVERRIDE}'. Expected one of: ${models[*]}"
+              exit 1
+            fi
+          else
+            if [[ "${RUN_HIGGS_LABEL}" == "true" && "${RUN_MOSS_LABEL}" == "true" ]]; then
+              echo "::error::Multiple TTS model labels found in PR labels ${PR_LABELS}. Keep only one of: run-higgs run-moss"
+              exit 1
+            fi
+            if [[ "${RUN_HIGGS_LABEL}" == "true" ]]; then
+              selected="higgs"
+            elif [[ "${RUN_MOSS_LABEL}" == "true" ]]; then
+              selected="moss"
+            fi
+          fi
+          if [[ -z "${selected}" ]]; then
+            seed="$(date +%s%N)"
+            RANDOM=$((seed % 32768))
+            selected="${models[$((RANDOM % ${#models[@]}))]}"
+            echo "Random seed for TTS CI model: ${seed}"
+          fi
+          echo "Selected TTS CI model: ${selected}"
+          echo "tts_ci_model=${selected}" >> "$GITHUB_OUTPUT"
 
   tts-ci:
     name: TTS CI
-    needs: setup
+    needs: [setup, pr-test, pick-tts-model]
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      needs.pick-tts-model.result == 'success'
     uses: ./.github/workflows/test-tts-ci.yaml
+    with:
+      tts_ci_model: ${{ needs.pick-tts-model.outputs.tts_ci_model }}
     secrets: inherit
 
   qwen3-omni-ci:
@@ -111,22 +203,15 @@ jobs:
     needs: [setup, tts-ci]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
     secrets: inherit
 
   pr-test:
     name: PR Test
-    needs: [setup, qwen3-omni-ci]
+    needs: setup
     if: >-
-      always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     uses: ./.github/workflows/test.yaml
     secrets: inherit
 
@@ -135,14 +220,11 @@ jobs:
     needs: [setup, tts-ci, qwen3-omni-ci, pr-test]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+      needs.setup.result == 'success'
     runs-on: [self-hosted]
     timeout-minutes: 5
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm

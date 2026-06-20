@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 STARTUP_TIMEOUT = 600
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/ensure_gpus_idle.sh"
+GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/delete_gpu_process.sh"
 GPU_IDLE_THRESHOLD_MB = 2048
 GPU_IDLE_WAIT_SECONDS = 600
 GPU_IDLE_POLL_SECONDS = 5
@@ -116,14 +115,14 @@ def wait_for_gpu_memory_release(
         flush=True,
     )
     result = subprocess.run(
-        ["bash", str(GPU_CLEANUP_SCRIPT)],
+        ["bash", str(GPU_CLEANUP_SCRIPT), "--kill-orphans"],
         env=env,
         check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
             "GPU memory was not released after stopping the inference server. "
-            f"ensure_gpus_idle.sh exit={result.returncode}"
+            f"delete_gpu_process.sh exit={result.returncode}"
         )
 
 
@@ -231,6 +230,8 @@ def managed_omni_server(
     port: int,
     host: str,
     log_file: Path | None,
+    max_running_requests: int | None = None,
+    cuda_graph_max_bs: int | None = None,
     timeout: int = STARTUP_TIMEOUT,
     wait_for_gpu_release: bool = True,
 ) -> Iterator[None]:
@@ -247,6 +248,10 @@ def managed_omni_server(
         "--host",
         host,
     ]
+    if max_running_requests is not None:
+        cmd.extend(["--max-running-requests", str(max_running_requests)])
+    if cuda_graph_max_bs is not None:
+        cmd.extend(["--cuda-graph-max-bs", str(cuda_graph_max_bs)])
     logger.info(f"Starting server: {' '.join(cmd)}")
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -279,26 +284,6 @@ def parse_sse_event(line: str) -> dict | None:
     if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
         return None
     return json.loads(line[len(SSE_DATA_PREFIX) :])
-
-
-def process_sse_line(
-    line: str,
-    total_duration: float,
-    usage: dict | None,
-) -> tuple[float, dict | None]:
-    """Merge one TTS-style Server-Sent Event (SSE) JSON event with duration and latest usage."""
-    event = parse_sse_event(line)
-    if event is None:
-        return total_duration, usage
-    audio = event.get("audio")
-    if audio is not None:
-        chunk_b64 = audio.get("data")
-        if chunk_b64:
-            total_duration += get_wav_duration(base64.b64decode(chunk_b64))
-    event_usage = event.get("usage")
-    if event_usage is not None:
-        usage = event_usage
-    return total_duration, usage
 
 
 def wait_for_service(

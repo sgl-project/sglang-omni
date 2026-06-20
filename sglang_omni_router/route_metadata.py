@@ -41,6 +41,7 @@ MESSAGE_TYPE_CAPABILITIES: dict[str, Capability] = {
     "video_url": "video_input",
     "input_video": "video_input",
 }
+OUTPUT_MODALITY_FIELDS = ("modalities", "output_modalities")
 
 
 class RouteMetadataError(ValueError):
@@ -439,14 +440,20 @@ def _infer_payload_capabilities(
     payload: dict[str, Any],
 ) -> set[Capability]:
     capabilities: set[Capability] = set()
-    for field, capability in INPUT_FIELD_CAPABILITIES.items():
-        if _has_non_empty(payload.get(field)):
-            capabilities.add(capability)
+    capabilities.update(_infer_input_field_capabilities(payload))
     if path == "/v1/audio/speech" and _speech_uses_reference_audio(payload):
         capabilities.add("audio_input")
     if _modalities_include_audio(payload) or _has_non_empty(payload.get("audio")):
         capabilities.add("audio_output")
     capabilities.update(_infer_message_part_capabilities(payload.get("messages")))
+    return capabilities
+
+
+def _infer_input_field_capabilities(payload: dict[str, Any]) -> set[Capability]:
+    capabilities: set[Capability] = set()
+    for field, capability in INPUT_FIELD_CAPABILITIES.items():
+        if _has_non_empty(payload.get(field)):
+            capabilities.add(capability)
     return capabilities
 
 
@@ -463,10 +470,11 @@ def _has_non_empty(value: Any) -> bool:
 
 
 def _modalities_include_audio(payload: dict[str, Any]) -> bool:
-    modalities = payload.get("modalities")
-    if not isinstance(modalities, list):
-        return False
-    return any(item == "audio" for item in modalities)
+    for field in OUTPUT_MODALITY_FIELDS:
+        modalities = payload.get(field)
+        if isinstance(modalities, list) and any(item == "audio" for item in modalities):
+            return True
+    return False
 
 
 def _speech_uses_reference_audio(payload: dict[str, Any]) -> bool:

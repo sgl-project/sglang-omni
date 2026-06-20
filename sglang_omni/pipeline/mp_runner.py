@@ -234,6 +234,7 @@ def _build_tp_stage_specs(
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
+    follower_admin_result_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     specs: list[StageLaunchConfig] = []
 
     for tp_rank in range(stage_cfg.tp_size):
@@ -262,6 +263,7 @@ def _build_tp_stage_specs(
                     recv_endpoint=recv_endpoint,
                     follower_work_queues=follower_work_queues,
                     follower_abort_queues=follower_abort_queues,
+                    follower_admin_result_queues=follower_admin_result_queues,
                     **stage_kwargs,
                 )
             )
@@ -280,6 +282,7 @@ def _build_tp_stage_specs(
                 recv_endpoint="",
                 internal_work_queue=follower_work_queues[idx],
                 internal_abort_queue=follower_abort_queues[idx],
+                internal_admin_result_queue=follower_admin_result_queues[idx],
                 **stage_kwargs,
             )
         )

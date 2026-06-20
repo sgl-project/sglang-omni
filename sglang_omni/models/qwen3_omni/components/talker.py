@@ -4,7 +4,6 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
-import copy
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -26,6 +25,11 @@ from sglang_omni.models.qwen3_omni.hf_config import (
 from sglang_omni.models.qwen3_omni.quantization import (
     convert_fp8_weight_scale_inv_for_sglang,
 )
+from sglang_omni.sampling.seed import (
+    SAMPLING_SEED_MASK,
+    derive_sampling_seed,
+    resolve_row_seed,
+)
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
@@ -46,22 +50,6 @@ def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
-
-
-def _quant_config_for_code_predictor_dense_mlp(
-    quant_config: Optional[QuantizationConfig],
-) -> Optional[QuantizationConfig]:
-    """Keep dense code-predictor MLP projections quantized under SGLang 0.5.8."""
-    ignored_layers = getattr(quant_config, "ignored_layers", None)
-    if not ignored_layers or "mlp.gate" not in ignored_layers:
-        return quant_config
-
-    # FIXME (Ratish): when upgrading past SGLang 0.5.8. Newer SGLang uses
-    # dotted-boundary ignored-layer matching, so this local workaround should be
-    # removed once this repo depends on that behavior.
-    cloned = copy.copy(quant_config)
-    cloned.ignored_layers = [layer for layer in ignored_layers if layer != "mlp.gate"]
-    return cloned
 
 
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -506,9 +494,6 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         # 5 dense decoder layers
         alt_stream = torch.cuda.Stream()
         self.model.layers = nn.ModuleList()
-        dense_mlp_quant_config = _quant_config_for_code_predictor_dense_mlp(
-            quant_config
-        )
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP
             layer = nn.Module()
@@ -532,7 +517,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             layer.mlp = Qwen3OmniMoeTalkerDenseMLP(
                 cp_config.hidden_size,
                 cp_config.intermediate_size,
-                quant_config=dense_mlp_quant_config,
+                quant_config=quant_config,
                 prefix=add_prefix(f"model.layers.{idx}.mlp", prefix),
             )
             layer.input_layernorm = RMSNorm(
@@ -942,8 +927,15 @@ class Qwen3OmniTalker(nn.Module):
             top_ps.append(float(sp.top_p))
             top_ks.append(int(sp.top_k))
             min_ps.append(float(sp.min_p))
+            # Unseeded: rank-shared seed from the request id (same on every TP
+            # rank), not os.urandom, else the ranks desync.
             seed = sp.sampling_seed
-            sampling_seeds.append(int(seed) if seed is not None else 0)
+            if seed is None:
+                seed = derive_sampling_seed("sglang-omni-unseeded-row", req.rid)
+            elif not (0 <= seed <= SAMPLING_SEED_MASK):
+                seed = resolve_row_seed(seed)
+                sp.sampling_seed = seed
+            sampling_seeds.append(seed)
 
             if penalty != 1.0 and req.output_ids:
                 unique = {
@@ -1181,7 +1173,9 @@ class Qwen3OmniTalker(nn.Module):
             vocab_mask=None,
             apply_mask_func=None,
             penalizer_orchestrator=None,
-            acc_linear_penalties=None,
+            # Note:(Chenchen Hong) SGLang 0.5.12.post1 replaced the single
+            # acc_linear_penalties field with acc_additive_penalties /
+            # acc_scaling_penalties (both default None); leave them unset.
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,

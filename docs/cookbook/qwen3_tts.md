@@ -12,17 +12,20 @@ endpoint.
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-Qwen3-TTS Base uses the upstream `qwen-tts` package, which currently pins Transformers 4.57.3.
-Install it only in environments that serve Qwen3-TTS:
+Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
+dependencies so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains
+in place:
 
 ```bash
-uv pip install transformers==4.57.3 accelerate==1.12.0 sox einops
+apt-get update && apt-get install -y sox
+uv pip install sox einops onnxruntime
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
-> Do **not** add `--upgrade` here. It pulls a newer `torch`/`numpy`/CUDA stack and breaks
-> inference (mismatched cuDNN, `numba` requires NumPy ≤ 2.3). Pin only what is listed above so
-> the image's existing `torch` build is left untouched.
+> Do **not** install `qwen-tts` with dependencies here. Its declared dependency
+> set can pull a different Transformers/Torch stack than the SGLang-Omni runtime.
+
+The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
 
 Download a checkpoint (both repositories are public, no token required):
 
@@ -33,7 +36,8 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`.
+The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes
+while the `tts_engine` captures CUDA graphs.
 
 ```bash
 # 0.6B
@@ -53,10 +57,9 @@ sgl-omni serve \
 
 ## Synthesizing Speech
 
-### Zero-shot
+### Text-only Requests
 
-
-Qwen3-TTS does not support zero-shot synthesis.
+Qwen3-TTS Base checkpoints require a reference clip. Text-only requests are supported by CustomVoice and VoiceDesign checkpoints; see [TTS Model Usage](../basic_usage/tts.md) for those launch commands.
 
 ### Voice Cloning
 
@@ -123,7 +126,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Set `"stream": true` to receive audio chunks in real time over Server-Sent Events (SSE):
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -134,12 +138,15 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
       "text": "We asked over twenty different people, and they all said it was his."
     }],
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
-Each event carries a base64-encoded audio chunk; the stream ends with `data: [DONE]`. See the
-[Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming) for a full Python SSE consumer.
+Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
+the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
+for a full Python raw PCM consumer.
 
 ## Generation Parameters
 
@@ -155,7 +162,7 @@ Each event carries a base64-encoded audio chunk; the stream ends with `data: [DO
 | `repetition_penalty` | `1.05` | Repetition penalty |
 | `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream audio chunks over SSE |
+| `stream` | `false` | Stream raw PCM audio chunks |
 
 ## Model Variants
 

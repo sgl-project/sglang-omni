@@ -24,6 +24,9 @@ def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
         "decode",
     ]
     assert config.terminal_stages == ["decode"]
+    stages = {stage.name: stage for stage in config.stages}
+    assert stages["thinker"].stream_to == ["decode"]
+    assert stages["decode"].can_accept_stream_before_payload is True
     assert all(
         stage.factory.startswith("sglang_omni.models.ming_omni.stages.create_")
         for stage in config.stages
@@ -68,7 +71,9 @@ def test_ming_speech_config_routes_decode_and_talker() -> None:
         == "sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker"
     )
     assert stages["thinker"].next == ["decode", "talker"]
+    assert stages["thinker"].stream_to == ["decode"]
     assert stages["decode"].terminal is True
+    assert stages["decode"].can_accept_stream_before_payload is True
     assert stages["talker"].terminal is True
     assert config.terminal_stages == ["decode", "talker"]
 
@@ -583,6 +588,7 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
     assert captured_server_args_kwargs["trust_remote_code"] is False
+    assert captured_server_args_kwargs["sampling_backend"] == "pytorch"
 
 
 def test_ming_arch_override_uses_composite_llm_config() -> None:
@@ -671,8 +677,10 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
 
 
 def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
+    from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
+        _attach_decode_final_metadata,
+    )
     from sglang_omni.models.ming_omni.io import MingOmniPipelineState
-    from sglang_omni.models.ming_omni.stages import _attach_decode_final_metadata
 
     class TensorLike:
         def numel(self) -> int:

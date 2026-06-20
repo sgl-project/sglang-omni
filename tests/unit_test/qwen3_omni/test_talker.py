@@ -13,7 +13,6 @@ from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
-    _quant_config_for_code_predictor_dense_mlp,
 )
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
@@ -255,6 +254,37 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert isinstance(queue, PendingTextTensorQueue)
     assert len(queue) == 2
     assert queue[0].device.type == "meta"
+
+
+def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
+    """Mixed CPU/CUDA thinker chunks must not crash torch.stack in build_prompt_prefill."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._device = torch.device("meta")
+    builder._dtype = torch.float16
+
+    chunks = [
+        SimpleNamespace(data=torch.ones((3,), dtype=torch.float32), metadata={}),
+        SimpleNamespace(
+            data=torch.zeros((3,), dtype=torch.float32),
+            metadata={
+                "layer_hidden": torch.empty((3,), device="meta", dtype=torch.float32)
+            },
+        ),
+    ]
+
+    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
+    result = torch.stack(
+        [
+            builder.chunk_layer_hidden_or_embed(c).to(
+                device=builder._device, dtype=builder._dtype
+            )
+            for c in chunks
+        ],
+        dim=0,
+    )
+    assert result.shape == (2, 3)
+    assert result.device.type == "meta"
+    assert result.dtype == torch.float16
 
 
 def test_pending_text_queue_rejects_unexpected_rank() -> None:
@@ -1243,33 +1273,6 @@ def test_qwen_talker_keeps_existing_read_only_weight_loader() -> None:
     assert module.param.weight_loader == "existing"
 
 
-def test_qwen_talker_code_predictor_dense_mlp_ignores_only_router_gate_skip() -> None:
-    """Prevents SGLang 0.5.8 substring skips from dequantizing gate_up_proj."""
-
-    class FakeQuantConfig:
-        ignored_layers = ["mlp.gate", "lm_head", "thinker.visual"]
-
-    original = FakeQuantConfig()
-
-    dense_mlp_config = _quant_config_for_code_predictor_dense_mlp(original)
-
-    assert dense_mlp_config is not original
-    assert original.ignored_layers == ["mlp.gate", "lm_head", "thinker.visual"]
-    assert dense_mlp_config.ignored_layers == ["lm_head", "thinker.visual"]
-
-
-def test_qwen_talker_code_predictor_quant_config_is_unchanged_without_router_skip() -> (
-    None
-):
-    class FakeQuantConfig:
-        ignored_layers = ["lm_head"]
-
-    original = FakeQuantConfig()
-
-    assert _quant_config_for_code_predictor_dense_mlp(original) is original
-    assert _quant_config_for_code_predictor_dense_mlp(None) is None
-
-
 def test_qwen_talker_activation_dtype_comes_from_codec_embedding() -> None:
     talker = object.__new__(Qwen3OmniTalker)
     talker.model = SimpleNamespace(
@@ -1777,3 +1780,62 @@ def test_build_talker_request_wall_clock(seq_len: int) -> None:
     mean_ms = (time.perf_counter() - t0) / 20 * 1000
 
     print(f"\n[seq_len={seq_len}] mean={mean_ms:.2f}ms  floats={seq_len * 2048:,}")
+
+
+def _talker_seed_self(max_bs: int = 4, vocab: int = 8) -> SimpleNamespace:
+    """Minimal stand-in carrying only the buffers prepare_decode_buffers writes."""
+    return SimpleNamespace(
+        _repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool),
+        _suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool),
+        _repetition_penalties=torch.ones(max_bs, 1),
+        _sampling_temperatures=torch.ones(max_bs, 1),
+        _sampling_top_ps=torch.ones(max_bs),
+        _sampling_top_ks=torch.ones(max_bs, dtype=torch.long),
+        _sampling_min_ps=torch.zeros(max_bs),
+        _sampling_seeds=torch.zeros(max_bs, dtype=torch.long),
+    )
+
+
+def _talker_seed_req(seed: int | None, rid: str) -> SimpleNamespace:
+    sp = SimpleNamespace(
+        repetition_penalty=1.0,  # keep rep/suppress branches off
+        temperature=0.8,
+        top_p=0.9,
+        top_k=20,
+        min_p=0.0,
+        sampling_seed=seed,
+    )
+    req = SimpleNamespace(
+        sampling_params=sp, output_ids=[], _codec_suppress_tokens=None, rid=rid
+    )
+    return SimpleNamespace(data=SimpleNamespace(req=req, suppress_tokens=None))
+
+
+def test_talker_prepare_decode_buffers_unseeded_seed_is_rank_shared() -> None:
+    # Unseeded rows must get a rank-shared (request-id-derived) seed, not
+    # os.urandom, or TP ranks desync.
+    from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, derive_sampling_seed
+
+    fake = _talker_seed_self()
+    seeded = _talker_seed_req(123, "seeded")
+    unseeded = _talker_seed_req(None, "unseeded")
+    out_of_range = _talker_seed_req(0xFFFFFFFF, "oor")
+    requests = [seeded, unseeded, out_of_range]
+
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+    seeds = fake._sampling_seeds
+
+    assert int(seeds[0]) == 123
+    assert seeded.data.req.sampling_params.sampling_seed == 123
+    assert int(seeds[1]) == derive_sampling_seed("sglang-omni-unseeded-row", "unseeded")
+    assert unseeded.data.req.sampling_params.sampling_seed is None  # not cached
+    assert int(seeds[2]) == (0xFFFFFFFF & SAMPLING_SEED_MASK)
+    assert out_of_range.data.req.sampling_params.sampling_seed == (
+        0xFFFFFFFF & SAMPLING_SEED_MASK
+    )
+
+    # stable across decode steps
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+    assert int(fake._sampling_seeds[1]) == derive_sampling_seed(
+        "sglang-omni-unseeded-row", "unseeded"
+    )

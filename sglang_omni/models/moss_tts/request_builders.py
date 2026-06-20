@@ -7,7 +7,6 @@ import base64
 import collections
 import hashlib
 import io
-import os
 import re
 import threading
 import time
@@ -18,7 +17,9 @@ import torch
 
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
+from sglang_omni.sampling.seed import derive_sampling_seed, new_random_sampling_seed
 from sglang_omni.scheduling.types import ARRequestData
+from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
 _MOSS_TTS_PREPARED_MARKER = "_moss_tts_prepared_request"
@@ -26,11 +27,10 @@ _TOKEN_PREFIX_RE = re.compile(r"^\$\{token:(\d+)\}")
 _TOKEN_PREFIX_START_RE = re.compile(r"^\$\{token:")
 _DATA_URI_RE = re.compile(r"^data:audio/[^;,]+;base64,(?P<data>.+)$", re.DOTALL)
 _INF_DELAY = -1
-_MOSS_TTS_SAMPLING_SEED_MASK = 0x7FFFFFFF
 
 
 def _new_moss_tts_sampling_seed() -> int:
-    return int.from_bytes(os.urandom(4), "little") & _MOSS_TTS_SAMPLING_SEED_MASK
+    return new_random_sampling_seed()
 
 
 def derive_moss_tts_sampling_seed(public_seed: int) -> int:
@@ -41,10 +41,7 @@ def derive_moss_tts_sampling_seed(public_seed: int) -> int:
     token depends only on its own seed and position -- never on its batch
     neighbours. This makes ``seed`` reproducible at any batch size, not just 1.
     """
-    digest = hashlib.blake2b(
-        f"moss-tts:{int(public_seed)}".encode("utf-8"), digest_size=8
-    ).digest()
-    return int.from_bytes(digest, "little") & _MOSS_TTS_SAMPLING_SEED_MASK
+    return derive_sampling_seed("moss-tts", int(public_seed))
 
 
 _GENERATION_FIELDS = (
@@ -201,6 +198,7 @@ def resolve_moss_reference(
         reference.get("audio_path")
         or reference.get("ref_audio")
         or reference.get("audio")
+        or audio_data_uri_from_reference(reference)
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")

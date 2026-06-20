@@ -11,11 +11,13 @@ import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signa
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.4.3"
+__version__ = "0.5.0"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
+HOSTS_DIR = SKILL_DIR / "hosts"
 DEFAULT_MODEL = "qwen3-omni-v1"
+_SPEAKER_SIM_MIN_BYTES = 100 * 1024 * 1024
 REPO_ROOT = Path("/sgl-workspace/sglang-omni")
 if not REPO_ROOT.exists():
     REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -28,7 +30,7 @@ _GPU_LAUNCH_RECHECK_S = 3
 _GPU_WAIT_POLL_S = 5
 _GPU_WAIT_TIMEOUT_S = 600
 _PYTEST_POLL_S = 30
-_MAX_RUN_ATTEMPTS = 4
+_MAX_RUN_ATTEMPTS = 4  # infra-failure retries (OOM/crash/GPU-not-clear) to obtain one clean repeat; calibration-specific, unrelated to CI's per-test failure retry
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
 _CI_HOME = Path("/github/home")
@@ -71,24 +73,12 @@ def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
 
 
 def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
-    # Runtime JIT dirs only — never remove the host wheel cache under
-    # /github/home/.cache/flashinfer-jit-cache/ (see install_flashinfer_jit_cache.sh).
+    # Wipe the runtime FlashInfer JIT dirs so kernels recompile cleanly on the
+    # next cold start. Matches CI, which wipes the same dir before every pytest
+    # attempt (omni-setup at job start + run_flaky_pytest.sh before each retry).
     for cache_dir in _flashinfer_cache_dirs(env):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
-
-def _venv_has_flashinfer_jit_cache(py: str) -> bool:
-    r = subprocess.run(
-        [
-            py,
-            "-c",
-            "import importlib.util, sys;"
-            "sys.exit(0 if importlib.util.find_spec('flashinfer_jit_cache') else 1)",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode == 0
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -199,6 +189,73 @@ def available_models():
                   if d.is_dir() and (d / "config.yaml").exists())
 
 
+def available_hosts():
+    if not HOSTS_DIR.exists():
+        return []
+    return sorted(p.stem for p in HOSTS_DIR.glob("*.yaml"))
+
+
+def load_host_profile(name: str | None = None) -> dict | None:
+    """Load hosts/<name>.yaml, or autodetect by socket.gethostname()."""
+    import socket
+
+    if name is None:
+        name = os.environ.get("TUNE_HOST")
+    if name:
+        path = HOSTS_DIR / f"{name}.yaml"
+        if not path.exists():
+            raise SystemExit(
+                f"host profile not found: {path} "
+                f"(known: {', '.join(available_hosts()) or 'none'})")
+        return _load_yaml(path, top_is_dict=True)
+    if not HOSTS_DIR.exists():
+        return None
+    hostname = socket.gethostname()
+    for path in HOSTS_DIR.glob("*.yaml"):
+        profile = _load_yaml(path, top_is_dict=True)
+        if profile.get("hostname") == hostname:
+            return profile
+    return None
+
+
+def resolve_repo_root(host: dict | None) -> Path:
+    if os.environ.get("TUNE_REPO_ROOT"):
+        return Path(os.environ["TUNE_REPO_ROOT"])
+    if host and host.get("repo_root"):
+        return Path(host["repo_root"])
+    default = Path("/sgl-workspace/sglang-omni")
+    if default.exists():
+        return default
+    return Path(__file__).resolve().parents[3]
+
+
+def apply_host_profile(cfg: dict, host: dict) -> None:
+    """Map host physical paths onto tune.py auto_env (no symlinks required)."""
+    physical = host.get("physical") or {}
+    auto = cfg.setdefault("auto_env", {})
+    if physical.get("hf_hub"):
+        auto["HF_HOME"] = str(physical["hf_hub"])
+    if physical.get("speaker_sim"):
+        auto["SEEDTTS_SIM_CACHE_DIR"] = str(physical["speaker_sim"])
+    if physical.get("omni_ci_home"):
+        cfg["omni_ci_home"] = str(physical["omni_ci_home"])
+    cfg["_host"] = host
+
+
+def _speaker_sim_assets_ok(cache_dir: Path) -> tuple[bool, str]:
+    marker = cache_dir / ".complete"
+    base = cache_dir / "wavlm_large.pt"
+    finetune = cache_dir / "wavlm_large_finetune.pth"
+    if not marker.is_file():
+        return False, "missing .complete — run speaker_similarity_assets --warm-cache"
+    for path in (base, finetune):
+        if not path.is_file():
+            return False, f"missing {path.name}"
+        if path.stat().st_size < _SPEAKER_SIM_MIN_BYTES:
+            return False, f"{path.name} too small (truncated?)"
+    return True, "wavlm_large.pt + wavlm_large_finetune.pth"
+
+
 def model_dir(name):  return MODELS_DIR / name
 def stages_path(name): return model_dir(name) / "stages.yaml"
 
@@ -219,7 +276,7 @@ def _apply_auto_env(cfg: dict) -> None:
         os.environ[key] = str(value)
 
 
-def load_model_config(name):
+def load_model_config(name, host: dict | None = None):
     p = model_dir(name) / "config.yaml"
     if not p.exists():
         raise SystemExit(f"model config not found: {p}. "
@@ -229,8 +286,10 @@ def load_model_config(name):
     cfg.setdefault("auto_env", {})
     cfg.setdefault("metric_sources", {})
     cfg.setdefault("hf_model_ids_by_test", {})
+    if host:
+        apply_host_profile(cfg, host)
     # Auto-apply env vars so the user doesn't need to export them
-    # manually. Overrides any pre-existing value to match CI.
+    # manually. Overrides any pre-existing value to match CI / host profile.
     _apply_auto_env(cfg)
     return cfg
 
@@ -305,6 +364,20 @@ def _required_model_ids_for_tests(cfg, test_names):
     model_ids = []
     for test_name in sorted(set(test_names)):
         model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
+    return _unique_ordered(model_ids)
+
+
+def _required_model_ids_for_stages(cfg, all_stages, stage_keys):
+    by_test = cfg.get("hf_model_ids_by_test") or {}
+    model_ids = []
+    for sk in stage_keys:
+        stage = all_stages[sk]
+        stage_model_ids = stage.get("hf_model_ids")
+        if stage_model_ids:
+            model_ids.extend(stage_model_ids)
+        else:
+            test_name = Path(stage["test"]).name
+            model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
     return _unique_ordered(model_ids)
 
 
@@ -632,9 +705,8 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     print(f"venv_python: {py} ({src})")
     if src == "default" and tried and len(tried) > 1:
         print(f"  (tried in order: {', '.join(tried)})")
-    # Container-name / hostname checks removed deliberately — they were
-    # fragile heuristics. Equivalence with CI is established by: same
-    # image's venv + pinned sglang/torch + cached assets + clean GPUs.
+    # Equivalence with CI is established by: same image's venv + pinned
+    # sglang/torch + cached assets + clean GPUs.
     if not (REPO_ROOT / "pyproject.toml").exists():
         errs.append(f"repo not found at {REPO_ROOT}")
         return _summary(errs, warns)
@@ -668,19 +740,6 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
-    if not _venv_has_flashinfer_jit_cache(py):
-        venv_root = Path(py).resolve().parent.parent
-        venv_name = venv_root.name
-        errs.append(
-            "flashinfer-jit-cache missing from venv (CI MoE graph capture needs it).\n"
-            f"  From repo root with OMNI_CI_HOME={cfg['auto_env'].get('OMNI_CI_HOME', '<set>')}:\n"
-            f"    ln -sfn {venv_root} ./{venv_name}\n"
-            f"    bash .github/scripts/install_flashinfer_jit_cache.sh {venv_name}\n"
-            "  Host wheel cache: /github/home/.cache/flashinfer-jit-cache/ (shared across PRs)."
-        )
-    # WER normalizer check removed — the user manages venv contents
-    # explicitly and the warning was producing noise without changing
-    # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
     def _cached(repo_id, kind):
         if kind == "dataset":
             r = subprocess.run(
@@ -764,6 +823,25 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
                 f"huggingface-cli download {repo_id}{flag}"
             )
         errs.append("\n".join(lines))
+    sim_dir = cfg["auto_env"].get("SEEDTTS_SIM_CACHE_DIR")
+    needs_speaker_sim = bool(cfg.get("_host")) or cfg["name"] in (
+        "tts", "qwen3-omni-v1")
+    if sim_dir and needs_speaker_sim:
+        sim_ok, sim_detail = _speaker_sim_assets_ok(Path(sim_dir))
+        mark = "✓" if sim_ok else "✗"
+        print(f"    {mark} speaker_sim: {sim_dir} ({sim_detail})")
+        if not sim_ok:
+            bootstrap = ((cfg.get("_host") or {}).get("speaker_similarity_bootstrap")
+                         or {})
+            cmd = (bootstrap.get("warm_cache") or {}).get("command", "").strip()
+            hint = (
+                f"speaker_sim incomplete at {sim_dir}: {sim_detail}. "
+                "Run benchmarks.metrics.speaker_similarity_assets --warm-cache "
+                f"with SEEDTTS_SIM_CACHE_DIR={sim_dir}."
+            )
+            if cmd:
+                hint += f" See hosts profile warm_cache.command."
+            errs.append(hint)
     smi = nvidia_smi_L()
     if not smi:
         errs.append("nvidia-smi -L returned no GPUs")
@@ -784,7 +862,7 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             errs.append(f"need {gpu_required} free GPU(s); only {free_count} free "
                         f"(busy: {sorted(busy)}) — "
                         "free them yourself (e.g. stop your own jobs); "
-                        "this skill no longer kills GPU processes")
+                        "precheck does not kill GPU processes")
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "precheck.json").write_text(json.dumps(dict(
@@ -862,6 +940,88 @@ def _build_sample_counts(sc_raw, default_file):
         jf, jp = _split_source(sc_raw.get(ck), default_file)
         out[ck] = dict(json_file=jf, json_path=jp)
     return out
+
+
+def _calibration_presets(ms, base_extra):
+    """Return stage env/GPU overlays for non-random calibration presets.
+
+    CI may randomly pick one runtime preset, but calibration must observe
+    every configured preset. A metric_source can therefore declare
+    `calibration_presets`, and discover expands one stage set per preset.
+    """
+    presets = ms.get("calibration_presets") or {}
+    if not presets:
+        return [(None, base_extra, None, None)]
+    out = []
+    for name, raw in presets.items():
+        raw = raw or {}
+        env = dict(base_extra)
+        env.update(raw.get("extra_env") or {})
+        gpus = raw.get("gpus")
+        model_ids = raw.get("hf_model_ids")
+        out.append((name, env, gpus, model_ids))
+    return out
+
+
+def _stage_key(base, group, variant=None, calibration_preset=None):
+    parts = [base]
+    if calibration_preset:
+        parts.append(str(calibration_preset))
+    if variant:
+        parts.append(str(variant))
+    parts.append(group)
+    return "_".join(parts)
+
+
+def _stage_title(base, group, variant=None, calibration_preset=None):
+    parts = [base.replace("_", " ").upper()]
+    if calibration_preset:
+        parts.append(str(calibration_preset).upper())
+    if variant:
+        parts.append(str(variant).upper())
+    parts.append(group.capitalize())
+    return " ".join(parts)
+
+
+def _stage_entry(
+    rel,
+    title,
+    group,
+    extra_env,
+    context_vars,
+    test_file_sha256,
+    metrics,
+    sample_counts,
+    variant=None,
+    calibration_preset=None,
+    gpus=None,
+    hf_model_ids=None,
+    threshold_file=None,
+    threshold_file_sha256=None,
+):
+    entry = dict(
+        test=rel,
+        title=title,
+        group=group,
+        extra_env=extra_env,
+        context_vars=context_vars,
+        test_file_sha256=test_file_sha256,
+        last_discovered_at=now_iso(),
+        metrics=metrics,
+        sample_counts=sample_counts,
+    )
+    if variant:
+        entry["variant"] = variant
+    if calibration_preset:
+        entry["calibration_preset"] = calibration_preset
+    if gpus:
+        entry["gpus"] = int(gpus)
+    if hf_model_ids:
+        entry["hf_model_ids"] = hf_model_ids
+    if threshold_file:
+        entry["threshold_file"] = threshold_file
+        entry["threshold_file_sha256"] = threshold_file_sha256
+    return entry
 
 
 def _emit_groups(constants, cfg_paths, default_file, counters):
@@ -1014,9 +1174,14 @@ def discover(out, only, cfg):
             print(f"  [warn] {tp.name}: no auto-inference available, "
                   f"needs metric_sources in config.yaml")
         ms = _merge_metric_sources(inferred, ms)
+        threshold_rel = ms.get("threshold_file")
+        threshold_tp = REPO_ROOT / threshold_rel if threshold_rel else tp
+        threshold_tree = ast.parse(threshold_tp.read_text())
+        threshold_sha = sha256(threshold_tp)
+        threshold_file_sha = threshold_sha if threshold_rel else None
         ignored_constants = set(ms.get("ignored_constants") or [])
         all_constants = [
-            (n, k) for (n, k) in _constants(tree)
+            (n, k) for (n, k) in _constants(threshold_tree)
             if n not in ignored_constants
         ]
         variants = ms.get("variants") or {}
@@ -1033,19 +1198,62 @@ def discover(out, only, cfg):
                 v_sc_default = _build_sample_counts(
                     vcfg.get("sample_counts") or {}, v_default)
                 sc_by_group = vcfg.get("sample_counts_by_group") or {}
-                v_groups = _emit_groups(claimed, v_paths, v_default, counters)
-                for g, metrics in v_groups.items():
-                    if g in sc_by_group:
-                        group_sc = _build_sample_counts(sc_by_group[g], v_default)
+                for (
+                    preset_name,
+                    preset_env,
+                    preset_gpus,
+                    preset_model_ids,
+                ) in _calibration_presets(ms, extra):
+                    preset_raw = (ms.get("calibration_presets") or {}).get(
+                        preset_name, {}
+                    ) or {}
+                    preset_filter = preset_raw.get("constant_filter")
+                    if preset_filter:
+                        ppat = re.compile(preset_filter)
+                        preset_claimed = [
+                            (n, k)
+                            for (n, k) in claimed
+                            if ppat.match(n.lstrip("_"))
+                        ]
                     else:
-                        group_sc = v_sc_default
-                    key = f"{base}_{vname}_{g}"
-                    title = (f"{base.replace('_', ' ').upper()} "
-                             f"{vname.upper()} {g.capitalize()}")
-                    stages[key] = dict(test=rel, title=title, group=g,
-                        variant=vname, extra_env=extra, context_vars=ctx,
-                        test_file_sha256=sha, last_discovered_at=now_iso(),
-                        metrics=metrics, sample_counts=group_sc)
+                        preset_claimed = claimed
+                    v_groups = _emit_groups(
+                        preset_claimed, v_paths, v_default, counters
+                    )
+                    for g, metrics in v_groups.items():
+                        if g in sc_by_group:
+                            group_sc = _build_sample_counts(
+                                sc_by_group[g], v_default
+                            )
+                        else:
+                            group_sc = v_sc_default
+                        key = _stage_key(
+                            base,
+                            g,
+                            variant=vname,
+                            calibration_preset=preset_name,
+                        )
+                        stages[key] = _stage_entry(
+                            rel,
+                            _stage_title(
+                                base,
+                                g,
+                                variant=vname,
+                                calibration_preset=preset_name,
+                            ),
+                            g,
+                            preset_env,
+                            ctx,
+                            sha,
+                            metrics,
+                            group_sc,
+                            variant=vname,
+                            calibration_preset=preset_name,
+                            gpus=preset_gpus,
+                            hf_model_ids=preset_model_ids,
+                            threshold_file=threshold_rel,
+                            threshold_file_sha256=threshold_file_sha,
+                        )
         else:
             # Single-source flow (one result-JSON tree per test file).
             default_file = ms.get("json_file")
@@ -1059,12 +1267,36 @@ def discover(out, only, cfg):
                     sample_counts = _build_sample_counts(sc_by_group[g], default_file)
                 else:
                     sample_counts = default_sample_counts
-                key = f"{base}_{g}"
-                title = f"{base.replace('_', ' ').upper()} {g.capitalize()}"
-                stages[key] = dict(test=rel, title=title, group=g,
-                    extra_env=extra, context_vars=ctx, test_file_sha256=sha,
-                    last_discovered_at=now_iso(), metrics=metrics,
-                    sample_counts=sample_counts)
+                for (
+                    preset_name,
+                    preset_env,
+                    preset_gpus,
+                    preset_model_ids,
+                ) in _calibration_presets(ms, extra):
+                    key = _stage_key(
+                        base,
+                        g,
+                        calibration_preset=preset_name,
+                    )
+                    stages[key] = _stage_entry(
+                        rel,
+                        _stage_title(
+                            base,
+                            g,
+                            calibration_preset=preset_name,
+                        ),
+                        g,
+                        preset_env,
+                        ctx,
+                        sha,
+                        metrics,
+                        sample_counts,
+                        calibration_preset=preset_name,
+                        gpus=preset_gpus,
+                        hf_model_ids=preset_model_ids,
+                        threshold_file=threshold_rel,
+                        threshold_file_sha256=threshold_file_sha,
+                    )
     if only: stages = {k: v for k, v in stages.items() if k == only}
     out.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml(stages, out)
@@ -1093,8 +1325,18 @@ def _write_yaml(stages, path):
             L.append("  context_vars: []")
         if e.get("variant"):
             L.append(f"  variant: {_yq(e['variant'])}")
+        if e.get("calibration_preset"):
+            L.append(f"  calibration_preset: {_yq(e['calibration_preset'])}")
+        if e.get("gpus"):
+            L.append(f"  gpus: {int(e['gpus'])}")
+        if e.get("hf_model_ids"):
+            L.append("  hf_model_ids:")
+            L += [f"    - {_yq(v)}" for v in e["hf_model_ids"]]
         L += [f"  test_file_sha256: {e['test_file_sha256']}",
               f"  last_discovered_at: {e['last_discovered_at']}"]
+        if e.get("threshold_file"):
+            L += [f"  threshold_file: {_yq(e['threshold_file'])}",
+                  f"  threshold_file_sha256: {e['threshold_file_sha256']}"]
         sc = e.get("sample_counts") or {}
         if sc:
             L.append("  sample_counts:")
@@ -1185,14 +1427,35 @@ def _stage_meta_base(sk, stage):
     return None
 
 
+def _stage_alias_bases(sk, stage):
+    """Return every base token that should expand to this stage.
+
+    Example: `tts_moss_nonstream_speed` advertises:
+    `tts_moss_nonstream`, `tts_moss`, and `tts`.
+    """
+    bases = []
+
+    def add(value):
+        if value and value not in bases:
+            bases.append(value)
+
+    base = _stage_base_of(sk, stage)
+    add(base)
+    v = stage.get("variant")
+    if v and base.endswith(f"_{v}"):
+        add(base[:-len(v) - 1])
+    p = stage.get("calibration_preset")
+    for candidate in list(bases):
+        if p and candidate.endswith(f"_{p}"):
+            add(candidate[:-len(p) - 1])
+    return bases
+
+
 def _build_aliases(all_stages):
     by_base, by_group = {}, {}
     for sk, v in all_stages.items():
-        b = _stage_base_of(sk, v)
-        by_base.setdefault(b, []).append(sk)
-        meta = _stage_meta_base(sk, v)
-        if meta and meta != b:
-            by_base.setdefault(meta, []).append(sk)
+        for b in _stage_alias_bases(sk, v):
+            by_base.setdefault(b, []).append(sk)
         by_group.setdefault(v.get("group", ""), []).append(sk)
     return by_base, by_group
 
@@ -1219,6 +1482,30 @@ def _expand_stages(tokens, all_stages):
     return out
 
 
+def _stage_gpus(stage, gpus_per_test):
+    if stage.get("gpus"):
+        return int(stage["gpus"])
+    return gpus_per_test.get(Path(stage["test"]).name, 2)
+
+
+def _stage_env_key(stage):
+    return tuple(sorted((stage.get("extra_env") or {}).items()))
+
+
+def _run_namespace(test_path, stage_keys, all_stages):
+    test_base = Path(test_path).stem
+    presets = sorted({
+        str(all_stages[sk].get("calibration_preset"))
+        for sk in stage_keys
+        if all_stages[sk].get("calibration_preset")
+    })
+    if presets:
+        suffix = "__" + "_".join(presets)
+    else:
+        suffix = ""
+    return f"{test_base}{suffix}"
+
+
 def stages_list(cfg):
     sy = stages_path(cfg["name"])
     if not sy.exists():
@@ -1234,7 +1521,12 @@ def stages_list(cfg):
         print(f"  {base}  ({tp})")
         for sk in keys:
             g = all_stages[sk].get("group", "")
-            print(f"    {sk}  [{g}]")
+            details = [g]
+            if all_stages[sk].get("calibration_preset"):
+                details.append(f"preset={all_stages[sk]['calibration_preset']}")
+            if all_stages[sk].get("gpus"):
+                details.append(f"gpus={all_stages[sk]['gpus']}")
+            print(f"    {sk}  [{', '.join(details)}]")
     print("groups:")
     for g in sorted(by_group):
         if not g: continue
@@ -1243,7 +1535,7 @@ def stages_list(cfg):
 
 
 def run_cmd(args):
-    cfg = load_model_config(args.model)
+    cfg = load_model_config(args.model, host=getattr(args, "host_profile", None))
     py, src, _ = resolve_venv(args.venv_python, cfg)
     out = Path(args.output_dir) if args.output_dir \
         else DEFAULT_RUN_ROOT / f"{cfg['name']}-{ts_dir()}"
@@ -1288,6 +1580,15 @@ def _run_cmd_inner(args, cfg, py, src, out):
         if sha256(tf) != all_stages[s].get("test_file_sha256"):
             print(f"warning: {s} test sha mismatch — "
                   f"run `tune.py discover --model {cfg['name']}`")
+        threshold_file = all_stages[s].get("threshold_file")
+        if threshold_file:
+            th = REPO_ROOT / threshold_file
+            if not th.exists():
+                print(f"error: threshold file missing for {s}: {th}")
+                return 2
+            if sha256(th) != all_stages[s].get("threshold_file_sha256"):
+                print(f"warning: {s} threshold sha mismatch — "
+                      f"run `tune.py discover --model {cfg['name']}`")
     # Which datasets do the selected tests actually reference?
     # Each test uses DATASETS["key"]; resolve key → repo_id via the
     # canonical benchmarks/dataset/prepare.py:DATASETS dict so we don't
@@ -1308,11 +1609,10 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
-    selected_tests = [Path(all_stages[s]["test"]).name for s in sel]
-    required_models = _required_model_ids_for_tests(cfg, selected_tests)
+    required_models = _required_model_ids_for_stages(cfg, all_stages, sel)
     gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     selected_gpu_requirement = max(
-        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
         default=1,
     )
     if not args.skip_precheck:
@@ -1338,24 +1638,26 @@ def _run_cmd_inner(args, cfg, py, src, out):
         d = subprocess.run(["git", "diff", "HEAD"], cwd=REPO_ROOT,
                            capture_output=True, text=True, check=False).stdout
         (out / "workspace.diff").write_text(d)
-    # Group stages by test file so one pytest invocation covers all stages
-    # tied to that file (e.g. mmmu_accuracy + mmmu_speed come from a single
-    # `test_mmmu_accuracy_and_speed` function — run it once per repeat,
-    # extract both metric groups from the same result JSON).
+    # Group stages by test file and env so one pytest invocation covers all
+    # compatible stages tied to that file. Multi-preset TTS stages deliberately
+    # do not share a pytest invocation: `TTS_CI_MODEL=higgs` and
+    # `TTS_CI_MODEL=moss` must each run their own full observation.
     by_test = {}
     for sk in sel:
-        by_test.setdefault(all_stages[sk]["test"], []).append(sk)
+        stage = all_stages[sk]
+        key = (stage["test"], _stage_env_key(stage))
+        by_test.setdefault(key, []).append(sk)
     for sk in sel:
         (out / sk).mkdir(parents=True, exist_ok=True)
     max_passes = getattr(args, "max_passes", _DEFAULT_CALIBRATION_PASSES)
     max_gpus = max(
-        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
         default=2,
     )
     for pass_num in range(1, max_passes + 1):
         ran_any = False
         for k in range(1, args.repeats + 1):
-            for test_path, stage_keys in by_test.items():
+            for (test_path, _env_key), stage_keys in by_test.items():
                 if all(_run_json_ok(out / sk / f"run{k}.json", all_stages[sk])
                        for sk in stage_keys):
                     if pass_num == 1 and args.resume:
@@ -1363,7 +1665,10 @@ def _run_cmd_inner(args, cfg, py, src, out):
                               f"skipped (complete, {len(stage_keys)} stage(s))")
                     continue
                 _purge_incomplete_run(out, stage_keys, all_stages, k)
-                needed = gpus_per_test.get(Path(test_path).name, 2)
+                needed = max(
+                    (_stage_gpus(all_stages[s], gpus_per_test) for s in stage_keys),
+                    default=2,
+                )
                 extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
                     Path(test_path).name, []) or []
                 if pass_num > 1:
@@ -1524,7 +1829,8 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     the result JSONs written under the fresh pytest basetemp.
     """
     test_base = Path(test_path).stem
-    shared = out / "_pytest" / test_base
+    run_namespace = _run_namespace(test_path, stage_keys, all_stages)
+    shared = out / "_pytest" / run_namespace
     shared.mkdir(parents=True, exist_ok=True)
     log = shared / f"run{k}.log"
     basetemp = shared / f"basetemp_run{k}"
@@ -1565,8 +1871,17 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     )
     env["NO_PROXY"] = merged
     env["no_proxy"] = merged
-    env.update(all_stages[stage_keys[0]].get("extra_env") or {})
-    label = f"[{test_base}] run {k}/{total} ({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
+    stage_env = _stage_env_key(all_stages[stage_keys[0]])
+    for sk in stage_keys[1:]:
+        if _stage_env_key(all_stages[sk]) != stage_env:
+            raise RuntimeError(
+                f"internal grouping error: {test_path} stages have different env"
+            )
+    env.update(dict(stage_env))
+    label = (
+        f"[{run_namespace}] run {k}/{total} "
+        f"({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
+    )
     _print_run_banner(label, test_path, stage_keys, all_stages)
     attempts, status, reason, dur, text, pytest_rc = 0, "ok", "", 0.0, "", 0
     while attempts < _MAX_RUN_ATTEMPTS:
@@ -1971,10 +2286,9 @@ def report(run_dir):
             v = min(vals[k]) if worst[k] == "min" else max(vals[k])
             wc.append(f"**{_fmt(v, disp[k])}**")
         L += [f"| **Worst-of-{N}** | " + " | ".join(wc) + " |", ""]
-        # `Threshold: ...` lines were removed — what actually got written
-        # into the test files (if anything) is recorded in the
-        # "Applied changes" table appended after mode-smart/mode-full
-        # apply (see SKILL.md step 9).
+        # What actually got written into the test files (if anything) is
+        # recorded in the "Applied changes" table appended after
+        # mode-smart/mode-full apply (see SKILL.md step 9).
         for k in nulls:
             L.append(f"> ⚠ {disp[k]['label']}: no `json_path` in stages.yaml "
                      "(config.yaml `metric_sources` missing this metric)")
@@ -2031,7 +2345,7 @@ def _read_bare_value(text, symbol):
 
 def _read_nested_value(text, symbol, conc, subkey):
     m = re.search(rf"^{re.escape(symbol)}\s*=\s*\{{", text, re.M)
-    if not m or conc is None: return None
+    if not m: return None
     # Walk braces from the opening `{` to find the matching close.
     i, depth, end = m.end() - 1, 0, None
     while i < len(text):
@@ -2044,6 +2358,16 @@ def _read_nested_value(text, symbol, conc, subkey):
         i += 1
     if end is None: return None
     block = text[m.start():end]
+    if conc is None:
+        keys = sorted(
+            set(
+                int(k)
+                for k in re.findall(r"^\s*(\d+)\s*:\s*\{", block, re.M)
+            )
+        )
+        if len(keys) != 1:
+            return None
+        conc = keys[0]
     sub = re.search(rf"\b{conc}\s*:\s*\{{(.*?)\}}", block, re.S)
     if not sub: return None
     val = re.search(
@@ -2105,15 +2429,26 @@ def apply_plan(run_dir):
         if not s["metrics"]:  # docs stage
             continue
         test_path = REPO_ROOT / s["test"]
-        text = test_path.read_text()
-        conc = _read_concurrency(text)
+        test_text = test_path.read_text()
+        threshold_path = REPO_ROOT / s.get("threshold_file", s["test"])
+        threshold_text = threshold_path.read_text()
+        conc = _read_concurrency(test_text) or _read_concurrency(threshold_text)
         per_run = []
         for k in range(1, N + 1):
             p = run_dir / sk / f"run{k}.json"
             per_run.append(json.loads(p.read_text()) if p.exists() else None)
-        sg = {"stage_key": sk, "test": str(test_path), "title": s["title"],
-              "stage_group": s.get("group"), "concurrency": conc,
-              "metrics": []}
+        sg = {
+            "stage_key": sk,
+            "test": str(test_path),
+            "threshold_file": str(threshold_path),
+            "title": s["title"],
+            "stage_group": s.get("group"),
+            "variant": s.get("variant"),
+            "calibration_preset": s.get("calibration_preset"),
+            "gpus": s.get("gpus"),
+            "concurrency": conc,
+            "metrics": [],
+        }
         for mk, m in s["metrics"].items():
             kind, sym, sub = _parse_source(m["source"])
             display = m.get("display", {})
@@ -2132,9 +2467,9 @@ def apply_plan(run_dir):
             write_value = _apply_write_value(
                 worst_op, worst, worst_rounded, s.get("group"))
             if kind == "bare":
-                cur = _read_bare_value(text, sym)
+                cur = _read_bare_value(threshold_text, sym)
             elif kind == "nested":
-                cur = _read_nested_value(text, sym, conc, sub)
+                cur = _read_nested_value(threshold_text, sym, conc, sub)
             else:
                 cur = None
             direction = _classify_direction(worst_op, cur, write_value)
@@ -2161,14 +2496,30 @@ def apply_plan(run_dir):
     return 0
 
 
+def _bootstrap_from_host(host: dict | None) -> None:
+    global REPO_ROOT
+    if not host:
+        return
+    REPO_ROOT = resolve_repo_root(host)
+    venv = host.get("venv_python")
+    if venv and not os.environ.get("TUNE_VENV_PYTHON"):
+        os.environ.setdefault("TUNE_VENV_PYTHON", str(venv))
+
+
 def main(argv=None):
+    global REPO_ROOT
     p = argparse.ArgumentParser(prog="tune.py")
     p.add_argument("--venv-python")
     p.add_argument("--skip-version-check", action="store_true")
+    p.add_argument(
+        "--host",
+        help="host profile under hosts/ (default: $TUNE_HOST or autodetect by hostname)",
+    )
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"model config name under models/ (default: {DEFAULT_MODEL})")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("models-list")
+    sub.add_parser("hosts-list")
     sub.add_parser("stages-list")
     sa = sub.add_parser("precheck"); sa.add_argument("--output-dir")
     sb = sub.add_parser("discover"); sb.add_argument("--output")
@@ -2189,13 +2540,23 @@ def main(argv=None):
     if args.cmd == "models-list":
         for m in available_models(): print(m)
         return 0
+    if args.cmd == "hosts-list":
+        for h in available_hosts():
+            print(h)
+        return 0
+    host = load_host_profile(args.host)
+    _bootstrap_from_host(host)
+    args.host_profile = host
+    if host:
+        print(f"host: {host.get('name', args.host or 'autodetect')} "
+              f"(repo={REPO_ROOT})")
     if args.cmd == "report":
         return report(Path(args.run_dir))
     if args.cmd == "apply-plan":
         return apply_plan(Path(args.run_dir))
     if args.cmd == "status":
         return status_cmd(Path(args.run_dir))
-    cfg = load_model_config(args.model)
+    cfg = load_model_config(args.model, host=host)
     if args.cmd == "stages-list":
         return stages_list(cfg)
     py, src, tried = resolve_venv(args.venv_python, cfg)

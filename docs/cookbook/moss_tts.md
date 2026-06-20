@@ -1,12 +1,19 @@
 # MOSS-TTS
 
-[MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5) is a discrete
-multi-codebook text-to-speech model from the OpenMOSS team. It pairs a Qwen3 language-model
-backbone with 32 residual-vector-quantization (RVQ) audio codebooks scheduled in a **delay
-pattern** (one text channel plus 32 audio channels, advanced one codebook per frame). It clones
-a voice from a short reference clip, supports inline duration control, and the vocoder
-reconstructs 24 kHz speech. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder`
-pipeline and is served through the OpenAI-compatible `/v1/audio/speech` endpoint.
+[MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5) is a delay-pattern text-to-speech model from MOSI.AI and the OpenMOSS team. It reconstructs **24 kHz** speech and supports zero-shot voice cloning from reference audio, reference-less synthesis, long-form speech generation, streaming, token-level duration control, Pinyin/IPA pronunciation control, multilingual synthesis, and code-switching. The model supports **31 languages**, accepts language tags to guide multilingual generation, and supports inline pause markers such as `[pause 3.2s]` for explicit prosody control.
+
+![MOSS-TTS delay-pattern architecture](../_static/image/moss-tts-arch-delay.png)
+
+Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-Local-Transformer-v1.5](moss_tts_local.md). The Qwen3-8B backbone predicts one text stream plus 32 residual-vector-quantization (RVQ) audio codebooks with delay-pattern scheduling; the generated codes are de-delayed and reconstructed into waveform by the vocoder. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible `/v1/audio/speech` endpoint.
+
+| Component | Spec |
+|---|---|
+| Architecture | `MossTTSDelayModel` (`moss_tts_delay`) |
+| Backbone | Qwen3-8B autoregressive decoder (36 L, hidden=4096, GQA 32/8) |
+| Audio tokens | 32-codebook RVQ depth with delay-pattern scheduling |
+| Output audio | 24 kHz |
+| Languages | 31 languages with optional language tags |
+| Controls | Voice reference, target duration tokens, Pinyin/IPA, pause markers, style instructions |
 
 ## Prerequisites
 
@@ -33,11 +40,22 @@ sgl-omni serve \
 
 ## Synthesizing Speech
 
+### Basic Speech
+
+MOSS-TTS can synthesize speech without a reference clip:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "SGLang-Omni is a great project!"}' \
+  --output output.wav
+```
+
 ### Voice Cloning
 
-MOSS-TTS is a cloning model: it needs a reference clip. The `references` field accepts
-`audio_path` (a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that
-clip). Supplying the transcript materially improves cloning quality.
+Provide a reference clip when you want voice cloning. The `references` field accepts `audio_path`
+(a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip). Supplying
+the transcript materially improves cloning quality.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -82,6 +100,24 @@ URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soun
 {"ref_audio": "data:audio/wav;base64,UklGR.....", "ref_text": "Transcript of the clip."}
 ```
 
+### Streaming
+
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time.
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his.",
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
+```
+
 ### Duration Control
 
 MOSS-TTS conditions on a target **duration token count** (codec frames; a larger count yields
@@ -108,7 +144,6 @@ to let the model infer from the text):
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
-  "instructions": "Speak slowly and warmly."
 }
 ```
 
@@ -119,6 +154,7 @@ to let the model infer from the text):
 | `input` | (required) | Text to synthesize; may carry a `${token:N}` duration prefix and inline markup |
 | `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
+| `stream` | `false` | Stream raw PCM audio chunks |
 | `language` | `null` | Optional target-language hint; omit to let the model infer |
 | `instructions` / `instruct` | `null` | Optional free-text style directive |
 | `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames; must be `> 0` |
@@ -161,8 +197,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --output-dir results/moss_tts_en --lang en --max-concurrency 8
 ```
 
-Use `--lang zh` for the Chinese split. See the [SeedTTS benchmark](../../benchmarks/README.md)
-for the full workflow.
+Use `--lang zh` for the Chinese split. See `benchmarks/README.md` for the full workflow.
 
 ## Benchmark Results
 
@@ -182,8 +217,8 @@ is 0.00%.
 
 ## Known Limitations
 
-- **Reference audio required.** As a cloning model, MOSS-TTS needs a reference clip; provide its
-  transcript (`text` / `ref_text`) for the best speaker similarity.
+- **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide
+  the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
 - **Concurrency vs. WER.** Quality is best around `--max-concurrency 8`; higher concurrency
   regresses WER.
 - **Rare runaway generation.** A small fraction of utterances can loop and generate up to

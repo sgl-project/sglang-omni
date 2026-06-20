@@ -64,6 +64,7 @@ def _build_runner(
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
         _cg_active_generation_done=torch.tensor(active_generation_done),
         _cg_active_last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
+        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
         _cg_was_done=torch.tensor(was_done),
         _cg_codes_BN=torch.tensor(codes_BN),
         _cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
@@ -72,6 +73,7 @@ def _build_runner(
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
             last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
+            step_count=torch.zeros(n, dtype=torch.long),
         ),
     )
     reqs = [
@@ -290,6 +292,7 @@ def test_async_real_pinned_path_matches_sync():
                 [False, True, False, True], device=dev
             ),
             _cg_active_last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
+            _cg_active_step_count=torch.zeros(n, dtype=torch.long, device=dev),
             _cg_was_done=torch.tensor([False, True, False, False], device=dev),
             _cg_codes_BN=torch.tensor(
                 [[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]], device=dev
@@ -300,6 +303,7 @@ def test_async_real_pinned_path_matches_sync():
                 eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
                 generation_done=torch.zeros(n, dtype=torch.bool, device=dev),
                 last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
+                step_count=torch.zeros(n, dtype=torch.long, device=dev),
             ),
         )
         reqs = [

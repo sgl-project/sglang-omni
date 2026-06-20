@@ -13,6 +13,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
@@ -37,6 +38,10 @@ class _ResettableHiggsModel(Protocol):
 
 _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
+
+
+def _perf_counter() -> float:
+    return time.perf_counter()
 
 
 def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
@@ -127,12 +132,17 @@ def build_higgs_stream_metadata(
             f"Invalid Higgs stream codec contract: "
             f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
         )
-    return {
+    metadata: dict[str, Any] = {
         "modality": "audio_codes",
         "stream": True,
         "num_codebooks": num_codebooks,
         "codebook_size": codebook_size,
     }
+    if params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
+            INITIAL_CODEC_CHUNK_FRAMES_PARAM
+        ]
+    return metadata
 
 
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
@@ -166,7 +176,7 @@ def make_higgs_scheduler_adapters(
                 int(max_new_tokens_cap),
             )
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
-        data.engine_start_s = time.perf_counter()
+        data.engine_start_s = _perf_counter()
         data.stage_payload = payload
         data.stream_metadata = build_higgs_stream_metadata(payload, data)
         return data
@@ -176,7 +186,7 @@ def make_higgs_scheduler_adapters(
         state = HiggsTtsState.from_dict(payload.data)
         apply_higgs_result(state, data)
         if data.engine_start_s:
-            state.engine_time_s = time.perf_counter() - data.engine_start_s
+            state.engine_time_s = _perf_counter() - data.engine_start_s
         model.reset_request(payload.request_id)
         return StagePayload(
             request_id=payload.request_id,
@@ -189,6 +199,7 @@ def make_higgs_scheduler_adapters(
 
 __all__ = [
     "HiggsSGLangRequestData",
+    "INITIAL_CODEC_CHUNK_FRAMES_PARAM",
     "apply_higgs_result",
     "build_higgs_stream_metadata",
     "build_sglang_higgs_request",

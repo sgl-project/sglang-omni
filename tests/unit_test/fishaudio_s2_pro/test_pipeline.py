@@ -52,6 +52,7 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert config.supports_uploaded_voice_references() is True
 
     state = S2ProState(
         input_ids=torch.tensor([1, 2, 3]),

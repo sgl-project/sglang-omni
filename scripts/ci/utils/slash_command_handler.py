@@ -6,6 +6,10 @@ import time
 from github import Auth, Github
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+TTS_MODEL_LABELS = {
+    "higgs": "run-higgs",
+    "moss": "run-moss",
+}
 
 
 def get_env_var(name):
@@ -43,9 +47,22 @@ def load_permissions(user_login):
         sys.exit(1)
 
 
-def handle_tag_run_ci(pr, comment, user_perms, react_on_success=True):
+def parse_tts_model_target(tokens):
+    targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
+    if len(set(targets)) > 1:
+        return None, "Specify only one TTS CI model target: higgs or moss."
+    return (targets[0] if targets else None), None
+
+
+def handle_tag_run_ci(
+    pr, comment, user_perms, react_on_success=True, tts_model_target=None
+):
     """
     Handles the /tag-run-ci-label command.
+
+    When tts_model_target is set, also applies the matching TTS model label.
+    The TTS model labels are mutually exclusive, so remove the opposite label
+    before adding the selected one.
 
     How fresh runs get dispatched: Omni CI workflows include `labeled` in
     `on.pull_request.types`, so adding `run-ci` fires a new
@@ -59,6 +76,20 @@ def handle_tag_run_ci(pr, comment, user_perms, react_on_success=True):
         return False
 
     labels = ["run-ci"]
+    if tts_model_target:
+        selected_label = TTS_MODEL_LABELS[tts_model_target]
+        opposite_labels = [
+            label
+            for model, label in TTS_MODEL_LABELS.items()
+            if model != tts_model_target
+        ]
+        current_labels = {label.name for label in pr.get_labels()}
+        for label in opposite_labels:
+            if label in current_labels:
+                print(f"Removing mutually exclusive label: {label}.")
+                pr.remove_from_labels(label)
+        labels.append(selected_label)
+
     print(f"Permission granted. Adding labels: {labels}.")
     for label in labels:
         pr.add_to_labels(label)
@@ -89,12 +120,24 @@ def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms, react_on_success=Tr
 
     runs = gh_repo.get_workflow_runs(head_sha=head_sha)
 
+    rerun_candidates = [
+        run
+        for run in runs
+        if run.status == "completed" and run.conclusion in ("failure", "skipped")
+    ]
+    rerun_candidates.sort(key=lambda run: (run.created_at, run.id), reverse=True)
+
     rerun_count = 0
-    for run in runs:
-        if run.status != "completed":
+    seen_workflows = set()
+    for run in rerun_candidates:
+        workflow_key = (run.workflow_id, run.event)
+        if workflow_key in seen_workflows:
+            print(
+                f"Skipping older {run.conclusion} workflow: "
+                f"{run.name} (ID: {run.id})"
+            )
             continue
-        if run.conclusion not in ("failure", "skipped"):
-            continue
+        seen_workflows.add(workflow_key)
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
@@ -156,17 +199,37 @@ def main():
         return
 
     first_line = comment_body.split("\n")[0].strip()
+    tokens = first_line.split()
 
     if first_line.startswith("/tag-run-ci-label"):
-        handle_tag_run_ci(pr, comment, user_perms)
+        tts_model_target, parse_error = parse_tts_model_target(tokens)
+        if parse_error:
+            print(parse_error)
+            comment.create_reaction("confused")
+            return
+        handle_tag_run_ci(pr, comment, user_perms, tts_model_target=tts_model_target)
 
     elif first_line.startswith("/rerun-failed-ci"):
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
     elif first_line.startswith("/tag-and-rerun-ci"):
-        print("Processing combined command: /tag-and-rerun-ci")
+        tts_model_target, parse_error = parse_tts_model_target(tokens)
+        if parse_error:
+            print(parse_error)
+            comment.create_reaction("confused")
+            return
+        print(
+            "Processing combined command: "
+            f"/tag-and-rerun-ci (tts_model_target={tts_model_target})"
+        )
 
-        tagged = handle_tag_run_ci(pr, comment, user_perms, react_on_success=False)
+        tagged = handle_tag_run_ci(
+            pr,
+            comment,
+            user_perms,
+            react_on_success=False,
+            tts_model_target=tts_model_target,
+        )
 
         if tagged:
             print("Waiting 5 seconds for label to propagate...")

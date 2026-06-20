@@ -319,8 +319,10 @@ def create_sglang_thinker_executor_from_config(
     _ensure_ming_config_registered(model_path)
     # Use local snapshot path so AutoConfig finds our patched files
     local_path = _resolve_local_model_path(model_path)
+    overrides = {"sampling_backend": "pytorch"}
+    overrides.update(server_args_overrides or {})
     server_args = build_sglang_server_args(
-        local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        local_path, context_length=thinker_max_seq_len, **overrides
     )
     _log.getLogger(__name__).info(
         "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",

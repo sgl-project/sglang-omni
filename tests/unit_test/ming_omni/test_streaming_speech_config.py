@@ -27,12 +27,14 @@ def test_streaming_speech_topology_wires_segmenter_between_thinker_and_talker():
     assert "talker" not in names
 
 
-def test_streaming_thinker_fans_out_and_streams_to_segmenter():
+def test_streaming_thinker_fans_out_to_decode_and_segmenter():
     config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
     thinker = _stage(config, THINKER_STAGE)
-    assert sorted(thinker.next) == sorted([DECODE_STAGE, SEGMENTER_STAGE])
-    assert thinker.stream_to == [SEGMENTER_STAGE]
+    decode = _stage(config, DECODE_STAGE)
+    assert thinker.next == [DECODE_STAGE, SEGMENTER_STAGE]
+    assert thinker.stream_to == [DECODE_STAGE, SEGMENTER_STAGE]
     assert thinker.factory_args.get("enable_streaming_tts") is True
+    assert decode.can_accept_stream_before_payload is True
 
 
 def test_segmenter_routes_to_talker_stream_and_accepts_pre_payload_streams():

@@ -257,6 +257,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for generation SGLang ServerArgs overrides."""
+        return {}
+
+    @classmethod
     def code2wav_stage(cls) -> str | None:
         """Return the code2wav stage name when the pipeline supports it."""
         return None
@@ -270,6 +275,14 @@ class PipelineConfig(BaseModel):
     ) -> dict[str, object]:
         """Return SGLang ServerArgs overrides implied by stage TP settings."""
         return {}
+
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        """Return whether non-default TTS voice names must be uploaded voices."""
+        return False
+
+    def supports_uploaded_voice_references(self) -> bool:
+        """Return whether uploaded voices can be lowered as reference audio."""
+        return False
 
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:

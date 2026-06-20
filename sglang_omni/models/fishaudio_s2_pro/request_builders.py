@@ -31,6 +31,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     ras_window: int = 16
     ras_temperature: float = 1.0
     ras_top_p: float = 0.9
+    seed: int | None = None
     previous_semantic_tokens: list[int] = field(default_factory=list)
     semantic_history_tokens: torch.Tensor | None = None
     semantic_history_count: int = 0
@@ -121,6 +122,7 @@ def build_sglang_tts_request(
         ras_window=state.ras_window,
         ras_temperature=state.ras_temperature,
         ras_top_p=state.ras_top_p,
+        seed=state.seed,
     )
 
 

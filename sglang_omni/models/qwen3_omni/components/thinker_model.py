@@ -263,6 +263,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         return None, forward_batch, inner_state
 
     def apply_qk_norm_rope(self, qkv, positions, forward_batch):
+        # Note:(Chenchen Hong) the talker uses a base (non-MRoPE) RotaryEmbedding
+        # but post1 still passes MRoPE [3, seq] positions; collapse to the
+        # temporal row so it isn't misread as 3 batches (all sections equal here).
+        if positions.dim() == 2 and not isinstance(self.rotary_emb, MRotaryEmbedding):
+            positions = positions[0]
         use_fused = self.use_fused_qk_norm_rope and qkv.dtype == torch.bfloat16
         if use_fused:
             theta = self.config.rope_theta
@@ -355,8 +360,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
-        if attn_output.dtype != self.o_proj.weight.dtype:
-            attn_output = attn_output.to(dtype=self.o_proj.weight.dtype)
+        # Note:(Chenchen Hong) cast attn output to the compute dtype (v.dtype),
+        # not o_proj.weight.dtype: for FP8 weights the latter feeds an fp8
+        # activation to the quantizer, which post1's sgl_kernel rejects.
+        if attn_output.dtype != v.dtype:
+            attn_output = attn_output.to(dtype=v.dtype)
         output, _ = self.o_proj(attn_output)
         return output
 

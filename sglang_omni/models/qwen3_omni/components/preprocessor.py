@@ -109,6 +109,20 @@ def validate_prompt_seq_len(
         )
 
 
+def _is_pretokenized_prompt(inputs: Any) -> bool:
+    """True when a rollout request carries pre-tokenized prompt ids.
+
+    Miles RL rollout sends the exact prompt token ids it trains on, so those
+    ids must bypass the chat template + HF processor to keep rollout and
+    training tokens identical. A list of message dicts goes the normal path.
+    """
+    return (
+        isinstance(inputs, list)
+        and bool(inputs)
+        and all(isinstance(token, int) for token in inputs)
+    )
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
@@ -215,8 +229,65 @@ class Qwen3OmniPreprocessor:
             )
         return result
 
+    def _finalize_state(
+        self,
+        payload: StagePayload,
+        *,
+        input_ids: "torch.Tensor",
+        attention_mask: "torch.Tensor",
+        prompt_text: str,
+        full_mm_inputs: dict[str, Any],
+        encoder_inputs: dict[str, dict[str, Any]],
+    ) -> StagePayload:
+        """Assemble the thinker-ready pipeline state (single source of shape)."""
+        state = Qwen3OmniPipelineState(
+            mm_inputs=build_lightweight_mm_inputs(full_mm_inputs),
+            prompt={
+                "prompt_text": prompt_text,
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            },
+            encoder_inputs=encoder_inputs,
+            stream_state={"token_ids": [], "text": ""},
+        )
+        payload.data = state.to_dict()
+        return payload
+
+    def _preprocess_pretokenized(
+        self, payload: StagePayload, token_ids: list[int]
+    ) -> StagePayload:
+        """Build thinker state directly from pre-tokenized prompt ids.
+
+        Skips the chat template + HF processor so the thinker runs the exact
+        tokens the RL trainer computes gradients on (text-only; multimodal ids
+        still go through the normal messages path).
+        """
+        input_ids = torch.tensor(token_ids, dtype=torch.long)
+        attention_mask = torch.ones_like(input_ids)
+        validate_prompt_seq_len(
+            input_ids,
+            max_seq_len=self.max_seq_len,
+            max_new_tokens=payload.request.params.get(
+                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+            ),
+            request_id=payload.request_id,
+        )
+        return self._finalize_state(
+            payload,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            prompt_text="",
+            full_mm_inputs={},
+            encoder_inputs={
+                "image_encoder": {"_skip": True, "_result": {}},
+                "audio_encoder": {"_skip": True, "_result": {}},
+            },
+        )
+
     async def _call_impl(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
+        if _is_pretokenized_prompt(inputs):
+            return self._preprocess_pretokenized(payload, inputs)
         if isinstance(inputs, dict):
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
@@ -491,15 +562,11 @@ class Qwen3OmniPreprocessor:
         else:
             encoder_inputs["audio_encoder"] = {"_skip": True, "_result": {}}
 
-        state = Qwen3OmniPipelineState(
-            mm_inputs=build_lightweight_mm_inputs(full_mm_inputs),
-            prompt={
-                "prompt_text": prompt_text,
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-            },
+        return self._finalize_state(
+            payload,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            prompt_text=prompt_text,
+            full_mm_inputs=full_mm_inputs,
             encoder_inputs=encoder_inputs,
-            stream_state={"token_ids": [], "text": ""},
         )
-        payload.data = state.to_dict()
-        return payload

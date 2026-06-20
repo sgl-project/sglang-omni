@@ -14,20 +14,16 @@ env:
         && format('/github/home/pr-{0}', github.event.pull_request.number)
         || format('/github/home/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after TTS CI (second benchmark suite in the omni-ci
-# sequence: TTS → Qwen3-Omni → PR Test). Restores omni only.
+# Invoked by omni-ci.yaml after TTS CI (last benchmark suite in the omni-ci
+# sequence: PR Test → TTS → Qwen3-Omni). Restores omni only.
 
 jobs:
   stage-1-thinker:
     name: stage 1 - thinker length integration
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -60,14 +56,10 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -117,14 +109,10 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -161,14 +149,10 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -199,20 +183,16 @@ jobs:
         with:
           stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
-            */mmmu_audio/mmmu_results.json
+            */mmmu_audio*/mmmu_results.json
           artifact-upload-name: qwen3-omni-mmmu-talker-results
-          artifact-upload-path: /tmp/**/mmmu_audio/mmmu_results.json
+          artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -250,14 +230,10 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -288,20 +264,16 @@ jobs:
         with:
           stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
-            */mmsu_audio/mmsu_results.json
+            */mmsu_audio*/mmsu_results.json
           artifact-upload-name: qwen3-omni-mmsu-talker-results
-          artifact-upload-path: /tmp/**/mmsu_audio/mmsu_results.json
+          artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -338,14 +310,10 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -376,20 +344,16 @@ jobs:
         with:
           stage-label: Video-MME Talker (WER + speed)
           artifact-path-globs: |
-            */videomme_audio/videomme_results.json
+            */videomme_audio*/videomme_results.json
           artifact-upload-name: qwen3-omni-videomme-talker-results
-          artifact-upload-path: /tmp/**/videomme_audio/videomme_results.json
+          artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -426,14 +390,10 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --gpus all --rm
         -v /dev/shm:/dev/shm
@@ -464,22 +424,21 @@ jobs:
         with:
           stage-label: Video-AMME Talker (WER + speed)
           artifact-path-globs: |
-            */videoamme_audio/videoamme_results.json
+            */videoamme_audio*/videoamme_results.json
           artifact-upload-name: qwen3-omni-videoamme-talker-results
-          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
+          artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
 
   stage-11-thinker-tp2:
     name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 35
     container:
-      image: frankleeeee/sglang-omni:dev
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
+      # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
         --gpus all --rm
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -501,6 +460,9 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+          # note (Yue Yin): GPU 1 co-locates thinker rank-1 + talker + code2wav under TP=2;
+          # expandable_segments reduces allocator fragmentation (issue #765).
+          PYTORCH_ALLOC_CONF: expandable_segments:True
 
       - name: Post-stage cleanup
         if: always()
@@ -508,6 +470,6 @@ jobs:
         with:
           stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
           artifact-path-globs: |
-            */videoamme_audio/videoamme_results.json
+            */videoamme_audio*/videoamme_results.json
           artifact-upload-name: qwen3-omni-thinker-tp2-results
-          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
+          artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json

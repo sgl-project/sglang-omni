@@ -23,6 +23,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
 
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -62,6 +66,12 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        return True
+
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
 
 
 EntryClass = HiggsTtsPipelineConfig

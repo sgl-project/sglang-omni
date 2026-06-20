@@ -301,6 +301,10 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
         return {"talker": "talker_ar"}
 
     @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "talker_ar"}
+
+    @classmethod
     def code2wav_stage(cls) -> str | None:
         return "code2wav"
 

@@ -22,10 +22,10 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 _VOXTRAL_MISTRAL_COMMON_HINT = (
-    "Voxtral TTS requires the `mistral-common` package (speech / Tekken tokenizer). "
+    "Voxtral TTS requires the `mistral_common` package (speech / Tekken tokenizer). "
     "Please install it in your active environment, for example:\n"
-    "  pip install 'mistral-common[audio]>=1.8.0'\n"
-    "  uv pip install 'mistral-common[audio]>=1.8.0'"
+    "  pip install 'mistral_common[audio]>=1.11.0'\n"
+    "  uv pip install 'mistral_common[audio]>=1.11.0'"
 )
 
 
@@ -153,12 +153,31 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 # ---- Generation ----
 
 
+def _enable_inductor_gemm_autotune() -> None:
+    # Note:(Chenchen Hong) on torch 2.11/cu13 inductor routes the compiled
+    # matmuls to slow split-K cuBLAS (~8% RTF); per-shape GEMM autotuning makes
+    # it benchmark triton vs aten and keep the fastest. One-time startup cost.
+    try:
+        from torch._inductor import config as inductor_config
+    except Exception:
+        return
+    if hasattr(inductor_config, "max_autotune_gemm"):
+        inductor_config.max_autotune_gemm = True
+    if hasattr(inductor_config, "max_autotune_gemm_backends"):
+        inductor_config.max_autotune_gemm_backends = "TRITON,ATEN"
+    logger.info(
+        "Voxtral: enabled inductor per-shape GEMM autotuning (TRITON,ATEN); "
+        "adds one-time startup autotune cost."
+    )
+
+
 def create_generation_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
+    server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
@@ -178,20 +197,29 @@ def create_generation_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
+    overrides: dict[str, Any] = {
+        "dtype": "bfloat16",
+        "disable_cuda_graph": False,
+        "disable_overlap_schedule": True,
+        "decrypted_config_file": _write_voxtral_sglang_config(checkpoint_dir),
+        "enable_torch_compile": True,
+        "mem_fraction_static": 0.85,
+        "max_prefill_tokens": 8192,
+        "max_running_requests": 16,
+        "sampling_backend": "pytorch",
+        "torch_compile_max_bs": 16,
+    }
+    if server_args_overrides:
+        overrides.update(server_args_overrides)
+
     server_args = build_sglang_server_args(
         checkpoint_dir,
         context_length=8192,
-        dtype="bfloat16",
-        disable_cuda_graph=False,
-        disable_overlap_schedule=True,
-        decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
-        enable_torch_compile=True,
-        mem_fraction_static=0.85,
-        max_prefill_tokens=8192,
-        max_running_requests=16,
-        sampling_backend="pytorch",
-        torch_compile_max_bs=16,
+        **overrides,
     )
+
+    if getattr(server_args, "enable_torch_compile", False):
+        _enable_inductor_gemm_autotune()
 
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
     if want_cuda_graph:

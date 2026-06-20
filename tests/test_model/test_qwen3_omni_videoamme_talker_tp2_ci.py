@@ -48,21 +48,24 @@ MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0172
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0175
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.052,
+        "throughput_qps": 0.061,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 130.381,
-        "rtf_mean": 21.1857,
+        "latency_mean_s": 162.533,
+        "rtf_mean": 12.2402,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
+# note (Yue Yin): 0.55-calibrated latency baseline (146.7 gate) is unreachable on
+# the #765 0.40 OOM-fix config (~148s); pin the gate to 150 (manager-approved).
+VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 150.0
 
 
 @dataclass

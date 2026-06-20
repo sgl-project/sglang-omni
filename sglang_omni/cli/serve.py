@@ -8,14 +8,22 @@ import yaml
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.preprocessing.resource_connector import (
+    resolve_allowed_local_media_path,
+)
+from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 
 logger = logging.getLogger(__name__)
 
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-_HIGGS_ASYNC_DECODE_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
+_DECODE_MODE = Literal["async", "sync"]
+_ASYNC_DECODE_FACTORIES = frozenset(
+    {
+        "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+    }
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -32,6 +40,13 @@ def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MO
     normalized = value.strip().lower()
     if normalized not in {"default", "on", "off"}:
         raise typer.BadParameter(f"{flag_name} must be one of: default, on, off")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_decode_mode(value: str) -> _DECODE_MODE:
+    normalized = value.strip().lower()
+    if normalized not in {"async", "sync"}:
+        raise typer.BadParameter("--decode-mode must be one of: async, sync")
     return normalized  # type: ignore[return-value]
 
 
@@ -128,6 +143,8 @@ def _apply_stage_server_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
+    supported_factories: frozenset[str] | None = None,
+    flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
         pipeline_config,
@@ -135,6 +152,12 @@ def _apply_stage_server_args_override(
         reason=reason,
     )
     for stage in matching_stages:
+        if supported_factories is not None and stage.factory not in supported_factories:
+            display_flag = flag_name or reason
+            raise typer.BadParameter(
+                f"{display_flag} does not support stage {stage.name!r} "
+                f"with factory {stage.factory!r}"
+            )
         factory_args = dict(stage.factory_args or {})
         overrides = dict(factory_args.get("server_args_overrides") or {})
         overrides.update(updates)
@@ -205,6 +228,30 @@ def _validate_encoder_mem_reserve(value: float | None) -> float | None:
     if not 0.0 <= value < 1.0:
         raise typer.BadParameter("--encoder-mem-reserve must be in [0, 1)")
     return float(value)
+
+
+def _validate_allowed_local_media_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(resolve_allowed_local_media_path(value))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
+    domains: list[str] = []
+    for value in values or []:
+        domains.extend(
+            part.strip().lower() for part in value.split(",") if part.strip()
+        )
+    return domains
+
+
+def _validate_tts_batch_max_items(value: int) -> int:
+    if value < 1:
+        raise typer.BadParameter("tts batch max items must be greater than 0")
+    return value
 
 
 def apply_mem_fraction_cli_overrides(
@@ -490,6 +537,8 @@ def apply_parallelism_cli_overrides(
     *,
     thinker_tp_size: int | None,
     thinker_gpus: str | None,
+    image_encoder_tp_size: int | None = None,
+    image_encoder_gpus: str | None = None,
     talker_gpu: int | None,
     code2wav_gpu: int | None,
 ) -> PipelineConfig:
@@ -511,6 +560,29 @@ def apply_parallelism_cli_overrides(
             if thinker_gpu_override is not None:
                 stage.gpu = thinker_gpu_override
             _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
+            if stage.tp_size == 1 and isinstance(stage.gpu, list):
+                stage.gpu = int(stage.gpu[0])
+
+    image_encoder_gpu_override = (
+        _parse_gpu_placement("image_encoder_gpus", image_encoder_gpus)
+        if image_encoder_gpus is not None
+        else None
+    )
+    if image_encoder_tp_size is not None or image_encoder_gpu_override is not None:
+        image_encoder_stages = _find_matching_stages(
+            pipeline_config,
+            stage_name="image_encoder",
+            reason="tensor parallel settings",
+        )
+        for stage in image_encoder_stages:
+            if image_encoder_tp_size is not None:
+                stage.tp_size = int(image_encoder_tp_size)
+                stage.parallelism.tp = stage.tp_size
+            if image_encoder_gpu_override is not None:
+                stage.gpu = image_encoder_gpu_override
+            _validate_stage_parallelism_config(
+                "image_encoder", stage.tp_size, stage.gpu
+            )
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
@@ -669,7 +741,7 @@ def _apply_stage_factory_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
-    supported_factory: str | None = None,
+    supported_factories: frozenset[str] | None = None,
     flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
@@ -678,11 +750,12 @@ def _apply_stage_factory_args_override(
         reason=reason,
     )
     for stage in matching_stages:
-        if supported_factory is not None and stage.factory != supported_factory:
+        if supported_factories is not None and stage.factory not in supported_factories:
             display_flag = flag_name or reason
             raise typer.BadParameter(
-                f"{display_flag} currently supports only Higgs TTS; "
-                f"stage {stage.name!r} uses factory {stage.factory!r}"
+                f"{display_flag} currently supports only Higgs TTS and "
+                f"MOSS-TTS-Local; stage {stage.name!r} uses factory "
+                f"{stage.factory!r}"
             )
         factory_args = dict(stage.factory_args or {})
         factory_args.update(updates)
@@ -693,43 +766,35 @@ def _apply_stage_factory_args_override(
             stage_runtime_overrides.update(updates)
 
 
-def _resolve_async_decode_flag(async_decode: str, enable_async_decode: bool) -> str:
-    """Map the deprecated bool ``--enable-async-decode`` onto the ``--async-decode``
-    tri-state. The legacy flag only expressed "on", so reject it against an
-    explicit ``--async-decode off``."""
-    if not enable_async_decode:
-        return async_decode
-    if async_decode == "off":
-        raise typer.BadParameter(
-            "--enable-async-decode cannot be combined with --async-decode off"
-        )
-    logger.warning("--enable-async-decode is deprecated; use --async-decode on.")
-    return "on"
-
-
-def apply_async_decode_cli_overrides(
+def apply_decode_mode_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
-    async_decode: str,
-    async_decode_min_batch_size: int | None,
+    decode_mode: str | None,
+    async_lookahead_min_batch_size: int | None,
 ) -> PipelineConfig:
-    mode = _normalize_stage_toggle_mode("async_decode", async_decode)
     updates: dict[str, object] = {}
-    if mode != "default":
-        updates["enable_async_decode"] = mode == "on"
-    if async_decode_min_batch_size is not None:
-        if int(async_decode_min_batch_size) < 1:
-            raise typer.BadParameter("--async-decode-min-batch-size must be >= 1")
-        updates["async_decode_min_batch_size"] = int(async_decode_min_batch_size)
+    mode: _DECODE_MODE | None = None
+    if decode_mode is not None:
+        mode = _normalize_decode_mode(decode_mode)
+        updates["enable_async_decode"] = mode == "async"
+    if async_lookahead_min_batch_size is not None:
+        if mode == "sync":
+            raise typer.BadParameter(
+                "--async-lookahead-min-batch-size cannot be combined with "
+                "--decode-mode sync"
+            )
+        if int(async_lookahead_min_batch_size) < 1:
+            raise typer.BadParameter("--async-lookahead-min-batch-size must be >= 1")
+        updates["async_decode_min_batch_size"] = int(async_lookahead_min_batch_size)
     if not updates:
         return pipeline_config
     _apply_stage_factory_args_override(
         pipeline_config,
         stage_name="tts_engine",
         updates=updates,
-        reason="async decode override",
-        supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
-        flag_name="--async-decode/--async-decode-min-batch-size",
+        reason="decode mode override",
+        supported_factories=_ASYNC_DECODE_FACTORIES,
+        flag_name="--decode-mode/--async-lookahead-min-batch-size",
     )
     return pipeline_config
 
@@ -807,6 +872,36 @@ def serve(
     model_name: Annotated[
         str, typer.Option(help="Model name for /v1/models (default: pipeline name).")
     ] = None,
+    allowed_local_media_path: Annotated[
+        str | None,
+        typer.Option(
+            "--allowed-local-media-path",
+            "--allowed_local_media_path",
+            help=(
+                "Directory allowed for file:// media references in TTS requests. "
+                "Local file references are disabled when this is omitted."
+            ),
+        ),
+    ] = None,
+    allowed_media_domain: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-media-domain",
+            "--allowed_media_domain",
+            help=(
+                "Restrict remote media references to this domain. Repeat the "
+                "flag to allow multiple domains. When omitted, remote HTTP(S) "
+                "references from any public host are allowed."
+            ),
+        ),
+    ] = None,
+    tts_batch_max_items: Annotated[
+        int,
+        typer.Option(
+            "--tts-batch-max-items",
+            help="Maximum number of items accepted by /v1/audio/speech/batch.",
+        ),
+    ] = DEFAULT_TTS_BATCH_MAX_ITEMS,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -881,6 +976,22 @@ def serve(
             "--thinker-gpus",
             "--thinker_gpus",
             help="GPU ids for thinker TP ranks, e.g. '0,1' or '[0, 1]'.",
+        ),
+    ] = None,
+    image_encoder_tp_size: Annotated[
+        int | None,
+        typer.Option(
+            "--image-encoder-tp-size",
+            "--image_encoder_tp_size",
+            help="Set tensor parallel size for image_encoder stage.",
+        ),
+    ] = None,
+    image_encoder_gpus: Annotated[
+        str | None,
+        typer.Option(
+            "--image-encoder-gpus",
+            "--image_encoder_gpus",
+            help="GPU ids for image_encoder TP ranks, e.g. '4,5' or '[4, 5]'.",
         ),
     ] = None,
     talker_gpu: Annotated[
@@ -973,36 +1084,53 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
-    async_decode: Annotated[
-        str,
+    decode_mode: Annotated[
+        str | None,
         typer.Option(
-            "--async-decode",
-            "--async_decode",
+            "--decode-mode",
+            "--decode_mode",
             help=(
-                "One-step-lookahead async decode for the tts_engine stage: "
-                "default|on|off. When on, per-step host collect overlaps the "
-                "next GPU forward. 'default' uses the pipeline config default "
-                "(on for Higgs TTS). Currently supported by Higgs TTS."
+                "Decode execution mode for the tts_engine stage: "
+                "async|sync. Omit this flag to use the pipeline config default "
+                "(async for Higgs TTS). Async mode enables one-step lookahead, "
+                "which can overlap the previous step's host-side collect with "
+                "the next GPU forward. Available for Higgs TTS and "
+                "MOSS-TTS-Local."
             ),
         ),
-    ] = "default",
-    enable_async_decode: Annotated[
-        bool,
-        typer.Option(
-            "--enable-async-decode",
-            "--enable_async_decode",
-            hidden=True,
-            help="Deprecated alias for '--async-decode on'.",
-        ),
-    ] = False,
-    async_decode_min_batch_size: Annotated[
+    ] = None,
+    async_lookahead_min_batch_size: Annotated[
         int | None,
         typer.Option(
-            "--async-decode-min-batch-size",
-            "--async_decode_min_batch_size",
+            "--async-lookahead-min-batch-size",
+            "--async_lookahead_min_batch_size",
             help=(
-                "Decode batches smaller than this bypass the async-decode "
-                "lookahead and run synchronously (fast path). Default 2."
+                "Decode batches smaller than this bypass async lookahead and "
+                "run synchronously (fast path). Default 2."
+            ),
+        ),
+    ] = None,
+    max_running_requests: Annotated[
+        int | None,
+        typer.Option(
+            "--max-running-requests",
+            "--max_running_requests",
+            min=1,
+            help=(
+                "Override SGLang generation stage max_running_requests. "
+                "Omit to use the pipeline config default."
+            ),
+        ),
+    ] = None,
+    cuda_graph_max_bs: Annotated[
+        int | None,
+        typer.Option(
+            "--cuda-graph-max-bs",
+            "--cuda_graph_max_bs",
+            min=1,
+            help=(
+                "Override SGLang generation stage cuda_graph_max_bs. Omit "
+                "to use the pipeline config default."
             ),
         ),
     ] = None,
@@ -1060,6 +1188,8 @@ def serve(
         merged_config,
         thinker_tp_size=thinker_tp_size,
         thinker_gpus=thinker_gpus,
+        image_encoder_tp_size=image_encoder_tp_size,
+        image_encoder_gpus=image_encoder_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
     )
@@ -1075,11 +1205,31 @@ def serve(
         thinker_torch_compile_max_bs=thinker_torch_compile_max_bs,
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
     )
-    merged_config = apply_async_decode_cli_overrides(
+    merged_config = apply_decode_mode_cli_overrides(
         merged_config,
-        async_decode=_resolve_async_decode_flag(async_decode, enable_async_decode),
-        async_decode_min_batch_size=async_decode_min_batch_size,
+        decode_mode=decode_mode,
+        async_lookahead_min_batch_size=async_lookahead_min_batch_size,
     )
+    generation_server_args_overrides: dict[str, object] = {}
+    if max_running_requests is not None:
+        generation_server_args_overrides["max_running_requests"] = max_running_requests
+    if cuda_graph_max_bs is not None:
+        generation_server_args_overrides["cuda_graph_max_bs"] = cuda_graph_max_bs
+    if generation_server_args_overrides:
+        generation_stage_name = (
+            type(merged_config).generation_sglang_role_to_stage().get("generation")
+        )
+        if generation_stage_name is None:
+            _raise_unsupported_flag(
+                merged_config,
+                "--max-running-requests/--cuda-graph-max-bs",
+            )
+        _apply_stage_server_args_override(
+            merged_config,
+            stage_name=generation_stage_name,
+            updates=generation_server_args_overrides,
+            reason="SGLang generation server args override",
+        )
     merged_config = apply_partial_start_cli_overrides(
         merged_config,
         talker_partial_start=talker_partial_start,
@@ -1095,4 +1245,9 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        allowed_local_media_path=_validate_allowed_local_media_path(
+            allowed_local_media_path
+        ),
+        allowed_media_domains=_normalize_allowed_media_domains(allowed_media_domain),
+        tts_batch_max_items=_validate_tts_batch_max_items(tts_batch_max_items),
     )

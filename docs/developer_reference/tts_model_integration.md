@@ -111,10 +111,10 @@ Two pieces of glue still have to be added by hand:
 
 ## Where the request comes in
 
-`POST /v1/audio/speech` builds a `GenerateRequest` from the OpenAI payload in
-`sglang_omni/serve/openai_api.py::build_speech_generate_request`. That request
-enters the pipeline and your model's request builder turns it into whatever
-the AR scheduler needs.
+`POST /v1/audio/speech` validates the OpenAI payload through
+`sglang_omni/serve/speech_service.py::SpeechRequestValidator`, then lowers it
+into a `GenerateRequest`. That request enters the pipeline and your model's
+request builder turns it into whatever the AR scheduler needs.
 
 Two things are easy to get wrong at this boundary:
 

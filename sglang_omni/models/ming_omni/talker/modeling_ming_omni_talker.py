@@ -190,7 +190,7 @@ class CFMGraphExecutor:
         # (execute) checks abort before _initialize_graph and on every replay.
         self.graph = torch.cuda.CUDAGraph()
         try:
-            with torch.cuda.graph(self.graph):
+            with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
                 self.gen_lat_placeholder = self.cfm.sample(
                     self.last_hidden_state_placeholder,
                     self.his_lat_placeholder,
@@ -558,7 +558,9 @@ class MingOmniTalker(nn.Module):
                         inputs_embeds_placeholder.copy_(inputs_embeds)
                         cache_position_placeholder.copy_(cache_position)
 
-                        with torch.cuda.graph(model_graph):
+                        with torch.cuda.graph(
+                            model_graph, capture_error_mode="thread_local"
+                        ):
                             outputs_placeholder = self.model(
                                 position_ids=position_ids_placeholder,
                                 cache_position=cache_position_placeholder,

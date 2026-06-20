@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import struct
 import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1033,6 +1035,70 @@ def test_client_completion_stream_non_streaming_keeps_full_text():
     assert len(chunks) == 1
     assert chunks[0].text == "hi there"
     assert chunks[0].finish_reason == "stop"
+
+
+def test_client_completion_audio_uses_chunk_sample_rate():
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+
+    coordinator = _FakeCoordinatorForClient(
+        [],
+        submit_result={
+            "audio_data": [0.0, 0.1, -0.1, 0.0],
+            "sample_rate": 48000,
+            "modality": "audio",
+        },
+    )
+    client = Client(coordinator=coordinator)
+
+    result = asyncio.run(
+        client.completion(
+            GenerateRequest(prompt="ignored", stream=False),
+            request_id="req-1",
+            audio_format="wav",
+        )
+    )
+
+    assert result.audio is not None
+    wav = base64.b64decode(result.audio.data)
+    assert struct.unpack("<I", wav[24:28])[0] == 48000
+
+
+def test_client_completion_stream_audio_uses_chunk_sample_rate():
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+    from sglang_omni.proto import StreamMessage
+
+    messages = [
+        StreamMessage(
+            request_id="req-1",
+            from_stage="vocoder",
+            chunk={
+                "audio_data": [0.0, 0.1, -0.1, 0.0],
+                "sample_rate": 48000,
+                "modality": "audio",
+            },
+            stage_name="vocoder",
+            modality="audio",
+        )
+    ]
+    client = Client(coordinator=_FakeCoordinatorForClient(messages))
+
+    async def _collect():
+        out = []
+        async for chunk in client.completion_stream(
+            GenerateRequest(prompt="ignored", stream=True),
+            request_id="req-1",
+            audio_format="wav",
+        ):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_collect())
+
+    assert chunks[0].audio_b64 is not None
+    wav = base64.b64decode(chunks[0].audio_b64)
+    assert struct.unpack("<I", wav[24:28])[0] == 48000
 
 
 def test_client_speech_forces_non_streaming_request(

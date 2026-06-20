@@ -5,10 +5,9 @@ tests/
 ├── __init__.py
 ├── utils.py
 ├── data/
-├── docs/
-│   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
+│   ├── test_rl_distributed_weight_update.py
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
@@ -51,6 +50,9 @@ tests/
     ├── ming_omni/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
+    │   ├── test_streaming_decode.py
+    │   ├── test_streaming_e2e_glue.py
+    │   ├── test_streaming_speech_config.py
     │   ├── test_talker.py
     │   ├── test_talker_voice_validation.py
     │   ├── test_thinker.py
@@ -65,9 +67,17 @@ tests/
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
-    │   ├── test_cli_async_decode.py
+    │   ├── test_cli_decode_mode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── moss_tts/
+    │   └── test_pipeline.py
+    ├── moss_tts_local/
+    │   ├── test_pipeline.py
+    │   ├── test_radix_hash.py
+    │   ├── test_s0_gate.py
+    │   ├── test_state_pool.py
+    │   └── test_streaming_vocoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -76,6 +86,7 @@ tests/
     │   ├── test_stop_run_id.py
     │   └── test_views.py
     ├── serve/
+    │   ├── test_generation_server_args.py
     │   └── test_openai_api.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
@@ -108,8 +119,6 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 - `benchmark`: GPU performance / parity tests in `test_model/`. May require a
   populated HF cache and tens of GB of GPU memory; per-test docstrings call
   out hardware needs.
-- `docs`: documented-example tests in `docs/`. Verify documented request
-  shapes and CLI snippets still work.
 - `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
   Combined with `--tts-stage` (see `test_model/conftest.py`).
 
@@ -118,33 +127,13 @@ Tag each test with the marker that matches its lane and use it to filter runs.
 
 - `README.md`: This file. It explains test ownership and where new tests belong.
 - `__init__.py`: Keeps `tests` importable as a package.
-- `utils.py`: Shared helpers used by docs and model CI tests.
+- `utils.py`: Shared helpers used by model CI tests.
 
 ## `data/`
 
 Small static fixtures shared by tests, such as images, audio, and short videos.
 Keep these files small and deterministic. Large model artifacts, generated
 outputs, and benchmark datasets should live outside the unit test tree.
-
-## `docs/`
-
-Documentation/example tests. These verify that documented user-facing examples
-still work.
-
-Use this lane when the test protects:
-
-- install/docs snippets,
-- client examples,
-- documented request/response shapes,
-- examples that may need optional docs dependencies.
-
-These tests are not the default fast unit lane.
-
-Expected command:
-
-```bash
-pytest tests/docs -m docs -v
-```
 
 ## `test_model/`
 
@@ -173,7 +162,7 @@ Relevant model CI ownership:
   summary style as the other benchmark stages: `ASR WER Benchmark Result`
   followed by `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
-  stops the upstream model server, runs `ensure_gpus_idle.sh`, then launches
+  stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
   (`QWEN3_ASR_WER_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
   and TTS WER tests instead of the in-process transformers Whisper pipeline.
@@ -189,7 +178,7 @@ Relevant model CI ownership:
   an earlier suite does not skip later ones; only a failed setup blocks the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
-- GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan
+- GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
   spawn/router workers, waits for VRAM below threshold).
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
   init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark
@@ -199,6 +188,12 @@ Relevant model CI ownership:
   with `--enable-realtime` and drives `/v1/realtime` through a real WebSocket
   client to cover text responses, server VAD transcription, and disconnect
   teardown.
+- `test_rl_distributed_weight_update.py`: launches a Higgs TTS worker on one GPU
+  and a rank-0 trainer subprocess on another GPU, initializes the distributed
+  weight-update group, broadcasts base-model body weights, verifies the
+  `tts_engine` checksum changes, destroys the update group, and checks the
+  server still serves audio. It is skipped unless two GPUs and the required
+  Higgs base checkpoint are already available in the Hugging Face cache.
 - CLI flags `--s2pro-stage {nonstream,stream,consistency,all}` and
   `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
   source.
@@ -310,6 +305,19 @@ that happened to contain an older version of the test.
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
   - vision encoder `patch_embed` numerical equivalence: `nn.Conv3d` vs `F.linear` reshape at the substitution boundary, using synthetic weights without loading real Ming checkpoints.
+  - streaming text decode (`MingStreamingDetokenizeScheduler` /
+    `make_text_stream_output_builder`): per-token detokenization and delta
+    emission with UTF-8 multibyte boundary safety, streaming vs. non-streaming
+    final-result shape, stream-completion ordering races, per-request failure
+    isolation, bounded orphan `_state` eviction with abort cleanup, and
+    text-stream output gating on the `stream` flag, chunked prefill, and
+    text-vs-audio-only output modalities
+  - streaming speech glue and topology: thinker text/combined stream builders
+    fanning token ids to decode and text to the segmenter (audio-only kept off
+    decode), client merge of decode deltas with the talker stream, and
+    `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
+    talker, terminal talker-stream stage, thinker/talker GPU-range collision
+    rejection, streaming variant exposure).
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts
@@ -326,7 +334,22 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--async-decode` tri-state CLI override.
+  - async-decode default-on config + `--decode-mode async|sync` CLI override.
+
+- `unit_test/moss_tts/`: MOSS-TTS unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR/vocoder stage factory wiring
+  - request mapping for `ref_audio`, `references`, and `token_count`
+  - preprocessing handoff and abort cleanup behavior
+  - delay-pattern runner, codec splitting, and seeded sampling contracts.
+
+- `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
+  - pipeline config, request builders, and scheduler adapter contracts
+  - decode-state pool acquisition, launch-state gathers, repetition-penalty history, cleanup, and resume/retraction lifecycle
+  - chunked prefill feedback/journal suppression and postprocess alignment checks
+  - synchronous frame-decode parity harness and S0 gate coverage
+  - streaming vocoder session lifecycle, per-request chunk-threshold and
+    coalescing contracts, and decode-failure isolation.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
@@ -336,6 +359,7 @@ that happened to contain an older version of the test.
   - managed launcher command construction and cleanup.
 
 - `unit_test/serve/`: In-process serving API unit tests:
+  - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
   - streaming response framing and failure semantics.
 
