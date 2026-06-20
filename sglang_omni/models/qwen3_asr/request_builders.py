@@ -69,27 +69,53 @@ def _audio_source_from_payload(payload: StagePayload) -> Any:
     return inputs
 
 
-def load_audio(source: Any) -> np.ndarray:
+def _load_audio_torchaudio(source: Any) -> tuple[np.ndarray, int]:
     import torchaudio
 
+    if isinstance(source, bytes):
+        audio, sr = torchaudio.load(io.BytesIO(source))
+    elif isinstance(source, str):
+        audio, sr = torchaudio.load(source)
+    else:
+        raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
+    if audio.ndim == 2 and audio.shape[0] > 1:
+        audio = audio.mean(dim=0, keepdim=True)
+    return audio.squeeze(0).to(torch.float32).cpu().numpy(), int(sr)
+
+
+def _load_audio_soundfile(source: Any) -> tuple[np.ndarray, int]:
+    import soundfile as sf
+
+    if isinstance(source, bytes):
+        audio, sr = sf.read(io.BytesIO(source))
+    elif isinstance(source, str):
+        audio, sr = sf.read(source)
+    else:
+        raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+    return audio.astype(np.float32), int(sr)
+
+
+def load_audio(source: Any) -> np.ndarray:
     if isinstance(source, memoryview):
         source = source.tobytes()
     if isinstance(source, bytearray):
         source = bytes(source)
 
-    if isinstance(source, bytes):
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
-    elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
-    else:
-        raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
+    try:
+        audio, sample_rate = _load_audio_torchaudio(source)
+    except Exception:
+        # torchaudio may fail when torchcodec lacks a compatible FFmpeg build;
+        # fall back to soundfile which has bundled codecs.
+        audio, sample_rate = _load_audio_soundfile(source)
 
-    if audio.ndim == 2 and audio.shape[0] > 1:
-        audio = audio.mean(dim=0, keepdim=True)
-    audio = audio.squeeze(0).to(torch.float32)
     if sample_rate != _SAMPLE_RATE:
-        audio = torchaudio.functional.resample(audio, sample_rate, _SAMPLE_RATE)
-    return audio.cpu().numpy()
+        import torchaudio.functional as F
+        audio = F.resample(
+            torch.from_numpy(audio), sample_rate, _SAMPLE_RATE
+        ).numpy()
+    return audio
 
 
 def _audio_fingerprint(audio: np.ndarray) -> str:
@@ -187,7 +213,7 @@ def make_qwen3_asr_scheduler_adapters(
         # Keep the full padded mel; the model's get_audio_feature uses the mask
         # to select valid frames. (Its no-mask branch transposes wrong, so the
         # mask path must be taken — we hand the mask over via model_specific_data
-        # since sglang 0.5.8's MultimodalDataItem has no such field.)
+        # since MultimodalDataItem has no feature_attention_mask field.)
         num_mel_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = int(qwen3_asr_num_audio_tokens(num_mel_frames))
         logger.debug(
@@ -207,7 +233,7 @@ def make_qwen3_asr_scheduler_adapters(
             feature=features,
         )
         # get_audio_feature reads item.feature_attention_mask via __getattr__;
-        # stash it in model_specific_data (not a real dataclass field in 0.5.8).
+        # stash it in model_specific_data (not a real dataclass field).
         audio_item.set("feature_attention_mask", feature_attention_mask)
         # general_mm_embed_routine locates audio positions by matching each
         # item's pad_value against input_ids. The omni scheduler does not run

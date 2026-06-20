@@ -18,6 +18,7 @@ import queue as _queue_mod
 import time
 import types
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import torch
@@ -101,6 +102,8 @@ class OmniScheduler:
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 2,
+        parallel_request_build: bool = False,
+        parallel_request_build_workers: int = 16,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -140,6 +143,18 @@ class OmniScheduler:
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if model_runner is not None:
             model_runner._async_enabled = enable_async_decode
+
+        # Parallel request building: run _request_builder calls concurrently so
+        # CPU-bound preprocessing (e.g. mel extraction) does not block the GPU.
+        # Opt-in per model via parallel_request_build=True in stages.py.
+        self._parallel_request_build = parallel_request_build
+        if parallel_request_build:
+            self._request_build_pool: ThreadPoolExecutor | None = ThreadPoolExecutor(
+                max_workers=parallel_request_build_workers,
+                thread_name_prefix="omni_req_build",
+            )
+        else:
+            self._request_build_pool = None
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -453,7 +468,16 @@ class OmniScheduler:
         return recv_msgs
 
     def process_input_requests(self, recv_reqs):
-        """Convert incoming payloads to SGLang Reqs and enqueue."""
+        """Convert incoming payloads to SGLang Reqs and enqueue.
+
+        When parallel_request_build is enabled the CPU-bound _request_builder
+        calls (e.g. mel extraction for ASR) are dispatched concurrently to a
+        thread pool.  All shared-state accesses (stream chunks, deferred map,
+        waiting queue) remain serial so no locking is needed.
+        """
+        # Phase 1 (serial): stream-state setup and readiness gating.
+        # Collects (orig_req_id, payload, pending_stream_done) for each ready req.
+        ready: list[tuple[str, Any, bool]] = []
         for payload in recv_reqs:
             req_id = payload.request_id
             buffered_chunks = self._pending_stream_chunks.pop(req_id, [])
@@ -476,16 +500,42 @@ class OmniScheduler:
                 stage=None,
                 event_name="scheduler_request_build_start",
             )
+            ready.append((req_id, payload, pending_stream_done))
+
+        if not ready:
+            return
+
+        # Phase 2: run _request_builder for each ready payload.
+        # With parallel_request_build=True and a batch of >1, dispatch to the
+        # persistent thread pool so mel/FFT work runs concurrently on all cores.
+        def _safe_build(args: tuple) -> tuple:
+            orig_req_id, payload, pending_stream_done = args
             try:
-                req_data = self._request_builder(payload)
+                return orig_req_id, payload, pending_stream_done, self._request_builder(payload), None
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
-                self._emit_request_error(req_id, exc)
-                self.abort(req_id)
+                return orig_req_id, payload, pending_stream_done, None, exc
+
+        if self._parallel_request_build and len(ready) > 1 and self._request_build_pool is not None:
+            t0 = time.perf_counter()
+            built = list(self._request_build_pool.map(_safe_build, ready))
+            logger.debug(
+                "[parallel_request_build] n=%d elapsed=%.1fms",
+                len(ready),
+                1e3 * (time.perf_counter() - t0),
+            )
+        else:
+            built = [_safe_build(args) for args in ready]
+
+        # Phase 3 (serial): post-build validation and queue insertion.
+        for orig_req_id, payload, pending_stream_done, req_data, exc in built:
+            if exc is not None:
+                logger.exception(f"OmniScheduler: request builder failed for {orig_req_id}")
+                self._emit_request_error(orig_req_id, exc)
+                self.abort(orig_req_id)
                 continue
             if pending_stream_done:
-                self._pending_stream_done.discard(req_id)
-            self._deferred_request_payloads.pop(req_id, None)
+                self._pending_stream_done.discard(orig_req_id)
+            self._deferred_request_payloads.pop(orig_req_id, None)
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
@@ -820,6 +870,9 @@ class OmniScheduler:
 
     def stop(self) -> None:
         self._running = False
+        if self._request_build_pool is not None:
+            self._request_build_pool.shutdown(wait=False)
+            self._request_build_pool = None
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         running_abort = (
