@@ -495,11 +495,6 @@ class OmniScheduler:
             ):
                 self._deferred_request_payloads[req_id] = payload
                 continue
-            _emit_event(
-                request_id=req_id,
-                stage=None,
-                event_name="scheduler_request_build_start",
-            )
             ready.append((req_id, payload, pending_stream_done))
 
         if not ready:
@@ -510,10 +505,17 @@ class OmniScheduler:
         # persistent thread pool so mel/FFT work runs concurrently on all cores.
         def _safe_build(args: tuple) -> tuple:
             orig_req_id, payload, pending_stream_done = args
+            # Capture timestamps around the actual build so the profiler's
+            # request_build interval stays per-request even under the 3-phase
+            # split (start/end are emitted serially in phase 3 below).
+            build_t0 = time.time_ns()
             try:
-                return orig_req_id, payload, pending_stream_done, self._request_builder(payload), None
+                req_data = self._request_builder(payload)
+                return (orig_req_id, payload, pending_stream_done, req_data,
+                        None, build_t0, time.time_ns())
             except Exception as exc:
-                return orig_req_id, payload, pending_stream_done, None, exc
+                return (orig_req_id, payload, pending_stream_done, None,
+                        exc, build_t0, time.time_ns())
 
         if self._parallel_request_build and len(ready) > 1 and self._request_build_pool is not None:
             t0 = time.perf_counter()
@@ -527,7 +529,23 @@ class OmniScheduler:
             built = [_safe_build(args) for args in ready]
 
         # Phase 3 (serial): post-build validation and queue insertion.
-        for orig_req_id, payload, pending_stream_done, req_data, exc in built:
+        for orig_req_id, payload, pending_stream_done, req_data, exc, build_t0, build_t1 in built:
+            # Replay the per-build timestamps captured in _safe_build so the
+            # request_build interval reflects a single build(not the whole phase 2)
+            # Emitted here (serial, in scheduler thread) so stage attribution
+            # is correct and there's no lock contention.
+            _emit_event(
+                request_id=orig_req_id,
+                stage=None,
+                event_name="scheduler_request_build_start",
+                timestamp_ns=build_t0,
+            )
+            _emit_event(
+                request_id=orig_req_id,
+                stage=None,
+                event_name="scheduler_request_build_end",
+                timestamp_ns=build_t1,
+            )
             if exc is not None:
                 logger.exception(f"OmniScheduler: request builder failed for {orig_req_id}")
                 self._emit_request_error(orig_req_id, exc)
@@ -539,11 +557,6 @@ class OmniScheduler:
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
-            _emit_event(
-                request_id=req_id,
-                stage=None,
-                event_name="scheduler_request_build_end",
-            )
             if bool(getattr(req_data, "enforce_request_limits", False)):
                 error_msg = self._prepare_request_limits(req_data)
                 if error_msg:
