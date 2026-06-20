@@ -112,9 +112,8 @@ def load_audio(source: Any) -> np.ndarray:
 
     if sample_rate != _SAMPLE_RATE:
         import torchaudio.functional as F
-        audio = F.resample(
-            torch.from_numpy(audio), sample_rate, _SAMPLE_RATE
-        ).numpy()
+
+        audio = F.resample(torch.from_numpy(audio), sample_rate, _SAMPLE_RATE).numpy()
     return audio
 
 
