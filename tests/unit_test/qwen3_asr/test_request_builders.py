@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -15,9 +18,108 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
+    _try_load_pcm_wav_fast,
+    load_audio,
     make_qwen3_asr_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+
+
+def _wav_bytes(audio: np.ndarray, *, sample_rate: int) -> bytes:
+    if audio.ndim == 1:
+        pcm = audio[:, None]
+    else:
+        pcm = audio
+    pcm16 = np.clip(pcm * 32767.0, -32768, 32767).astype("<i2")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(pcm16.shape[1])
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm16.tobytes())
+    return buffer.getvalue()
+
+
+def _wav_bytes_uint8(audio: np.ndarray, *, sample_rate: int) -> bytes:
+    if audio.ndim == 1:
+        pcm = audio[:, None]
+    else:
+        pcm = audio
+    pcm8 = np.clip((pcm + 1.0) * 127.5, 0, 255).astype("u1")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(pcm8.shape[1])
+        wav_file.setsampwidth(1)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm8.tobytes())
+    return buffer.getvalue()
+
+
+def test_qwen3_asr_fast_pcm_wav_loads_mono_16k_bytes() -> None:
+    audio = np.array([0.0, 0.5, -0.5, 0.25], dtype=np.float32)
+    loaded = load_audio(_wav_bytes(audio, sample_rate=16000))
+
+    expected = np.array([0.0, 16383 / 32768.0, -16383 / 32768.0, 8191 / 32768.0])
+    np.testing.assert_allclose(loaded, expected, atol=1e-6)
+
+
+def test_qwen3_asr_fast_pcm_wav_loads_path(tmp_path: Path) -> None:
+    audio = np.array([0.0, 0.5, -0.5, 0.25], dtype=np.float32)
+    wav_path = tmp_path / "mono.wav"
+    wav_path.write_bytes(_wav_bytes(audio, sample_rate=16000))
+
+    loaded = load_audio(str(wav_path))
+
+    expected = np.array([0.0, 16383 / 32768.0, -16383 / 32768.0, 8191 / 32768.0])
+    np.testing.assert_allclose(loaded, expected, atol=1e-6)
+
+
+def test_qwen3_asr_fast_pcm_wav_loads_stereo_without_resample() -> None:
+    audio = np.array(
+        [
+            [0.25, -0.25],
+            [0.5, -0.5],
+        ],
+        dtype=np.float32,
+    )
+    fast = _try_load_pcm_wav_fast(_wav_bytes(audio, sample_rate=16000))
+
+    assert fast is not None
+    loaded_channels_first, sample_rate = fast
+    assert sample_rate == 16000
+    expected = np.array(
+        [
+            [8191 / 32768.0, 16383 / 32768.0],
+            [-8191 / 32768.0, -16383 / 32768.0],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(loaded_channels_first, expected, atol=1e-6)
+
+
+def test_qwen3_asr_fast_pcm_wav_rejects_malformed_bytes() -> None:
+    assert _try_load_pcm_wav_fast(b"not a wav") is None
+
+
+def test_qwen3_asr_fast_pcm_wav_rejects_unsupported_sample_width() -> None:
+    audio = np.array([0.0, 0.5, -0.5, 0.25], dtype=np.float32)
+
+    assert _try_load_pcm_wav_fast(_wav_bytes_uint8(audio, sample_rate=16000)) is None
+
+
+def test_qwen3_asr_fast_pcm_wav_matches_torchaudio_path() -> None:
+    import torchaudio
+
+    rng = np.random.default_rng(0)
+    audio = rng.uniform(-0.8, 0.8, size=(257, 2)).astype(np.float32)
+    wav = _wav_bytes(audio, sample_rate=16000)
+    fast = load_audio(wav)
+
+    baseline, sample_rate = torchaudio.load(io.BytesIO(wav))
+    assert sample_rate == 16000
+    baseline = baseline.mean(dim=0).to(torch.float32).cpu().numpy()
+
+    np.testing.assert_allclose(fast, baseline, atol=1e-6)
 
 
 class _FakeTokenizer:

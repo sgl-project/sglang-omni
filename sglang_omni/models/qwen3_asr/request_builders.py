@@ -18,6 +18,7 @@ import hashlib
 import io
 import logging
 import time
+import wave
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -69,6 +70,48 @@ def _audio_source_from_payload(payload: StagePayload) -> Any:
     return inputs
 
 
+def _try_load_pcm_wav_fast(source: Any) -> tuple[np.ndarray, int] | None:
+    """Fast path for uncompressed PCM WAV inputs.
+
+    Returns ``(channels_first_float32_audio, sample_rate)`` or ``None`` when the
+    source is not a supported WAV. The caller keeps the generic torchaudio
+    fallback, so this path must stay conservative.
+    """
+    if isinstance(source, bytes):
+        wav_source: Any = io.BytesIO(source)
+    elif isinstance(source, str):
+        wav_source = source
+    else:
+        return None
+
+    try:
+        with wave.open(wav_source, "rb") as wav_file:
+            if wav_file.getcomptype() != "NONE":
+                return None
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+            if channels < 1 or sample_rate <= 0 or frame_count < 0:
+                return None
+            if sample_width != 2:
+                return None
+            raw = wav_file.readframes(frame_count)
+    except (EOFError, OSError, wave.Error):
+        return None
+
+    expected_bytes = frame_count * channels * sample_width
+    if len(raw) != expected_bytes:
+        return None
+
+    audio = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    if channels > 1:
+        audio = audio.reshape(frame_count, channels).T
+    else:
+        audio = audio.reshape(1, frame_count)
+    return audio, sample_rate
+
+
 def load_audio(source: Any) -> np.ndarray:
     import torchaudio
 
@@ -77,7 +120,11 @@ def load_audio(source: Any) -> np.ndarray:
     if isinstance(source, bytearray):
         source = bytes(source)
 
-    if isinstance(source, bytes):
+    fast_audio = _try_load_pcm_wav_fast(source)
+    if fast_audio is not None:
+        audio_np, sample_rate = fast_audio
+        audio = torch.from_numpy(audio_np)
+    elif isinstance(source, bytes):
         audio, sample_rate = torchaudio.load(io.BytesIO(source))
     elif isinstance(source, str):
         audio, sample_rate = torchaudio.load(source)
