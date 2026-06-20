@@ -511,13 +511,31 @@ class OmniScheduler:
             build_t0 = time.time_ns()
             try:
                 req_data = self._request_builder(payload)
-                return (orig_req_id, payload, pending_stream_done, req_data,
-                        None, build_t0, time.time_ns())
+                return (
+                    orig_req_id,
+                    payload,
+                    pending_stream_done,
+                    req_data,
+                    None,
+                    build_t0,
+                    time.time_ns(),
+                )
             except Exception as exc:
-                return (orig_req_id, payload, pending_stream_done, None,
-                        exc, build_t0, time.time_ns())
+                return (
+                    orig_req_id,
+                    payload,
+                    pending_stream_done,
+                    None,
+                    exc,
+                    build_t0,
+                    time.time_ns(),
+                )
 
-        if self._parallel_request_build and len(ready) > 1 and self._request_build_pool is not None:
+        if (
+            self._parallel_request_build
+            and len(ready) > 1
+            and self._request_build_pool is not None
+        ):
             t0 = time.perf_counter()
             built = list(self._request_build_pool.map(_safe_build, ready))
             logger.debug(
@@ -529,7 +547,15 @@ class OmniScheduler:
             built = [_safe_build(args) for args in ready]
 
         # Phase 3 (serial): post-build validation and queue insertion.
-        for orig_req_id, payload, pending_stream_done, req_data, exc, build_t0, build_t1 in built:
+        for (
+            orig_req_id,
+            payload,
+            pending_stream_done,
+            req_data,
+            exc,
+            build_t0,
+            build_t1,
+        ) in built:
             # Replay the per-build timestamps captured in _safe_build so the
             # request_build interval reflects a single build(not the whole phase 2)
             # Emitted here (serial, in scheduler thread) so stage attribution
@@ -547,7 +573,9 @@ class OmniScheduler:
                 timestamp_ns=build_t1,
             )
             if exc is not None:
-                logger.exception(f"OmniScheduler: request builder failed for {orig_req_id}")
+                logger.exception(
+                    f"OmniScheduler: request builder failed for {orig_req_id}"
+                )
                 self._emit_request_error(orig_req_id, exc)
                 self.abort(orig_req_id)
                 continue
