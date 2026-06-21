@@ -72,8 +72,14 @@ def make_asr_send_fn(
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 else:
                     payload = await response.json()
-                    result.text = str(payload.get("text", ""))
-                    result.is_success = True
+                    if "text" not in payload:
+                        result.error = (
+                            f"Malformed transcription response (missing 'text'): "
+                            f"{payload}"
+                        )
+                    else:
+                        result.text = str(payload["text"])
+                        result.is_success = True
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
