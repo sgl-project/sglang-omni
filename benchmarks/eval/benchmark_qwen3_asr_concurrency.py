@@ -56,7 +56,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import calculate_asr_speed_metrics, calculate_wer_metrics
-from benchmarks.tasks.qwen3_asr import (
+from benchmarks.tasks.asr_transcription import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
     run_asr_transcription,

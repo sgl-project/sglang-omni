@@ -55,7 +55,7 @@ from benchmarks.metrics.wer import (
     print_asr_speed_summary,
     print_wer_summary,
 )
-from benchmarks.tasks.qwen3_asr import (
+from benchmarks.tasks.asr_transcription import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MAX_NEW_TOKENS,
     QWEN3_ASR_MODEL_PATH,
@@ -325,7 +325,7 @@ async def _transcribe_qwen3_asr_entries_async(
 ) -> list[tuple[int, dict, SampleOutput]]:
     samples = [
         SimpleNamespace(
-            sample_id=str(entry.get("sample_id", "")),
+            sample_id=entry["sample_id"],
             ref_audio=entry["wav_path"],
         )
         for _idx, entry, _output in pending
