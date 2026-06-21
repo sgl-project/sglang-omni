@@ -27,7 +27,6 @@ class _FakeTokenizer:
     def __init__(self) -> None:
         self.encode_calls: list[str] = []
         self.decode_calls: list[dict] = []
-        self.prompt_calls: list[str] = []
 
     def convert_tokens_to_ids(self, token: str) -> int:
         assert token == "<|audio_pad|>"
@@ -41,7 +40,6 @@ class _FakeTokenizer:
 
     def __call__(self, text: str, *, add_special_tokens: bool = False):
         assert not add_special_tokens
-        self.prompt_calls.append(text)
         audio_pad_count = text.count("<|audio_pad|>")
         return SimpleNamespace(input_ids=[11] + [42] * audio_pad_count + [12, 13, 14])
 
@@ -117,87 +115,6 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     assert data.prompt_token_ids[start : end + 1] == (
         [audio_item.pad_value] * num_audio_tokens
     )
-
-
-def test_qwen3_asr_prompt_token_ids_are_cached_by_audio_length_and_language(
-    monkeypatch,
-) -> None:
-    num_mel_frames = 101
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 3000)),
-        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
-    )
-    tokenizer = _FakeTokenizer()
-    request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        max_new_tokens=32,
-        feature_extractor=feature_extractor,
-    )
-
-    first = request_builder(
-        StagePayload(
-            request_id="req-asr-1",
-            request=OmniRequest(inputs={"audio_bytes": b"wav-1"}),
-            data={},
-        )
-    )
-    second = request_builder(
-        StagePayload(
-            request_id="req-asr-2",
-            request=OmniRequest(inputs={"audio_bytes": b"wav-2"}),
-            data={},
-        )
-    )
-
-    assert len(tokenizer.prompt_calls) == 1
-    assert first.prompt_token_ids is not second.prompt_token_ids
-    assert first.prompt_token_ids == second.prompt_token_ids
-
-
-def test_qwen3_asr_prompt_token_cache_is_split_by_language(monkeypatch) -> None:
-    num_mel_frames = 101
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 3000)),
-        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
-    )
-    monkeypatch.setattr(
-        request_builders,
-        "load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
-    )
-    tokenizer = _FakeTokenizer()
-    request_builder, _ = make_qwen3_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        max_new_tokens=32,
-        feature_extractor=feature_extractor,
-    )
-
-    request_builder(
-        StagePayload(
-            request_id="req-asr-en",
-            request=OmniRequest(inputs={"audio_bytes": b"wav-en"}),
-            data={},
-        )
-    )
-    request_builder(
-        StagePayload(
-            request_id="req-asr-zh",
-            request=OmniRequest(
-                inputs={"audio_bytes": b"wav-zh"},
-                params={"language": "zh"},
-            ),
-            data={},
-        )
-    )
-
-    assert len(tokenizer.prompt_calls) == 2
-    assert "language English<asr_text>" in tokenizer.prompt_calls[0]
-    assert "language Chinese<asr_text>" in tokenizer.prompt_calls[1]
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:

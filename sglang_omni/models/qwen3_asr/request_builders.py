@@ -19,7 +19,6 @@ import io
 import logging
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Callable
 
 import numpy as np
@@ -45,7 +44,6 @@ _AUDIO_START = "<|audio_start|>"
 _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_END = "<|audio_end|>"
 _ASR_TEXT = "<asr_text>"
-_PROMPT_TOKEN_CACHE_SIZE = 128
 
 
 @dataclass
@@ -153,10 +151,7 @@ def make_qwen3_asr_scheduler_adapters(
     vocab_size = int(tokenizer.vocab_size)
     asr_text_token_ids = _encode_literal(tokenizer, _ASR_TEXT)
 
-    @lru_cache(maxsize=_PROMPT_TOKEN_CACHE_SIZE)
-    def _build_prompt_ids_cached(
-        num_audio_tokens: int, language: str
-    ) -> tuple[int, ...]:
+    def _build_prompt_ids(num_audio_tokens: int, language: str) -> list[int]:
         prompt = (
             f"<|im_start|>user\n"
             f"{_AUDIO_START}{_AUDIO_PAD * num_audio_tokens}{_AUDIO_END}"
@@ -168,10 +163,7 @@ def make_qwen3_asr_scheduler_adapters(
         # <asr_text>. Without it the (small) model emits the language tag then
         # stops. Upstream qwen_asr does the same (_build_text_prompt).
         prompt = prompt + f"language {language}<asr_text>"
-        return tuple(tokenizer(prompt, add_special_tokens=False).input_ids)
-
-    def _build_prompt_ids(num_audio_tokens: int, language: str) -> list[int]:
-        return list(_build_prompt_ids_cached(num_audio_tokens, language))
+        return tokenizer(prompt, add_special_tokens=False).input_ids
 
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
