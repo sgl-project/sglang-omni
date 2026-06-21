@@ -86,6 +86,7 @@ tests/
     │   ├── test_stop_run_id.py
     │   └── test_views.py
     ├── serve/
+    │   ├── test_generation_server_args.py
     │   └── test_openai_api.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
@@ -358,6 +359,7 @@ that happened to contain an older version of the test.
   - managed launcher command construction and cleanup.
 
 - `unit_test/serve/`: In-process serving API unit tests:
+  - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
   - streaming response framing and failure semantics.
 

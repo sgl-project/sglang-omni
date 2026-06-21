@@ -177,6 +177,7 @@ def create_generation_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
+    server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
@@ -196,19 +197,25 @@ def create_generation_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
+    overrides: dict[str, Any] = {
+        "dtype": "bfloat16",
+        "disable_cuda_graph": False,
+        "disable_overlap_schedule": True,
+        "decrypted_config_file": _write_voxtral_sglang_config(checkpoint_dir),
+        "enable_torch_compile": True,
+        "mem_fraction_static": 0.85,
+        "max_prefill_tokens": 8192,
+        "max_running_requests": 16,
+        "sampling_backend": "pytorch",
+        "torch_compile_max_bs": 16,
+    }
+    if server_args_overrides:
+        overrides.update(server_args_overrides)
+
     server_args = build_sglang_server_args(
         checkpoint_dir,
         context_length=8192,
-        dtype="bfloat16",
-        disable_cuda_graph=False,
-        disable_overlap_schedule=True,
-        decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
-        enable_torch_compile=True,
-        mem_fraction_static=0.85,
-        max_prefill_tokens=8192,
-        max_running_requests=16,
-        sampling_backend="pytorch",
-        torch_compile_max_bs=16,
+        **overrides,
     )
 
     if getattr(server_args, "enable_torch_compile", False):
