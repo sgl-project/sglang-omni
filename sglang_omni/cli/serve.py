@@ -143,6 +143,8 @@ def _apply_stage_server_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
+    supported_factories: frozenset[str] | None = None,
+    flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
         pipeline_config,
@@ -150,6 +152,12 @@ def _apply_stage_server_args_override(
         reason=reason,
     )
     for stage in matching_stages:
+        if supported_factories is not None and stage.factory not in supported_factories:
+            display_flag = flag_name or reason
+            raise typer.BadParameter(
+                f"{display_flag} does not support stage {stage.name!r} "
+                f"with factory {stage.factory!r}"
+            )
         factory_args = dict(stage.factory_args or {})
         overrides = dict(factory_args.get("server_args_overrides") or {})
         overrides.update(updates)
@@ -1102,6 +1110,30 @@ def serve(
             ),
         ),
     ] = None,
+    max_running_requests: Annotated[
+        int | None,
+        typer.Option(
+            "--max-running-requests",
+            "--max_running_requests",
+            min=1,
+            help=(
+                "Override SGLang generation stage max_running_requests. "
+                "Omit to use the pipeline config default."
+            ),
+        ),
+    ] = None,
+    cuda_graph_max_bs: Annotated[
+        int | None,
+        typer.Option(
+            "--cuda-graph-max-bs",
+            "--cuda_graph_max_bs",
+            min=1,
+            help=(
+                "Override SGLang generation stage cuda_graph_max_bs. Omit "
+                "to use the pipeline config default."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline."""
     logging.basicConfig(
@@ -1178,6 +1210,26 @@ def serve(
         decode_mode=decode_mode,
         async_lookahead_min_batch_size=async_lookahead_min_batch_size,
     )
+    generation_server_args_overrides: dict[str, object] = {}
+    if max_running_requests is not None:
+        generation_server_args_overrides["max_running_requests"] = max_running_requests
+    if cuda_graph_max_bs is not None:
+        generation_server_args_overrides["cuda_graph_max_bs"] = cuda_graph_max_bs
+    if generation_server_args_overrides:
+        generation_stage_name = (
+            type(merged_config).generation_sglang_role_to_stage().get("generation")
+        )
+        if generation_stage_name is None:
+            _raise_unsupported_flag(
+                merged_config,
+                "--max-running-requests/--cuda-graph-max-bs",
+            )
+        _apply_stage_server_args_override(
+            merged_config,
+            stage_name=generation_stage_name,
+            updates=generation_server_args_overrides,
+            reason="SGLang generation server args override",
+        )
     merged_config = apply_partial_start_cli_overrides(
         merged_config,
         talker_partial_start=talker_partial_start,

@@ -22,6 +22,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3TTSForConditionalGeneration"
 
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(

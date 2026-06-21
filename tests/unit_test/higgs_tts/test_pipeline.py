@@ -27,6 +27,7 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
     stages_by_name = {stage.name: stage for stage in config.stages}
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
+    assert "server_args_overrides" not in stages_by_name["tts_engine"].factory_args
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
 
 
@@ -103,10 +104,8 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     assert captured["context_length"] == 4096
     assert captured["gpu_id"] == 0
     assert captured["overrides"]["disable_cuda_graph"] is False
-    assert captured["overrides"]["cuda_graph_max_bs"] == stages.DEFAULT_MAX_CONCURRENCY
-    assert (
-        captured["overrides"]["max_running_requests"] == stages.DEFAULT_MAX_CONCURRENCY
-    )
+    assert captured["overrides"]["cuda_graph_max_bs"] == 64
+    assert captured["overrides"]["max_running_requests"] == 64
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["adapter_kwargs"] == {"max_new_tokens_cap": 2048}
     assert (
@@ -717,7 +716,7 @@ def test_higgs_tts_vocoder_batches_decode_requests(
     decode_batch_sizes = _fake_codec_fixtures(monkeypatch)
 
     scheduler = stages.create_vocoder_executor(
-        "fake-model", max_batch_size=4, max_batch_wait_ms=2
+        "fake-model", vocoder_decode_batch_size=4, max_batch_wait_ms=2
     )
 
     p1 = _make_payload(
@@ -752,7 +751,9 @@ def test_higgs_tts_vocoder_batch_handles_empty_items(
     """Items with empty/too-short codes get empty waveform payloads, not a crash."""
     decode_batch_sizes = _fake_codec_fixtures(monkeypatch)
 
-    scheduler = stages.create_vocoder_executor("fake-model", max_batch_size=4)
+    scheduler = stages.create_vocoder_executor(
+        "fake-model", vocoder_decode_batch_size=4
+    )
 
     payloads = [
         _make_payload("r-empty", HiggsTtsState(output_codes_delayed=None)),

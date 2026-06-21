@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
@@ -26,6 +27,8 @@ from sglang_omni.models.higgs_tts.sampler import (
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 from sglang_omni.sampling.seed import resolve_row_seed
 
+logger = logging.getLogger(__name__)
+
 # Higgs ckpt prefixes → sglang Qwen3ForCausalLM parameter tree (under ``backbone.``).
 _BACKBONE_PREFIX_MAP: dict[str, str] = {
     "tied.embedding.text_embedding.": "backbone.model.embed_tokens.",
@@ -44,7 +47,18 @@ class HiggsGenParams:
     top_k: int | None = None
 
 
-_DEFAULT_MAX_BATCH_SIZE = 64
+def _resolve_max_running_requests() -> int:
+    try:
+        from sglang.srt.server_args import get_global_server_args
+
+        return int(get_global_server_args().max_running_requests)
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        fallback = 64
+        logger.warning(
+            f"Falling back to Higgs max_running_requests={fallback} because "
+            f"SGLang global server args are unavailable: {exc}"
+        )
+        return fallback
 
 
 def _flat_sampling_attr(sampling_info, attr: str) -> list | None:
@@ -96,7 +110,6 @@ class HiggsTTSModel(nn.Module):
         config: HiggsMultimodalQwen3Config,
         quant_config=None,
         prefix: str = "",
-        max_batch_size: int = _DEFAULT_MAX_BATCH_SIZE,
     ) -> None:
         super().__init__()
         self.config = config
@@ -143,7 +156,7 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        self._max_batch_size = int(max_batch_size)
+        self._max_batch_size = _resolve_max_running_requests()
         pool_size = self._max_batch_size + 1
         self._sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,
@@ -221,9 +234,9 @@ class HiggsTTSModel(nn.Module):
             return row
         if not self._free_rows:
             raise RuntimeError(
-                f"HiggsTTSModel sampler pool exhausted (max_batch_size="
-                f"{self._max_batch_size}); raise ``max_batch_size`` or limit "
-                f"concurrent requests."
+                f"HiggsTTSModel sampler pool exhausted "
+                f"(max_running_requests={self._max_batch_size}); raise "
+                f"``max_running_requests`` or limit concurrent requests."
             )
         row = self._free_rows.pop()
         self._rid_to_row[req_id] = row
