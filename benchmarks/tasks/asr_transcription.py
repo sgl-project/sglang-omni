@@ -55,7 +55,7 @@ def make_asr_send_fn(
 
         form = aiohttp.FormData()
         form.add_field("model", model_name)
-        form.add_field("language", "en" if lang == "en" else lang)
+        form.add_field("language", lang)
         form.add_field("response_format", "json")
         form.add_field("max_new_tokens", str(max_new_tokens))
         form.add_field(
