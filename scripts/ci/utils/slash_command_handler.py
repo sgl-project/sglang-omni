@@ -3,9 +3,13 @@ import os
 import sys
 import time
 
+import requests
 from github import Auth, Github
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+ACTIVE_WORKFLOW_STATUSES = {"queued", "in_progress", "waiting", "pending", "requested"}
+WORKFLOW_CANCEL_POLL_SECONDS = 5
+WORKFLOW_CANCEL_TIMEOUT_SECONDS = 120
 TTS_MODEL_LABELS = {
     "higgs": "run-higgs",
     "moss": "run-moss",
@@ -103,41 +107,155 @@ def handle_tag_run_ci(
     return True
 
 
-def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms, react_on_success=True):
+def wait_for_workflow_run_completed(gh_repo, token, run_id):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    url = f"https://api.github.com/repos/{gh_repo.full_name}/actions/runs/{run_id}"
+
+    deadline = time.time() + WORKFLOW_CANCEL_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            print(f"Failed to fetch workflow {run_id}: {response.status_code}")
+            return False
+        status = response.json().get("status")
+        if status == "completed":
+            return True
+        print(f"Waiting for workflow {run_id} to complete cancellation: {status}")
+        time.sleep(WORKFLOW_CANCEL_POLL_SECONDS)
+
+    print(f"Timed out waiting for workflow {run_id} to complete cancellation.")
+    return False
+
+
+def cancel_and_rerun_workflow(gh_repo, token, run):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    run_url = f"https://api.github.com/repos/{gh_repo.full_name}/actions/runs/{run.id}"
+
+    print(f"Cancelling active workflow before full rerun: {run.name} (ID: {run.id})")
+    cancel_response = requests.post(f"{run_url}/cancel", headers=headers, timeout=15)
+    if cancel_response.status_code == 202:
+        if not wait_for_workflow_run_completed(gh_repo, token, run.id):
+            return False
+    elif cancel_response.status_code in (409, 422):
+        print(
+            f"Cancel returned {cancel_response.status_code}; "
+            "checking whether workflow already completed."
+        )
+        state_response = requests.get(run_url, headers=headers, timeout=15)
+        if (
+            state_response.status_code != 200
+            or state_response.json().get("status") != "completed"
+        ):
+            print(f"Workflow {run.id} is not ready for rerun after cancel response.")
+            return False
+    else:
+        print(
+            f"Failed to cancel workflow {run.id}: "
+            f"{cancel_response.status_code} {cancel_response.text}"
+        )
+        return False
+
+    rerun_response = requests.post(f"{run_url}/rerun", headers=headers, timeout=15)
+    if rerun_response.status_code not in (201, 202):
+        print(
+            f"Failed to rerun workflow {run.id}: "
+            f"{rerun_response.status_code} {rerun_response.text}"
+        )
+        return False
+    print(f"Triggered full rerun for workflow {run.name} (ID: {run.id}).")
+    return True
+
+
+def handle_rerun_failed_ci(
+    gh_repo,
+    pr,
+    comment,
+    user_perms,
+    react_on_success=True,
+    force_full_pull_request_workflow_names=None,
+    token=None,
+):
     """
     Handles the /rerun-failed-ci command.
     Reruns workflows with 'failure' or 'skipped' conclusions.
+    When force_full_pull_request_workflow_names is set, full-reruns the
+    latest matching pull_request workflow even if it is active or successful.
     Returns True if action was taken, False otherwise.
     """
     if not user_perms.get("can_rerun_failed_ci", False):
         print("Permission denied: can_rerun_failed_ci is false.")
         return False
 
-    print("Permission granted. Triggering rerun of failed or skipped workflows.")
+    if force_full_pull_request_workflow_names is None:
+        force_full_pull_request_workflow_names = set()
+
+    print("Permission granted. Triggering CI workflow reruns.")
 
     head_sha = pr.head.sha
     print(f"Checking workflows for commit: {head_sha}")
 
     runs = gh_repo.get_workflow_runs(head_sha=head_sha)
 
-    rerun_candidates = [
-        run
-        for run in runs
-        if run.status == "completed" and run.conclusion in ("failure", "skipped")
-    ]
-    rerun_candidates.sort(key=lambda run: (run.created_at, run.id), reverse=True)
-
-    rerun_count = 0
+    latest_runs = []
     seen_workflows = set()
-    for run in rerun_candidates:
+    for run in sorted(runs, key=lambda run: (run.created_at, run.id), reverse=True):
         workflow_key = (run.workflow_id, run.event)
         if workflow_key in seen_workflows:
+            continue
+        seen_workflows.add(workflow_key)
+        latest_runs.append(run)
+
+    rerun_count = 0
+    for run in latest_runs:
+        force_full_rerun = (
+            run.event == "pull_request"
+            and run.name in force_full_pull_request_workflow_names
+        )
+        if run.status in ACTIVE_WORKFLOW_STATUSES:
+            if not force_full_rerun:
+                print(
+                    f"Skipping latest workflow because it is still {run.status}: "
+                    f"{run.name} (ID: {run.id})"
+                )
+                continue
+            if not token:
+                print(f"Cannot restart active workflow without token: {run.id}")
+                continue
+            try:
+                if cancel_and_rerun_workflow(gh_repo, token, run):
+                    rerun_count += 1
+            except Exception as e:
+                print(f"Failed to restart active workflow {run.id}: {e}")
+            continue
+
+        if run.status != "completed":
             print(
-                f"Skipping older {run.conclusion} workflow: "
+                f"Skipping latest workflow because it is still {run.status}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
-        seen_workflows.add(workflow_key)
+        if force_full_rerun:
+            print(f"Processing full workflow rerun: {run.name} (ID: {run.id})")
+            try:
+                run.rerun()
+                rerun_count += 1
+            except Exception as e:
+                print(f"Failed to rerun workflow {run.id}: {e}")
+            continue
+        if run.conclusion not in ("failure", "skipped"):
+            print(
+                f"Skipping latest workflow with conclusion {run.conclusion}: "
+                f"{run.name} (ID: {run.id})"
+            )
+            continue
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
@@ -236,7 +354,15 @@ def main():
             time.sleep(5)
 
         rerun = handle_rerun_failed_ci(
-            repo, pr, comment, user_perms, react_on_success=False
+            repo,
+            pr,
+            comment,
+            user_perms,
+            react_on_success=False,
+            force_full_pull_request_workflow_names=(
+                {"Omni CI"} if tts_model_target else None
+            ),
+            token=token,
         )
 
         if tagged or rerun:
