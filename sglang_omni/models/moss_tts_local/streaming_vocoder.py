@@ -849,6 +849,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             # The processor helper forces chunk_duration=8 and enters the
             # tokenizer streaming loop. This decoder is non-streaming, so it must
             # run through the tokenizer's full-sequence decode path.
+            # TODO(Ratish): Load and own the non-streaming codec directly so this
+            # path does not need to swap the processor-owned decoder at call time.
             original_decoder = self._codec.decoder
             self._codec.decoder = self._nonstream_decoder
             try:
