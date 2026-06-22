@@ -9,8 +9,8 @@ directories via the ``/v1/fs/file`` and ``/v1/fs/list`` endpoints.
 After the fix, _fs_root() must return a restricted directory, and requests
 outside that directory must be rejected with HTTP 403.
 """
+import argparse
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -61,9 +61,14 @@ def client(sandbox: Path, monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
 
-    # Prevent uvicorn.run from actually starting a server at import time
+    # Prevent uvicorn.run from actually starting a server at import time,
+    # and prevent argparse from parsing pytest's CLI args.
     import unittest.mock
-    with unittest.mock.patch("uvicorn.run"):
+    with unittest.mock.patch("uvicorn.run"), \
+         unittest.mock.patch(
+             "argparse.ArgumentParser.parse_args",
+             return_value=argparse.Namespace(port=7860),
+         ):
         spec.loader.exec_module(mod)
 
     return TestClient(mod.app, raise_server_exceptions=False)
