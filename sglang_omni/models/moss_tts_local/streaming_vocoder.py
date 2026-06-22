@@ -833,13 +833,12 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             raise RuntimeError(
                 "audio_tokenizer.decode did not return audio/audio_lengths."
             )
-        wavs = []
-        for index in range(int(audio.shape[0])):
-            length = int(audio_lengths[index].item())
-            wavs.append(
-                audio[index, :, :length].detach().to("cpu", torch.float32).contiguous()
-            )
-        return wavs
+        audio_cpu = audio.detach().to("cpu", torch.float32)
+        lengths_cpu = audio_lengths.detach().to("cpu")
+        return [
+            audio_cpu[index, :, : int(lengths_cpu[index])].contiguous()
+            for index in range(int(audio_cpu.shape[0]))
+        ]
 
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
         """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
