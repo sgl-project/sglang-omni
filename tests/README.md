@@ -77,7 +77,8 @@ tests/
     │   ├── test_radix_hash.py
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
-    │   └── test_streaming_vocoder.py
+    │   ├── test_streaming_vocoder.py
+    │   └── test_vocoder_decoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -349,7 +350,11 @@ that happened to contain an older version of the test.
   - chunked prefill feedback/journal suppression and postprocess alignment checks
   - synchronous frame-decode parity harness and S0 gate coverage
   - streaming vocoder session lifecycle, per-request chunk-threshold and
-    coalescing contracts, and decode-failure isolation.
+    coalescing contracts, decode-failure isolation, and non-streaming full-sequence
+    decode through the codec path
+  - MOSS-TTS Local vocoder decoder packing, local-causal FlashAttention window
+    equivalence, CUDA bf16 packed-vs-SDPA parity, zero-length handling, and
+    flash-unavailable fallback.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
