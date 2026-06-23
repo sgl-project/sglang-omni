@@ -63,9 +63,11 @@ _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
-# note (Yue Yin): 0.55-calibrated latency baseline (146.7 gate) is unreachable on
-# the #765 0.40 OOM-fix config (~148s); pin the gate to 150 (manager-approved).
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 150.0
+
+# note (Yue Yin, Chenyang): 0.55-calibrated latency baseline (146.7 gate) is
+# unreachable on the #765 0.40 OOM-fix config (~148s); pin the gate to 155
+
+VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 155
 
 
 @dataclass

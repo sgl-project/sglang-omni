@@ -152,6 +152,10 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         return SimpleNamespace(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=False,
+            max_running_requests=kwargs["max_running_requests"],
+            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_bs=kwargs["cuda_graph_bs"],
+            torch_compile_max_bs=kwargs.get("torch_compile_max_bs"),
         )
 
     def fake_create_sglang_infrastructure(
@@ -195,7 +199,9 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     )
     fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
 
-    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+    )
     monkeypatch.setattr(
         stages,
         "make_moss_tts_scheduler_adapters",

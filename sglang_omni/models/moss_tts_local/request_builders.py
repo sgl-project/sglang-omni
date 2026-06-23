@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.moss_tts.request_builders import (
+    _DATA_URI_RE,
     MOSS_TTS_DEFAULT_MAX_NEW_TOKENS,
     _new_moss_tts_sampling_seed,
     _reference_for_processor,
@@ -250,20 +251,14 @@ def _build_processor_message(
     state: MossTTSLocalState,
     reference_encoder: Any = None,
 ) -> dict[str, Any]:
-    from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
-
     ref_audio = state.ref_audio
     if reference_encoder is not None and isinstance(ref_audio, str):
         if _DATA_URI_RE.match(ref_audio) is None:
             # File-path refs share one batched codec forward via the coalescer.
             reference = [reference_encoder.encode(ref_audio)]
-        elif hasattr(reference_encoder, "encode_data_uri"):
-            # Data-URI refs through the same LRU (bytes: keyspace).
-            reference = [
-                reference_encoder.encode_data_uri(ref_audio, processor=processor)
-            ]
         else:
-            reference = _reference_for_processor(processor, ref_audio)
+            # Data-URI refs through the same LRU (bytes: keyspace).
+            reference = [reference_encoder.encode_data_uri(ref_audio)]
     else:
         reference = _reference_for_processor(processor, ref_audio)
     return processor.build_user_message(

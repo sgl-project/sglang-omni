@@ -55,6 +55,18 @@ class _FakeStreamingState:
         self.exec_mask[reset_mask] = True
 
 
+class _FakeDecoderStage(nn.Module):
+    module_type = "PatchedPretransform"
+    patch_size = 1
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        input_lengths: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return x, input_lengths
+
+
 class FakeCodec(nn.Module):
     """Stateful fake of the MOSS-Audio-Tokenizer-v2 decode surface.
 
@@ -69,7 +81,11 @@ class FakeCodec(nn.Module):
         self.dummy = nn.Parameter(torch.zeros(1))
         self._streaming_state: _FakeStreamingState | None = None
         self.config = SimpleNamespace(sampling_rate=SAMPLE_RATE)
+        self.decoder = nn.ModuleList([_FakeDecoderStage()])
         self.frame_calls = 0
+        self.decode_calls = 0
+        self.decode_chunk_durations: list[float | None] = []
+        self.decode_decoders: list[nn.Module] = []
 
     @contextmanager
     def streaming(self, batch_size: int):
@@ -107,6 +123,33 @@ class FakeCodec(nn.Module):
             if state is not None:
                 state.offsets[b] += t_len
         return SimpleNamespace(audio=audio, audio_lengths=audio_lengths)
+
+    def decode(
+        self,
+        audio_codes: torch.Tensor,
+        *,
+        padding_mask: torch.Tensor | None = None,
+        return_dict: bool = True,
+        chunk_duration: float | None = None,
+        num_quantizers: int | None = None,
+    ):
+        self.decode_calls += 1
+        self.decode_chunk_durations.append(chunk_duration)
+        self.decode_decoders.append(self.decoder)
+        assert return_dict
+        assert chunk_duration is None
+        if num_quantizers is not None:
+            audio_codes = audio_codes[:num_quantizers]
+        if padding_mask is None:
+            lengths = torch.full(
+                (audio_codes.shape[1],),
+                audio_codes.shape[2],
+                device=audio_codes.device,
+                dtype=torch.long,
+            )
+        else:
+            lengths = padding_mask.sum(dim=-1).long()
+        return self._decode_frame(audio_codes, lengths)
 
 
 class FakeProcessor:
@@ -155,14 +198,30 @@ def reference_waveform(rows: torch.Tensor) -> torch.Tensor:
 def _make_scheduler(
     monkeypatch: pytest.MonkeyPatch, processor: FakeProcessor, **kwargs: int
 ) -> MossTTSLocalStreamingVocoderScheduler:
-    monkeypatch.setattr(
-        stages,
-        "_load_moss_tts_local_processor",
-        lambda model_path, *, device: processor,
-    )
+    _patch_vocoder_factory_loaders(monkeypatch, processor, processor.audio_tokenizer)
     scheduler = stages.create_vocoder_executor("fake-model", device="cpu", **kwargs)
     assert isinstance(scheduler, MossTTSLocalStreamingVocoderScheduler)
     return scheduler
+
+
+def _patch_vocoder_factory_loaders(
+    monkeypatch: pytest.MonkeyPatch,
+    processor: FakeProcessor,
+    codec: FakeCodec,
+) -> None:
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_tts_local_processor",
+        lambda model_path: processor,
+    )
+    monkeypatch.setattr(
+        stages,
+        "load_moss_tts_local_audio_tokenizer",
+        lambda model_path, *, device: SimpleNamespace(
+            model=codec,
+            sample_rate=SAMPLE_RATE,
+        ),
+    )
 
 
 def _rows(frames: int, *, seed: int) -> torch.Tensor:
@@ -646,31 +705,55 @@ def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, processor)
     scheduler._ensure_session()
     assert scheduler._session is not None
-    assert processor.audio_tokenizer._streaming_state is not None
+    assert scheduler._codec._streaming_state is not None
 
     rows = _rows(11, seed=59)
+    original_decoder = scheduler._codec.decoder
     (result,) = scheduler._vocode_batch([_offline_payload(rows, "r1")])
 
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert scheduler._codec.decode_calls == 1
+    assert scheduler._codec.decode_chunk_durations == [None]
+    assert scheduler._codec.decode_decoders == [scheduler._nonstream_decoder]
+    assert scheduler._codec.decoder is original_decoder
     assert scheduler._session is None
-    assert processor.audio_tokenizer._streaming_state is None
+    assert scheduler._codec._streaming_state is None
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
+
+
+def test_non_streaming_empty_audio_codes_skip_decode(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(monkeypatch, processor)
+    rows = torch.empty(0, N_VQ + 1, dtype=torch.long)
+
+    (result,) = scheduler._vocode_batch([_offline_payload(rows, "empty")])
+
+    assert processor.decode_calls == 0
+    assert scheduler._codec.decode_calls == 0
+    assert "audio_codes" not in result.data
+    assert "audio_waveform" not in result.data
 
 
 def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
 
-    rows_1 = _rows(11, seed=60)
+    rows_1 = _rows(101, seed=60)
     rows_2 = _rows(4, seed=61)
+    original_decoder = scheduler._codec.decoder
 
-    # Before any stream: the pre-existing processor path is used.
+    # Before any stream: use the full-sequence tokenizer path with the packed
+    # non-streaming decoder installed.
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r1"), _offline_payload(rows_2, "r2")]
     )
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert scheduler._codec.decode_calls == 1
+    assert scheduler._codec.decode_chunk_durations == [None]
+    assert scheduler._codec.decode_decoders == [scheduler._nonstream_decoder]
+    assert scheduler._codec.decoder is original_decoder
     waves_before = [_decode_audio(result.data) for result in results]
     for result in results:
         assert result.data["sample_rate"] == SAMPLE_RATE
@@ -687,7 +770,8 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r3"), _offline_payload(rows_2, "r4")]
     )
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert scheduler._codec.decode_calls == 1
     waves_after = [_decode_audio(result.data) for result in results]
     for before, after in zip(waves_before, waves_after):
         np.testing.assert_array_equal(before, after)
@@ -701,7 +785,9 @@ def test_offline_lane_waves_split_across_slots(monkeypatch) -> None:
     processor = FakeProcessor()
     # Constructed directly: max_step_frames is not a factory knob.
     scheduler = MossTTSLocalStreamingVocoderScheduler(
-        processor,
+        processor.audio_tokenizer,
+        n_vq=N_VQ,
+        sample_rate=SAMPLE_RATE,
         max_batch_size=2,
         max_step_frames=3,
         stream_chunk_frames=3,
@@ -730,20 +816,20 @@ def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, processor)
     scheduler._on_chunk("req", _stream_item(_rows(1, seed=74)[0], _metadata()))
     assert scheduler._session is not None
-    assert processor.audio_tokenizer._streaming_state is not None
+    assert scheduler._codec._streaming_state is not None
 
     scheduler.stop()
 
     assert scheduler._session is None
     assert scheduler._stream_states == {}
-    assert processor.audio_tokenizer._streaming_state is None
+    assert scheduler._codec._streaming_state is None
 
     # Reusing the same codec instance after stop must be able to open a fresh
     # streaming context instead of tripping the codec's nested-session guard.
     restarted = _make_scheduler(monkeypatch, processor)
     restarted._on_chunk("req2", _stream_item(_rows(1, seed=75)[0], _metadata()))
     assert restarted._session is not None
-    assert processor.audio_tokenizer._streaming_state is not None
+    assert restarted._codec._streaming_state is not None
     restarted.stop()
 
 
@@ -896,6 +982,54 @@ def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
     assert scheduler2._cuda_graph_min_free_gb == 7.0
 
 
+def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
+    processor = FakeProcessor()
+    codec = FakeCodec()
+    _patch_vocoder_factory_loaders(monkeypatch, processor, codec)
+
+    scheduler = stages.create_vocoder_executor("fake-model", device="cpu")
+
+    assert scheduler._codec is codec
+    assert scheduler._codec is not processor.audio_tokenizer
+
+    rows = _rows(7, seed=98)
+    (result,) = scheduler._vocode_batch([_offline_payload(rows, "separate-codec")])
+
+    assert processor.decode_calls == 0
+    assert processor.audio_tokenizer.decode_calls == 0
+    assert codec.decode_calls == 1
+    assert codec.decode_decoders == [scheduler._nonstream_decoder]
+    np.testing.assert_array_equal(
+        _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
+    )
+
+
+def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> None:
+    processor = FakeProcessor()
+    processor.model_config.audio_tokenizer_name_or_path = "codec-from-model-config"
+    codec = FakeCodec()
+    loaded_codec_paths = []
+
+    def fake_load_audio_tokenizer(model_path, *, device):
+        loaded_codec_paths.append(model_path)
+        return SimpleNamespace(model=codec, sample_rate=SAMPLE_RATE)
+
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_tts_local_processor",
+        lambda model_path: processor,
+    )
+    monkeypatch.setattr(
+        stages,
+        "load_moss_tts_local_audio_tokenizer",
+        fake_load_audio_tokenizer,
+    )
+
+    stages.create_vocoder_executor("fake-model", device="cpu")
+
+    assert loaded_codec_paths == ["codec-from-model-config"]
+
+
 def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
     from sglang_omni.models.moss_tts_local.config import (
         MossTTSLocalPipelineConfig,
@@ -948,7 +1082,11 @@ def test_scheduler_rejects_frame_above_max_step(monkeypatch) -> None:
     # do not silently drop it.
     with pytest.raises(ValueError, match="exceed max_step_frames"):
         MossTTSLocalStreamingVocoderScheduler(
-            FakeProcessor(), max_step_frames=25, cuda_graph_frames=[5, 100]
+            FakeCodec(),
+            n_vq=N_VQ,
+            sample_rate=SAMPLE_RATE,
+            max_step_frames=25,
+            cuda_graph_frames=[5, 100],
         )
 
 

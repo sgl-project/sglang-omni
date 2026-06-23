@@ -227,6 +227,10 @@ class HiggsTTSModel(nn.Module):
     def codebook_vocab_size(self) -> int:
         return self._codebook_vocab_size
 
+    @property
+    def sampler_pool_max_running_requests(self) -> int:
+        return self._max_batch_size
+
     def acquire_row(self, req_id: str) -> int:
         """Allocate or look up the sampler-pool row for ``req_id``. Idempotent."""
         row = self._rid_to_row.get(req_id)

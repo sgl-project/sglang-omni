@@ -2,8 +2,8 @@
 """Streaming vocoder scheduler for MOSS-TTS Local.
 
 Streaming requests share one persistent batched ``codec.streaming()`` session.
-Pure non-streaming traffic keeps the pre-existing ``processor.decode_audio_codes``
-path even when startup CUDA-graph warmup briefly opened an idle session.
+Pure non-streaming traffic uses the MOSS decoder with packed SGLang FlashAttention
+when no live streaming session owns the codec state.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import torch
 
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
+from sglang_omni.models.moss_tts_local.vocoder_decoder import MossTTSLocalVocoderDecoder
 from sglang_omni.models.tts_streaming import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
@@ -30,18 +31,6 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 _SOURCE_HINT = "MOSS-TTS Local"
-
-
-def _resolve_sample_rate(processor: Any) -> int:
-    return int(
-        getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
-        or getattr(
-            getattr(getattr(processor, "audio_tokenizer", None), "config", None),
-            "sampling_rate",
-            0,
-        )
-        or 48000
-    )
 
 
 def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
@@ -250,8 +239,8 @@ class _CodecStreamSession:
     def decode_offline(
         self, codes_list: list[torch.Tensor], *, max_step_frames: int
     ) -> list[torch.Tensor]:
-        """Decode complete utterances ``[n_vq, T]`` via the offline lane, replaying the codec's
-        chunked ``batch_decode`` so output matches ``processor.decode_audio_codes``."""
+        """Decode complete utterances ``[n_vq, T]`` through offline slots in the
+        persistent codec session."""
         wavs: list[torch.Tensor] = []
         for wave_start in range(0, len(codes_list), self._offline_slots):
             wave = codes_list[wave_start : wave_start + self._offline_slots]
@@ -300,8 +289,10 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
     def __init__(
         self,
-        processor: Any,
+        codec: Any,
         *,
+        n_vq: int,
+        sample_rate: int,
         stream_slots: int = 8,
         stream_chunk_frames: int = 25,
         initial_chunk_frames: int = 5,
@@ -319,14 +310,14 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 "stream_chunk_frames must be in (0, max_step_frames], got "
                 f"{stream_chunk_frames} (max_step_frames={max_step_frames})"
             )
-        codec = getattr(processor, "audio_tokenizer", None)
-        if codec is None:
-            raise RuntimeError(
-                "MOSS-TTS Local vocoder requires processor.audio_tokenizer"
-            )
         missing = [
             name
-            for name in ("streaming", "_set_streaming_exec_mask", "_decode_frame")
+            for name in (
+                "streaming",
+                "_set_streaming_exec_mask",
+                "_decode_frame",
+                "decode",
+            )
             if not hasattr(codec, name)
         ]
         if missing:
@@ -334,8 +325,13 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 f"MOSS-TTS Local streaming vocoder: codec is missing {missing}; "
                 "the installed MOSS-Audio-Tokenizer-v2 version is incompatible"
             )
-        self._processor = processor
+        nonstream_decoder = MossTTSLocalVocoderDecoder(codec.decoder)
+        logger.info(
+            f"MOSS-TTS Local non-streaming vocoder uses packed SGLang attention "
+            f"stages={len(nonstream_decoder)}"
+        )
         self._codec = codec
+        self._nonstream_decoder = nonstream_decoder
         self._stream_slots = int(stream_slots)
         self._stream_chunk_frames = int(stream_chunk_frames)
         self._default_initial_chunk_frames = max(
@@ -343,8 +339,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         )
         self._max_step_frames = int(max_step_frames)
         self._offline_slots = max(int(max_batch_size), 1)
-        self._n_vq = int(processor.model_config.n_vq)
-        self._sample_rate = _resolve_sample_rate(processor)
+        self._n_vq = int(n_vq)
+        self._sample_rate = int(sample_rate)
         self._session: _CodecStreamSession | None = None
         self._session_used_by_streaming = False
         self._cuda_graph = bool(cuda_graph)
@@ -781,17 +777,68 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             payload.data["usage"] = usage
         return payload
 
+    def _decode_codes_rows_nonstream(
+        self, codes_list: list[torch.Tensor]
+    ) -> list[torch.Tensor]:
+        n_vq = self._n_vq
+        device = next(self._codec.parameters()).device
+        codes_channels_first = [
+            codes[:, :n_vq]
+            .transpose(0, 1)
+            .contiguous()
+            .to(device=device, dtype=torch.long)
+            for codes in codes_list
+        ]
+        max_len = max(int(codes.shape[1]) for codes in codes_channels_first)
+        audio_codes = torch.zeros(
+            n_vq,
+            len(codes_channels_first),
+            max_len,
+            device=device,
+            dtype=torch.long,
+        )
+        padding_mask = torch.zeros(
+            len(codes_channels_first), max_len, device=device, dtype=torch.bool
+        )
+        for index, codes in enumerate(codes_channels_first):
+            length = int(codes.shape[1])
+            audio_codes[:, index, :length] = codes
+            padding_mask[index, :length] = True
+
+        decoded = self._codec.decode(
+            audio_codes,
+            padding_mask=padding_mask,
+            num_quantizers=n_vq,
+            return_dict=True,
+            chunk_duration=None,
+        )
+        audio = decoded.audio
+        audio_lengths = decoded.audio_lengths
+        if audio is None or audio_lengths is None:
+            raise RuntimeError(
+                "audio_tokenizer.decode did not return audio/audio_lengths."
+            )
+        audio_cpu = audio.detach().to("cpu", torch.float32)
+        lengths_cpu = audio_lengths.detach().to("cpu")
+        return [
+            audio_cpu[index, :, : int(lengths_cpu[index])].contiguous()
+            for index in range(int(audio_cpu.shape[0]))
+        ]
+
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
         """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
         with self._state_lock:
             self._close_idle_startup_session_locked()
         if self._session is None:
-            # Processor path opens its own streaming context; illegal once a
-            # session is live.
-            return [
-                torch.as_tensor(wav).detach().to("cpu")
-                for wav in self._processor.decode_audio_codes(codes_list)
-            ]
+            # The processor helper forces chunk_duration=8 and enters the
+            # tokenizer streaming loop. This decoder is non-streaming, so it must
+            # run through the tokenizer's full-sequence decode path.
+            original_decoder = self._codec.decoder
+            self._codec.decoder = self._nonstream_decoder
+            try:
+                return self._decode_codes_rows_nonstream(codes_list)
+            finally:
+                self._codec.decoder = original_decoder
         channels_first = [
             codes[:, : self._n_vq].transpose(0, 1).contiguous() for codes in codes_list
         ]

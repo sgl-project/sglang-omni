@@ -3,21 +3,28 @@
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
+import io
 import logging
 import os
 import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeAlias
 
 import torch
 
-from sglang_omni.models.moss_tts.stages import (
-    _load_moss_processor_class,
-    _moss_transformers_processor_compat,
-    _resolve_checkpoint,
+from sglang_omni.models.moss_tts.hf_loading import (
+    load_moss_processor_class,
+    moss_transformers_processor_compat,
+    resolve_moss_checkpoint,
+)
+from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
+from sglang_omni.models.moss_tts_local.audio_tokenizer import (
+    DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+    load_moss_tts_local_audio_tokenizer,
 )
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
@@ -31,8 +38,14 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 from sglang_omni.models.moss_tts_local.streaming_vocoder import (
     MossTTSLocalStreamingVocoderScheduler,
 )
+from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_cuda_graph_bs,
+    sync_cuda_graph_bs_with_max_bs,
+    validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
@@ -44,17 +57,31 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "Launch with trust_remote_code=True and make sure the checkpoint can load "
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
+_MAX_REFERENCE_SECONDS = 100.0
 
-# NOTE: preprocessing and vocoder stages each load their own processor (and
-# ~4.3 GB bf16 codec instance): `model.streaming()` flips module-global codec
-# state, so a decode on a shared instance would corrupt a concurrent
-# reference encode (see streaming_vocoder.py).
+# NOTE: preprocessing and vocoder stages each load their own codec instance:
+# `model.streaming()` flips codec state, so a decode on a shared instance would
+# corrupt a concurrent reference encode (see streaming_vocoder.py).
 
 
 @dataclass(frozen=True)
 class _ArMemoryBudget:
     effective_total_gpu_memory_fraction: float | None
     applied_codec_mem_reserve: float
+
+
+@dataclass(frozen=True)
+class _PathReferenceJob:
+    path: str
+
+
+@dataclass(frozen=True)
+class _WaveformReferenceJob:
+    wav: torch.Tensor
+    sample_rate: int
+
+
+_ReferenceEncodeJob: TypeAlias = _PathReferenceJob | _WaveformReferenceJob
 
 
 def _apply_colocated_ar_memory_budget(
@@ -137,32 +164,47 @@ def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     return "cuda:0"
 
 
-def _load_moss_tts_local_processor(model_path: str, *, device: str) -> Any:
-    checkpoint_dir = _resolve_checkpoint(model_path)
-    logger.info(
-        "Loading MOSS-TTS Local processor from %s on %s", checkpoint_dir, device
-    )
+def _load_moss_tts_local_processor(model_path: str) -> Any:
+    checkpoint_dir = resolve_moss_checkpoint(model_path)
+    logger.info(f"Loading MOSS-TTS Local processor from {checkpoint_dir} without codec")
     try:
-        with _moss_transformers_processor_compat():
-            processor_cls = _load_moss_processor_class(checkpoint_dir)
-            processor = processor_cls.from_pretrained(
+        from transformers import AutoConfig, AutoTokenizer
+
+        with moss_transformers_processor_compat():
+            processor_cls = load_moss_processor_class(checkpoint_dir)
+            model_config = AutoConfig.from_pretrained(
                 checkpoint_dir,
                 trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                checkpoint_dir,
+                trust_remote_code=True,
+            )
+            processor = processor_cls(
+                tokenizer=tokenizer,
+                audio_tokenizer=None,
+                model_config=model_config,
             )
     except Exception as exc:
         raise RuntimeError(_MOSS_TTS_LOCAL_INSTALL_HINT) from exc
 
     _normalize_processor_config(processor)
-    audio_tokenizer = getattr(processor, "audio_tokenizer", None)
-    if audio_tokenizer is not None:
-        if hasattr(audio_tokenizer, "eval"):
-            audio_tokenizer.eval()
-        if hasattr(audio_tokenizer, "to"):
-            # Device move only: the v2 codec manages its own dtypes (bf16
-            # encoder/decoder with an fp32 quantizer); a blanket dtype cast
-            # would corrupt the quantizer codebooks.
-            audio_tokenizer.to(device)
     return processor
+
+
+def _resolve_audio_tokenizer_model_path(
+    processor: Any,
+    codec_model_path: str | None,
+) -> str:
+    if codec_model_path is not None:
+        return codec_model_path
+    return str(
+        getattr(
+            processor.model_config,
+            "audio_tokenizer_name_or_path",
+            DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+        )
+    )
 
 
 class _BatchedReferenceEncoder:
@@ -178,22 +220,26 @@ class _BatchedReferenceEncoder:
 
     # Mirrors the Higgs reference-audio cap: bounds both encoder runtime and
     # the batch-padding memory amplification.
-    MAX_REFERENCE_SECONDS = 100.0
+    MAX_REFERENCE_SECONDS = _MAX_REFERENCE_SECONDS
     # An encode batch takes well under a second; a result this late means the
     # worker died or wedged, so fail the request instead of hanging the slot.
     ENCODE_TIMEOUT_S = 120.0
 
     def __init__(
         self,
-        processor: Any,
+        audio_tokenizer: Any,
         *,
+        n_vq: int,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 4,
     ) -> None:
-        self._processor = processor
+        self._audio_tokenizer = audio_tokenizer
+        self._n_vq = int(n_vq)
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._queue: queue.Queue[tuple[str, concurrent.futures.Future]] = queue.Queue()
+        self._queue: queue.Queue[
+            tuple[_ReferenceEncodeJob, concurrent.futures.Future]
+        ] = queue.Queue()
         self._thread = threading.Thread(
             target=self._worker, name="moss-local-ref-encode", daemon=True
         )
@@ -210,19 +256,51 @@ class _BatchedReferenceEncoder:
             return  # unreadable files fail with a clearer error in the codec
         if duration > cls.MAX_REFERENCE_SECONDS:
             raise ValueError(
-                f"reference audio is {duration:.1f}s long; the limit is "
+                f"reference audio is {duration:.1f}s long, limit is "
                 f"{cls.MAX_REFERENCE_SECONDS:.0f}s"
             )
+
+    @staticmethod
+    def _data_uri_audio_bytes(ref_audio: str) -> bytes:
+        match = _DATA_URI_RE.match(ref_audio)
+        if match is None:
+            raise ValueError(f"encode_data_uri: not a data URI ({ref_audio[:40]!r}...)")
+        return base64.b64decode(match.group("data"))
+
+    @staticmethod
+    def _decode_data_uri_audio(raw: bytes) -> tuple[torch.Tensor, int]:
+        import soundfile as sf
+
+        audio, sample_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+        duration = audio.shape[0] / max(int(sample_rate), 1)
+        if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
+            raise ValueError(
+                f"reference audio is {duration:.1f}s long, limit is "
+                f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
+            )
+        return torch.from_numpy(audio.T), int(sample_rate)
 
     def encode(self, path: str) -> torch.Tensor:
         """Encode one reference file; blocks until its batch completes."""
         path = str(path)
         self._check_reference_duration(path)
         future: concurrent.futures.Future = concurrent.futures.Future()
-        self._queue.put((path, future))
+        self._queue.put((_PathReferenceJob(path), future))
         return future.result(timeout=self.ENCODE_TIMEOUT_S)
 
-    def _drain_batch(self) -> list[tuple[str, concurrent.futures.Future]]:
+    def encode_wav(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._queue.put((_WaveformReferenceJob(wav, int(sample_rate)), future))
+        return future.result(timeout=self.ENCODE_TIMEOUT_S)
+
+    def encode_data_uri(self, ref_audio: str) -> torch.Tensor:
+        raw = self._data_uri_audio_bytes(ref_audio)
+        wav, sample_rate = self._decode_data_uri_audio(raw)
+        return self.encode_wav(wav, sample_rate)
+
+    def _drain_batch(
+        self,
+    ) -> list[tuple[_ReferenceEncodeJob, concurrent.futures.Future]]:
         batch = [self._queue.get()]
         while len(batch) < self._max_batch_size:
             try:
@@ -237,37 +315,76 @@ class _BatchedReferenceEncoder:
     def _worker(self) -> None:
         while True:
             batch = self._drain_batch()
-            unique_paths = list(dict.fromkeys(path for path, _ in batch))
-            results: dict[str, Any] = {}
-            try:
-                encoded = self._processor.encode_audios_from_path(unique_paths)
-                results = dict(zip(unique_paths, encoded))
-            except Exception:
-                logger.exception(
-                    "MOSS-TTS Local batched reference encode failed; "
-                    "retrying per item"
-                )
-                for path in unique_paths:
-                    try:
-                        results[path] = self._processor.encode_audios_from_path([path])[
-                            0
-                        ]
-                    except Exception as exc:
-                        results[path] = exc
-            for path, future in batch:
-                outcome = results.get(path)
+            results = self._encode_batch(batch)
+            for index, (_, future) in enumerate(batch):
+                outcome = results.get(index)
                 if isinstance(outcome, Exception):
                     # Fresh exception per future: a shared instance would be
                     # mutated concurrently by every waiter's traceback raise.
                     future.set_exception(
-                        RuntimeError(f"reference encode failed for {path}: {outcome}")
+                        RuntimeError(f"reference encode failed: {outcome}")
                     )
                 elif outcome is None:
                     future.set_exception(
-                        RuntimeError(f"reference encode produced no codes: {path}")
+                        RuntimeError("reference encode produced no codes")
                     )
                 else:
                     future.set_result(outcome)
+
+    def _encode_batch(
+        self, batch: list[tuple[_ReferenceEncodeJob, concurrent.futures.Future]]
+    ) -> dict[int, Any]:
+        results: dict[int, Any] = {}
+        path_to_indices: dict[str, list[int]] = {}
+        waveforms: list[tuple[torch.Tensor, int]] = []
+        waveform_indices: list[int] = []
+        for index, (job, _) in enumerate(batch):
+            if isinstance(job, _PathReferenceJob):
+                path_to_indices.setdefault(job.path, []).append(index)
+            elif isinstance(job, _WaveformReferenceJob):
+                waveform_indices.append(index)
+                waveforms.append((job.wav, job.sample_rate))
+            else:
+                raise TypeError(f"unknown reference encode job: {type(job).__name__}")
+
+        unique_paths = list(path_to_indices)
+        try:
+            path_waveforms = (
+                self._audio_tokenizer.load_paths(unique_paths) if unique_paths else []
+            )
+            encoded = self._audio_tokenizer.encode_waveforms(
+                path_waveforms + waveforms,
+                num_quantizers=self._n_vq,
+            )
+            path_count = len(unique_paths)
+            for path, codes in zip(unique_paths, encoded[:path_count]):
+                for index in path_to_indices[path]:
+                    results[index] = codes
+            for index, codes in zip(waveform_indices, encoded[path_count:]):
+                results[index] = codes
+        except Exception:
+            logger.exception(
+                "MOSS-TTS Local batched reference encode failed; retrying per item"
+            )
+            for path, indices in path_to_indices.items():
+                try:
+                    codes = self._audio_tokenizer.encode_paths(
+                        [path],
+                        num_quantizers=self._n_vq,
+                    )[0]
+                except Exception as exc:
+                    codes = exc
+                for index in indices:
+                    results[index] = codes
+            for index, waveform in zip(waveform_indices, waveforms):
+                try:
+                    results[index] = self._audio_tokenizer.encode_waveforms(
+                        [waveform],
+                        num_quantizers=self._n_vq,
+                    )[0]
+                except Exception as exc:
+                    results[index] = exc
+        return results
 
 
 class CachedReferenceEncoder:
@@ -408,43 +525,22 @@ class CachedReferenceEncoder:
             *snapshot,
         )
 
-    def encode_data_uri(self, ref_audio: str, *, processor: Any) -> torch.Tensor:
+    def encode_data_uri(self, ref_audio: str) -> torch.Tensor:
         """Cache-aware encode for data-URI refs through the same LRU + single-flight
         as file paths (adds the duration check _reference_for_processor lacks).
 
         Note(Jiaxin): file: and bytes: keyspaces never collide — the two decode
         chains differ, so codes aren't guaranteed identical for the "same" audio.
         """
-        import base64
-        import io
-
-        from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
-        from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
-
-        match = _DATA_URI_RE.match(ref_audio)
-        if match is None:
-            raise ValueError(f"encode_data_uri: not a data URI ({ref_audio[:40]!r}...)")
-
-        raw = base64.b64decode(match.group("data"))
+        raw = _BatchedReferenceEncoder._data_uri_audio_bytes(ref_audio)
         key = f"bytes:{_hash_bytes(raw)}"
 
         def _encode() -> torch.Tensor:
-            import soundfile as sf
-
-            audio, sample_rate = sf.read(
-                io.BytesIO(raw), dtype="float32", always_2d=True
-            )
             # Note(Jiaxin): the duration check runs inside the leader (not before
             # inflight registration like the file path) so concurrent same-payload
             # requests share one sf.read of a potentially large decoded buffer.
-            duration = audio.shape[0] / max(int(sample_rate), 1)
-            if duration > _BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:
-                raise ValueError(
-                    f"reference audio is {duration:.1f}s long; the limit is "
-                    f"{_BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
-                )
-            wav = torch.from_numpy(audio.T)
-            return processor.encode_audios_from_wav([wav], int(sample_rate))[0]
+            wav, sample_rate = _BatchedReferenceEncoder._decode_data_uri_audio(raw)
+            return self._encoder.encode_wav(wav, sample_rate)
 
         return self._cached_encode(key, _encode, desc="data-URI")
 
@@ -464,6 +560,7 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    codec_model_path: str | None = None,
     max_concurrency: int = 16,
     encode_batch_size: int = 8,
     encode_batch_wait_ms: int = 4,
@@ -483,9 +580,14 @@ def create_preprocessing_executor(
             "",
         )
     device = _resolve_codec_device(device, gpu_id)
-    processor = _load_moss_tts_local_processor(model_path, device=device)
+    processor = _load_moss_tts_local_processor(model_path)
+    audio_tokenizer = load_moss_tts_local_audio_tokenizer(
+        _resolve_audio_tokenizer_model_path(processor, codec_model_path),
+        device=device,
+    )
     reference_encoder: Any = _BatchedReferenceEncoder(
-        processor,
+        audio_tokenizer,
+        n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
         max_batch_wait_ms=encode_batch_wait_ms,
     )
@@ -528,14 +630,14 @@ def create_sglang_tts_engine_executor(
         build_sglang_server_args,
     )
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_moss_checkpoint(model_path)
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     overrides: dict[str, Any] = {
         "dtype": dtype,
-        "cuda_graph_bs": [1, 2, 4, 8, 16],
+        "cuda_graph_bs": build_default_cuda_graph_bs(16),
         "cuda_graph_max_bs": 16,
         "disable_cuda_graph": False,
         "disable_overlap_schedule": True,
@@ -553,6 +655,7 @@ def create_sglang_tts_engine_executor(
         overrides["mem_fraction_static"] = 0.6 if torch.cuda.device_count() > 1 else 0.5
     if server_args_overrides:
         overrides.update(server_args_overrides)
+        sync_cuda_graph_bs_with_max_bs(overrides, server_args_overrides)
     memory_budget = _apply_colocated_ar_memory_budget(
         overrides,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
@@ -610,6 +713,11 @@ def create_sglang_tts_engine_executor(
     if want_cuda_graph:
         server_args.disable_cuda_graph = False
 
+    validate_generation_batch_policy(
+        model_name="MOSS-TTS Local",
+        server_args=server_args,
+    )
+
     model = model_worker.model_runner.model
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
@@ -617,7 +725,10 @@ def create_sglang_tts_engine_executor(
         # micro-steps and 13 seeded sampling passes per frame): eager it is
         # kernel-launch-bound at ~22 ms/frame independent of batch size.
         model.init_frame_decode_graphs(
-            list(overrides.get("cuda_graph_bs") or [1, 2, 4, 8, 16])
+            list(
+                overrides.get("cuda_graph_bs")
+                or build_default_cuda_graph_bs(int(overrides["cuda_graph_max_bs"]))
+            )
         )
 
     output_proc = SGLangOutputProcessor(
@@ -665,6 +776,7 @@ def create_vocoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 8,
@@ -675,9 +787,15 @@ def create_vocoder_executor(
     cuda_graph_min_free_gb: float = 3.0,
 ) -> MossTTSLocalStreamingVocoderScheduler:
     device = _resolve_codec_device(device, gpu_id)
-    processor = _load_moss_tts_local_processor(model_path, device=device)
+    processor = _load_moss_tts_local_processor(model_path)
+    audio_tokenizer = load_moss_tts_local_audio_tokenizer(
+        _resolve_audio_tokenizer_model_path(processor, codec_model_path),
+        device=device,
+    )
     scheduler = MossTTSLocalStreamingVocoderScheduler(
-        processor,
+        audio_tokenizer.model,
+        n_vq=int(processor.model_config.n_vq),
+        sample_rate=audio_tokenizer.sample_rate,
         stream_slots=stream_slots,
         stream_chunk_frames=stream_chunk_frames,
         initial_chunk_frames=initial_chunk_frames,
