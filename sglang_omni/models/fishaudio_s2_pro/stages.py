@@ -17,6 +17,11 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     make_tts_scheduler_adapters,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_cuda_graph_bs,
+    sync_cuda_graph_bs_with_max_bs,
+    validate_generation_batch_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,13 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         len(compiled_forward_kvcached_layers),
         compile_mode,
         max_batch_size,
+    )
+
+
+def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
+    return min(
+        int(model.vq_decode_max_batch_size),
+        int(model._audio_decoder.kv_cache_max_batch_size),
     )
 
 
@@ -239,17 +251,20 @@ def create_sglang_tts_engine_executor(
     patch_fish_config_for_sglang()
 
     overrides: dict[str, Any] = {
+        "cuda_graph_bs": build_default_cuda_graph_bs(64),
+        "cuda_graph_max_bs": 64,
         "disable_cuda_graph": False,
         "mem_fraction_static": 0.85,
         "max_running_requests": 64,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
         "enable_torch_compile": True,
-        "torch_compile_max_bs": 16,
+        "torch_compile_max_bs": 64,
         "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
+        sync_cuda_graph_bs_with_max_bs(overrides, server_args_overrides)
 
     server_args = build_sglang_server_args(
         checkpoint_dir,
@@ -294,6 +309,11 @@ def create_sglang_tts_engine_executor(
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         ras_window=ras_window,
+    )
+    validate_generation_batch_policy(
+        model_name="FishAudio S2-Pro",
+        server_args=server_args,
+        model_buffer_bs=_resolve_s2pro_model_buffer_bs(model_worker.model_runner.model),
     )
 
     if bool(getattr(server_args, "enable_torch_compile", False)):

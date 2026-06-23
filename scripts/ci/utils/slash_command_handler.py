@@ -4,6 +4,7 @@ import sys
 import time
 
 from github import Auth, Github
+from github.GithubException import GithubException
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
 TTS_MODEL_LABELS = {
@@ -64,10 +65,9 @@ def handle_tag_run_ci(
     The TTS model labels are mutually exclusive, so remove the opposite label
     before adding the selected one.
 
-    How fresh runs get dispatched: Omni CI workflows include `labeled` in
-    `on.pull_request.types`, so adding `run-ci` fires a new
-    `pull_request.labeled` event with the up-to-date label set in its
-    payload. This is the recovery mechanism for label-gated workflows.
+    The combined /tag-and-rerun-ci command restarts Omni CI after updating
+    labels, because labels added by GITHUB_TOKEN do not cascade-trigger a
+    new pull_request.labeled workflow run.
 
     Returns True if action was taken, False otherwise.
     """
@@ -103,41 +103,125 @@ def handle_tag_run_ci(
     return True
 
 
-def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms, react_on_success=True):
+def wait_for_workflow_run_completed(gh_repo, run_id):
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        latest_run = gh_repo.get_workflow_run(run_id)
+        if latest_run.status == "completed":
+            return True
+        print(
+            f"Waiting for workflow {run_id} to complete cancellation: "
+            f"{latest_run.status}"
+        )
+        time.sleep(5)
+
+    print(f"Timed out waiting for workflow {run_id} to complete cancellation.")
+    return False
+
+
+def cancel_and_rerun_workflow(gh_repo, run):
+    print(f"Cancelling active workflow before full rerun: {run.name} (ID: {run.id})")
+    try:
+        cancelled = run.cancel()
+    except GithubException as e:
+        latest_run = gh_repo.get_workflow_run(run.id)
+        if latest_run.status != "completed":
+            print(f"Failed to cancel workflow {run.id}: {e}")
+            return False
+    else:
+        if not cancelled:
+            print(f"Failed to cancel workflow {run.id}.")
+            return False
+
+    if not wait_for_workflow_run_completed(gh_repo, run.id):
+        return False
+
+    latest_run = gh_repo.get_workflow_run(run.id)
+    try:
+        rerun_started = latest_run.rerun()
+    except GithubException as e:
+        print(f"Failed to rerun workflow {latest_run.id}: {e}")
+        return False
+    if not rerun_started:
+        print(f"Failed to rerun workflow {latest_run.id}.")
+        return False
+    print(f"Triggered full rerun for workflow {latest_run.name} (ID: {run.id}).")
+    return True
+
+
+def handle_rerun_failed_ci(
+    gh_repo,
+    pr,
+    comment,
+    user_perms,
+    react_on_success=True,
+    force_full_omni_ci_rerun=False,
+):
     """
     Handles the /rerun-failed-ci command.
     Reruns workflows with 'failure' or 'skipped' conclusions.
+    When force_full_omni_ci_rerun is set, full-reruns the latest Omni CI
+    pull_request workflow even if it is active or successful.
     Returns True if action was taken, False otherwise.
     """
     if not user_perms.get("can_rerun_failed_ci", False):
         print("Permission denied: can_rerun_failed_ci is false.")
         return False
 
-    print("Permission granted. Triggering rerun of failed or skipped workflows.")
+    print("Permission granted. Triggering CI workflow reruns.")
 
     head_sha = pr.head.sha
     print(f"Checking workflows for commit: {head_sha}")
 
     runs = gh_repo.get_workflow_runs(head_sha=head_sha)
 
-    rerun_candidates = [
-        run
-        for run in runs
-        if run.status == "completed" and run.conclusion in ("failure", "skipped")
-    ]
-    rerun_candidates.sort(key=lambda run: (run.created_at, run.id), reverse=True)
-
-    rerun_count = 0
+    latest_runs = []
     seen_workflows = set()
-    for run in rerun_candidates:
+    for run in sorted(runs, key=lambda run: (run.created_at, run.id), reverse=True):
         workflow_key = (run.workflow_id, run.event)
         if workflow_key in seen_workflows:
+            continue
+        seen_workflows.add(workflow_key)
+        latest_runs.append(run)
+
+    rerun_count = 0
+    for run in latest_runs:
+        force_full_rerun = (
+            run.event == "pull_request"
+            and run.name == "Omni CI"
+            and force_full_omni_ci_rerun
+        )
+        if run.status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            if not force_full_rerun:
+                print(
+                    f"Skipping latest workflow because it is still {run.status}: "
+                    f"{run.name} (ID: {run.id})"
+                )
+                continue
+            if cancel_and_rerun_workflow(gh_repo, run):
+                rerun_count += 1
+            continue
+
+        if run.status != "completed":
             print(
-                f"Skipping older {run.conclusion} workflow: "
+                f"Skipping latest workflow because it is still {run.status}: "
                 f"{run.name} (ID: {run.id})"
             )
             continue
-        seen_workflows.add(workflow_key)
+        if force_full_rerun:
+            print(f"Processing full workflow rerun: {run.name} (ID: {run.id})")
+            try:
+                run.rerun()
+                rerun_count += 1
+            except GithubException as e:
+                print(f"Failed to rerun workflow {run.id}: {e}")
+            continue
+        if run.conclusion not in ("failure", "skipped"):
+            print(
+                f"Skipping latest workflow with conclusion {run.conclusion}: "
+                f"{run.name} (ID: {run.id})"
+            )
+            continue
 
         print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
         try:
@@ -236,7 +320,12 @@ def main():
             time.sleep(5)
 
         rerun = handle_rerun_failed_ci(
-            repo, pr, comment, user_perms, react_on_success=False
+            repo,
+            pr,
+            comment,
+            user_perms,
+            react_on_success=False,
+            force_full_omni_ci_rerun=tagged and tts_model_target is not None,
         )
 
         if tagged or rerun:

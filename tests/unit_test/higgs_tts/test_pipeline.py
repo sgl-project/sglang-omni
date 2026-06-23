@@ -38,6 +38,11 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
         server_args = SimpleNamespace(
             disable_cuda_graph=overrides["disable_cuda_graph"],
             disable_overlap_schedule=False,
+            enable_torch_compile=False,
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            torch_compile_max_bs=32,
         )
         captured["checkpoint_dir"] = checkpoint_dir
         captured["context_length"] = context_length
@@ -47,7 +52,10 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
 
     def fake_create_sglang_infrastructure(server_args, gpu_id):
         captured["gpu_id"] = gpu_id
-        model = SimpleNamespace(reset_request=lambda _request_id: None)
+        model = SimpleNamespace(
+            sampler_pool_max_running_requests=64,
+            reset_request=lambda _request_id: None,
+        )
         return (
             SimpleNamespace(model_runner=SimpleNamespace(model=model)),
             object(),
@@ -104,9 +112,25 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     assert captured["context_length"] == 4096
     assert captured["gpu_id"] == 0
     assert captured["overrides"]["disable_cuda_graph"] is False
+    assert captured["overrides"]["cuda_graph_bs"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
     assert captured["overrides"]["cuda_graph_max_bs"] == 64
     assert captured["overrides"]["max_running_requests"] == 64
     assert captured["server_args"].disable_overlap_schedule is True
+    assert captured["server_args"].enable_torch_compile is False
+    assert captured["server_args"].torch_compile_max_bs == 32
     assert captured["adapter_kwargs"] == {"max_new_tokens_cap": 2048}
     assert (
         captured["stream_outbox"]

@@ -29,6 +29,11 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_cuda_graph_bs,
+    sync_cuda_graph_bs_with_max_bs,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -1067,11 +1072,16 @@ def create_talker_ar_executor_from_config(
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
     # trigger degenerate AR loops (see #408). Revert once upstream lands.
     overrides: dict[str, Any] = {
+        "cuda_graph_bs": build_default_cuda_graph_bs(16),
+        "cuda_graph_max_bs": 16,
         "disable_cuda_graph": False,
+        "max_running_requests": 16,
         "sampling_backend": "pytorch",
+        "torch_compile_max_bs": 16,
     }
     if server_args_overrides:
         overrides.update(server_args_overrides)
+        sync_cuda_graph_bs_with_max_bs(overrides, server_args_overrides)
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,
@@ -1082,6 +1092,10 @@ def create_talker_ar_executor_from_config(
         model_path,
         context_length=talker_max_seq_len,
         **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name="Qwen3-Omni talker_ar",
+        server_args=server_args,
     )
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)

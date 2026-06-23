@@ -282,9 +282,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert audio_decoder._compiled_forward_kvcached_max_bs == 2
 
 
-def test_s2pro_engine_disables_generic_compile_after_local_compile(
+def _run_s2pro_engine_with_fake_buffers(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    *,
+    text_buffer_bs: int = 64,
+    audio_buffer_bs: int = 64,
+) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
 
@@ -300,7 +303,7 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
 
         def init_device_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
-            assert self.server_args.torch_compile_max_bs == 16
+            assert self.server_args.torch_compile_max_bs == 64
             init_graph_calls.append(True)
 
     class _FakeWorker:
@@ -311,12 +314,22 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     fake_bootstrap.patch_fish_config_for_sglang = lambda: None
     fake_bootstrap.truncate_rope_to_bf16 = lambda model: None
     fake_bootstrap.load_audio_decoder = lambda checkpoint_dir, device: (
-        SimpleNamespace(),
+        SimpleNamespace(kv_cache_max_batch_size=-1),
         10,
         4096,
         FakeFishTokenizer(),
     )
-    fake_bootstrap.bootstrap_text_model_for_decode = lambda **kwargs: None
+
+    def fake_bootstrap_text_model_for_decode(**kwargs: object) -> None:
+        text_model = kwargs["text_model"]
+        audio_decoder = kwargs["audio_decoder"]
+        text_model.vq_decode_max_batch_size = text_buffer_bs
+        text_model._audio_decoder = audio_decoder
+        audio_decoder.kv_cache_max_batch_size = audio_buffer_bs
+
+    fake_bootstrap.bootstrap_text_model_for_decode = (
+        fake_bootstrap_text_model_for_decode
+    )
 
     def fake_build_sglang_server_args(
         model_path: str,
@@ -330,6 +343,8 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
             max_running_requests=kwargs["max_running_requests"],
+            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_bs=kwargs["cuda_graph_bs"],
             page_size=1,
             chunked_prefill_size=kwargs["chunked_prefill_size"],
             max_prefill_tokens=16384,
@@ -410,15 +425,86 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     monkeypatch.setattr(stages, "_compile_s2pro_codebook_decoder", fake_compile)
 
     scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
+    return SimpleNamespace(
+        scheduler=scheduler,
+        build_kwargs=build_kwargs,
+        infrastructure_saw_graph_disabled=infrastructure_saw_graph_disabled,
+        compile_calls=compile_calls,
+        init_graph_calls=init_graph_calls,
+    )
+
+
+def test_s2pro_engine_disables_generic_compile_after_local_compile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run_s2pro_engine_with_fake_buffers(monkeypatch)
+    scheduler = result.scheduler
+    build_kwargs = result.build_kwargs
 
     assert build_kwargs["enable_torch_compile"] is True
-    assert build_kwargs["torch_compile_max_bs"] == 16
-    assert infrastructure_saw_graph_disabled == [True]
-    assert compile_calls == [(scheduler.model_runner.args[0].model_runner.model, 16)]
-    assert init_graph_calls == [True]
+    assert build_kwargs["max_running_requests"] == 64
+    assert build_kwargs["cuda_graph_max_bs"] == 64
+    assert build_kwargs["cuda_graph_bs"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
+    assert build_kwargs["torch_compile_max_bs"] == 64
+    assert result.infrastructure_saw_graph_disabled == [True]
+    assert result.compile_calls == [
+        (scheduler.model_runner.args[0].model_runner.model, 64)
+    ]
+    assert result.init_graph_calls == [True]
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False
-    assert scheduler.server_args.torch_compile_max_bs == 16
+    assert scheduler.server_args.cuda_graph_max_bs == 64
+    assert scheduler.server_args.cuda_graph_bs == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
+    assert scheduler.server_args.torch_compile_max_bs == 64
+
+
+@pytest.mark.parametrize(
+    "text_buffer_bs,audio_buffer_bs",
+    [
+        (32, 64),
+        (64, 32),
+    ],
+)
+def test_s2pro_engine_validates_allocated_decode_buffers(
+    monkeypatch: pytest.MonkeyPatch,
+    text_buffer_bs: int,
+    audio_buffer_bs: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="model_buffer_bs must cover max_running_requests",
+    ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            text_buffer_bs=text_buffer_bs,
+            audio_buffer_bs=audio_buffer_bs,
+        )
 
 
 def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:

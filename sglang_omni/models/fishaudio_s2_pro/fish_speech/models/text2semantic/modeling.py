@@ -1006,6 +1006,15 @@ class FishQwen3AudioDecoder(PreTrainedModel):
             persistent=False,
         )
 
+    @property
+    def kv_cache_max_batch_size(self) -> int:
+        if not self.layers:
+            raise RuntimeError("Audio decoder layers are not initialized")
+        kv_cache = self.layers[0].attention.kv_cache
+        if kv_cache is None:
+            raise RuntimeError("Audio decoder KV cache is not initialized")
+        return int(kv_cache.k_cache.shape[0])
+
     def reset_caches(self):
         """Reset all KV caches to zeros."""
         for layer in self.layers:

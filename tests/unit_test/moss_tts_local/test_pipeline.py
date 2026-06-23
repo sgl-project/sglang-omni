@@ -190,7 +190,7 @@ def test_pipeline_stage_wiring():
     tts_engine_runtime = stages["tts_engine"].runtime
     assert tts_engine_runtime.resources.total_gpu_memory_fraction == pytest.approx(0.90)
     assert tts_engine_runtime.sglang_server_args.mem_fraction_static is None
-    assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.05)
+    assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.15)
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
@@ -1786,4 +1786,4 @@ def test_async_decode_cli_accepts_moss_local():
     assert args["enable_async_decode"] is True
     assert args["async_decode_min_batch_size"] == 4
     assert args["total_gpu_memory_fraction"] == pytest.approx(0.90)
-    assert args["codec_mem_reserve"] == pytest.approx(0.05)
+    assert args["codec_mem_reserve"] == pytest.approx(0.15)

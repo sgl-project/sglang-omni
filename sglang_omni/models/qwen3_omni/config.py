@@ -11,6 +11,7 @@ from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
+THINKER_STAGE = "thinker"
 MIN_PARTIAL_START_CHUNKS = 3
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
@@ -250,21 +251,26 @@ _SPEECH_DEFAULT_PROCESSES = {
 }
 
 
-class Qwen3OmniPipelineConfig(PipelineConfig):
-    """6-stage text-only pipeline."""
-
+class _Qwen3OmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
+        THINKER_STAGE,
+    )
     env_defaults: dict[str, str] = Field(
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
 
+
+class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):
+    """6-stage text-only pipeline."""
+
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": "thinker"}
+        return {"thinker": THINKER_STAGE}
 
     @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": "thinker"}
+        return {"thinker": THINKER_STAGE}
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
@@ -276,21 +282,16 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = Field(default_factory=_text_stages)
 
 
-class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
+class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
     """8-stage speech pipeline (text + audio output)."""
-
-    architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
-    env_defaults: dict[str, str] = Field(
-        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
-    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": "thinker", "talker": "talker_ar"}
+        return {"thinker": THINKER_STAGE, "talker": "talker_ar"}
 
     @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": "thinker"}
+        return {"thinker": THINKER_STAGE}
 
     @classmethod
     def talker_role_to_stage(cls) -> dict[str, str]:

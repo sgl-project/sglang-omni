@@ -55,6 +55,18 @@ class _FakeStreamingState:
         self.exec_mask[reset_mask] = True
 
 
+class _FakeDecoderStage(nn.Module):
+    module_type = "PatchedPretransform"
+    patch_size = 1
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        input_lengths: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return x, input_lengths
+
+
 class FakeCodec(nn.Module):
     """Stateful fake of the MOSS-Audio-Tokenizer-v2 decode surface.
 
@@ -69,7 +81,11 @@ class FakeCodec(nn.Module):
         self.dummy = nn.Parameter(torch.zeros(1))
         self._streaming_state: _FakeStreamingState | None = None
         self.config = SimpleNamespace(sampling_rate=SAMPLE_RATE)
+        self.decoder = nn.ModuleList([_FakeDecoderStage()])
         self.frame_calls = 0
+        self.decode_calls = 0
+        self.decode_chunk_durations: list[float | None] = []
+        self.decode_decoders: list[nn.Module] = []
 
     @contextmanager
     def streaming(self, batch_size: int):
@@ -107,6 +123,33 @@ class FakeCodec(nn.Module):
             if state is not None:
                 state.offsets[b] += t_len
         return SimpleNamespace(audio=audio, audio_lengths=audio_lengths)
+
+    def decode(
+        self,
+        audio_codes: torch.Tensor,
+        *,
+        padding_mask: torch.Tensor | None = None,
+        return_dict: bool = True,
+        chunk_duration: float | None = None,
+        num_quantizers: int | None = None,
+    ):
+        self.decode_calls += 1
+        self.decode_chunk_durations.append(chunk_duration)
+        self.decode_decoders.append(self.decoder)
+        assert return_dict
+        assert chunk_duration is None
+        if num_quantizers is not None:
+            audio_codes = audio_codes[:num_quantizers]
+        if padding_mask is None:
+            lengths = torch.full(
+                (audio_codes.shape[1],),
+                audio_codes.shape[2],
+                device=audio_codes.device,
+                dtype=torch.long,
+            )
+        else:
+            lengths = padding_mask.sum(dim=-1).long()
+        return self._decode_frame(audio_codes, lengths)
 
 
 class FakeProcessor:
@@ -649,9 +692,14 @@ def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
     assert processor.audio_tokenizer._streaming_state is not None
 
     rows = _rows(11, seed=59)
+    original_decoder = processor.audio_tokenizer.decoder
     (result,) = scheduler._vocode_batch([_offline_payload(rows, "r1")])
 
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert processor.audio_tokenizer.decode_calls == 1
+    assert processor.audio_tokenizer.decode_chunk_durations == [None]
+    assert processor.audio_tokenizer.decode_decoders == [scheduler._nonstream_decoder]
+    assert processor.audio_tokenizer.decoder is original_decoder
     assert scheduler._session is None
     assert processor.audio_tokenizer._streaming_state is None
     np.testing.assert_array_equal(
@@ -659,18 +707,37 @@ def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
     )
 
 
+def test_non_streaming_empty_audio_codes_skip_decode(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(monkeypatch, processor)
+    rows = torch.empty(0, N_VQ + 1, dtype=torch.long)
+
+    (result,) = scheduler._vocode_batch([_offline_payload(rows, "empty")])
+
+    assert processor.decode_calls == 0
+    assert processor.audio_tokenizer.decode_calls == 0
+    assert "audio_codes" not in result.data
+    assert "audio_waveform" not in result.data
+
+
 def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
 
-    rows_1 = _rows(11, seed=60)
+    rows_1 = _rows(101, seed=60)
     rows_2 = _rows(4, seed=61)
+    original_decoder = processor.audio_tokenizer.decoder
 
-    # Before any stream: the pre-existing processor path is used.
+    # Before any stream: use the full-sequence tokenizer path with the packed
+    # non-streaming decoder installed.
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r1"), _offline_payload(rows_2, "r2")]
     )
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert processor.audio_tokenizer.decode_calls == 1
+    assert processor.audio_tokenizer.decode_chunk_durations == [None]
+    assert processor.audio_tokenizer.decode_decoders == [scheduler._nonstream_decoder]
+    assert processor.audio_tokenizer.decoder is original_decoder
     waves_before = [_decode_audio(result.data) for result in results]
     for result in results:
         assert result.data["sample_rate"] == SAMPLE_RATE
@@ -687,7 +754,8 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r3"), _offline_payload(rows_2, "r4")]
     )
-    assert processor.decode_calls == 1
+    assert processor.decode_calls == 0
+    assert processor.audio_tokenizer.decode_calls == 1
     waves_after = [_decode_audio(result.data) for result in results]
     for before, after in zip(waves_before, waves_after):
         np.testing.assert_array_equal(before, after)
