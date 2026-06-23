@@ -20,6 +20,25 @@ except ImportError:
 from transformers.utils.hub import cached_file
 
 # ---------------------------------------------------------------------------
+# Checkpoint resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_checkpoint(checkpoint: str) -> str:
+    """Return a local checkpoint directory for a local path or HF repo id.
+
+    If ``checkpoint`` is an existing directory it is returned unchanged;
+    otherwise it is treated as a Hugging Face repo id, downloaded, and the
+    local snapshot path is returned.
+    """
+    if os.path.isdir(checkpoint):
+        return checkpoint
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(checkpoint)
+
+
+# ---------------------------------------------------------------------------
 # Architecture resolution helpers
 # ---------------------------------------------------------------------------
 

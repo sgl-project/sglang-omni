@@ -22,6 +22,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     sync_cuda_graph_bs_with_max_bs,
     validate_generation_batch_policy,
 )
+from sglang_omni.utils.hf import resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,6 @@ def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
         int(model.vq_decode_max_batch_size),
         int(model._audio_decoder.kv_cache_max_batch_size),
     )
-
-
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
 
 
 def _load_codec(checkpoint_dir: str, device: str):
@@ -114,7 +107,7 @@ def create_preprocessing_executor(
     """Returns a threaded scheduler for CPU-heavy preprocessing."""
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_checkpoint(model_path)
 
     from transformers import PreTrainedTokenizerFast
 
@@ -245,7 +238,7 @@ def create_sglang_tts_engine_executor(
         build_sglang_server_args,
     )
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_checkpoint(model_path)
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     patch_fish_config_for_sglang()
@@ -372,7 +365,7 @@ def create_vocoder_executor(
 
     if device is None:
         device = f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_checkpoint(model_path)
     codec = _load_codec(checkpoint_dir, device)
 
     return S2ProVocoderScheduler(

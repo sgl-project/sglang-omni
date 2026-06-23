@@ -27,6 +27,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.hf import resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,6 @@ def store_state(payload: StagePayload, state: Qwen3TTSState) -> StagePayload:
     return payload
 
 
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
-
-
 def _load_qwen3_tts_tokenizer(
     model_path: str,
     *,
@@ -67,7 +60,7 @@ def _load_qwen3_tts_tokenizer(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_checkpoint(model_path)
     tokenizer_path = os.path.join(checkpoint_dir, "speech_tokenizer")
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
     kwargs: dict[str, Any] = {
@@ -191,7 +184,7 @@ def create_sglang_tts_engine_executor(
     )
 
     _register_qwen3_tts_hf_config()
-    checkpoint_dir = _resolve_checkpoint(model_path)
+    checkpoint_dir = resolve_checkpoint(model_path)
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
