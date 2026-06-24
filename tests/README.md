@@ -158,8 +158,8 @@ Relevant model CI ownership:
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
 - `test_qwen3_asr_ci.py`: Qwen3-ASR correctness + speed via SGLang Omni
-  router (`/v1/audio/transcriptions`). Uses the first 20 English SeedTTS
-  clips; writes `qwen3_asr_results.json` for threshold calibration
+  router (`/v1/audio/transcriptions`). Uses the full 1088-sample English
+  SeedTTS set; writes `qwen3_asr_results.json` for threshold calibration
   (`qwen3-asr-v1` in `tune-ci-thresholds`). Its stdout uses the same boxed
   summary style as the other benchmark stages: `ASR WER Benchmark Result`
   followed by `ASR Speed Benchmark Result`.

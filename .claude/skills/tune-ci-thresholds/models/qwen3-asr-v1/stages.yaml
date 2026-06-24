@@ -6,7 +6,8 @@ qwen3_asr_wer:
   extra_env: {}
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: 0b3222e94bd31686e5d76e6595cfd82c1f670922a31aa42849758daa85905e3c
+    - QWEN3_ASR_CONCURRENCY
+  test_file_sha256: 60e2880c28d0c925674d5a9318b1413609baa0a8481c938acff83c3f8a3bf6
   last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:
@@ -43,7 +44,8 @@ qwen3_asr_speed:
   extra_env: {}
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: 0b3222e94bd31686e5d76e6595cfd82c1f670922a31aa42849758daa85905e3c
+    - QWEN3_ASR_CONCURRENCY
+  test_file_sha256: 60e2880c28d0c925674d5a9318b1413609baa0a8481c938acff83c3f8a3bf6
   last_discovered_at: 2026-06-14T23:57:14Z
   sample_counts:
     total:

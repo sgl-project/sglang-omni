@@ -199,7 +199,9 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     )
     fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
 
-    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+    )
     monkeypatch.setattr(
         stages,
         "make_moss_tts_scheduler_adapters",

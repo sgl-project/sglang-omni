@@ -441,9 +441,8 @@ explicitly asks you to fix a named gap (e.g. speaker sim warm-cache).
 ### Stage-specific shortcuts (still check-first)
 
 - **Qwen3-ASR (TTS CI stage 1 / `--model tts`)**: uses `omni`, **2 GPU / router DP=2**.
-  TTS stage-1 Qwen3-ASR correctness runs with ASR request concurrency **2**.
-  Standalone `qwen3-asr-v1` calibration keeps ASR request concurrency **32**,
-  and TTS generation stages use **16**.
+  Stage 1 uses the same ASR transcribe fan-out as other WER stages
+  (`QWEN3_ASR_WER_CONCURRENCY` = **32** at DP=2).
   Included in `--model tts --stages ALL`; calibrate alone with
   `--stages qwen3_asr`. Venv only needs to pass precheck for torch/sglang pins
   and cached assets. Do **not** use `--skip-precheck`. Source
@@ -552,7 +551,7 @@ python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages tts_moss --repeats 5 --output-dir .tune-runs/<timestamp>_tts_moss_r5
 
-# Stage 1 only (Qwen3-ASR on SeedTTS EN 20-sample correctness subset):
+# Stage 1 only (Qwen3-ASR on the full SeedTTS EN set):
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages qwen3_asr --repeats 5 --output-dir .tune-runs/<timestamp>_tts_qwen3_asr_r5
 ```
@@ -574,10 +573,9 @@ while leaving Qwen3-ASR on stale literals.
 Notes:
 - Uses **`Qwen/Qwen3-ASR-1.7B`** via `hf_model_ids_by_test` (not the Higgs
   checkpoint). Same **`omni`** venv and 2-GPU router DP=2 as TTS stages.
-  In `--model tts`, this correctness gate sets `QWEN3_ASR_CI_CONCURRENCY=2`
-  to match the stable TTS stage-1 baseline. Standalone `--model qwen3-asr-v1`
-  leaves the test default at **32**.
-- Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** (=20),
+  Stage 1 imports **`QWEN3_ASR_WER_CONCURRENCY`** from `tests.utils` (32),
+  matching TTS WER and talker WER transcribe fan-out.
+- Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** (=1088),
   JSON `summary.evaluated` / `summary.total_samples`.
 - **CI slack:** tune.py writes P95 reference constants only; assertions use
   derived `*_THRESHOLD` values with **10% slack** (`THRESHOLD_SLACK_HIGHER=0.9`,
