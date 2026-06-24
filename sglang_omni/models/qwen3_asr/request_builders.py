@@ -70,39 +70,41 @@ def _audio_source_from_payload(payload: StagePayload) -> Any:
     return inputs
 
 
-def _try_load_pcm_wav_fast(source: Any) -> tuple[np.ndarray, int] | None:
-    """Fast path for uncompressed PCM WAV inputs.
-
-    Returns ``(channels_first_float32_audio, sample_rate)`` or ``None`` when the
-    source is not a supported WAV. The caller keeps the generic torchaudio
-    fallback, so this path must stay conservative.
-    """
+def _load_pcm_wav(source: Any) -> tuple[np.ndarray, int]:
+    """Load uncompressed int16 PCM WAV. Raises ValueError for unsupported inputs."""
     if isinstance(source, bytes):
         wav_source: Any = io.BytesIO(source)
     elif isinstance(source, str):
         wav_source = source
     else:
-        return None
+        raise ValueError(f"Unsupported audio input type: {type(source).__name__}")
 
     try:
         with wave.open(wav_source, "rb") as wav_file:
-            if wav_file.getcomptype() != "NONE":
-                return None
+            comp_type = wav_file.getcomptype()
+            if comp_type != "NONE":
+                raise ValueError(f"Unsupported WAV compression: {comp_type}")
             channels = wav_file.getnchannels()
             sample_width = wav_file.getsampwidth()
             sample_rate = wav_file.getframerate()
             frame_count = wav_file.getnframes()
-            if channels < 1 or sample_rate <= 0 or frame_count < 0:
-                return None
+            if channels < 1 or sample_rate <= 0 or frame_count <= 0:
+                raise ValueError(
+                    f"Invalid WAV header: channels={channels} sample_rate={sample_rate} frames={frame_count}"
+                )
             if sample_width != 2:
-                return None
+                raise ValueError(
+                    f"Unsupported WAV sample width {sample_width}, only int16 / 2-byte supported"
+                )
             raw = wav_file.readframes(frame_count)
-    except (EOFError, OSError, wave.Error):
-        return None
+    except (EOFError, OSError, wave.Error) as exc:
+        raise ValueError(f"Failed to read WAV: {exc}") from exc
 
     expected_bytes = frame_count * channels * sample_width
     if len(raw) != expected_bytes:
-        return None
+        raise ValueError(
+            f"Truncated WAV: expected {expected_bytes} bytes, got {len(raw)}"
+        )
 
     audio = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
     if channels > 1:
@@ -120,16 +122,8 @@ def load_audio(source: Any) -> np.ndarray:
     if isinstance(source, bytearray):
         source = bytes(source)
 
-    fast_audio = _try_load_pcm_wav_fast(source)
-    if fast_audio is not None:
-        audio_np, sample_rate = fast_audio
-        audio = torch.from_numpy(audio_np)
-    elif isinstance(source, bytes):
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
-    elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
-    else:
-        raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
+    audio_np, sample_rate = _load_pcm_wav(source)
+    audio = torch.from_numpy(audio_np)
 
     if audio.ndim == 2 and audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)

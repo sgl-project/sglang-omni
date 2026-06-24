@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 import sglang_omni.models.qwen3_asr.request_builders as request_builders
@@ -18,7 +19,7 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
-    _try_load_pcm_wav_fast,
+    _load_pcm_wav,
     load_audio,
     make_qwen3_asr_scheduler_adapters,
 )
@@ -74,7 +75,7 @@ def test_qwen3_asr_fast_pcm_wav_loads_path(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded, expected, atol=1e-6)
 
 
-def test_qwen3_asr_fast_pcm_wav_loads_stereo_without_resample() -> None:
+def test_qwen3_asr_pcm_wav_loads_stereo_without_resample() -> None:
     audio = np.array(
         [
             [0.25, -0.25],
@@ -82,10 +83,10 @@ def test_qwen3_asr_fast_pcm_wav_loads_stereo_without_resample() -> None:
         ],
         dtype=np.float32,
     )
-    fast = _try_load_pcm_wav_fast(_wav_bytes(audio, sample_rate=16000))
+    loaded_channels_first, sample_rate = _load_pcm_wav(
+        _wav_bytes(audio, sample_rate=16000)
+    )
 
-    assert fast is not None
-    loaded_channels_first, sample_rate = fast
     assert sample_rate == 16000
     expected = np.array(
         [
@@ -97,29 +98,49 @@ def test_qwen3_asr_fast_pcm_wav_loads_stereo_without_resample() -> None:
     np.testing.assert_allclose(loaded_channels_first, expected, atol=1e-6)
 
 
-def test_qwen3_asr_fast_pcm_wav_rejects_malformed_bytes() -> None:
-    assert _try_load_pcm_wav_fast(b"not a wav") is None
+def test_qwen3_asr_pcm_wav_rejects_malformed_bytes() -> None:
+    with pytest.raises(ValueError, match="Failed to read WAV"):
+        _load_pcm_wav(b"not a wav")
 
 
-def test_qwen3_asr_fast_pcm_wav_rejects_unsupported_sample_width() -> None:
+def test_qwen3_asr_pcm_wav_rejects_unsupported_sample_width() -> None:
     audio = np.array([0.0, 0.5, -0.5, 0.25], dtype=np.float32)
+    with pytest.raises(ValueError, match="sample width"):
+        _load_pcm_wav(_wav_bytes_uint8(audio, sample_rate=16000))
 
-    assert _try_load_pcm_wav_fast(_wav_bytes_uint8(audio, sample_rate=16000)) is None
+
+@pytest.mark.parametrize("sample_rate", [16000, 44100, 48000])
+@pytest.mark.parametrize("channels", [1, 2])
+def test_qwen3_asr_pcm_wav_loads_common_formats(
+    sample_rate: int, channels: int
+) -> None:
+    rng = np.random.default_rng(sample_rate + channels)
+    n_frames = sample_rate // 10
+    if channels == 1:
+        audio = rng.uniform(-0.8, 0.8, size=(n_frames,)).astype(np.float32)
+    else:
+        audio = rng.uniform(-0.8, 0.8, size=(n_frames, channels)).astype(np.float32)
+
+    wav = _wav_bytes(audio, sample_rate=sample_rate)
+    loaded_audio, loaded_sr = _load_pcm_wav(wav)
+
+    assert loaded_sr == sample_rate
+    assert loaded_audio.shape == (channels, n_frames)
 
 
-def test_qwen3_asr_fast_pcm_wav_matches_torchaudio_path() -> None:
+def test_qwen3_asr_pcm_wav_matches_torchaudio(tmp_path: Path) -> None:
     import torchaudio
 
     rng = np.random.default_rng(0)
     audio = rng.uniform(-0.8, 0.8, size=(257, 2)).astype(np.float32)
     wav = _wav_bytes(audio, sample_rate=16000)
-    fast = load_audio(wav)
+    result = load_audio(wav)
 
     baseline, sample_rate = torchaudio.load(io.BytesIO(wav))
     assert sample_rate == 16000
     baseline = baseline.mean(dim=0).to(torch.float32).cpu().numpy()
 
-    np.testing.assert_allclose(fast, baseline, atol=1e-6)
+    np.testing.assert_allclose(result, baseline, atol=1e-6)
 
 
 class _FakeTokenizer:
