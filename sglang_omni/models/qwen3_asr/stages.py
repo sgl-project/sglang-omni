@@ -119,6 +119,8 @@ def create_sglang_qwen3_asr_executor(
         model_runner=ModelRunner(model_worker, output_proc),
         request_builder=request_builder,
         result_adapter=result_adapter,
+        parallel_request_build=True,
+        parallel_request_build_workers=max_running_requests,
     )
 
 
