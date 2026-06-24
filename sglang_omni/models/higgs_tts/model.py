@@ -156,16 +156,16 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        self._max_batch_size = _resolve_max_running_requests()
-        pool_size = self._max_batch_size + 1
+        self._max_running_requests = _resolve_max_running_requests()
+        pool_size = self._max_running_requests + 1
         self._sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,
             num_codebooks=num_codebooks,
             device=self.backbone.model.embed_tokens.weight.device,
         )
-        self._padding_row = self._max_batch_size  # last row reserved
+        self._padding_row = self._max_running_requests  # last row reserved
         self._rid_to_row: dict[str, int] = {}
-        self._free_rows: list[int] = list(range(self._max_batch_size))
+        self._free_rows: list[int] = list(range(self._max_running_requests))
         self._output_codes: dict[str, list[torch.Tensor]] = {}
 
         cg_device = self.backbone.model.embed_tokens.weight.device
@@ -239,7 +239,7 @@ class HiggsTTSModel(nn.Module):
         if not self._free_rows:
             raise RuntimeError(
                 f"HiggsTTSModel sampler pool exhausted "
-                f"(max_running_requests={self._max_batch_size}); raise "
+                f"(max_running_requests={self._max_running_requests}); raise "
                 f"``max_running_requests`` or limit concurrent requests."
             )
         row = self._free_rows.pop()
