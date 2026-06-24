@@ -3,11 +3,11 @@ qwen3_asr_wer:
   test: tests/test_model/test_qwen3_asr_ci.py
   title: "QWEN3 ASR Wer"
   group: wer
-  extra_env:
-    QWEN3_ASR_CI_CONCURRENCY: "2"
+  extra_env: {}
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: e6a360a039864aeba2f6309ae54c2276227d71dbf6c2fe649e8b69809b1cba88
+    - QWEN3_ASR_CONCURRENCY
+  test_file_sha256: 60e2880c28d0c925674d5a9318b1413609baa0a8481c938acff83c3f8a3e3bf6
   last_discovered_at: 2026-06-16T05:27:59Z
   sample_counts:
     total:
@@ -41,11 +41,11 @@ qwen3_asr_speed:
   test: tests/test_model/test_qwen3_asr_ci.py
   title: "QWEN3 ASR Speed"
   group: speed
-  extra_env:
-    QWEN3_ASR_CI_CONCURRENCY: "2"
+  extra_env: {}
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
-  test_file_sha256: e6a360a039864aeba2f6309ae54c2276227d71dbf6c2fe649e8b69809b1cba88
+    - QWEN3_ASR_CONCURRENCY
+  test_file_sha256: 60e2880c28d0c925674d5a9318b1413609baa0a8481c938acff83c3f8a3e3bf6
   last_discovered_at: 2026-06-16T05:27:59Z
   sample_counts:
     total:

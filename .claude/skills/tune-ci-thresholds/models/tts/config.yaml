@@ -3,9 +3,8 @@
 # Notes:
 # - Stage 1 (Qwen3-ASR): test_qwen3_asr_ci.py runs in parallel with Higgs
 #   stages in the CI DAG and writes the Qwen3-ASR WER/speed baselines.
-#   TTS workflow/calibration runs this correctness gate at ASR concurrency 2
-#   to match the stable stage-1 baseline; standalone qwen3-asr-v1 calibration
-#   keeps the test default of 32.
+#   Uses the same ASR transcribe fan-out as other WER stages
+#   (QWEN3_ASR_WER_CONCURRENCY / DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32).
 #   Calibrate via `--model tts --stages qwen3_asr` or full `--stages ALL`.
 # - test_tts_ci.py runs the model-dependent TTS stages (nonstream / stream /
 #   in-file consistency) controlled by --tts-stage in CI. Calibration does not
@@ -75,9 +74,7 @@ gpus_per_test:
 test_globs:
   - "tests/test_model/test_qwen3_asr_ci.py"
   - "tests/test_model/test_tts_ci.py"
-extra_env:
-  test_qwen3_asr_ci.py:
-    QWEN3_ASR_CI_CONCURRENCY: "2"
+extra_env: {}
 pytest_extra_args:
   test_tts_ci.py:
     - "--concurrency"

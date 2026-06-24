@@ -54,7 +54,6 @@ jobs:
           HF_HUB_DISABLE_XET: "1"
           HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-          QWEN3_ASR_CI_CONCURRENCY: "2"
           QWEN3_ASR_MODEL_PATH: ${{ env.QWEN3_ASR_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 

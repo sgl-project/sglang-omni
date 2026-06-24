@@ -6,8 +6,7 @@ SGLang Omni router and reports, for each concurrency level, the metrics tracked
 in issue #646: corpus/per-sample WER, wall-clock, throughput, latency
 percentiles, RTF, and per-worker routing balance. This produces the repeatable
 concurrency-scaling data the issue's acceptance criteria ask for, and lets us
-decide the right ASR fan-out for the small correctness gate vs. the full
-SeedTTS EN transcription / WER workloads.
+decide the right ASR fan-out for SeedTTS EN transcription / WER workloads.
 
 This script transcribes the SeedTTS *reference* clips directly (no TTS
 generation step), so it isolates ASR behavior from TTS.
@@ -35,7 +34,7 @@ Usage:
         --concurrencies 1,2,4,8,16,32,64 \
         --repeats 3
 
-    # Quick check on the 20-sample correctness subset:
+    # Quick local smoke on a 20-sample subset:
     python -m benchmarks.eval.benchmark_qwen3_asr_concurrency \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 3
 """
