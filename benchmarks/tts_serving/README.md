@@ -104,7 +104,7 @@ Common `params` fields:
 | `speaker_max_uploaded` | Expected server-side uploaded-speaker cap. |
 | `voice_cache_pressure_voice_count` | Number of unique uploaded voices for cache-pressure stages. |
 | `voice_speaker_cap_count` | Upload-attempt budget for speaker-cap stages. |
-| `file_ref_audio` | Optional `file://` reference audio URI sent to the target service. Required for full speech reference coverage. The target service must be launched with an allowed-local-media path that contains this file. |
+| `file_ref_audio` | Optional file URI sent to the target service. Required for full speech reference coverage. The target service must be launched with an allowed-local-media path that contains this file. |
 | `file_ref_text` | Optional transcript for `file_ref_audio`. Defaults to the SeedTTS reference text. |
 
 Load-stage fields:
@@ -184,7 +184,9 @@ python -m benchmarks.eval.benchmark_tts_serving \
 ```
 
 The checked-in spec targets a Higgs TTS service through the `base_url` and
-`model_name` fields in `examples/stress.json`. Update those fields, and
+`model_name` fields in `examples/stress.json`. It also sends a reference clip
+from `docs/_static/audio`, so launch the target service from the repo root with
+`--allowed-local-media-path docs/_static/audio`. Update the spec fields, and
 `auth.api_key_env` when needed, for a different target.
 
 ## Docker

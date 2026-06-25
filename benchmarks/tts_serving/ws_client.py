@@ -146,6 +146,16 @@ async def _run_ws_script(
                 )
                 if not matched:
                     return
+            elif action_type == "expect_audio_until_session_done":
+                matched = await _expect_audio_until_session_done(
+                    ws,
+                    result,
+                    audio_state,
+                    min_binary_frames=int(action.get("min_binary_frames", 1)),
+                    expect_success=expect_success,
+                )
+                if not matched:
+                    return
             else:
                 result.status = "failed"
                 result.capability = "fail"
@@ -259,6 +269,65 @@ async def _expect_audio_until_done(
         if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
             result.ws_close_reason = "server_closed"
             _mark_ws_protocol_error(result, "WebSocket closed before audio.done")
+            return False
+        if msg.type == aiohttp.WSMsgType.ERROR:
+            result.status = "failed"
+            result.capability = "fail"
+            result.error_class = "transport_error"
+            result.error = str(ws.exception())
+            return False
+        _mark_ws_protocol_error(result, f"unexpected WebSocket frame type: {msg.type}")
+        return False
+
+
+async def _expect_audio_until_session_done(
+    ws: aiohttp.ClientWebSocketResponse,
+    result: ScenarioResult,
+    audio_state: WebSocketAudioState,
+    *,
+    min_binary_frames: int,
+    expect_success: bool,
+) -> bool:
+    binary_frames = 0
+    while True:
+        msg = await ws.receive()
+        if msg.type == aiohttp.WSMsgType.BINARY:
+            if not _record_binary_audio(msg.data, result, audio_state):
+                return False
+            binary_frames += 1
+            continue
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            event_type = _merge_text_event(
+                msg.data,
+                result,
+                audio_state,
+                expect_success=expect_success,
+            )
+            if result.status in {"failed", "expected_error"}:
+                return event_type == "error"
+            if event_type in WS_CONTROL_EVENT_TYPES:
+                continue
+            if event_type in {"audio.start", "audio.done"}:
+                continue
+            if event_type == "session.done":
+                if binary_frames < min_binary_frames:
+                    _mark_ws_protocol_error(
+                        result,
+                        "session completed before the required binary frames "
+                        f"(expected>={min_binary_frames}, "
+                        f"observed={binary_frames})",
+                    )
+                    return False
+                return True
+            _mark_ws_protocol_error(
+                result,
+                "received WebSocket event "
+                f"{event_type!r} while streaming binary audio until session.done",
+            )
+            return False
+        if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
+            result.ws_close_reason = "server_closed"
+            _mark_ws_protocol_error(result, "WebSocket closed before session.done")
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"

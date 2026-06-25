@@ -233,6 +233,15 @@ async def run_voice_lifecycle(
         )
         if before_delete is None:
             return
+        if not await _post_speech_with_uploaded_voice(
+            session,
+            spec,
+            scenario,
+            result,
+            voice_name=voice_name,
+            prompt="Synthesize speech before deleting the uploaded voice.",
+        ):
+            return
         if not await _delete_voice_by_name(session, spec, scenario, result, voice_name):
             return
         after_delete = await _get_voice_list(session, spec, scenario, result)

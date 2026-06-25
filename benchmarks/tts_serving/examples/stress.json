@@ -13,6 +13,8 @@
       "websocket"
     ],
     "speaker_max_uploaded": 1000,
+    "file_ref_audio": "file:docs/_static/audio/male-voice.wav",
+    "file_ref_text": "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time.",
     "load_stages": [
       {
         "id": "closed-1",

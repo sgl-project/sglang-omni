@@ -1818,9 +1818,7 @@ def _websocket_stream_audio(
                 },
             },
             {"action": "send_json", "payload": {"type": "input.done"}},
-            {"action": "expect", "event": "audio.start"},
-            {"action": "expect_audio_until_done", "min_binary_frames": 2},
-            {"action": "expect", "event": "session.done"},
+            {"action": "expect_audio_until_session_done", "min_binary_frames": 2},
         ],
         description="WebSocket stream_audio=true path requiring incremental binary audio",
     )
