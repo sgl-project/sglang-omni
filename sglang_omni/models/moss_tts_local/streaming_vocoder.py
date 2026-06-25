@@ -512,37 +512,12 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             self._session = None
 
     def _cuda_graph_capture_frames(self) -> list[int]:
-        """Step lengths T to capture (config ``cuda_graph_frames`` overrides). Default is a
-        data-driven broad-exact set (see below); uncaptured T fall back to eager."""
+        """Step lengths T to capture. Config ``cuda_graph_frames`` overrides the default."""
         if self._cuda_graph_frames:
             # Validated at config (>= 1) and __init__ (<= max_step_frames); use as configured.
             return sorted(set(self._cuda_graph_frames))
-        # Broad-exact small-T set (measured per-T serving frequency). The T=max_step_frames cap is
-        # excluded (biggest single graph, only ~1.04x offline-lane) to shrink the warmup VRAM peak.
-        join_floor = max(
-            1,
-            min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames),
-        )
-        frames = [
-            4,
-            5,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            20,
-            22,
-            24,
-            25,
-            join_floor,
-            self._default_initial_chunk_frames or join_floor,
-            self._stream_chunk_frames,
-        ]
-        # Clamp the generated default to the supported range (this is the auto-default, not user
-        # input; user-supplied frames are validated and rejected, never silently filtered).
-        return sorted({t for t in frames if 1 <= t <= self._max_step_frames})
+        max_frame = min(self._stream_chunk_frames, self._max_step_frames)
+        return list(range(1, max_frame + 1))
 
     def _codec_on_cuda(self) -> bool:
         try:
