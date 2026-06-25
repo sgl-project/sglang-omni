@@ -13,7 +13,9 @@ from benchmarks.tts_serving.scenarios import (
     BATCH_OVERSIZED_SIZE,
     BATCH_SIZES,
     LENGTH_EXTREME_TEXTS,
+    LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
     MALFORMED_CASE_NAMES,
+    MAX_SPEECH_INPUT_CHARS,
     MULTILINGUAL_TEXTS,
     REFERENCE_FAILURES,
     RESPONSE_FORMATS,
@@ -634,6 +636,27 @@ def _speech_coverage_matrix(
         ),
         _coverage_matrix_row(
             spec,
+            "speech.long_prefill_decode",
+            tested=_has_stress_case(speech_scenarios, "long_prefill_decode"),
+            expected=[
+                {
+                    "stress_case": "long_prefill_decode",
+                    "input_chars": MAX_SPEECH_INPUT_CHARS,
+                    "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
+                }
+            ],
+            observed=[
+                {
+                    "stress_case": scenario.planned_metadata.get("stress_case"),
+                    "input_chars": scenario.planned_metadata.get("input_chars"),
+                    "max_new_tokens": scenario.planned_metadata.get("max_new_tokens"),
+                }
+                for scenario in speech_scenarios
+                if scenario.planned_metadata.get("stress_case") == "long_prefill_decode"
+            ],
+        ),
+        _coverage_matrix_row(
+            spec,
             "speech.initial_codec_chunk_frames",
             tested=any(
                 scenario.planned_metadata.get("initial_codec_chunk_frames")
@@ -1051,6 +1074,10 @@ def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]
             _metadata_values(speech_scenarios, "input_chars"),
         )
     )
+    if not _has_stress_case(speech_scenarios, "long_prefill_decode"):
+        failures.append(
+            _coverage_gap("speech.long_prefill_decode", ["long_prefill_decode"])
+        )
     failures.extend(
         _value_coverage_gap(
             "speech.reference_cases",
@@ -1293,6 +1320,13 @@ def _coverage_gap(
 
 def _has_capability(scenarios: list[Scenario], capability_key: str) -> bool:
     return any(scenario.capability_key == capability_key for scenario in scenarios)
+
+
+def _has_stress_case(scenarios: list[Scenario], stress_case: str) -> bool:
+    return any(
+        scenario.planned_metadata.get("stress_case") == stress_case
+        for scenario in scenarios
+    )
 
 
 def _capabilities_for(

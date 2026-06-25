@@ -61,6 +61,10 @@ VOICE_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 VOICE_NEAR_LIMIT_BYTES = VOICE_MAX_UPLOAD_BYTES - 1
 VOICE_OVERSIZED_BYTES = VOICE_MAX_UPLOAD_BYTES + 1
 MAX_SPEECH_INPUT_CHARS = 4096
+LONG_PREFILL_DECODE_MAX_NEW_TOKENS = 2048
+LONG_PREFILL_DECODE_TEXT = (
+    "Long prefill and decode serving validation request. " * 128
+)[:MAX_SPEECH_INPUT_CHARS]
 DEFAULT_REFERENCE_AUDIO = (
     "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/"
     "en/prompt-wavs/common_voice_en_10119832.wav"
@@ -268,6 +272,8 @@ def _required_stage_scenarios(
         for _ in LENGTH_EXTREME_TEXTS:
             speech_edges.append(_speech_length(next_index, spec, stage))
             next_index += 1
+        speech_edges.append(_speech_long_prefill_decode(next_index, spec, stage))
+        next_index += 1
         speech_edges.append(_speech_reference_success(next_index, spec, stage))
         next_index += 1
         speech_edges.append(_speech_reference_base64_success(next_index, spec, stage))
@@ -737,6 +743,33 @@ def _speech_length(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scenari
             "length_case": case_name,
             "input_chars": len(text),
             "input_limit_chars": MAX_SPEECH_INPUT_CHARS,
+        },
+    )
+
+
+def _speech_long_prefill_decode(
+    index: int, spec: BenchmarkSpec, stage: LoadStage
+) -> Scenario:
+    payload = _base_payload(spec, LONG_PREFILL_DECODE_TEXT)
+    payload.update(
+        {
+            "response_format": "pcm",
+            "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
+            "seed": spec.seed + index,
+        }
+    )
+    return Scenario(
+        id=_scenario_id(stage, "speech_long_prefill_decode", index),
+        endpoint="speech",
+        category="speech_long_prefill_decode",
+        stage_id=stage.id,
+        capability_key="speech.create",
+        payload=payload,
+        description="max-valid input with high decode budget",
+        planned_metadata={
+            "stress_case": "long_prefill_decode",
+            "input_chars": len(LONG_PREFILL_DECODE_TEXT),
+            "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
         },
     )
 
