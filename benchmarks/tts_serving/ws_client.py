@@ -26,11 +26,14 @@ from benchmarks.tts_serving.urls import websocket_url
 
 WS_CONTROL_EVENT_TYPES = {
     "session.created",
+    "session.configured",
     "session.updated",
     "response.created",
     "input.ack",
 }
 UNSUPPORTED_WS_STATUSES = UNSUPPORTED_HTTP_STATUSES
+SUPPORTED_WS_RESPONSE_FORMATS = {"wav", "pcm", "mp3", "flac", "aac", "opus"}
+SUPPORTED_WS_SPLIT_GRANULARITIES = {"sentence", "clause"}
 
 
 @dataclass
@@ -306,6 +309,13 @@ def _merge_text_event(
         )
         result.error = data
         return "error"
+    if event_type == "session.configured":
+        if not _is_valid_session_configured(event):
+            _mark_ws_protocol_error(
+                result,
+                f"invalid session.configured event: {data}",
+            )
+        return event_type
     if event_type in WS_CONTROL_EVENT_TYPES:
         return event_type
 
@@ -405,6 +415,18 @@ def _is_valid_ws_error_event(event: dict) -> bool:
     return any(
         isinstance(event.get(key), (dict, str)) and bool(event[key])
         for key in ("error", "message", "code")
+    )
+
+
+def _is_valid_session_configured(event: dict) -> bool:
+    return (
+        isinstance(event.get("session_id"), str)
+        and bool(event["session_id"])
+        and isinstance(event.get("response_format"), str)
+        and event["response_format"] in SUPPORTED_WS_RESPONSE_FORMATS
+        and isinstance(event.get("stream_audio"), bool)
+        and isinstance(event.get("split_granularity"), str)
+        and event["split_granularity"] in SUPPORTED_WS_SPLIT_GRANULARITIES
     )
 
 

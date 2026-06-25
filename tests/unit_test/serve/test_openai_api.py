@@ -395,6 +395,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
         json={
             "model": model_name,
             "input": "hello",
+            "voice": "default",
             "stream": False,
             "response_format": "wav",
         },
@@ -410,7 +411,9 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "tts",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },
@@ -432,7 +435,12 @@ def test_speech_endpoint_returns_binary_audio() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "response_format": "wav"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "response_format": "wav",
+        },
     )
 
     assert response.status_code == 200
@@ -483,7 +491,13 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -496,7 +510,13 @@ def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -593,7 +613,9 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -616,7 +638,9 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "s2-pro",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -679,7 +703,9 @@ def test_speech_stream_rejects_non_pcm_response_format() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },

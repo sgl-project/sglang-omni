@@ -40,6 +40,29 @@ def test_speech_service_rejects_non_string_input() -> None:
     assert exc_info.value.param == "input"
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_param"),
+    [
+        ({"input": "hello", "voice": "default"}, "model"),
+        ({"model": "tts", "input": "hello"}, "voice"),
+        ({"model": "", "input": "hello", "voice": "default"}, "model"),
+        ({"model": "   ", "input": "hello", "voice": "default"}, "model"),
+        ({"model": "tts", "input": "hello", "voice": ""}, "voice"),
+        ({"model": "tts", "input": "hello", "voice": "   "}, "voice"),
+    ],
+)
+def test_speech_generation_requires_explicit_model_and_voice(
+    payload: dict[str, object], expected_param: str
+) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_generation_request(payload)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == expected_param
+
+
 @pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])
 def test_speech_service_requires_pcm_for_http_streaming(
     response_format: str,
@@ -264,7 +287,12 @@ def test_reference_audio_accepts_allowed_https(
     )
 
     prepared = service.parse_generation_request(
-        {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
+        {
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "ref_audio": "https://example.com/reference.wav",
+        }
     )
     gen_req = service.build_generate_request(
         prepared.request,
@@ -310,7 +338,13 @@ def test_reference_audio_accepts_local_path_by_default(tmp_path: Path) -> None:
     service = SpeechRequestValidator(default_model="tts")
 
     prepared = service.parse_generation_request(
-        {"input": "hello", "ref_audio": str(ref_audio), "ref_text": "reference text"}
+        {
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "ref_audio": str(ref_audio),
+            "ref_text": "reference text",
+        }
     )
     gen_req = service.build_generate_request(
         prepared.request,
@@ -339,7 +373,9 @@ def test_reference_audio_accepts_relative_local_path_by_default(
 
     prepared = service.parse_generation_request(
         {
+            "model": "tts",
             "input": "hello",
+            "voice": "default",
             "references": [
                 {"audio_path": "relative/reference.wav", "text": "reference text"}
             ],

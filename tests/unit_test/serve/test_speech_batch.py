@@ -128,6 +128,8 @@ def test_batch_speech_preserves_order_and_item_errors() -> None:
     response = client.post(
         "/v1/audio/speech/batch",
         json={
+            "model": "tts",
+            "voice": "default",
             "response_format": "wav",
             "items": [
                 {"input": "first"},
@@ -164,11 +166,29 @@ def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one"}, {"input": "two"}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "one"}, {"input": "two"}],
+        },
     )
 
     assert response.status_code == 400
     assert response.json()["error"]["param"] == "items"
+    assert client_impl.requests == []
+
+
+def test_batch_speech_requires_resolved_model_and_voice_before_item_work() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "one"}]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "items.0.model"
     assert client_impl.requests == []
 
 
@@ -191,6 +211,8 @@ def test_batch_speech_rejects_stringified_default_types(
     response = client.post(
         "/v1/audio/speech/batch",
         json={
+            "model": "tts",
+            "voice": "default",
             field_name: value,
             "items": [{"input": "one"}],
         },
@@ -218,7 +240,12 @@ def test_batch_speech_rejects_non_positive_default_duration_fields(
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={field_name: value, "items": [{"input": "one"}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            field_name: value,
+            "items": [{"input": "one"}],
+        },
     )
 
     assert response.status_code == 400
@@ -241,7 +268,11 @@ def test_batch_speech_rejects_stringified_item_integer_overrides(
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one", field_name: value}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "one", field_name: value}],
+        },
     )
 
     assert response.status_code == 200
@@ -268,7 +299,11 @@ def test_batch_speech_rejects_non_positive_item_duration_fields(
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one", field_name: value}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "one", field_name: value}],
+        },
     )
 
     assert response.status_code == 200
@@ -284,7 +319,11 @@ def test_batch_speech_rejects_streaming_items() -> None:
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one", "stream": True}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "one", "stream": True}],
+        },
     )
 
     assert response.status_code == 200
@@ -301,6 +340,8 @@ def test_batch_speech_accepts_item_model_override() -> None:
     response = client.post(
         "/v1/audio/speech/batch",
         json={
+            "model": "tts",
+            "voice": "default",
             "items": [
                 {"input": "first"},
                 {
@@ -309,7 +350,7 @@ def test_batch_speech_accepts_item_model_override() -> None:
                     "unknown_field": "ignored",
                 },
                 {"input": "third"},
-            ]
+            ],
         },
     )
 
@@ -331,7 +372,11 @@ def test_batch_speech_isolates_runtime_failures_and_preserves_order() -> None:
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "slow"}, {"input": "fail"}, {"input": "fast"}]},
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "slow"}, {"input": "fail"}, {"input": "fast"}],
+        },
     )
 
     assert response.status_code == 200
@@ -346,7 +391,9 @@ def test_batch_speech_isolates_runtime_failures_and_preserves_order() -> None:
 def test_batch_speech_cancellation_aborts_started_items() -> None:
     async def run() -> None:
         service = SpeechRequestValidator(default_model="tts")
-        batch = service.parse_batch_request({"items": [{"input": "one"}]})
+        batch = service.parse_batch_request(
+            {"model": "tts", "voice": "default", "items": [{"input": "one"}]}
+        )
         client_impl = BlockingBatchSpeechClient()
 
         task = asyncio.create_task(
@@ -365,7 +412,9 @@ def test_batch_speech_cancellation_aborts_started_items() -> None:
 def test_batch_speech_logs_abort_failures(caplog: pytest.LogCaptureFixture) -> None:
     async def run() -> None:
         service = SpeechRequestValidator(default_model="tts")
-        batch = service.parse_batch_request({"items": [{"input": "one"}]})
+        batch = service.parse_batch_request(
+            {"model": "tts", "voice": "default", "items": [{"input": "one"}]}
+        )
         client_impl = FailingAbortBatchSpeechClient()
 
         with caplog.at_level(logging.WARNING):
@@ -386,7 +435,9 @@ def test_batch_speech_logs_abort_failures(caplog: pytest.LogCaptureFixture) -> N
 def test_batch_speech_request_disconnect_aborts_started_items() -> None:
     async def run() -> None:
         service = SpeechRequestValidator(default_model="tts")
-        batch = service.parse_batch_request({"items": [{"input": "one"}]})
+        batch = service.parse_batch_request(
+            {"model": "tts", "voice": "default", "items": [{"input": "one"}]}
+        )
         client_impl = BlockingBatchSpeechClient()
         request = DisconnectingBatchRequest(client_impl)
 
@@ -410,6 +461,8 @@ def test_batch_speech_reuses_shared_default_reference_loads() -> None:
         client_impl = RecordingBatchSpeechClient()
         batch = service.parse_batch_request(
             {
+                "model": "tts",
+                "voice": "default",
                 "ref_audio": "data:audio/wav;base64,AAAA",
                 "items": [
                     {"input": "first"},

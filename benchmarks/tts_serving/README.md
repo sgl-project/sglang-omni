@@ -183,9 +183,9 @@ python -m benchmarks.eval.benchmark_tts_serving \
   --out results/tts_serving/stress
 ```
 
-The example spec uses `http://127.0.0.1:8000` and the Higgs TTS model id.
-Edit `base_url`, `model_name`, and `auth.api_key_env` for a different target or
-authenticated deployment.
+The checked-in spec targets a Higgs TTS service through the `base_url` and
+`model_name` fields in `examples/stress.json`. Update those fields, and
+`auth.api_key_env` when needed, for a different target.
 
 ## Docker
 

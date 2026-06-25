@@ -47,7 +47,11 @@ MOSS-TTS can synthesize speech without a reference clip:
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "SGLang-Omni is a great project!"}' \
+  -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
+    "input": "SGLang-Omni is a great project!"
+  }' \
   --output output.wav
 ```
 
@@ -61,6 +65,8 @@ the transcript materially improves cloning quality.
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
     "input": "SGLang-Omni is a great project!",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -81,6 +87,8 @@ import requests
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
+        "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "voice": "default",
         "input": "Get the trust fund to the bank early.",
         "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
         "ref_text": "We asked over twenty different people, and they all said it was his.",
@@ -109,6 +117,8 @@ chunks in real time.
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
@@ -126,7 +136,12 @@ or with a `token_count` (alias `duration_tokens` / `tokens`) parameter. The coun
 positive integer.
 
 ```json
-{"input": "${token:150}A sentence with an explicit duration target.", "ref_audio": "..."}
+{
+  "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+  "voice": "default",
+  "input": "${token:150}A sentence with an explicit duration target.",
+  "ref_audio": "..."
+}
 ```
 
 If omitted, the model picks a duration on its own; the SeedTTS benchmark estimates one per
@@ -141,6 +156,8 @@ to let the model infer from the text):
 
 ```json
 {
+  "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+  "voice": "default",
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
@@ -151,7 +168,9 @@ to let the model infer from the text):
 
 | Parameter | Default | Notes |
 |---|---|---|
+| `model` | (required) | Served model identifier |
 | `input` | (required) | Text to synthesize; may carry a `${token:N}` duration prefix and inline markup |
+| `voice` | (required) | Voice identifier |
 | `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `stream` | `false` | Stream raw PCM audio chunks |

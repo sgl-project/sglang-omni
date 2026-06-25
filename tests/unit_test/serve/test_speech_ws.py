@@ -219,6 +219,16 @@ class CompletedSpeechClient:
         self.aborted.append(request_id)
 
 
+def _session_config(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "session.config",
+        "model": "tts",
+        "voice": "default",
+    }
+    payload.update(overrides)
+    return payload
+
+
 class RecordingWebSocket:
     def __init__(
         self,
@@ -271,6 +281,8 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
             {
                 "type": "session.config",
                 "session": {
+                    "model": "tts",
+                    "voice": "default",
                     "response_format": "pcm",
                     "stream_audio": True,
                     "split_granularity": "sentence",
@@ -321,7 +333,7 @@ def test_speech_websocket_rejects_binary_client_frames() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
 
         websocket.send_bytes(b"not-json-text")
@@ -341,6 +353,8 @@ def test_speech_websocket_supports_non_streaming_sentence_frames() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "response_format": "wav",
                 "stream_audio": False,
             }
@@ -362,7 +376,7 @@ def test_speech_websocket_stream_audio_defaults_to_non_streaming() -> None:
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "wav"})
+        websocket.send_json(_session_config(response_format="wav"))
         configured = websocket.receive_json()
         assert configured["type"] == "session.configured"
         assert configured["stream_audio"] is False
@@ -379,7 +393,7 @@ def test_speech_websocket_unknown_message_type_is_recoverable() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "unexpected"})
         event = websocket.receive_json()
@@ -408,6 +422,8 @@ def test_speech_websocket_rejects_stringified_config_types(
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 field_name: value,
                 "response_format": "pcm",
             }
@@ -436,6 +452,8 @@ def test_speech_websocket_rejects_non_positive_duration_fields(
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 field_name: value,
                 "response_format": "pcm",
             }
@@ -453,6 +471,8 @@ def test_speech_websocket_streaming_accepts_speed() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
                 "speed": 1.1,
@@ -477,6 +497,8 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }
@@ -507,6 +529,8 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
                 "temperature": 0.7,
@@ -534,7 +558,7 @@ def test_speech_websocket_rejects_oversized_sentence_before_generation() -> None
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json(
             {
@@ -561,6 +585,8 @@ def test_speech_websocket_stream_start_uses_chunk_sample_rate() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }
@@ -579,7 +605,7 @@ def test_speech_websocket_non_streaming_start_uses_result_sample_rate() -> None:
     )
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "input.text", "text": "Hello."})
         start = websocket.receive_json()
@@ -807,6 +833,8 @@ def test_speech_websocket_reuses_prepared_session_references() -> None:
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }

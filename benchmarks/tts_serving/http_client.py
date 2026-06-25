@@ -37,6 +37,8 @@ from benchmarks.tts_serving.voice_client import (
     request_size,
     run_voice_cache_pressure_sequence,
     run_voice_lifecycle,
+    run_voice_named_batch_sequence,
+    run_voice_named_speech_sequence,
     run_voice_overwrite,
     run_voice_speaker_cap_sequence,
     run_voice_upload,
@@ -79,6 +81,10 @@ async def run_http_scenario(
             await run_voice_upload_metadata_sequence(session, spec, scenario, result)
         elif scenario.method == "VOICE_CACHE_PRESSURE_SEQUENCE":
             await run_voice_cache_pressure_sequence(session, spec, scenario, result)
+        elif scenario.method == "VOICE_NAMED_SPEECH_SEQUENCE":
+            await run_voice_named_speech_sequence(session, spec, scenario, result)
+        elif scenario.method == "VOICE_NAMED_BATCH_SEQUENCE":
+            await run_voice_named_batch_sequence(session, spec, scenario, result)
         elif scenario.capability_key == "voices.upload" and scenario.expect_success:
             await run_voice_upload(session, spec, scenario, result)
         elif scenario.method == "GET":

@@ -26,7 +26,11 @@ Plain TTS:
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "Hello, how are you?"}' \
+  -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
+    "input": "Hello, how are you?"
+  }' \
   --output output.wav
 ```
 
@@ -36,6 +40,8 @@ Voice cloning:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -51,6 +57,8 @@ Streaming:
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -66,8 +74,9 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `model` | string | required | Served model identifier |
 | `input` | string | required | Text to synthesize |
-| `voice` | string | `default` | Voice identifier for non-reference requests |
+| `voice` | string | required | Voice identifier for non-reference requests |
 | `response_format` | string | `wav` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Stream raw PCM audio chunks |
