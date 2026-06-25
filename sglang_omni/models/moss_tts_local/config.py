@@ -102,7 +102,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     )
 
     # Streaming-vocoder CUDA-graph knobs, injected into the vocoder factory by model_post_init.
-    # Default on, fail-safe to eager; cuda_graph_frames=None uses the built-in broad-exact set.
+    # Default on, fail-safe to eager; cuda_graph_frames=None captures exact T=1..stream_chunk.
     cuda_graph: bool = True
     cuda_graph_frames: list[int] | None = None
     cuda_graph_min_free_gb: float = 3.0

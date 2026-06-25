@@ -982,6 +982,32 @@ def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
     assert scheduler2._cuda_graph_min_free_gb == 7.0
 
 
+def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> None:
+    captured: list[list[int]] = []
+    monkeypatch.setattr(
+        MossTTSLocalStreamingVocoderScheduler, "_codec_on_cuda", lambda self: True
+    )
+
+    def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list[int]:
+        self.warmup_attempted = True
+        captured.append(list(frames))
+        self._cg_runner = _FakeCudaGraphRunner(frames)
+        return self._cg_runner.captured_frames()
+
+    monkeypatch.setattr(_CodecStreamSession, "warmup_cuda_graph", fake_warmup)
+
+    scheduler = _make_scheduler(
+        monkeypatch,
+        FakeProcessor(),
+        stream_chunk_frames=4,
+        initial_chunk_frames=2,
+    )
+
+    assert captured == [[1, 2, 3, 4]]
+    assert scheduler._session is not None
+    assert scheduler._session.captured_frames() == [1, 2, 3, 4]
+
+
 def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
     processor = FakeProcessor()
     codec = FakeCodec()

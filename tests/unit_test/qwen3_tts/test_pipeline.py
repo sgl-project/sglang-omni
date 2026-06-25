@@ -1325,6 +1325,12 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler._first_emit_done = set()
         scheduler._prefill_start_done = set()
         scheduler.waiting_queue = []
+        scheduler._request_admission_lock = threading.RLock()
+        scheduler._request_build_executor = None
+        scheduler.request_build_max_pending = 0
+        scheduler._pending_request_builds = {}
+        scheduler._backlogged_request_build_payloads = []
+        scheduler._request_build_max_pending_observed = 0
         scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
         scheduler.cur_batch = None
         scheduler.last_batch = None

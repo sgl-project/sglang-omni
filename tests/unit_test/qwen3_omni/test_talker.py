@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from types import SimpleNamespace
@@ -829,6 +830,12 @@ def _build_state_machine_scheduler(
     scheduler._aborted_request_ids = set()
     scheduler.waiting_queue = []
     scheduler._request_builder = request_builder_stub
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._request_build_executor = None
+    scheduler.request_build_max_pending = 0
+    scheduler._pending_request_builds = {}
+    scheduler._backlogged_request_build_payloads = deque()
+    scheduler._request_build_max_pending_observed = 0
     scheduler.max_req_len = 8192
     return scheduler
 
