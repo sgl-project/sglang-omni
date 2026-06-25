@@ -544,6 +544,7 @@ def _speech_coverage_matrix(
     speech_scenarios = [
         scenario for scenario in scenarios if scenario.endpoint == "speech"
     ]
+    long_prefill_decode_cases = _long_prefill_decode_cases(speech_scenarios)
     rows = [
         _coverage_matrix_row(
             spec,
@@ -637,7 +638,7 @@ def _speech_coverage_matrix(
         _coverage_matrix_row(
             spec,
             "speech.long_prefill_decode",
-            tested=_has_stress_case(speech_scenarios, "long_prefill_decode"),
+            tested=bool(long_prefill_decode_cases),
             expected=[
                 {
                     "stress_case": "long_prefill_decode",
@@ -645,15 +646,7 @@ def _speech_coverage_matrix(
                     "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
                 }
             ],
-            observed=[
-                {
-                    "stress_case": scenario.planned_metadata.get("stress_case"),
-                    "input_chars": scenario.planned_metadata.get("input_chars"),
-                    "max_new_tokens": scenario.planned_metadata.get("max_new_tokens"),
-                }
-                for scenario in speech_scenarios
-                if scenario.planned_metadata.get("stress_case") == "long_prefill_decode"
-            ],
+            observed=long_prefill_decode_cases,
         ),
         _coverage_matrix_row(
             spec,
@@ -1074,7 +1067,7 @@ def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]
             _metadata_values(speech_scenarios, "input_chars"),
         )
     )
-    if not _has_stress_case(speech_scenarios, "long_prefill_decode"):
+    if not _long_prefill_decode_cases(speech_scenarios):
         failures.append(
             _coverage_gap("speech.long_prefill_decode", ["long_prefill_decode"])
         )
@@ -1322,11 +1315,23 @@ def _has_capability(scenarios: list[Scenario], capability_key: str) -> bool:
     return any(scenario.capability_key == capability_key for scenario in scenarios)
 
 
-def _has_stress_case(scenarios: list[Scenario], stress_case: str) -> bool:
-    return any(
-        scenario.planned_metadata.get("stress_case") == stress_case
-        for scenario in scenarios
-    )
+def _long_prefill_decode_cases(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+    cases = []
+    for scenario in scenarios:
+        metadata = scenario.planned_metadata
+        if (
+            metadata.get("stress_case") == "long_prefill_decode"
+            and metadata.get("input_chars") == MAX_SPEECH_INPUT_CHARS
+            and metadata.get("max_new_tokens") == LONG_PREFILL_DECODE_MAX_NEW_TOKENS
+        ):
+            cases.append(
+                {
+                    "stress_case": metadata["stress_case"],
+                    "input_chars": metadata["input_chars"],
+                    "max_new_tokens": metadata["max_new_tokens"],
+                }
+            )
+    return cases
 
 
 def _capabilities_for(
