@@ -235,8 +235,12 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     )
 
     default_kwargs, explicit_kwargs = captured["build_kwargs"]
+    assert default_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
+    assert default_kwargs["cuda_graph_max_bs"] == 16
     assert default_kwargs["enable_torch_compile"] is False
     assert "mem_fraction_static" not in default_kwargs
+    assert explicit_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
+    assert explicit_kwargs["cuda_graph_max_bs"] == 16
     assert explicit_kwargs["enable_torch_compile"] is True
     assert explicit_kwargs["mem_fraction_static"] == 0.61
     assert captured["context_length"] == 8192

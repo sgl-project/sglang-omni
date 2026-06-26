@@ -43,8 +43,7 @@ from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_default_cuda_graph_bs,
-    sync_cuda_graph_bs_with_max_bs,
+    build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -623,7 +622,9 @@ def create_sglang_tts_engine_executor(
     codec_mem_reserve: float = 0.0,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.bootstrap import (
+        create_sglang_infrastructure_defer_cuda_graph,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import (
         SGLangOutputProcessor,
@@ -635,27 +636,27 @@ def create_sglang_tts_engine_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
-    overrides: dict[str, Any] = {
+    stage_defaults: dict[str, Any] = {
         "dtype": dtype,
-        "cuda_graph_bs": build_default_cuda_graph_bs(16),
-        "cuda_graph_max_bs": 16,
         "disable_cuda_graph": False,
         "disable_overlap_schedule": True,
         "enable_torch_compile": False,
         "max_prefill_tokens": 8192,
-        "max_running_requests": 16,
         "sampling_backend": "pytorch",
-        "torch_compile_max_bs": 16,
         "trust_remote_code": True,
     }
     if total_gpu_memory_fraction is None:
-        # without a typed stage budget, this path cannot use process-scoped
-        # colocated profiling
-        # keep the legacy static fraction for split/custom deployments
-        overrides["mem_fraction_static"] = 0.6 if torch.cuda.device_count() > 1 else 0.5
-    if server_args_overrides:
-        overrides.update(server_args_overrides)
-        sync_cuda_graph_bs_with_max_bs(overrides, server_args_overrides)
+        # note (luojiaxuan): Without a typed stage budget, this path cannot use
+        # process-scoped colocated profiling, so keep the legacy static fraction
+        # for split/custom deployments.
+        stage_defaults["mem_fraction_static"] = (
+            0.6 if torch.cuda.device_count() > 1 else 0.5
+        )
+    overrides = build_generation_batch_overrides(
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        **stage_defaults,
+    )
     memory_budget = _apply_colocated_ar_memory_budget(
         overrides,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
@@ -681,10 +682,6 @@ def create_sglang_tts_engine_executor(
         **overrides,
     )
 
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
-    if want_cuda_graph:
-        server_args.disable_cuda_graph = True
-
     logger.info(
         f"MOSS-TTS Local SGLang startup: gpu_id={gpu_id} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
@@ -695,7 +692,7 @@ def create_sglang_tts_engine_executor(
         f"profile_total_gpu_memory_fraction={profile_total_gpu_memory_fraction}"
     )
 
-    (
+    want_cuda_graph, (
         model_worker,
         tree_cache,
         req_to_token_pool,
@@ -703,15 +700,12 @@ def create_sglang_tts_engine_executor(
         prefill_mgr,
         decode_mgr,
         model_config,
-    ) = create_sglang_infrastructure(
+    ) = create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         gpu_id,
         model_arch_override="MossTTSLocalSGLangModel",
         total_gpu_memory_fraction=profile_total_gpu_memory_fraction,
     )
-
-    if want_cuda_graph:
-        server_args.disable_cuda_graph = False
 
     validate_generation_batch_policy(
         model_name="MOSS-TTS Local",
@@ -721,15 +715,11 @@ def create_sglang_tts_engine_executor(
     model = model_worker.model_runner.model
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
-        # Also graph the per-frame local-transformer decode (1 + n_vq
-        # micro-steps and 13 seeded sampling passes per frame): eager it is
-        # kernel-launch-bound at ~22 ms/frame independent of batch size.
-        model.init_frame_decode_graphs(
-            list(
-                overrides.get("cuda_graph_bs")
-                or build_default_cuda_graph_bs(int(overrides["cuda_graph_max_bs"]))
-            )
-        )
+        # note (luojiaxuan): Also graph the per-frame local-transformer decode
+        # (1 + n_vq micro-steps and 13 seeded sampling passes per frame):
+        # eager it is kernel-launch-bound at ~22 ms/frame independent of batch
+        # size.
+        model.init_frame_decode_graphs(list(server_args.cuda_graph_bs))
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,

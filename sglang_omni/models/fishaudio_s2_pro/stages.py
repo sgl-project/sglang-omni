@@ -18,8 +18,7 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_default_cuda_graph_bs,
-    sync_cuda_graph_bs_with_max_bs,
+    build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 
@@ -239,7 +238,9 @@ def create_sglang_tts_engine_executor(
     from sglang_omni.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
     from sglang_omni.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
     from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.bootstrap import (
+        create_sglang_infrastructure_defer_cuda_graph,
+    )
     from sglang_omni.scheduling.sglang_backend import (
         SGLangOutputProcessor,
         build_sglang_server_args,
@@ -250,21 +251,16 @@ def create_sglang_tts_engine_executor(
 
     patch_fish_config_for_sglang()
 
-    overrides: dict[str, Any] = {
-        "cuda_graph_bs": build_default_cuda_graph_bs(64),
-        "cuda_graph_max_bs": 64,
-        "disable_cuda_graph": False,
-        "mem_fraction_static": 0.85,
-        "max_running_requests": 64,
-        "chunked_prefill_size": 8192,
-        "dtype": "bfloat16",
-        "enable_torch_compile": True,
-        "torch_compile_max_bs": 64,
-        "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
-    }
-    if server_args_overrides:
-        overrides.update(server_args_overrides)
-        sync_cuda_graph_bs_with_max_bs(overrides, server_args_overrides)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=64,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        mem_fraction_static=0.85,
+        chunked_prefill_size=8192,
+        dtype="bfloat16",
+        enable_torch_compile=True,
+        random_seed=int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
+    )
 
     server_args = build_sglang_server_args(
         checkpoint_dir,
@@ -275,11 +271,7 @@ def create_sglang_tts_engine_executor(
     if getattr(server_args, "attention_backend", None) is None:
         server_args.attention_backend = "fa3"
 
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
-    if want_cuda_graph:
-        server_args.disable_cuda_graph = True
-
-    (
+    want_cuda_graph, (
         model_worker,
         tree_cache,
         req_to_token_pool,
@@ -287,10 +279,7 @@ def create_sglang_tts_engine_executor(
         prefill_mgr,
         decode_mgr,
         model_config,
-    ) = create_sglang_infrastructure(server_args, gpu_id)
-
-    if want_cuda_graph:
-        server_args.disable_cuda_graph = False
+    ) = create_sglang_infrastructure_defer_cuda_graph(server_args, gpu_id)
 
     truncate_rope_to_bf16(model_worker.model_runner.model)
 
