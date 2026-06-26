@@ -455,7 +455,7 @@ def _coverage_failures(
     for endpoint in sorted(enabled_endpoint_set - generated_endpoint_set):
         failures.append(_coverage_gap(f"{endpoint}.enabled", [endpoint]))
     if "speech" in enabled_endpoint_set:
-        failures.extend(_speech_coverage_failures(scenarios))
+        failures.extend(_speech_coverage_failures(spec, scenarios))
     if "speech_stream" in enabled_endpoint_set and not _has_capability(
         scenarios, "speech.stream"
     ):
@@ -544,7 +544,11 @@ def _speech_coverage_matrix(
     speech_scenarios = [
         scenario for scenario in scenarios if scenario.endpoint == "speech"
     ]
-    long_prefill_decode_cases = _long_prefill_decode_cases(speech_scenarios)
+    (
+        long_prefill_expected,
+        long_prefill_observed,
+        long_prefill_missing,
+    ) = _long_prefill_decode_coverage(spec, speech_scenarios)
     rows = [
         _coverage_matrix_row(
             spec,
@@ -638,15 +642,10 @@ def _speech_coverage_matrix(
         _coverage_matrix_row(
             spec,
             "speech.long_prefill_decode",
-            tested=bool(long_prefill_decode_cases),
-            expected=[
-                {
-                    "stress_case": "long_prefill_decode",
-                    "input_chars": MAX_SPEECH_INPUT_CHARS,
-                    "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
-                }
-            ],
-            observed=long_prefill_decode_cases,
+            tested=not long_prefill_missing,
+            expected=long_prefill_expected,
+            observed=long_prefill_observed,
+            missing=long_prefill_missing,
         ),
         _coverage_matrix_row(
             spec,
@@ -986,6 +985,7 @@ def _coverage_matrix_row(
     tested: bool,
     expected: list[Any],
     observed: list[Any],
+    missing: list[Any] | None = None,
     gap_status: str = "coverage_gap",
     gap_error: str | None = None,
     out_of_scope_reason: str | None = None,
@@ -993,27 +993,31 @@ def _coverage_matrix_row(
     if tested:
         status = "tested"
         reason = None
-        missing: list[Any] = []
+        missing_values: list[Any] = []
         error = None
     elif out_of_scope_reason:
         status = "out_of_scope"
         reason = out_of_scope_reason
-        missing = []
+        missing_values = []
         error = None
     else:
         status = gap_status
         reason = None
-        missing = sorted(set(expected) - set(observed), key=str)
+        missing_values = (
+            missing
+            if missing is not None
+            else sorted(set(expected) - set(observed), key=str)
+        )
         error = (
             gap_error
-            or f"enabled benchmark contract is missing required coverage: {missing}"
+            or f"enabled benchmark contract is missing required coverage: {missing_values}"
         )
     return {
         "contract": contract,
         "status": status,
         "expected": expected,
         "observed": observed,
-        "missing": missing,
+        "missing": missing_values,
         "reason": reason,
         "error": error,
     }
@@ -1026,11 +1030,14 @@ def _enabled_endpoint_set(spec: BenchmarkSpec) -> set[str]:
     return endpoint_set
 
 
-def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+def _speech_coverage_failures(
+    spec: BenchmarkSpec, scenarios: list[Scenario]
+) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     speech_scenarios = [
         scenario for scenario in scenarios if scenario.endpoint == "speech"
     ]
+    _, _, long_prefill_missing = _long_prefill_decode_coverage(spec, speech_scenarios)
     languages = {language for language, _ in MULTILINGUAL_TEXTS}
     failures.extend(
         _value_coverage_gap(
@@ -1067,9 +1074,9 @@ def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]
             _metadata_values(speech_scenarios, "input_chars"),
         )
     )
-    if not _long_prefill_decode_cases(speech_scenarios):
+    if long_prefill_missing:
         failures.append(
-            _coverage_gap("speech.long_prefill_decode", ["long_prefill_decode"])
+            _coverage_gap("speech.long_prefill_decode", long_prefill_missing)
         )
     failures.extend(
         _value_coverage_gap(
@@ -1315,8 +1322,15 @@ def _has_capability(scenarios: list[Scenario], capability_key: str) -> bool:
     return any(scenario.capability_key == capability_key for scenario in scenarios)
 
 
-def _long_prefill_decode_cases(scenarios: list[Scenario]) -> list[dict[str, Any]]:
-    cases = []
+def _long_prefill_decode_coverage(
+    spec: BenchmarkSpec, scenarios: list[Scenario]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    expected_keys = [
+        (stage.id, MAX_SPEECH_INPUT_CHARS, LONG_PREFILL_DECODE_MAX_NEW_TOKENS)
+        for stage in spec.params.load_stages
+        if "speech" in (stage.enabled_endpoints or spec.params.enabled_endpoints)
+    ]
+    observed_keys = set()
     for scenario in scenarios:
         metadata = scenario.planned_metadata
         if (
@@ -1324,14 +1338,34 @@ def _long_prefill_decode_cases(scenarios: list[Scenario]) -> list[dict[str, Any]
             and metadata.get("input_chars") == MAX_SPEECH_INPUT_CHARS
             and metadata.get("max_new_tokens") == LONG_PREFILL_DECODE_MAX_NEW_TOKENS
         ):
-            cases.append(
-                {
-                    "stress_case": metadata["stress_case"],
-                    "input_chars": metadata["input_chars"],
-                    "max_new_tokens": metadata["max_new_tokens"],
-                }
+            observed_keys.add(
+                (
+                    scenario.stage_id,
+                    metadata["input_chars"],
+                    metadata["max_new_tokens"],
+                )
             )
-    return cases
+    observed = [key for key in expected_keys if key in observed_keys]
+    missing = [key for key in expected_keys if key not in observed_keys]
+    return (
+        _long_prefill_decode_rows(expected_keys),
+        _long_prefill_decode_rows(observed),
+        _long_prefill_decode_rows(missing),
+    )
+
+
+def _long_prefill_decode_rows(
+    keys: list[tuple[str, int, int]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "stage_id": stage_id,
+            "stress_case": "long_prefill_decode",
+            "input_chars": input_chars,
+            "max_new_tokens": max_new_tokens,
+        }
+        for stage_id, input_chars, max_new_tokens in keys
+    ]
 
 
 def _capabilities_for(
