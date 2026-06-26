@@ -31,6 +31,10 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
         runtime_arg_map={
             "max_seq_len": "thinker_max_seq_len",
             "video_fps": "video_fps",
+            "video_max_frames": "video_max_frames",
+            "video_min_pixels": "video_min_pixels",
+            "video_max_pixels": "video_max_pixels",
+            "video_total_pixels": "video_total_pixels",
         },
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
         route_fn=f"{_PKG}.request_builders.resolve_preprocessing_next_stages",
