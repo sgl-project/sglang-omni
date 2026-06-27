@@ -15,9 +15,9 @@
 #   TTS model preset and compute worst-of-N for each.
 # Fixed CI presets in test_tts_ci.py / tts_ci_config.py — NEVER written by
 # apply except the explicit threshold literals in tts_ci_config.py:
-#   SEEDTTS_EN_FULLSET_SAMPLES = 1088
-#   TTS_SIMILARITY_MAX_SAMPLES = 50
-#   STREAMING_BENCHMARK_MAX_SAMPLES = None  (full 1088 for streaming too)
+#   SEEDTTS_EN_FULLSET_SAMPLES
+#   TTS_SIMILARITY_MAX_SAMPLES
+#   STREAMING_BENCHMARK_MAX_SAMPLES = None  (full SeedTTS EN set for streaming)
 # - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
 #   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
 #   similarity_results.json and utmos_results.json for nonstream).
@@ -85,6 +85,7 @@ stage_base_docs_override: "tts_docs"
 metric_sources:
   test_qwen3_asr_ci.py:
     json_file: "qwen3_asr_results.json"
+    # discover → expected_samples from SEEDTTS_ASR_CORRECTNESS_SAMPLES
     sample_counts:
       total: "summary.total_samples"
       ok: "summary.evaluated"

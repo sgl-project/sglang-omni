@@ -11,7 +11,7 @@ import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signa
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
@@ -342,6 +342,61 @@ def git_info():
                 dirty=bool(q(["git", "status", "--porcelain"])))
 
 
+def _plan_calibration_sha(plan: dict) -> str:
+    """Git commit this calibration session is bound to."""
+    return plan.get("calibration_git_sha") or plan.get("git_sha") or ""
+
+
+def audit_git_provenance(run_dir: Path, plan=None) -> dict:
+    """Every run{k}.json must record the same git_sha as plan calibration_git_sha."""
+    plan = plan or json.loads((run_dir / "plan.json").read_text())
+    cal_sha = _plan_calibration_sha(plan)
+    if not cal_sha:
+        return dict(
+            ok=False,
+            calibration_git_sha="",
+            missing_sha=[],
+            mismatches=[],
+            reason="plan.json has no calibration_git_sha",
+        )
+    missing_sha = []
+    mismatches = []
+    repeats = plan["repeats"]
+    for sk in plan["stages"]:
+        for k in range(1, repeats + 1):
+            p = run_dir / sk / f"run{k}.json"
+            if not p.exists():
+                continue
+            try:
+                data = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                mismatches.append(f"{sk}/run{k}: corrupt json")
+                continue
+            run_sha = data.get("git_sha")
+            if not run_sha:
+                missing_sha.append(f"{sk}/run{k}")
+            elif run_sha != cal_sha:
+                mismatches.append(
+                    f"{sk}/run{k}: artifact {run_sha[:8]} != calibration {cal_sha[:8]}"
+                )
+    ok = not missing_sha and not mismatches
+    reason = ""
+    if missing_sha:
+        reason = (
+            f"{len(missing_sha)} run(s) missing git_sha "
+            "(pre-v0.6.0 or stale — purge and re-run on current commit)"
+        )
+    elif mismatches:
+        reason = f"{len(mismatches)} run(s) recorded on a different commit"
+    return dict(
+        ok=ok,
+        calibration_git_sha=cal_sha,
+        missing_sha=missing_sha,
+        mismatches=mismatches,
+        reason=reason,
+    )
+
+
 def _unique_ordered(items):
     seen, out = set(), []
     for item in items:
@@ -560,7 +615,12 @@ def _stage_counts_complete(stage, sample_counts):
         return True
     total = (sample_counts or {}).get("total")
     ok = (sample_counts or {}).get("ok")
-    return total is not None and ok is not None and ok == total
+    if total is None or ok is None or ok != total:
+        return False
+    expected = stage.get("expected_samples")
+    if expected is not None and total != expected:
+        return False
+    return True
 
 
 def _observation_status(stage, metrics, pytest_status, pytest_reason):
@@ -639,7 +699,19 @@ def audit_completeness(run_dir: Path, all_stages=None, plan=None):
                 if p.exists():
                     try:
                         d = json.loads(p.read_text())
-                        reason = d.get("reason") or d.get("status") or "incomplete metrics"
+                        sc = d.get("sample_counts") or {}
+                        expected = stage.get("expected_samples")
+                        if (
+                            expected is not None
+                            and sc.get("total") is not None
+                            and sc.get("total") != expected
+                        ):
+                            reason = (
+                                f"sample scope mismatch "
+                                f"(total {sc.get('total')} != expected {expected})"
+                            )
+                        else:
+                            reason = d.get("reason") or d.get("status") or "incomplete metrics"
                     except (json.JSONDecodeError, OSError):
                         reason = "corrupt json"
                 missing.append({"stage_key": sk, "run": k, "reason": reason})
@@ -652,6 +724,113 @@ def audit_completeness(run_dir: Path, all_stages=None, plan=None):
         repeats=repeats,
         model=plan.get("model"),
     )
+
+
+def strict_classify_cell(path: Path, stage: dict) -> str:
+    """Classify one stage-run for strict worst-of-N (✓ / △ / ✗ / —)."""
+    if not path.exists():
+        return "—"
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return "✗"
+    sample_counts = data.get("sample_counts") or {}
+    total = sample_counts.get("total")
+    ok = sample_counts.get("ok")
+    metrics = data.get("metrics") or {}
+    has_all = bool(metrics) and all(v is not None for v in metrics.values())
+    if not has_all:
+        return "✗"
+    if total is None or ok is None:
+        return "✗"
+    if ok != total:
+        return "△"
+    expected = stage.get("expected_samples")
+    if expected is not None and total != expected:
+        return "✗"
+    return "✓"
+
+
+def strict_audit(run_dir: Path, all_stages=None, plan=None) -> dict:
+    """Strict worst-of-N readiness — every stage must have N full-scope ✓ repeats."""
+    plan = plan or json.loads((run_dir / "plan.json").read_text())
+    if all_stages is None:
+        sy = Path(plan.get("stages_yaml")
+                  or stages_path(plan.get("model", DEFAULT_MODEL)))
+        all_stages = _load_yaml(sy)
+    repeats = plan["repeats"]
+    stage_rows = []
+    ready = 0
+    for sk in plan["stages"]:
+        stage = all_stages[sk]
+        cells = [
+            strict_classify_cell(run_dir / sk / f"run{k}.json", stage)
+            for k in range(1, repeats + 1)
+        ]
+        strict_ok = cells.count("✓")
+        if strict_ok == repeats:
+            ready += 1
+        stage_rows.append(dict(
+            stage_key=sk,
+            cells=cells,
+            strict_ok=strict_ok,
+            expected_samples=stage.get("expected_samples"),
+        ))
+    return dict(
+        strict_ready=ready,
+        total_stages=len(plan["stages"]),
+        repeats=repeats,
+        stages=stage_rows,
+        strict_complete=(ready == len(plan["stages"])),
+        git_provenance=audit_git_provenance(run_dir, plan),
+    )
+
+
+def strict_audit_cmd(run_dir: Path) -> int:
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        print(f"error: no plan.json in {run_dir}")
+        return 1
+    plan = json.loads(plan_path.read_text())
+    sy = Path(plan.get("stages_yaml")
+              or stages_path(plan.get("model", DEFAULT_MODEL)))
+    all_stages = _load_yaml(sy)
+    audit = strict_audit(run_dir, all_stages, plan)
+    git = audit["git_provenance"]
+    cal_sha = git["calibration_git_sha"]
+    if cal_sha:
+        print(f"calibration_git_sha: {cal_sha}")
+    if not git["ok"]:
+        print(f"GIT PROVENANCE: FAIL — {git['reason']}")
+        for item in git["mismatches"][:10]:
+            print(f"  {item}")
+        for item in git["missing_sha"][:10]:
+            print(f"  {item}")
+        if len(git["mismatches"]) > 10 or len(git["missing_sha"]) > 10:
+            extra = len(git["mismatches"]) + len(git["missing_sha"]) - 10
+            print(f"  … and {extra} more")
+    else:
+        print("GIT PROVENANCE: ok (all artifacts match calibration commit)")
+    for row in audit["stages"]:
+        cells = row["cells"]
+        exp = row["expected_samples"]
+        exp_note = f", expected={exp}" if exp is not None else ""
+        print(
+            f"{row['stage_key']}: {''.join(cells)} "
+            f"({row['strict_ok']}/{audit['repeats']} strict{exp_note})"
+        )
+    print(
+        f"STRICT READY: {audit['strict_ready']}/{audit['total_stages']} stages "
+        f"({audit['repeats']} repeats each)"
+    )
+    metrics_ok = audit["strict_complete"]
+    git_ok = git["ok"]
+    if metrics_ok and git_ok:
+        print("STRICT + GIT: READY")
+    elif metrics_ok and not git_ok:
+        print("STRICT metrics ok but GIT PROVENANCE failed — purge stale runs or "
+              "start a fresh --output-dir on the current commit")
+    return 0 if metrics_ok and git_ok else 1
 
 
 def busy_gpu_indices():
@@ -910,6 +1089,52 @@ def _ctx_vars(tree):
     return seen
 
 
+def _int_constant(tree, name: str) -> int | None:
+    """Return int literal for ``NAME = <int>``; None if missing, non-int, or ``None``."""
+    for n in tree.body:
+        if not isinstance(n, ast.Assign):
+            continue
+        for t in n.targets:
+            if isinstance(t, ast.Name) and t.id == name:
+                if isinstance(n.value, ast.Constant):
+                    if isinstance(n.value.value, int):
+                        return n.value.value
+                    return None
+    return None
+
+
+def _expected_samples(
+    tree,
+    group: str,
+    variant: str | None,
+    context_vars: list[str] | None,
+) -> int | None:
+    """Resolve CI sample scope from test-file constants (written to stages.yaml)."""
+    for const_name in context_vars or []:
+        value = _int_constant(tree, const_name)
+        if isinstance(value, int):
+            return value
+    if group == "similarity":
+        value = _int_constant(tree, "TTS_SIMILARITY_MAX_SAMPLES")
+        if isinstance(value, int):
+            return value
+    if variant == "stream":
+        stream_cap = _int_constant(tree, "STREAMING_BENCHMARK_MAX_SAMPLES")
+        if isinstance(stream_cap, int):
+            return stream_cap
+        fullset = _int_constant(tree, "SEEDTTS_EN_FULLSET_SAMPLES")
+        if isinstance(fullset, int):
+            return fullset
+    if group in ("wer", "speed", "utmos"):
+        value = _int_constant(tree, "SEEDTTS_EN_FULLSET_SAMPLES")
+        if isinstance(value, int):
+            return value
+    value = _int_constant(tree, "SEEDTTS_ASR_CORRECTNESS_SAMPLES")
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def _stage_base(path, cfg):
     s = path.stem
     if "docs" in path.parts:
@@ -998,6 +1223,7 @@ def _stage_entry(
     hf_model_ids=None,
     threshold_file=None,
     threshold_file_sha256=None,
+    expected_samples=None,
 ):
     entry = dict(
         test=rel,
@@ -1010,6 +1236,8 @@ def _stage_entry(
         metrics=metrics,
         sample_counts=sample_counts,
     )
+    if expected_samples is not None:
+        entry["expected_samples"] = int(expected_samples)
     if variant:
         entry["variant"] = variant
     if calibration_preset:
@@ -1253,6 +1481,8 @@ def discover(out, only, cfg):
                             hf_model_ids=preset_model_ids,
                             threshold_file=threshold_rel,
                             threshold_file_sha256=threshold_file_sha,
+                            expected_samples=_expected_samples(
+                                tree, g, vname, ctx),
                         )
         else:
             # Single-source flow (one result-JSON tree per test file).
@@ -1296,6 +1526,7 @@ def discover(out, only, cfg):
                         hf_model_ids=preset_model_ids,
                         threshold_file=threshold_rel,
                         threshold_file_sha256=threshold_file_sha,
+                        expected_samples=_expected_samples(tree, g, None, ctx),
                     )
     if only: stages = {k: v for k, v in stages.items() if k == only}
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1334,6 +1565,8 @@ def _write_yaml(stages, path):
             L += [f"    - {_yq(v)}" for v in e["hf_model_ids"]]
         L += [f"  test_file_sha256: {e['test_file_sha256']}",
               f"  last_discovered_at: {e['last_discovered_at']}"]
+        if e.get("expected_samples") is not None:
+            L.append(f"  expected_samples: {int(e['expected_samples'])}")
         if e.get("threshold_file"):
             L += [f"  threshold_file: {_yq(e['threshold_file'])}",
                   f"  threshold_file_sha256: {e['threshold_file_sha256']}"]
@@ -1629,11 +1862,77 @@ def _run_cmd_inner(args, cfg, py, src, out):
             versions={}, pins={}, git=git_info(),
             nvidia_smi_L=smi, gpu_summary=gpu_summary(smi)), indent=2))
     gi = git_info()
-    (out / "plan.json").write_text(json.dumps(dict(
-        model=cfg["name"], stages=sel, repeats=args.repeats,
-        timestamp=now_iso(), git_sha=gi["sha"], git_branch=gi["branch"],
-        dirty=gi["dirty"], venv_python=py, venv_source=src,
-        tune_version=__version__, stages_yaml=str(sy)), indent=2))
+    plan_path = out / "plan.json"
+    if not args.resume and plan_path.exists():
+        print(
+            "error: output-dir already contains plan.json.\n"
+            "  A new calibration request requires a **fresh** --output-dir named "
+            "with the current UTC timestamp (e.g. "
+            ".tune-runs/$(date -u +%Y%m%dT%H%M%SZ)_<label>/).\n"
+            "  Pass --resume only when the user explicitly asked to continue "
+            "the **same** interrupted session on the **same** commit.\n"
+            "  Never reuse an old run dir or report for a new calibration request."
+        )
+        return 2
+    if args.resume and plan_path.exists():
+        existing = json.loads(plan_path.read_text())
+        plan_stages = existing.get("stages") or sel
+        plan_repeats = existing.get("repeats", args.repeats)
+        cal_sha = _plan_calibration_sha(existing)
+        if cal_sha and gi["sha"] != cal_sha:
+            print(
+                "error: HEAD moved since this run dir was started.\n"
+                f"  calibration_git_sha: {cal_sha}\n"
+                f"  current HEAD:        {gi['sha']}\n"
+                "  Start a **new** --output-dir on the current commit; "
+                "do not --resume across commits."
+            )
+            return 2
+        if set(sel) - set(plan_stages):
+            print(
+                "error: --resume --stages must be a subset of the existing "
+                f"plan stages: {plan_stages}"
+            )
+            return 2
+        if args.repeats != plan_repeats:
+            print(
+                f"warning: --resume ignores --repeats {args.repeats}; "
+                f"using plan repeats={plan_repeats}"
+            )
+        if set(sel) != set(plan_stages):
+            print(
+                f"resume: executing subset {sel} within plan "
+                f"({len(plan_stages)} stages, repeats={plan_repeats})"
+            )
+        (out / "plan.json").write_text(json.dumps(dict(
+            model=existing.get("model", cfg["name"]),
+            stages=plan_stages,
+            repeats=plan_repeats,
+            timestamp=existing.get("timestamp", now_iso()),
+            calibration_started_at=existing.get(
+                "calibration_started_at", existing.get("timestamp", now_iso())),
+            calibration_git_sha=cal_sha or gi["sha"],
+            git_sha=cal_sha or gi["sha"],
+            git_branch=existing.get("git_branch", gi["branch"]),
+            dirty=gi["dirty"],
+            venv_python=existing.get("venv_python", py),
+            venv_source=existing.get("venv_source", src),
+            tune_version=existing.get("tune_version", __version__),
+            stages_yaml=existing.get("stages_yaml", str(sy)),
+            last_resume_at=now_iso(),
+            last_resume_git_sha=gi["sha"],
+        ), indent=2))
+        args.repeats = plan_repeats
+    else:
+        started = now_iso()
+        (out / "plan.json").write_text(json.dumps(dict(
+            model=cfg["name"], stages=sel, repeats=args.repeats,
+            timestamp=started,
+            calibration_started_at=started,
+            calibration_git_sha=gi["sha"],
+            git_sha=gi["sha"], git_branch=gi["branch"],
+            dirty=gi["dirty"], venv_python=py, venv_source=src,
+            tune_version=__version__, stages_yaml=str(sy)), indent=2))
     if gi["dirty"]:
         d = subprocess.run(["git", "diff", "HEAD"], cwd=REPO_ROOT,
                            capture_output=True, text=True, check=False).stdout
@@ -1958,10 +2257,13 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         sample_counts = _extract_counts(stage, basetemp)
         obs_status, obs_reason = _observation_status(
             stage, metrics, status, reason)
+        rec_gi = git_info()
         run_payload = dict(
             status=obs_status, reason=obs_reason, metrics=metrics,
             sample_counts=sample_counts,
             duration_s=round(dur, 2), attempts=attempts,
+            git_sha=rec_gi["sha"],
+            recorded_at=now_iso(),
             pytest_log=str(log.resolve()),
             basetemp=str(basetemp.resolve()))
         if stage.get("metrics"):
@@ -1973,6 +2275,17 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         brief_parts = []
         if sample_counts.get("total") is not None or sample_counts.get("ok") is not None:
             brief_parts.append(f"samples={sample_counts.get('ok')}/{sample_counts.get('total')}")
+        expected = stage.get("expected_samples")
+        if (
+            expected is not None
+            and sample_counts.get("total") is not None
+            and sample_counts.get("total") != expected
+        ):
+            print(
+                f"  ⚠ {sk}: sample scope mismatch "
+                f"got {sample_counts.get('total')} expected {expected} "
+                f"(strict ✗ — purge and re-run on current branch)"
+            )
         brief_parts += [f"{k2}={_fmt(v, stage['metrics'][k2]['display'])}"
                         for k2, v in metrics.items() if v is not None]
         brief = " ".join(brief_parts)
@@ -2173,6 +2486,7 @@ def status_cmd(run_dir: Path):
               or stages_path(plan.get("model", DEFAULT_MODEL)))
     all_stages = _load_yaml(sy)
     audit = audit_completeness(run_dir, all_stages, plan)
+    strict = strict_audit(run_dir, all_stages, plan)
     mem = _gpu_memory_by_index()
     busy = sorted(busy_gpu_indices())
     ready, _, _ = _ready_gpu_indices(max(len(mem), 1))
@@ -2208,14 +2522,42 @@ def status_cmd(run_dir: Path):
         pytest_active=pytest_active,
         run_log_tail=log_tail,
         agent_poll_interval_s=_AGENT_POLL_INTERVAL_S,
+        strict_ready=f"{strict['strict_ready']}/{strict['total_stages']}",
+        strict_complete=strict["strict_complete"],
         timestamp=now_iso(),
     )
     print(json.dumps(out, indent=2))
-    return 0 if audit["complete"] else 1
+    return 0 if audit["complete"] and strict["strict_complete"] else 1
 
 
 def report(run_dir):
-    audit = audit_completeness(run_dir)
+    plan = json.loads((run_dir / "plan.json").read_text())
+    sy = Path(plan.get("stages_yaml") or stages_path(plan.get("model", DEFAULT_MODEL)))
+    all_stages = _load_yaml(sy)
+    git = audit_git_provenance(run_dir, plan)
+    if not git["ok"]:
+        print(f"error: refusing report — git provenance failed: {git['reason']}")
+        for item in git["mismatches"][:10]:
+            print(f"  {item}")
+        for item in git["missing_sha"][:10]:
+            print(f"  {item}")
+        return 1
+    strict = strict_audit(run_dir, all_stages, plan)
+    if not strict["strict_complete"]:
+        print(
+            f"error: refusing report — strict audit incomplete "
+            f"({strict['strict_ready']}/{strict['total_stages']} stages strict-ready)"
+        )
+        for row in strict["stages"]:
+            if row["strict_ok"] < plan["repeats"]:
+                exp = row["expected_samples"]
+                exp_note = f", expected={exp}" if exp is not None else ""
+                print(
+                    f"  {row['stage_key']}: {''.join(row['cells'])} "
+                    f"({row['strict_ok']}/{plan['repeats']}{exp_note})"
+                )
+        return 1
+    audit = audit_completeness(run_dir, all_stages, plan)
     if not audit["complete"]:
         print(f"error: refusing report — incomplete calibration "
               f"({audit['ok']}/{audit['total']})")
@@ -2228,7 +2570,18 @@ def report(run_dir):
     sy = Path(plan.get("stages_yaml") or stages_path(plan.get("model", DEFAULT_MODEL)))
     all_stages = _load_yaml(sy)
     N = plan["repeats"]
-    L = ["# CI Threshold Observation Report", ""]
+    cal_sha = _plan_calibration_sha(plan)
+    started = plan.get("calibration_started_at") or plan.get("timestamp", "?")
+    L = [
+        "# CI Threshold Observation Report",
+        "",
+        f"**Calibration commit:** `{cal_sha}`",
+        f"**Branch:** {plan.get('git_branch', '?')}",
+        f"**Run directory:** `{run_dir}`",
+        f"**Calibration started:** {started}",
+        f"**Report generated:** {now_iso()}",
+        "",
+    ]
     for idx, sk in enumerate(plan["stages"], start=1):
         s = all_stages[sk]
         L += [f"## {idx}. {s['title']}", "", f"{{{{CONTEXT:{sk}}}}}", ""]
@@ -2298,14 +2651,15 @@ def report(run_dir):
     v = pre.get("versions", {}) or {}
     L += ["## Provenance", "",
           f"- Model: {plan.get('model', '?')}",
-          f"- Branch: {plan.get('git_branch', '?')} "
-          f"@ {plan.get('git_sha', '?')[:8]}{dirty}{diff}",
+          f"- Calibration commit: `{cal_sha}`",
+          f"- Branch: {plan.get('git_branch', '?')}{dirty}{diff}",
+          f"- Calibration started: {started}",
           f"- Venv Python: {plan.get('venv_python', '?')} "
           f"({plan.get('venv_source', '?')})",
           f"- sglang {v.get('sglang', '?')} · torch {v.get('torch', '?')}",
           f"- GPU: {pre.get('gpu_summary', '?')}",
           f"- tune-ci-thresholds v{__version__}",
-          f"- Ran {plan.get('timestamp', '?')} – {now_iso()}"]
+          f"- Report generated: {now_iso()}"]
     (run_dir / "report.md").write_text("\n".join(L) + "\n")
     print(f"report written to {run_dir / 'report.md'}")
     return 0
@@ -2418,6 +2772,16 @@ def _apply_write_value(worst_op: str, worst_raw: float | None,
 
 def apply_plan(run_dir):
     plan = json.loads((run_dir / "plan.json").read_text())
+    git = audit_git_provenance(run_dir, plan)
+    if not git["ok"]:
+        print(json.dumps(dict(
+            error="git_provenance_failed",
+            reason=git["reason"],
+            calibration_git_sha=git["calibration_git_sha"],
+            mismatches=git["mismatches"][:20],
+            missing_sha=git["missing_sha"][:20],
+        ), indent=2))
+        return 1
     sy = Path(plan.get("stages_yaml")
               or stages_path(plan.get("model", DEFAULT_MODEL)))
     all_stages = _load_yaml(sy)
@@ -2536,6 +2900,7 @@ def main(argv=None):
     sd = sub.add_parser("report"); sd.add_argument("--run-dir", required=True)
     se = sub.add_parser("apply-plan"); se.add_argument("--run-dir", required=True)
     sf = sub.add_parser("status"); sf.add_argument("--run-dir", required=True)
+    sg = sub.add_parser("strict-audit"); sg.add_argument("--run-dir", required=True)
     args = p.parse_args(argv)
     if args.cmd == "models-list":
         for m in available_models(): print(m)
@@ -2556,6 +2921,8 @@ def main(argv=None):
         return apply_plan(Path(args.run_dir))
     if args.cmd == "status":
         return status_cmd(Path(args.run_dir))
+    if args.cmd == "strict-audit":
+        return strict_audit_cmd(Path(args.run_dir))
     cfg = load_model_config(args.model, host=host)
     if args.cmd == "stages-list":
         return stages_list(cfg)

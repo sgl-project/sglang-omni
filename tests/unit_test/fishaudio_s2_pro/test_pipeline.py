@@ -339,12 +339,12 @@ def _run_s2pro_engine_with_fake_buffers(
         del model_path, context_length
         build_kwargs.update(kwargs)
         return SimpleNamespace(
+            cuda_graph_bs=kwargs["cuda_graph_bs"],
+            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
             max_running_requests=kwargs["max_running_requests"],
-            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
-            cuda_graph_bs=kwargs["cuda_graph_bs"],
             page_size=1,
             chunked_prefill_size=kwargs["chunked_prefill_size"],
             max_prefill_tokens=16384,
@@ -370,6 +370,22 @@ def _run_s2pro_engine_with_fake_buffers(
     fake_scheduler_bootstrap = ModuleType("sglang_omni.scheduling.bootstrap")
     fake_scheduler_bootstrap.create_sglang_infrastructure = (
         fake_create_sglang_infrastructure
+    )
+
+    def fake_create_sglang_infrastructure_defer_cuda_graph(
+        server_args: SimpleNamespace,
+        gpu_id: int,
+    ) -> tuple[bool, tuple[object, object, object, object, object, object, object]]:
+        want_cuda_graph = not bool(server_args.disable_cuda_graph)
+        if want_cuda_graph:
+            server_args.disable_cuda_graph = True
+        infrastructure = fake_create_sglang_infrastructure(server_args, gpu_id)
+        if want_cuda_graph:
+            server_args.disable_cuda_graph = False
+        return want_cuda_graph, infrastructure
+
+    fake_scheduler_bootstrap.create_sglang_infrastructure_defer_cuda_graph = (
+        fake_create_sglang_infrastructure_defer_cuda_graph
     )
 
     fake_sglang_backend = ModuleType("sglang_omni.scheduling.sglang_backend")

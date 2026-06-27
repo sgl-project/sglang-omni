@@ -50,6 +50,33 @@ After changing threshold literals in `tests/test_model/tts_ci_config.py`, run
 
 ---
 
+## Gate 0a — Fresh session vs resume (P0)
+
+**Before every `tune.py run`**, decide:
+
+| Situation | Action |
+|-----------|--------|
+| User asked for **new** calibration (default) | `RUN=.tune-runs/$(date -u +%Y%m%dT%H%M%SZ)_<label>` — **no** `--resume` |
+| User said **continue / resume** `<run-dir>` | `--resume --output-dir <run-dir>` only |
+| User moved to a newer commit since last run | **New** run dir on current `HEAD`; do not `--resume` old dir |
+
+**Pass:**
+
+```bash
+git rev-parse HEAD
+# announce: "Calibrating commit <full-sha> → run dir <path>"
+```
+
+**Fail → stop:**
+
+- Reusing an existing `plan.json` run dir without `--resume` (`tune.py` errors).
+- `--resume` when `HEAD` ≠ `plan.json` `calibration_git_sha`.
+- Opening an old `report.md` instead of calibrating current `HEAD`.
+
+See SKILL.md **Fresh calibration session**.
+
+---
+
 ## Gate 1 — Host profile loaded
 
 ```bash
@@ -305,6 +332,17 @@ report env issue (`XDG_CACHE_HOME`, `HOME`, HF path split) before calibration.
 **All mandatory gates (0–8 for your scope) pass** → follow `SKILL.md` for
 `tune.py run` (dual-terminal tail, poll ≤120s, strict audit).
 
+### Agent poll interval (P0 — every ≤120s while `tune.py run` is active)
+
+Never blind-wait more than **2 minutes**. Each cycle:
+
+```bash
+python .claude/skills/tune-ci-thresholds/tune.py status --run-dir <run-dir>
+python .claude/skills/tune-ci-thresholds/tune.py strict-audit --run-dir <run-dir>
+```
+
+Report **`strict-audit` N/N ✓** to the user, not `status ok/total` alone.
+
 Before `run`:
 
 - Confirm scope with user unless `handoff:` is explicit.
@@ -318,4 +356,5 @@ Before `run`:
 - `prepare_omni_venv.sh` / bulk downloads when precheck is green or one-repo ✗
 - Start calibration while any Gate 8 model shows not `precheck OK`
 - Proceed while strict audit has △/✗ repeats
+- Blind-wait **>120s** without `status` + `strict-audit` during active calibration
 - Fix env without reporting first (unless user explicitly asked)

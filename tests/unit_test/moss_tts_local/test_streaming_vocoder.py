@@ -384,6 +384,30 @@ def test_stream_concatenates_to_offline_decode(monkeypatch) -> None:
     }
 
 
+def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
+    """Factory default first chunk is 1 (aligned with the serve-layer streaming default),
+    while the coalescing join floor stays 5; the two are independent knobs.
+    """
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(monkeypatch, processor, stream_chunk_frames=10)
+    assert scheduler._default_initial_chunk_frames == 1
+    assert scheduler._coalesce_floor_frames == 5
+    # Note(Jiaxin): no per-request override, so the first chunk falls back to the serve-aligned
+    # default (1), not the old 5, and the decode still concatenates to the offline reference.
+    rows = _rows(12, seed=99)
+    messages = _run_stream(scheduler, rows)
+    sizes = [
+        _decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
+        for m in messages
+        if m.type == "stream"
+    ]
+    assert sizes[0] == 1
+    np.testing.assert_array_equal(
+        _concat_stream_audio(messages, "req"),
+        reference_waveform(rows[:, 1:]).numpy(),
+    )
+
+
 def test_initial_chunk_frames_request_override(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(
@@ -980,6 +1004,32 @@ def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
     )
     assert scheduler2._cuda_graph_frames == [5, 25]
     assert scheduler2._cuda_graph_min_free_gb == 7.0
+
+
+def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> None:
+    captured: list[list[int]] = []
+    monkeypatch.setattr(
+        MossTTSLocalStreamingVocoderScheduler, "_codec_on_cuda", lambda self: True
+    )
+
+    def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list[int]:
+        self.warmup_attempted = True
+        captured.append(list(frames))
+        self._cg_runner = _FakeCudaGraphRunner(frames)
+        return self._cg_runner.captured_frames()
+
+    monkeypatch.setattr(_CodecStreamSession, "warmup_cuda_graph", fake_warmup)
+
+    scheduler = _make_scheduler(
+        monkeypatch,
+        FakeProcessor(),
+        stream_chunk_frames=4,
+        initial_chunk_frames=2,
+    )
+
+    assert captured == [[1, 2, 3, 4]]
+    assert scheduler._session is not None
+    assert scheduler._session.captured_frames() == [1, 2, 3, 4]
 
 
 def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
