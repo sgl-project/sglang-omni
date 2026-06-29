@@ -11,6 +11,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Validate host venv cache
+    - name: Validate host venv against pyproject.toml
       shell: bash
-      run: bash .github/scripts/validate_omni_venv_cache.sh "${{ inputs.venv-name }}"
+      run: bash .github/scripts/validate_omni_env_reusable.sh "${{ inputs.venv-name }}"

@@ -1,15 +1,15 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports qwen3-omni-v1, qwen3-asr-v1, and tts; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H100 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Each new user calibration request MUST use a fresh UTC-timestamp --output-dir on current HEAD; --resume only when explicitly continuing the same interrupted session on the same commit. Reports must include the full calibration commit SHA. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports qwen3-omni-v1, qwen3-asr-v1, and tts; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
 
 ## Scope
-This skill is for the H20 CI-reproduction host only (the same image
+This skill is for the H100 CI-reproduction host (the same image
 CI uses,
 `crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
-a CUDA-13 image; the container name varies).
+a CUDA-13 image; the container name varies). The host is 2× H100.
 Numbers from environments that differ meaningfully from CI (different
 GPU model, different image, different pinned sglang/torch) are not
 comparable and must not drive threshold changes. If you just want to
@@ -32,11 +32,122 @@ or commit / push anything; if the user rejects the apply prompt, the
 test files stay untouched and the user picks values manually from
 the report.
 
+## Fresh calibration session (P0 — non-negotiable)
+
+**Every new calibration request from the user starts a new session on the
+current `HEAD` commit.** Resume is for **interruptions only**, never for
+“we already have an old run dir”.
+
+### Agent rules
+
+| User says | Agent must |
+|-----------|------------|
+| “Calibrate …” / “Run tune-ci-thresholds …” (no `--resume`) | Create **new** `.tune-runs/<UTC-timestamp>_<label>/`, run `git rev-parse HEAD`, calibrate **that** commit |
+| “Continue / resume run dir X” | `--resume --output-dir X` only; **same commit** as `plan.json` `calibration_git_sha` |
+| Show results / apply thresholds | Use **only** the run dir from **this** session; never open an older `report.md` |
+
+**Forbidden:**
+
+- Reusing `.tune-runs/20260622T…` (or any prior dir) when the user asked for a
+  **new** calibration on a **newer** commit.
+- Presenting a report whose `calibration_git_sha` ≠ current `HEAD` unless the
+  user explicitly asked to resume that same session.
+- Saying “calibration complete” while any stage artifact lacks `git_sha` or
+  records a different commit (`strict-audit` → `GIT PROVENANCE: FAIL`).
+- Mixing fresh Qwen3-ASR reruns with stale Moss artifacts from an earlier
+  commit in one apply.
+
+### New run directory (mandatory naming)
+
+```bash
+RUN=".tune-runs/$(date -u +%Y%m%dT%H%M%SZ)_<short-label>"
+mkdir -p "$RUN"
+git rev-parse HEAD   # tell the user which commit you are calibrating
+python tune.py --model <M> precheck --output-dir "$RUN"
+python tune.py --model <M> run --stages <S> --repeats <N> --output-dir "$RUN"
+```
+
+Do **not** pass `--resume` on the first `run` of a new user request.
+`tune.py` **refuses** `run` without `--resume` when `plan.json` already exists
+in `--output-dir`.
+
+### Resume (interruption recovery only)
+
+Use `--resume` only when:
+
+1. The user explicitly asked to continue an **existing** run dir, **or**
+2. The same session was interrupted (pytest crash, agent timeout) and the
+   commit has **not** changed.
+
+On `--resume`, `tune.py` errors if `HEAD` ≠ `plan.json` `calibration_git_sha`.
+If the user moved to a newer commit, create a **new** run dir instead.
+
+### Report must identify the commit
+
+Every `report.md` must show the **full** calibration commit at the top:
+
+```markdown
+**Calibration commit:** `5aa60e4bc1274e968fc11be557ca99ff9a4dff00`
+```
+
+The user must be able to verify which commit was calibrated without guessing
+from the run-dir date. `strict-audit` prints `calibration_git_sha` and
+`GIT PROVENANCE: ok|FAIL`; both gates must pass before report or apply.
+
 ## Zero-tolerance completeness contract (P0 — non-negotiable)
 
 **Calibration is not done until every stage × every repeat × every tracked
 metric is strict-complete (✓).** There are no exceptions, no “good enough”
 partial matrices, and no moving on while gaps remain.
+
+### Agent poll interval — never blind-wait > 2 minutes (P0 — non-negotiable)
+
+While `tune.py run` is active, the agent **must** check calibration progress
+**at least every 120 seconds (2 minutes)**. This is a hard ceiling, not a
+guideline.
+
+| Forbidden | Required instead |
+|-----------|------------------|
+| `Await` / `block_until_ms` ≥ 120000 on calibration | Poll with `block_until_ms` ≤ 120000; prefer 60–90s during active pytest |
+| Sleeping “until the stage finishes” | `tune.py status` + `tune.py strict-audit` + tail active `_pytest` log + GPU |
+| Reporting only `status ok/total` | Report **`strict-audit` N/N ✓** (includes `expected_samples` gate) |
+| Trusting old run dirs without `strict-audit` | Always run `python tune.py strict-audit --run-dir <run-dir>` before report/apply |
+| Reusing an old `--output-dir` for a new user calibration request | New UTC-timestamp dir + current `HEAD`; `--resume` only when user asks |
+| Reporting from stale `report.md` | Regenerate on current run dir after `STRICT + GIT: READY` |
+
+**Every poll cycle (≤120s):**
+
+```bash
+python .claude/skills/tune-ci-thresholds/tune.py status --run-dir <run-dir>
+python .claude/skills/tune-ci-thresholds/tune.py strict-audit --run-dir <run-dir>
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
+tail -30 <run-dir>/_pytest/<active-test>/run{k}.log
+```
+
+### Sample scope gate (`expected_samples`)
+
+Strict ✓ requires **both**:
+
+1. All tracked metrics non-null; `sample_counts.ok == sample_counts.total`.
+2. When `stages.yaml` lists `expected_samples`, **`total` must equal that
+   value** (`tune.py discover` reads it from the test-file constants).
+
+Always use **`tune.py strict-audit`** — not hand-rolled scripts that only
+check `ok == total`.
+
+**TTS sample scopes** (from test constants, written to `stages.yaml` by
+`discover`):
+
+| Stage group | Constant |
+|-------------|----------|
+| Qwen3 ASR | `SEEDTTS_ASR_CORRECTNESS_SAMPLES` |
+| TTS non-stream WER / speed / UTMOS; stream WER / speed | `SEEDTTS_EN_FULLSET_SAMPLES` (or full set when `STREAMING_BENCHMARK_MAX_SAMPLES` is `None`) |
+| TTS similarity | `TTS_SIMILARITY_MAX_SAMPLES` |
+
+Use a **fresh `--output-dir`** per calibration session (see **Fresh calibration
+session** above); do not mix runs from different commits or reuse an old dir
+when the user requested a new calibration. Do not mix runs from
+different `--stages` scopes into one apply without a full strict audit pass.
 
 ### Success criterion (all must hold)
 
@@ -67,6 +178,16 @@ Equivalently: **strict audit shows N/N ✓ for every stage** and
 repeats. **Forbidden:** treating pytest PASS as success when
 `run{k}.json` metrics are null or partial.
 
+**⚠️ `discover` can mislabel `expected_samples` for full-dataset stages.** For a
+stage whose only `context_var` is `CONCURRENCY` (no `MAX_SAMPLES`) — e.g.
+`mmmu_accuracy` / `mmmu_speed`, `mmsu_accuracy` / `mmsu_speed` — `discover`
+wrongly sets `expected_samples = CONCURRENCY` (**16**). Because `tune.py` uses
+`expected_samples` for the completion gate, those stages look **perpetually
+incomplete** and trigger futile `--resume` retries (mmsu is the 2000-sample slow
+stage, so this wastes a lot of GPU time). **After `discover`, verify
+`expected_samples` matches the real dataset size** (mmmu = **50**, mmsu =
+**2000**) and fix the `stages.yaml` literals **before** `run`.
+
 ### No `-x` during calibration (P0 — non-negotiable)
 
 `tune.py run` **must never** pass pytest `-x` / `--exitfirst`.
@@ -94,19 +215,22 @@ invocation is ✓. If any one threshold metric is missing, **the whole
 repeat is invalid** — purge all stage `run{k}.json` for that test and
 re-run.
 
-### Agent enforcement loop (every ≤120s while calibrating)
+### Agent enforcement loop (every ≤120s while calibrating — P0)
 
-1. `python tune.py status --run-dir <run-dir>`
-2. Run **strict audit** (script below) — this is the **only** progress metric
-   shown to the user
+**Hard rule: the agent must not go more than 120 seconds without a progress
+check.** Never use long `Await`/`sleep` while calibration runs.
+
+1. `python tune.py status --run-dir <run-dir>` (includes `strict_ready` summary)
+2. `python tune.py strict-audit --run-dir <run-dir>` — **the only** progress
+   metric shown to the user
 3. If `STRICT READY < total stages` **or** `run.log` shows extraction
-   warnings → diagnose, fix, purge, `--resume` (do not wait for pass 10)
+   warnings / `sample scope mismatch` → diagnose, fix, purge, `--resume`
 4. If `tune.py` exits with **metric extraction HALT** → fix config before
    any further pytest
 5. **Blocker fix is same-turn work** — when audit or `run.log` surfaces
-   `NEEDS_CONFIG`, null metrics, or missing JSON paths, patch
-   `config.yaml` / tests **immediately** in that session; purge the affected
-   pytest repeat; do **not** only report the issue and keep calibrating.
+   `NEEDS_CONFIG`, null metrics, `expected_samples` mismatch, or missing JSON paths,
+   patch `config.yaml` / tests **immediately** in that session; purge the
+   affected pytest repeat; do **not** only report the issue and keep calibrating.
 
 `tune.py` **halts immediately** when pytest passes but metric extraction
 fails (config / JSON path bug). The agent must fix and `--resume`; never
@@ -163,16 +287,35 @@ When a host profile is active (or model is `tts` / `qwen3-omni-v1`),
 `wavlm_large.pt`, `wavlm_large_finetune.pth`. Bootstrap once if ✗ — see
 `speaker_similarity_bootstrap` in the host YAML.
 
-### Shipped profile: `sglang-h20-ci`
+### UTMOS asset — NOT covered by precheck (warm before TTS)
 
-`repo_root` `/data/chenyang/sglang-omni`, `venv_python`
-`/data/chenyang/.python/omni/bin/python`, `physical.hf_hub`
+The TTS `tts_utmos` metric downloads `balacoon/utmos` → `utmos.jit` **on demand**
+via `benchmarks.metrics.utmos.ensure_utmos_assets`, into
+`/github/home/.cache/sglang-omni/utmos`. `precheck` does **not** verify it, so on
+an overseas host (e.g. H100) `tts_utmos` fails **mid-run** — `hf-mirror.com` can't
+serve the file. Warm it **before** TTS calibration with
+`HF_ENDPOINT=https://huggingface.co` by calling `ensure_utmos_assets()` (a raw
+`huggingface-cli download` won't satisfy its `.utmos_cache.json` marker):
+
+```bash
+HF_ENDPOINT=https://huggingface.co <venv>/bin/python -c \
+  "from benchmarks.metrics.utmos import ensure_utmos_assets; ensure_utmos_assets()"
+```
+
+### Shipped profile: `sglang-h100-ci` (current / active)
+
+`repo_root` `/data/sglang-omni`, `venv_python`
+`/github/home/calibration/omni/bin/python`, `physical.hf_hub`
 `/root/.cache/huggingface`, `physical.speaker_sim`
-`/root/.cache/huggingface/speaker_sim`.
+`/root/.cache/huggingface/speaker_sim`, `physical.omni_ci_home`
+`/github/home/calibration`. Container image
+`crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
+GPUs `NVIDIA_VISIBLE_DEVICES=6,7` (2× NVIDIA H100 80GB HBM3). Pins:
+**sglang 0.5.12.post1**, **torch 2.11.0** (cu130).
 
 ### Adding a new host profile
 
-Copy `hosts/sglang-h20-ci.yaml` → `hosts/<name>.yaml`. Set `hostname`,
+Copy `hosts/sglang-h100-ci.yaml` → `hosts/<name>.yaml`. Set `hostname`,
 `repo_root`, `venv_python`, `physical.*` — **in-container paths only**.
 Add venv to `default_venv_python` in `models/*/config.yaml`.
 
@@ -324,41 +467,23 @@ gap is filled. Do **not** apply thresholds from a mix of ✓, △, and ✗.
 From repo root, after each major progress checkpoint and always before
 steps 6–9:
 
+```bash
+python .claude/skills/tune-ci-thresholds/tune.py strict-audit --run-dir <run-dir>
 ```
-python3 << 'PY'
-import json
-from pathlib import Path
 
-run_dir = Path("<run-dir>")
-plan = json.loads((run_dir / "plan.json").read_text())
-repeats = plan["repeats"]
-stage_keys = plan["stages"]
+Example output:
 
-def classify(p):
-    if not p.exists():
-        return "—"
-    d = json.loads(p.read_text())
-    sc = d.get("sample_counts") or {}
-    tot, ok = sc.get("total"), sc.get("ok")
-    metrics = d.get("metrics") or {}
-    has_all = bool(metrics) and all(v is not None for v in metrics.values())
-    if not has_all:
-        return "✗"
-    if tot is not None and ok is not None and ok == tot:
-        return "✓"
-    if tot is not None and ok is not None and ok != tot:
-        return "△"
-    return "✗"
-
-ready = 0
-for sk in stage_keys:
-    cells = [classify(run_dir / sk / f"run{k}.json") for k in range(1, repeats + 1)]
-    if cells.count("✓") == repeats:
-        ready += 1
-    print(f"{sk}: {''.join(cells)} ({cells.count('✓')}/{repeats} strict)")
-print(f"STRICT READY: {ready}/{len(stage_keys)} stages ({repeats} repeats each)")
-PY
 ```
+qwen3_asr_wer: ✓✓✓✓✓ (5/5 strict, expected=<N>)
+tts_moss_stream_speed: ✓✓✓✓✓ (5/5 strict, expected=<N>)
+STRICT READY: 8/8 stages (5 repeats each)
+```
+
+(`<N>` comes from `expected_samples` in `stages.yaml` — run `discover` after
+test constant changes.)
+
+**Do not use hand-rolled Python that only checks `ok == total`** — use
+`tune.py strict-audit`, which also enforces `expected_samples`.
 
 When reporting progress to the user, show **strict ✓ counts** (and △/✗
 gaps), not only `tune.py status` `ok/total`.
@@ -441,9 +566,8 @@ explicitly asks you to fix a named gap (e.g. speaker sim warm-cache).
 ### Stage-specific shortcuts (still check-first)
 
 - **Qwen3-ASR (TTS CI stage 1 / `--model tts`)**: uses `omni`, **2 GPU / router DP=2**.
-  TTS stage-1 Qwen3-ASR correctness runs with ASR request concurrency **2**.
-  Standalone `qwen3-asr-v1` calibration keeps ASR request concurrency **32**,
-  and TTS generation stages use **16**.
+  Stage 1 uses the same ASR transcribe fan-out as other WER stages
+  (`QWEN3_ASR_WER_CONCURRENCY` = **32** at DP=2).
   Included in `--model tts --stages ALL`; calibrate alone with
   `--stages qwen3_asr`. Venv only needs to pass precheck for torch/sglang pins
   and cached assets. Do **not** use `--skip-precheck`. Source
@@ -494,9 +618,12 @@ Prefer repairing the single reported gap over rebuilding.
   them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
   own `disable_proxy()` helper strips them for loopback calls, matching
   real CI.
-- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (matches CI omni-setup). Use
-  `https://huggingface.co` only if mirror download fails and precheck prints an
-  alternate command.
+- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (the China mirror, matches CI
+  omni-setup). The **H100 host is overseas**, where `hf-mirror.com` fails with
+  `LocalEntryNotFoundError`; warm-cache downloads on that host (speaker-sim WavLM
+  and the UTMOS asset — see below) must use `HF_ENDPOINT=https://huggingface.co`.
+  Otherwise use `https://huggingface.co` only if a mirror download fails and
+  precheck prints an alternate command.
 - No GPU processes holding memory at **precheck** time. If all GPUs are
   busy, precheck fails with the busy PID list and the user must free them.
   **During `tune.py run`**, the tool runs `delete_gpu_process.sh` and
@@ -552,7 +679,7 @@ python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages tts_moss --repeats 5 --output-dir .tune-runs/<timestamp>_tts_moss_r5
 
-# Stage 1 only (Qwen3-ASR on SeedTTS EN 20-sample correctness subset):
+# Stage 1 only (Qwen3-ASR on the full SeedTTS EN set):
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages qwen3_asr --repeats 5 --output-dir .tune-runs/<timestamp>_tts_qwen3_asr_r5
 ```
@@ -574,11 +701,11 @@ while leaving Qwen3-ASR on stale literals.
 Notes:
 - Uses **`Qwen/Qwen3-ASR-1.7B`** via `hf_model_ids_by_test` (not the Higgs
   checkpoint). Same **`omni`** venv and 2-GPU router DP=2 as TTS stages.
-  In `--model tts`, this correctness gate sets `QWEN3_ASR_CI_CONCURRENCY=2`
-  to match the stable TTS stage-1 baseline. Standalone `--model qwen3-asr-v1`
-  leaves the test default at **32**.
-- Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** (=20),
-  JSON `summary.evaluated` / `summary.total_samples`.
+  Stage 1 imports **`QWEN3_ASR_WER_CONCURRENCY`** from `tests.utils` (32),
+  matching TTS WER and talker WER transcribe fan-out.
+- Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`**
+  (via `expected_samples` in `stages.yaml`), JSON `summary.evaluated` /
+  `summary.total_samples`.
 - **CI slack:** tune.py writes P95 reference constants only; assertions use
   derived `*_THRESHOLD` values with **10% slack** (`THRESHOLD_SLACK_HIGHER=0.9`,
   `THRESHOLD_SLACK_LOWER=1.1` via `apply_wer_slack()` for WER). Do **not**
@@ -627,10 +754,10 @@ The generated stage aliases reflect this:
 ### TTS model calibration targets (stages 2–4)
 
 **Fixed sample presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
-`SEEDTTS_EN_FULLSET_SAMPLES` (=1088), `TTS_SIMILARITY_MAX_SAMPLES` (=50),
-`STREAMING_BENCHMARK_MAX_SAMPLES` (=None → full 1088). These define *how many*
-samples CI runs; tune.py only uses them indirectly for strict-audit sample counts
-(JSON `total_requests` / WER `evaluated` must match those presets).
+`SEEDTTS_EN_FULLSET_SAMPLES`, `TTS_SIMILARITY_MAX_SAMPLES`,
+`STREAMING_BENCHMARK_MAX_SAMPLES` (when `None`, streaming uses the full
+SeedTTS EN set). These define *how many* samples CI runs; tune.py reads the
+numeric values via `discover` → `expected_samples`.
 Generation concurrency is **16** for both non-streaming and streaming TTS stages;
 the Qwen3-ASR WER transcribe phase remains **32**.
 
@@ -734,7 +861,7 @@ not merely run the same pytest command.
 after precheck reports the venv path missing, imports fail, or sglang/torch
 pins cannot be fixed with `uv pip install -e .`.
 
-From repo root on the H20 repro host (cu13 `hongccc/sglang-omni:dev` semantics):
+From repo root on the H100 repro host (cu13 `hongccc/sglang-omni:dev` semantics):
 
 ```bash
 # Qwen3-Omni example (TTS: OMNI_CI_HOME=/github/home/calibration, venv omni)
@@ -925,7 +1052,7 @@ Only the Qwen3-ASR router stage needs 2 free GPUs after `delete_gpu_process.sh`.
   rely on a polluted parent shell (`TORCHINDUCTOR_CACHE_DIR=/.torchinductor`
   has been observed from stale exports).
 - **One GPU consumer at a time** on the repro host: do not overlap `tune.py
-  run` with full talker/WER pytest — they fight for the same 2× H20.
+  run` with full talker/WER pytest — they fight for the same 2× H100.
 - **GPU idle gate before every stage** — run `.github/scripts/delete_gpu_process.sh --kill-orphans`
   (not `delete_gpu_process.sh` alone); abort if VRAM not below 2048 MiB on
   **both** GPUs before starting the next pytest.
@@ -961,22 +1088,25 @@ Only the Qwen3-ASR router stage needs 2 free GPUs after `delete_gpu_process.sh`.
 
 ## Monitoring, failures, and completeness (mandatory)
 
-### Agent polling — never blind-wait
-- **Maximum idle poll interval: 120 seconds (2 minutes).** Never use
-  `block_until_ms` ≥ 50 minutes or any equivalent long sleep while a
-  calibration run is active. Long blind waits hide server crashes and
-  waste hours.
-- While `tune.py run` is in progress, **every 120s at most**:
-  1. Run `python tune.py status --run-dir <run-dir>` and read JSON.
-  2. For agent polling only (not Tab A): skim `<run-dir>/run.log` milestones if
+### Agent polling — never blind-wait (P0)
+
+- **Maximum idle poll interval: 120 seconds (2 minutes).** This is
+  non-negotiable. Never use `block_until_ms` ≥ 120000 (or multi-minute
+  `Await`) while a calibration run is active. Long blind waits hide server
+  crashes and incomplete strict audits.
+- While `tune.py run` is in progress, **every 120s at most** (prefer 60–90s
+  during active GPU work):
+  1. Run `python tune.py status --run-dir <run-dir>` and read JSON
+     (`strict_ready`, `strict_complete`).
+  2. Run `python tune.py strict-audit --run-dir <run-dir>` — report this
+     output to the user, not `ok/total` alone.
+  3. For agent polling only (not Tab A): skim `<run-dir>/run.log` milestones if
      needed; read the active `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines)
      for pytest/server detail. **Tab A** must tail `_pytest` via
      `tail_calibration_pytest.sh`, never `run.log`.
-  3. Report **strict** progress (✓/△/✗ per stage, see strict audit
-     above) **and** `tune.py` `ok/total` / GPU memory. Never cite
-     `ok/total` alone as "calibration progress" — it includes △ partial.
-  4. If strict audit shows **any** stage with `< N` ✓, or `run.log` has
-     `ALL metrics None`, `metric extraction warnings`, or `incomplete_metrics_extraction`:
+  4. Check GPU memory ≤ 2048 MiB before next stage launches.
+  5. If strict audit shows **any** stage with `< N` ✓, wrong `expected_samples`,
+     or `run.log` has `sample scope mismatch` / metric extraction warnings →
      **stop treating calibration as healthy** — fix, purge, `--resume`.
 - If `status` shows `pytest_active: false` but completeness is not
   `complete: true` and the last log lines show **crash / OOM / server
@@ -1121,12 +1251,14 @@ weights checklist for agents).
    continue. Do **not** run `prepare_omni_venv.sh` or bulk downloads when
    precheck already passes.
    **`<run-dir>` must live under `.tune-runs/<timestamp>_<label>/`** at
-   the repo root (e.g. `.tune-runs/20260423T050000Z_mmsu_r3/`). That
-   path is already gitignored. Do NOT point `<run-dir>` inside
+   the repo root (e.g. `.tune-runs/20260423T050000Z_mmsu_r3/`). Generate
+   the timestamp with **`date -u +%Y%m%dT%H%M%SZ` at session start** — never
+   reuse a prior run dir unless the user explicitly asked to `--resume` it.
+   That path is already gitignored. Do NOT point `<run-dir>` inside
    `.claude/skills/` or anywhere else under version control — run
    artifacts can be large and must not leak into commits.
 4. State plan in one line:
-   `Running <M>: <stages>, <N> repeats, est. <T>.`
+   `Running <M>: <stages>, <N> repeats on commit <full-sha>, run-dir <path>.`
    No further confirmation.
 5. **Before** launching run, **spawn two IDE terminal tabs** per **Two-terminal
    supervision (mandatory — always)** — Tab A helper first, Tab B job second:
@@ -1141,7 +1273,7 @@ weights checklist for agents).
    cd <repo_root from host profile> && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... \
      --output-dir <run-dir>
    ```
-   Example (`sglang-h20-ci`): `cd /data/chenyang/sglang-omni && TUNE_VENV_PYTHON=/data/chenyang/.python/omni/bin/python python .claude/skills/tune-ci-thresholds/tune.py ...`
+   Example (`sglang-h100-ci`): `cd /data/sglang-omni && TUNE_VENV_PYTHON=/github/home/calibration/omni/bin/python python .claude/skills/tune-ci-thresholds/tune.py ...`
 
    Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — if both
    tabs show the same lines, Tab A is wrong (likely tailing `run.log`). Never
@@ -1149,9 +1281,11 @@ weights checklist for agents).
 
    Agent polls every **≤120s**: `python tune.py status --run-dir <run-dir>`.
 
-6. When `tune.py run` exits 0, verify **both** gates:
+6. When `tune.py run` exits 0, verify **all three** gates:
    - `python tune.py status --run-dir <run-dir>` → `"complete": true`
    - Strict audit → every stage **N/N ✓** (see "Strict worst-of-N")
+   - Strict audit → **`GIT PROVENANCE: ok`** (every `run{k}.json` matches
+     `calibration_git_sha`)
    If strict audit fails, `--resume` (or targeted re-runs) until it
    passes — **do not** open `report.md` for final threshold work yet.
    When both pass, run `python tune.py report --run-dir <run-dir>` if
@@ -1342,9 +1476,13 @@ weights checklist for agents).
 
 ## What I do not do
 - Proceed to the next test, model, report, or apply while **any** stage
-  lacks N/N strict ✓ repeats with **every** tracked metric non-null.
+  lacks N/N strict ✓ repeats with **every** tracked metric non-null **and**
+  correct `expected_samples` scope.
 - Treat `tune.py status` `ok/total` or `complete: true` as strict
-  worst-of-N readiness — always run the strict audit (✓ = full samples).
+  worst-of-N readiness — always run `tune.py strict-audit` (✓ = full samples
+  at CI scope per `expected_samples` in `stages.yaml`).
+- Blind-wait more than **120 seconds** without `status` + `strict-audit` during
+  an active `tune.py run`.
 - Continue calibration after `run.log` shows metric extraction warnings
   or `tune.py` extraction **HALT** — fix config, purge, `--resume` first.
 - Include △ partial or ✗ failed repeats in worst-of-N calculations or
@@ -1376,9 +1514,9 @@ weights checklist for agents).
 ├── tail_calibration_pytest.sh         # Tab A helper for tune.py run (_pytest log)
 ├── tune.py                              # CLI; METRIC_SPECS + JSON extractor
 │                                        # subcommands: run, report, status,
-│                                        # apply-plan, precheck, discover
+│                                        # strict-audit, apply-plan, precheck, discover
 ├── hosts/                               # per-machine repo/venv/cache layouts
-│   └── sglang-h20-ci.yaml               # example: /data/chenyang + /root/.cache
+│   └── sglang-h100-ci.yaml              # in-container repo/venv/cache layout for the H100 CI host
 └── models/
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml

@@ -204,6 +204,7 @@ class PipelineConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
+    tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
 
     model_path: str
     stages: list[StageConfig]
@@ -257,6 +258,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for generation SGLang ServerArgs overrides."""
+        return {}
+
+    @classmethod
     def code2wav_stage(cls) -> str | None:
         """Return the code2wav stage name when the pipeline supports it."""
         return None
@@ -269,6 +275,11 @@ class PipelineConfig(BaseModel):
         tp_size: int,
     ) -> dict[str, object]:
         """Return SGLang ServerArgs overrides implied by stage TP settings."""
+        if (
+            tp_size > 1
+            and stage_name in cls.tensor_parallel_disable_custom_all_reduce_stages
+        ):
+            return {"disable_custom_all_reduce": True}
         return {}
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:

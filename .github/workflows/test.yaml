@@ -2,11 +2,17 @@ name: PR Test
 
 on:
   workflow_call:
+    inputs:
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
 
 env:
   OMNI_CI_HOME: >-
-    ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}', github.event.pull_request.number)
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
         || format('/github/home/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
@@ -15,11 +21,12 @@ env:
 jobs:
   unit-test:
     name: unit-test
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface

@@ -171,22 +171,31 @@ def make_qwen3_asr_scheduler_adapters(
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
         fingerprint = _audio_fingerprint(audio)
 
+        # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
+        # WhisperFeatureExtractor defaults to padding="max_length", padding every clip to nb_max_frames=3000 (~30s),
+        # so a short clip pays the full 30s of mel FFT on silence.
+        # This is safe for Qwen3-ASR because its encoder is variable-length and keeps only the
+        # valid frames via feature_attention_mask; vanilla Whisper's fixed-length encoder would instead break on padding="longest" (see ref: transformers#26241).
+        # refs:
+        #  https://github.com/huggingface/transformers/blob/main/src/transformers/models/whisper/feature_extraction_whisper.py
+        #  https://github.com/huggingface/transformers/issues/26241
         extracted = feature_extractor(
             audio,
             sampling_rate=_SAMPLE_RATE,
             return_tensors="pt",
             return_attention_mask=True,
+            padding="longest",
+            truncation=True,
         )
-        features = extracted.input_features  # 128, 3000
+        features = extracted.input_features  # [128, true_frames] (<= 3000)
         feature_attention_mask = getattr(extracted, "attention_mask", None)
         if feature_attention_mask is None:
             # WhisperFeatureExtractor normally returns one; fall back to all-valid.
             feature_attention_mask = torch.ones(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
-        # Keep the full padded mel; the model's get_audio_feature uses the mask
-        # to select valid frames. Its no-mask branch transposes wrong, so the
-        # mask path must be taken.
+        # note (Jeffro Qu): get_audio_feature uses the mask to select valid
+        # frames; its no-mask branch transposes wrong, so the mask path must be taken.
         num_mel_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = int(qwen3_asr_num_audio_tokens(num_mel_frames))
         logger.debug(
@@ -283,7 +292,7 @@ def make_qwen3_asr_scheduler_adapters(
         # is not an identity transform for all whitespace/Unicode transcripts.
         raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
         logger.debug(
-            f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} " f"raw={raw!r}"
+            f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} raw={raw!r}"
         )
         asr_text_idx = _find_subsequence(output_ids, asr_text_token_ids)
         transcript_ids = (

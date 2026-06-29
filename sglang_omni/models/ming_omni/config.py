@@ -212,26 +212,20 @@ def _ming_streaming_speech_stages() -> list[StageConfig]:
     ]
 
 
-class MingOmniPipelineConfig(PipelineConfig):
-    """6-stage text pipeline."""
-
+class _MingOmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
     architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+    tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
+        THINKER_STAGE,
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": THINKER_STAGE}
 
-    @classmethod
-    def tensor_parallel_server_args_overrides(
-        cls,
-        *,
-        stage_name: str,
-        tp_size: int,
-    ) -> dict[str, object]:
-        if stage_name == THINKER_STAGE and tp_size > 1:
-            return {"disable_custom_all_reduce": True}
-        return {}
+
+class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
+    """6-stage text pipeline."""
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -247,30 +241,12 @@ class MingOmniPipelineConfig(PipelineConfig):
         _validate_ming_stage_tp_support(self.stages)
 
 
-class MingOmniSpeechPipelineConfig(PipelineConfig):
+class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     """7-stage speech pipeline."""
-
-    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
-    architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
-
-    @classmethod
-    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": THINKER_STAGE}
 
     @classmethod
     def talker_role_to_stage(cls) -> dict[str, str]:
         return {"talker": TALKER_STAGE}
-
-    @classmethod
-    def tensor_parallel_server_args_overrides(
-        cls,
-        *,
-        stage_name: str,
-        tp_size: int,
-    ) -> dict[str, object]:
-        if stage_name == THINKER_STAGE and tp_size > 1:
-            return {"disable_custom_all_reduce": True}
-        return {}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -306,7 +282,7 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         )
 
 
-class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
+class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     """8-stage streaming-TTS speech pipeline.
 
     Adds a ``segmenter`` stage between ``thinker`` and ``talker_stream``
@@ -316,27 +292,9 @@ class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
     streaming talker emits audio chunks to the coordinator (terminal).
     """
 
-    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
-    architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
-
-    @classmethod
-    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": THINKER_STAGE}
-
     @classmethod
     def talker_role_to_stage(cls) -> dict[str, str]:
         return {"talker": TALKER_STREAM_STAGE}
-
-    @classmethod
-    def tensor_parallel_server_args_overrides(
-        cls,
-        *,
-        stage_name: str,
-        tp_size: int,
-    ) -> dict[str, object]:
-        if stage_name == THINKER_STAGE and tp_size > 1:
-            return {"disable_custom_all_reduce": True}
-        return {}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE

@@ -323,6 +323,12 @@ class S2ProSGLangTextModel(nn.Module):
 
         self._vq_ready = True
 
+    @property
+    def vq_decode_max_batch_size(self) -> int:
+        if not self._vq_ready:
+            raise RuntimeError("VQ decode buffers are not initialized")
+        return int(self._vq_codes.shape[0])
+
     def forward(
         self,
         input_ids: Tensor,

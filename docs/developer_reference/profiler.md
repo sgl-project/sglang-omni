@@ -56,7 +56,7 @@ first executable prefill / extend batch is selected.
 | Thinker prefill start | `scheduler_prefill_start` (stage = thinker) | `OmniScheduler.run_batch` |
 | Thinker first token | `stage_first_stream_chunk_sent` (stage = thinker) | `Stage._send_stream_to_target` / `_send_stream_to_coordinator` |
 | First stream chunk to client | `stage_first_stream_chunk_sent` (terminal stage → coordinator) | same |
-| Talker request build start / end | `scheduler_request_build_start` / `_end` (stage = talker) | `OmniScheduler.process_input_requests` |
+| Talker request build execution start / end | `scheduler_request_build_start` / `_end` (stage = talker) | `OmniScheduler._run_request_builder` |
 | Talker prefill start | `scheduler_prefill_start` (stage = talker) | same |
 | First code chunk | `stage_first_stream_chunk_sent` (stage = talker) | `Stage._send_stream_to_target` |
 | Code2Wav first audio | `code2wav_first_audio` | `Code2WavScheduler._decode_and_emit` |

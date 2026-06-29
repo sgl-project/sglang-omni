@@ -32,9 +32,9 @@ hf_datasets:
 # Calibration uses a fixed slice with the same layout (no PR number).
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
-  - "/data/chenyang/.python/omni/bin/python"
-  - "/sgl-workspace/sglang-omni/omni/bin/python"
+  # H100 CI calibration venv (first match wins).
   - "/github/home/calibration/omni/bin/python"
+  - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/omni/bin/python"
 # Concurrency: Qwen3-Omni talker/TTS WER CI stages use CONCURRENCY=16 for
 # generation. Their Qwen3-ASR WER router/transcribe fan-out uses 32 at DP=2.

@@ -31,13 +31,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 CONCURRENCY = 16
 MAX_SAMPLES = 50
 
-VIDEOMME_MIN_ACCURACY = 0.56
+VIDEOMME_MIN_ACCURACY = 0.58
 
 _VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 1.102,
-        "output_tok_per_req_s": 8.2,
-        "latency_mean_s": 13.527,
+        "throughput_qps": 1.087,
+        "output_tok_per_req_s": 8.6,
+        "latency_mean_s": 12.684,
     },
 }
 VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
@@ -45,13 +45,13 @@ VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
 
 @pytest.mark.benchmark
 def test_videomme_accuracy_and_speed(
-    qwen3_omni_thinker_server: ManagedRouterHandle,
+    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run videomme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_thinker_server.port,
+        port=qwen3_omni_bf16_disagg_server.port,
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videomme"),
@@ -63,7 +63,7 @@ def test_videomme_accuracy_and_speed(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_thinker_server,
+        qwen3_omni_bf16_disagg_server,
         label="Qwen3-Omni Video-MME",
     ) as router_guard:
         results = asyncio.run(

@@ -10,6 +10,7 @@ from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
 )
 
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
+import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 
 
@@ -240,3 +241,109 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     ]
     assert "effective_total_gpu_memory_fraction=0.75" in caplog.text
     assert "encoder_mem_reserve=0.0" in caplog.text
+
+
+def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) -> None:
+    build_calls: list[dict[str, object]] = []
+    scheduler_calls: list[dict[str, object]] = []
+
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        assert model_path == "dummy"
+        assert context_length == 4096
+        build_calls.append(dict(overrides))
+        return SimpleNamespace(
+            mem_fraction_static=0.55,
+            sampling_backend=overrides["sampling_backend"],
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
+        )
+
+    def _fake_create_talker_scheduler(server_args, gpu_id, **kwargs):
+        scheduler_calls.append(
+            {
+                "gpu_id": gpu_id,
+                "sampling_backend": server_args.sampling_backend,
+                "max_running_requests": server_args.max_running_requests,
+                "cuda_graph_max_bs": server_args.cuda_graph_max_bs,
+                "cuda_graph_bs": server_args.cuda_graph_bs,
+                "torch_compile_max_bs": server_args.torch_compile_max_bs,
+                "weight_prefix": kwargs["weight_prefix"],
+            }
+        )
+        return object()
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        _fake_server_args_builder,
+    )
+    monkeypatch.setattr(
+        qwen_bootstrap,
+        "create_talker_scheduler",
+        _fake_create_talker_scheduler,
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+
+    qwen_stages.create_talker_ar_executor_from_config("dummy")
+
+    assert build_calls == [
+        {
+            "cuda_graph_bs": [1, 2, 4, 8, 12, 16, 24, 32],
+            "cuda_graph_max_bs": 32,
+            "disable_cuda_graph": False,
+            "max_running_requests": 32,
+            "sampling_backend": "pytorch",
+            "torch_compile_max_bs": 32,
+            "tp_size": 1,
+        }
+    ]
+    assert scheduler_calls == [
+        {
+            "gpu_id": 0,
+            "sampling_backend": "pytorch",
+            "max_running_requests": 32,
+            "cuda_graph_max_bs": 32,
+            "cuda_graph_bs": [1, 2, 4, 8, 12, 16, 24, 32],
+            "torch_compile_max_bs": 32,
+            "weight_prefix": "talker.",
+        }
+    ]
+
+
+def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
+    """talker_ar default max_running_requests is 32; a config override still wins."""
+    captured: list[dict[str, object]] = []
+
+    def _fake_builder(model_path, context_length, **overrides):
+        captured.append(dict(overrides))
+        return SimpleNamespace(
+            mem_fraction_static=overrides.get("mem_fraction_static"),
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
+        )
+
+    monkeypatch.setattr(qwen_stages, "build_sglang_server_args", _fake_builder)
+    monkeypatch.setattr(
+        qwen_bootstrap, "create_talker_scheduler", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages, "get_process_gpu_memory_bytes", lambda gpu_id: None
+    )
+
+    qwen_stages.create_talker_ar_executor_from_config("dummy")
+    assert captured[-1]["max_running_requests"] == 32
+
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", server_args_overrides={"max_running_requests": 8}
+    )
+    assert captured[-1]["max_running_requests"] == 8

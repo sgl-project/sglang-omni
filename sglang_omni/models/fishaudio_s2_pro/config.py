@@ -19,6 +19,10 @@ class S2ProPipelineConfig(PipelineConfig):
     def talker_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(

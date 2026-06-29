@@ -20,7 +20,7 @@ _PKG = "sglang_omni.models.moss_tts_local"
 # codec memory is included by process-scoped SGLang accounting
 # the reserve is for the later vocoder codec instance and runtime headroom
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
-_COLOCATED_CODEC_MEM_RESERVE = 0.05
+_COLOCATED_CODEC_MEM_RESERVE = 0.15
 _AR_MEM_FRACTION_STATIC = 0.85
 
 
@@ -92,13 +92,17 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     def talker_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
     )
 
     # Streaming-vocoder CUDA-graph knobs, injected into the vocoder factory by model_post_init.
-    # Default on, fail-safe to eager; cuda_graph_frames=None uses the built-in broad-exact set.
+    # Default on, fail-safe to eager; cuda_graph_frames=None captures exact T=1..stream_chunk.
     cuda_graph: bool = True
     cuda_graph_frames: list[int] | None = None
     cuda_graph_min_free_gb: float = 3.0
