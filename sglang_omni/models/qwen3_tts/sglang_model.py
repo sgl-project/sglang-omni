@@ -15,13 +15,15 @@ from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
     Qwen3OmniMoeTalkerDenseMLP,
     ResizeMLP,
     _bind_default_weight_loaders,
-    _repeat_kv,
 )
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
 )
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
+)
+from sglang_omni.models.qwen3_tts.sampling_kernels import (
+    sample_from_sorted_probs_with_seed_small_k,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
@@ -303,6 +305,11 @@ class Qwen3TTSTalker(nn.Module):
         cp_attn = cp_layers[0].self_attn
         self._predictor_positions = torch.arange(
             predictor_len, device=device, dtype=torch.long
+        )
+        self._predictor_position_rows = (
+            self._predictor_positions[:, None]
+            .expand(predictor_len, max_batch_size)
+            .contiguous()
         )
         self._predictor_k_cache = torch.zeros(
             len(cp_layers),
@@ -1122,15 +1129,7 @@ class Qwen3TTSTalker(nn.Module):
             keep_top_k = keep_all.unsqueeze(1) | (rank < top_ks.unsqueeze(1))
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
 
-        sorted_probs = torch.softmax(sorted_scores, dim=-1)
         top_ps = self._sub_top_p_tensor.index_select(0, row_indices)
-        if self._sub_sampled_has_top_p:
-            active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
-            cdf = torch.cumsum(sorted_probs, dim=-1)
-            remove = (cdf > top_ps.unsqueeze(1)) & active_top_p.unsqueeze(1)
-            remove[:, 0] = False
-            sorted_probs = sorted_probs.masked_fill(remove, 0.0)
-
         seeds = self._sub_sampling_seed_tensor.index_select(0, row_indices)
         sub_positions = (
             semantic_positions.to(device=logits.device, dtype=torch.long)
@@ -1138,6 +1137,24 @@ class Qwen3TTSTalker(nn.Module):
             + int(layer_idx)
             + 1
         )
+
+        sorted_probs = torch.softmax(sorted_scores, dim=-1)
+        if self._sub_sampled_has_top_p:
+            active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
+            cdf = torch.cumsum(sorted_probs, dim=-1)
+            remove = (cdf > top_ps.unsqueeze(1)) & active_top_p.unsqueeze(1)
+            remove[:, 0] = False
+            sorted_probs = sorted_probs.masked_fill(remove, 0.0)
+
+        sampled = sample_from_sorted_probs_with_seed_small_k(
+            sorted_probs,
+            sorted_idx,
+            seeds,
+            sub_positions,
+        )
+        if sampled is not None:
+            return sampled.to(torch.long)
+
         sampled_rank = _sample_seeded_categorical(
             sorted_probs,
             seeds,
@@ -1154,9 +1171,7 @@ class Qwen3TTSTalker(nn.Module):
     ) -> torch.Tensor:
         hidden_states = token_embeds
         hidden_size = hidden_states.shape[-1]
-        positions = self._predictor_positions[cache_len : cache_len + 1].repeat(
-            batch_size
-        )
+        positions = self._predictor_position_rows[cache_len, :batch_size]
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
             residual = hidden_states
             normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
@@ -1223,15 +1238,22 @@ class Qwen3TTSTalker(nn.Module):
         layer_v_cache[:, :, cache_len : cache_len + 1, :].copy_(v)
         cached_k = layer_k_cache[:, :, : cache_len + 1, :]
         cached_v = layer_v_cache[:, :, : cache_len + 1, :]
-        groups = attn.num_heads // attn.num_kv_heads
-        cached_k = _repeat_kv(cached_k, groups)
-        cached_v = _repeat_kv(cached_v, groups)
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q,
-            cached_k,
-            cached_v,
-            is_causal=False,
-        )
+        num_kv_groups = attn.num_heads // attn.num_kv_heads
+        if num_kv_groups == 1:
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                cached_k,
+                cached_v,
+                is_causal=False,
+            )
+        else:
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                cached_k,
+                cached_v,
+                is_causal=False,
+                enable_gqa=True,
+            )
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size, attn.num_heads * attn.head_dim
         )

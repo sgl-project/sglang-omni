@@ -6,11 +6,16 @@ on:
       tts_ci_model:
         type: string
         default: higgs
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
 
 env:
   OMNI_CI_HOME: >-
-    ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}', github.event.pull_request.number)
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
         || format('/github/home/run-{0}', github.run_id) }}
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
 
@@ -25,12 +30,13 @@ env:
 jobs:
   stage-1-qwen3-asr:
     name: stage 1 - Qwen3-ASR correctness
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -50,7 +56,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_asr_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           HF_HUB_DISABLE_XET: "1"
           HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
@@ -65,12 +71,13 @@ jobs:
 
   stage-2-non-streaming:
     name: stage 2 - non-streaming
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -88,7 +95,7 @@ jobs:
           source omni/bin/activate
           python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
 
       - name: Run TTS non-streaming benchmark stage
@@ -99,7 +106,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-1-nonstream
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
@@ -128,12 +135,13 @@ jobs:
 
   stage-3-streaming:
     name: stage 3 - streaming
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -153,7 +161,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-2-stream
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
@@ -181,12 +189,13 @@ jobs:
   stage-4-consistency:
     name: stage 4 - consistency
     needs: [stage-2-non-streaming, stage-3-streaming]
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface

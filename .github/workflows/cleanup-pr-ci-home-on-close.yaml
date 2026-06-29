@@ -10,11 +10,11 @@ permissions:
 jobs:
   cleanup-pr-ci-home:
     name: cleanup - PR CI home on close
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: --rm -e NVIDIA_VISIBLE_DEVICES=6,7 -v /dev/shm:/dev/shm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

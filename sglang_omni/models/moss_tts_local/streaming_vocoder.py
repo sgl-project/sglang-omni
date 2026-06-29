@@ -296,6 +296,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         stream_slots: int = 8,
         stream_chunk_frames: int = 25,
         initial_chunk_frames: int = 5,
+        coalesce_floor_frames: int = 5,
         max_step_frames: int = 100,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
@@ -336,6 +337,9 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         self._stream_chunk_frames = int(stream_chunk_frames)
         self._default_initial_chunk_frames = max(
             0, min(int(initial_chunk_frames), int(stream_chunk_frames))
+        )
+        self._coalesce_floor_frames = max(
+            0, min(int(coalesce_floor_frames), int(stream_chunk_frames))
         )
         self._max_step_frames = int(max_step_frames)
         self._offline_slots = max(int(max_batch_size), 1)
@@ -629,7 +633,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     def _pump_streams(self) -> None:
         """Decode every stream whose buffer crossed its threshold; due streams coalesce with peers above the join floor into one forward. A failed step fails and aborts all its participants."""
         join_floor = max(
-            1, min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames)
+            1, min(self._coalesce_floor_frames or 5, self._stream_chunk_frames)
         )
         while True:
             slotted = [

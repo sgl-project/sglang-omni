@@ -65,6 +65,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         gpu_thinker_tp=None,
         relay_backend="shm",
         thinker_max_seq_len=8192,
+        talker_max_seq_len=None,
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
@@ -138,6 +139,16 @@ def test_mem_fractions_applied(mock_launch_server):
 
     assert thinker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.55
     assert talker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.20
+
+
+def test_talker_max_seq_len_applied(mock_launch_server):
+    args = _make_args(talker_max_seq_len=128)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["talker_max_seq_len"] == 128
 
 
 def test_partial_start_updates_talker_factory_args(mock_launch_server):

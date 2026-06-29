@@ -1071,7 +1071,7 @@ def create_talker_ar_executor_from_config(
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
     # trigger degenerate AR loops (see #408). Revert once upstream lands.
     overrides = build_generation_batch_overrides(
-        max_running_requests=16,
+        max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         sampling_backend="pytorch",

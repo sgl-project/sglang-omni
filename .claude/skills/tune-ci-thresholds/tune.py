@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Observe CI metrics over N runs on the H20 repro host.
+"""Observe CI metrics over N runs on the H100 repro host.
 Emits worst-of-N markdown. Does NOT propose thresholds or edit tests.
 Model-agnostic: pass --model <name>; config comes from
 models/<name>/config.yaml. Metrics come from result JSONs that tests

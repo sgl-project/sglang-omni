@@ -151,8 +151,13 @@ pytest tests/test_model -m benchmark -v -s
 
 Relevant model CI ownership:
 
-- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: expose the shared
-  router-backed Qwen3-Omni endpoint from `conftest.py`.
+- Qwen3-Omni server fixtures in `conftest.py` span the five viable 2xH100
+  serving topologies (one per stage type — see the H20->H100 migration PR):
+  `qwen3_omni_fp8_colocated_server` (FP8 colocated DP2),
+  `qwen3_omni_bf16_colocated_server` / `qwen3_omni_bf16_colocated_thinker_server`
+  (BF16 colocated DP2, full / thinker-only), `qwen3_omni_bf16_disagg_server`
+  (BF16 disaggregated), and `qwen3_omni_fp8_tp2_server` (FP8 thinker-TP=2);
+  BF16 thinker-TP=2 is exercised by thinker_length via `_start_qwen3_omni_tp2`.
 - `test_qwen3_omni_tts_ci.py`: gates the SeedTTS speed/WER path through the
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
@@ -173,7 +178,7 @@ Relevant model CI ownership:
   GPUs, then transcribe saved WAVs through the ASR router. Qwen3-Omni
   talker/TTS generation concurrency is 16, including the
   `videoamme_talker_tp2` stage; ASR/WER transcription concurrency is 32.
-- CI env alignment on the H20 repro host: `source .github/scripts/ci_env.sh`
+- CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
   setup: TTS CI → Qwen3-Omni CI → PR Test (`test.yaml` unit tests). A failure in

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Remove a PR- or run-scoped CI home directory on the self-hosted runner.
+#
+# Omni CI preserves /github/home/pr-* across workflow runs so pushes within the
+# runner TTL (e.g. 3 days) can reuse venv/cache; this script is used on PR close
+# and for ephemeral workflow_dispatch run-* homes—not after every PR CI run.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then

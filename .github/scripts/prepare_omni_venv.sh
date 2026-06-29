@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Full rebuild of OMNI_CI_HOME (never reuses an existing tree).
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -13,8 +14,13 @@ fi
 
 VENV_NAME="$1"
 HOST="${OMNI_CI_HOME}/${VENV_NAME}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEPS_HASH_FILE="${OMNI_CI_HOME}/.deps-hash"
-DEPS_HASH="$(sha256sum pyproject.toml | awk '{print $1}')"
+
+# shellcheck source=omni_ci_deps_hash.sh
+source "${SCRIPT_DIR}/omni_ci_deps_hash.sh"
+DEPS_HASH="$(omni_ci_deps_hash)"
+
 LOCK_DIR="${UV_CACHE_DIR:-/github/home/.cache/uv}"
 mkdir -p "${LOCK_DIR}"
 LOCK_FILE="${LOCK_DIR}/omni-venv-prepare-$(echo -n "${OMNI_CI_HOME}" | sha256sum | awk '{print $1}').lock"
@@ -25,27 +31,12 @@ if ! flock -w 3600 200; then
   exit 1
 fi
 
-reuse_venv=false
-if [ -f "${DEPS_HASH_FILE}" ] \
-  && [ "$(cat "${DEPS_HASH_FILE}")" = "${DEPS_HASH}" ] \
-  && [ -x "${HOST}/bin/python" ] \
-  && "${HOST}/bin/python" -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-  reuse_venv=true
-fi
-
-if [ "${reuse_venv}" = true ]; then
-  echo "Reusing ${HOST} (pyproject.toml unchanged); refreshing editable install and dependency versions"
-  rm -rf "./${VENV_NAME}"
-  ln -sfn "${HOST}" "./${VENV_NAME}"
-  source "${VENV_NAME}/bin/activate"
-  uv pip install --upgrade -e .
-  exit 0
-fi
-
-echo "Preparing fresh ${HOST} (deps changed or venv missing/corrupt)"
+echo "Preparing fresh ${HOST} (full rebuild)"
+rm -f "${OMNI_CI_HOME}/.omni-env-complete"
 rm -rf "${OMNI_CI_HOME}"
 mkdir -p "${OMNI_CI_HOME}"
 uv venv "${HOST}" -p 3.11
+
 rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
@@ -61,5 +52,14 @@ if ! python -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/nu
   uv pip install --force-reinstall --no-deps --no-cache openai-whisper==20250625
 fi
 
-python -c "from whisper.normalizers import EnglishTextNormalizer"
+if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
+  exit 1
+fi
+
+if ! bash "${SCRIPT_DIR}/verify_omni_installed_pins.sh" "${VENV_NAME}"; then
+  echo "::error::Fresh venv does not match pyproject.toml pins" >&2
+  exit 1
+fi
+
 echo "${DEPS_HASH}" > "${DEPS_HASH_FILE}"
+echo "Fresh environment ready at ${HOST} (deps_hash=${DEPS_HASH})"

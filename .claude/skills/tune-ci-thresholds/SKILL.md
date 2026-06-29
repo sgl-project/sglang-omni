@@ -1,15 +1,15 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Each new user calibration request MUST use a fresh UTC-timestamp --output-dir on current HEAD; --resume only when explicitly continuing the same interrupted session on the same commit. Reports must include the full calibration commit SHA. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports qwen3-omni-v1, qwen3-asr-v1, and tts; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H100 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Each new user calibration request MUST use a fresh UTC-timestamp --output-dir on current HEAD; --resume only when explicitly continuing the same interrupted session on the same commit. Reports must include the full calibration commit SHA. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports qwen3-omni-v1, qwen3-asr-v1, and tts; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
 
 ## Scope
-This skill is for the H20 CI-reproduction host only (the same image
+This skill is for the H100 CI-reproduction host (the same image
 CI uses,
 `crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
-a CUDA-13 image; the container name varies).
+a CUDA-13 image; the container name varies). The host is 2× H100.
 Numbers from environments that differ meaningfully from CI (different
 GPU model, different image, different pinned sglang/torch) are not
 comparable and must not drive threshold changes. If you just want to
@@ -178,6 +178,16 @@ Equivalently: **strict audit shows N/N ✓ for every stage** and
 repeats. **Forbidden:** treating pytest PASS as success when
 `run{k}.json` metrics are null or partial.
 
+**⚠️ `discover` can mislabel `expected_samples` for full-dataset stages.** For a
+stage whose only `context_var` is `CONCURRENCY` (no `MAX_SAMPLES`) — e.g.
+`mmmu_accuracy` / `mmmu_speed`, `mmsu_accuracy` / `mmsu_speed` — `discover`
+wrongly sets `expected_samples = CONCURRENCY` (**16**). Because `tune.py` uses
+`expected_samples` for the completion gate, those stages look **perpetually
+incomplete** and trigger futile `--resume` retries (mmsu is the 2000-sample slow
+stage, so this wastes a lot of GPU time). **After `discover`, verify
+`expected_samples` matches the real dataset size** (mmmu = **50**, mmsu =
+**2000**) and fix the `stages.yaml` literals **before** `run`.
+
 ### No `-x` during calibration (P0 — non-negotiable)
 
 `tune.py run` **must never** pass pytest `-x` / `--exitfirst`.
@@ -277,16 +287,35 @@ When a host profile is active (or model is `tts` / `qwen3-omni-v1`),
 `wavlm_large.pt`, `wavlm_large_finetune.pth`. Bootstrap once if ✗ — see
 `speaker_similarity_bootstrap` in the host YAML.
 
-### Shipped profile: `sglang-h20-ci`
+### UTMOS asset — NOT covered by precheck (warm before TTS)
 
-`repo_root` `/data/chenyang/sglang-omni`, `venv_python`
-`/data/chenyang/.python/omni/bin/python`, `physical.hf_hub`
+The TTS `tts_utmos` metric downloads `balacoon/utmos` → `utmos.jit` **on demand**
+via `benchmarks.metrics.utmos.ensure_utmos_assets`, into
+`/github/home/.cache/sglang-omni/utmos`. `precheck` does **not** verify it, so on
+an overseas host (e.g. H100) `tts_utmos` fails **mid-run** — `hf-mirror.com` can't
+serve the file. Warm it **before** TTS calibration with
+`HF_ENDPOINT=https://huggingface.co` by calling `ensure_utmos_assets()` (a raw
+`huggingface-cli download` won't satisfy its `.utmos_cache.json` marker):
+
+```bash
+HF_ENDPOINT=https://huggingface.co <venv>/bin/python -c \
+  "from benchmarks.metrics.utmos import ensure_utmos_assets; ensure_utmos_assets()"
+```
+
+### Shipped profile: `sglang-h100-ci` (current / active)
+
+`repo_root` `/data/sglang-omni`, `venv_python`
+`/github/home/calibration/omni/bin/python`, `physical.hf_hub`
 `/root/.cache/huggingface`, `physical.speaker_sim`
-`/root/.cache/huggingface/speaker_sim`.
+`/root/.cache/huggingface/speaker_sim`, `physical.omni_ci_home`
+`/github/home/calibration`. Container image
+`crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
+GPUs `NVIDIA_VISIBLE_DEVICES=6,7` (2× NVIDIA H100 80GB HBM3). Pins:
+**sglang 0.5.12.post1**, **torch 2.11.0** (cu130).
 
 ### Adding a new host profile
 
-Copy `hosts/sglang-h20-ci.yaml` → `hosts/<name>.yaml`. Set `hostname`,
+Copy `hosts/sglang-h100-ci.yaml` → `hosts/<name>.yaml`. Set `hostname`,
 `repo_root`, `venv_python`, `physical.*` — **in-container paths only**.
 Add venv to `default_venv_python` in `models/*/config.yaml`.
 
@@ -589,9 +618,12 @@ Prefer repairing the single reported gap over rebuilding.
   them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
   own `disable_proxy()` helper strips them for loopback calls, matching
   real CI.
-- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (matches CI omni-setup). Use
-  `https://huggingface.co` only if mirror download fails and precheck prints an
-  alternate command.
+- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (the China mirror, matches CI
+  omni-setup). The **H100 host is overseas**, where `hf-mirror.com` fails with
+  `LocalEntryNotFoundError`; warm-cache downloads on that host (speaker-sim WavLM
+  and the UTMOS asset — see below) must use `HF_ENDPOINT=https://huggingface.co`.
+  Otherwise use `https://huggingface.co` only if a mirror download fails and
+  precheck prints an alternate command.
 - No GPU processes holding memory at **precheck** time. If all GPUs are
   busy, precheck fails with the busy PID list and the user must free them.
   **During `tune.py run`**, the tool runs `delete_gpu_process.sh` and
@@ -829,7 +861,7 @@ not merely run the same pytest command.
 after precheck reports the venv path missing, imports fail, or sglang/torch
 pins cannot be fixed with `uv pip install -e .`.
 
-From repo root on the H20 repro host (cu13 `hongccc/sglang-omni:dev` semantics):
+From repo root on the H100 repro host (cu13 `hongccc/sglang-omni:dev` semantics):
 
 ```bash
 # Qwen3-Omni example (TTS: OMNI_CI_HOME=/github/home/calibration, venv omni)
@@ -1020,7 +1052,7 @@ Only the Qwen3-ASR router stage needs 2 free GPUs after `delete_gpu_process.sh`.
   rely on a polluted parent shell (`TORCHINDUCTOR_CACHE_DIR=/.torchinductor`
   has been observed from stale exports).
 - **One GPU consumer at a time** on the repro host: do not overlap `tune.py
-  run` with full talker/WER pytest — they fight for the same 2× H20.
+  run` with full talker/WER pytest — they fight for the same 2× H100.
 - **GPU idle gate before every stage** — run `.github/scripts/delete_gpu_process.sh --kill-orphans`
   (not `delete_gpu_process.sh` alone); abort if VRAM not below 2048 MiB on
   **both** GPUs before starting the next pytest.
@@ -1241,7 +1273,7 @@ weights checklist for agents).
    cd <repo_root from host profile> && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... \
      --output-dir <run-dir>
    ```
-   Example (`sglang-h20-ci`): `cd /data/chenyang/sglang-omni && TUNE_VENV_PYTHON=/data/chenyang/.python/omni/bin/python python .claude/skills/tune-ci-thresholds/tune.py ...`
+   Example (`sglang-h100-ci`): `cd /data/sglang-omni && TUNE_VENV_PYTHON=/github/home/calibration/omni/bin/python python .claude/skills/tune-ci-thresholds/tune.py ...`
 
    Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — if both
    tabs show the same lines, Tab A is wrong (likely tailing `run.log`). Never
@@ -1484,7 +1516,7 @@ weights checklist for agents).
 │                                        # subcommands: run, report, status,
 │                                        # strict-audit, apply-plan, precheck, discover
 ├── hosts/                               # per-machine repo/venv/cache layouts
-│   └── sglang-h20-ci.yaml               # example: /data/chenyang + /root/.cache
+│   └── sglang-h100-ci.yaml              # in-container repo/venv/cache layout for the H100 CI host
 └── models/
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml

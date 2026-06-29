@@ -39,9 +39,9 @@ MMSU_MIN_ACCURACY = 0.699
 # util-ratio == qps-ratio). See PR.
 _MMSU_P95 = {
     16: {
-        "throughput_qps": 45.634,  # was 62.519
-        "output_tok_per_req_s": 5.9,  # was 8.1
-        "latency_mean_s": 0.35,  # was 0.255
+        "throughput_qps": 68.3,  # was 62.519
+        "output_tok_per_req_s": 8.8,  # was 8.1
+        "latency_mean_s": 0.234,  # was 0.255
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)
@@ -69,7 +69,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         disable_tqdm=False,
         seed=None,
         repo_id=DATASETS["mmsu-ci-2000"],
-        # Unused in text-only mode but kept for API consistency with run().
+        # Unused by this text-output benchmark (modalities="text"); kept for API consistency with run().
         lang="en",
         asr_device="cuda:0",
     )
@@ -77,13 +77,15 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
 
 @pytest.mark.benchmark
 def test_mmsu_accuracy_and_speed(
-    qwen3_omni_mmsu_server: ManagedRouterHandle,
+    qwen3_omni_bf16_colocated_thinker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
-    args = _build_args(qwen3_omni_mmsu_server.port, str(tmp_path / "mmsu"))
+    args = _build_args(
+        qwen3_omni_bf16_colocated_thinker_server.port, str(tmp_path / "mmsu")
+    )
     with router_worker_traffic_guard(
-        qwen3_omni_mmsu_server,
+        qwen3_omni_bf16_colocated_thinker_server,
         label="Qwen3-Omni MMSU",
     ) as router_guard:
         results = asyncio.run(run_mmsu(args))

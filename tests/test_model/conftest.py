@@ -45,141 +45,240 @@ QWEN3_OMNI_FP8_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_FP8_MODEL", QWEN3_OMNI_FP8_MODEL_PATH
 )
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
-QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
-QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
+QWEN3_OMNI_TP2_THINKER_MEM_FRACTION = "0.55"
+QWEN3_OMNI_TP2_TALKER_MEM_FRACTION = "0.20"
+QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN = 32768
+QWEN3_OMNI_FP8_COLOCATED_CONFIG = "examples/configs/qwen3_omni_colocated_h100_fp8.yaml"
+QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS = (
+    f"--config {QWEN3_OMNI_FP8_COLOCATED_CONFIG} --colocate "
+    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
-QWEN3_OMNI_MMMU_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_mmmu.yaml --text-only"
+QWEN3_OMNI_BF16_COLOCATED_CONFIG = (
+    "examples/configs/qwen3_omni_colocated_h100_bf16.yaml"
 )
-QWEN3_OMNI_MMSU_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
+QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS = (
+    f"--config {QWEN3_OMNI_BF16_COLOCATED_CONFIG} --colocate "
+    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
-QWEN3_OMNI_VIDEO_WORKER_ARGS = (
-    f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
-    "--stages.0.factory-args.thinker-max-seq-len 32768 "
-    "--stages.4.factory-args.thinker-max-seq-len 32768"
-)
+QWEN3_OMNI_BF16_THINKER_CONFIG = "examples/configs/qwen3_omni_mmmu_h100.yaml"
+QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"
+QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION = "0.82"
+QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION = "0.40"
+QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION = "0.40"
 
 
 @pytest.fixture(scope="module")
-def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start two colocated Qwen3-Omni workers behind the router."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_mmmu_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint tuned for MMMU text-output CI."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_MMMU_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_mmsu_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint tuned for MMSU text-output CI."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_MMSU_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint used by text-output benchmarks."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint used by audio-output benchmarks."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
-    """Start Qwen3-Omni TP=2 thinker + disaggregated talker on the same two-card host."""
-    yield from _start_qwen3_omni_speech_server(
-        tmp_path_factory,
-        extra_args=[
-            "--thinker-tp-size",
-            "2",
-            "--gpu-thinker-tp",
-            "0,1",
-            "--gpu-talker",
-            "1",
-            "--gpu-code2wav",
-            "1",
-            "--thinker-mem-fraction-static",
-            "0.55",
-            "--talker-mem-fraction-static",
-            "0.20",
-        ],
-        timeout=450,
-        log_prefix="server_logs_tp2",
-        force_log=True,
+def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 colocated-DP2, thinker-only (0.92); MMMU."""
+    yield from _start_qwen3_omni_bf16_colocated_router(
+        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_THINKER_ARGS
     )
 
 
 @pytest.fixture(scope="module")
-def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
-    """Start Qwen3-Omni FP8 with TP=2 thinker and TP=1 talker."""
-    yield from _start_qwen3_omni_speech_server(
-        tmp_path_factory,
-        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
-        extra_args=[
-            "--thinker-tp-size",
-            "2",
-            "--gpu-thinker-tp",
-            "0,1",
-            "--gpu-talker",
-            "1",
-            "--gpu-code2wav",
-            "1",
-            # note (Yue Yin): 0.40 not 0.55 — GPU 1 co-locates thinker rank-1, talker,
-            # code2wav under TP=2; 0.55 OOMs on concurrency-16 video-prefill (issue #765).
-            "--thinker-mem-fraction-static",
-            "0.40",
-            "--talker-mem-fraction-static",
-            "0.20",
-        ],
-        timeout=450,
-        log_prefix="server_logs_fp8_tp2",
-        force_log=True,
+def qwen3_omni_bf16_colocated_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 colocated-DP2, full thinker+talker; TTS."""
+    yield from _start_qwen3_omni_bf16_colocated_router(
+        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS
     )
 
 
-def _launch_qwen3_omni_router(
-    tmp_path_factory: pytest.TempPathFactory,
-    *,
-    model_path: str = QWEN3_OMNI_TEST_MODEL_PATH,
-    worker_extra_args: str,
-):
+@pytest.fixture(scope="module")
+def qwen3_omni_fp8_colocated_server(tmp_path_factory: pytest.TempPathFactory):
+    """FP8 colocated-DP2; MMMU, Video-AMME."""
+    yield from _start_qwen3_omni_fp8_colocated_router(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_bf16_disagg_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 disaggregated (thinker GPU 0 / talker GPU 1); Video-MME (+talker)."""
+    yield from _start_qwen3_omni_disagg(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_fp8_tp2_server(tmp_path_factory: pytest.TempPathFactory):
+    """FP8 thinker-TP=2; MMSU-talker, Video-AMME-talker."""
+    yield from _start_qwen3_omni_fp8_tp2(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 thinker-TP=2 (short context); thinker_length context-length checks."""
+    yield from _start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
+
+
+def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
+    """Start 2 FP8 colocated replicas (one per H100) behind the managed router."""
     from tests.test_model.omni_router_utils import launch_managed_router
 
-    return launch_managed_router(
+    with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=model_path,
+        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
+        model_name=QWEN3_OMNI_MODEL_NAME,
+        worker_extra_args=QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS,
+        num_workers=2,
+        num_gpus_per_worker=1,
+    ) as router:
+        yield router
+
+
+def _start_qwen3_omni_bf16_colocated_router(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    worker_extra_args: str,
+):
+    """Start 2 BF16 colocated replicas (one per H100) behind the managed router."""
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=worker_extra_args,
-        wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
+        num_workers=2,
+        num_gpus_per_worker=1,
+    ) as router:
+        yield router
+
+
+def _start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
+    """Start a BF16 disaggregated server (thinker GPU 0 / talker GPU 1) as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    extra_args = [
+        "--gpu-thinker",
+        "0",
+        "--gpu-image-encoder",
+        "0",
+        "--gpu-audio-encoder",
+        "0",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION,
+    ]
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        extra_args=extra_args,
+        timeout=600,
+        log_prefix="server_logs_disagg_ci",
+        force_log=True,
     )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
+
+
+def _start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
+    """Start an FP8 thinker-TP=2 server (talker stacked on GPU 1) as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    extra_args = [
+        "--thinker-tp-size",
+        "2",
+        "--gpu-thinker-tp",
+        "0,1",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
+    ]
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
+        extra_args=extra_args,
+        timeout=600,
+        log_prefix="server_logs_fp8_tp2_ci",
+        force_log=True,
+    )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
+
+
+def _start_qwen3_omni_tp2(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    thinker_max_seq_len: int = QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN,
+):
+    """Start a BF16 thinker-TP=2 server as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    model_path = QWEN3_OMNI_TEST_MODEL_PATH
+    is_short_thinker_context = thinker_max_seq_len != QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN
+    thinker_mem_fraction = (
+        QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION
+        if is_short_thinker_context
+        else QWEN3_OMNI_TP2_THINKER_MEM_FRACTION
+    )
+    extra_args = [
+        "--thinker-tp-size",
+        "2",
+        "--gpu-thinker-tp",
+        "0,1",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        thinker_mem_fraction,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
+    ]
+    if is_short_thinker_context:
+        extra_args.extend(
+            [
+                "--talker-max-seq-len",
+                str(thinker_max_seq_len),
+            ]
+        )
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=model_path,
+        extra_args=extra_args,
+        thinker_max_seq_len=thinker_max_seq_len,
+        timeout=600,
+        log_prefix="server_logs_tp2_ci",
+        force_log=True,
+    )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
 
 
 def _start_qwen3_omni_speech_server(
@@ -190,6 +289,7 @@ def _start_qwen3_omni_speech_server(
     timeout: int,
     log_prefix: str,
     force_log: bool,
+    thinker_max_seq_len: int = QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN,
 ) -> Generator[ServerHandle, None, None]:
     """Shared bring-up for run_qwen3_omni_speech_server.py-based fixtures."""
     import sys
@@ -218,7 +318,7 @@ def _start_qwen3_omni_speech_server(
         "--model-name",
         "qwen3-omni",
         "--thinker-max-seq-len",
-        "32768",
+        str(thinker_max_seq_len),
         *extra_args,
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=timeout, tee=force_log)

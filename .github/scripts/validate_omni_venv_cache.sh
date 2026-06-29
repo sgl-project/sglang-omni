@@ -11,12 +11,5 @@ if [ -z "${OMNI_CI_HOME:-}" ]; then
   exit 1
 fi
 
-VENV_NAME="$1"
-HOST_CACHE="${OMNI_CI_HOME}/${VENV_NAME}"
-
-if ! "${HOST_CACHE}/bin/python" -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-  echo "::error::Prepared ${VENV_NAME} at ${HOST_CACHE} is incomplete or corrupted"
-  exit 1
-fi
-
-echo "Validated host venv cache: ${HOST_CACHE}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "$1"

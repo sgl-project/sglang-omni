@@ -48,6 +48,15 @@ After changing threshold literals in `tests/test_model/tts_ci_config.py`, run
 `tune.py --model tts discover` so `stages.yaml` sources stay aligned with
 `calibration_presets.*.constant_filter`.
 
+**After any `discover`, verify `expected_samples` for full-dataset stages.**
+For a stage whose only `context_var` is `CONCURRENCY` (no `MAX_SAMPLES`) — e.g.
+`mmmu_accuracy`/`mmmu_speed`, `mmsu_accuracy`/`mmsu_speed` — `discover` wrongly
+sets `expected_samples = CONCURRENCY` (16), so the completion gate never passes
+and the stage triggers futile `--resume` retries (mmsu is the 2000-sample slow
+stage). Confirm `expected_samples` matches the real dataset size (mmmu = 50,
+mmsu = 2000) and fix the `stages.yaml` literals **before** `run`. See SKILL.md
+**Mandatory re-run on any gap**.
+
 ---
 
 ## Gate 0a — Fresh session vs resume (P0)
@@ -82,8 +91,8 @@ See SKILL.md **Fresh calibration session**.
 ```bash
 python .claude/skills/tune-ci-thresholds/tune.py hosts-list
 hostname
-# then cd to repo_root from host profile (sglang-h20-ci: /data/chenyang/sglang-omni)
-cd /data/chenyang/sglang-omni
+# then cd to repo_root from host profile (sglang-h100-ci: /data/sglang-omni)
+cd /data/sglang-omni
 ```
 
 **Pass:**
@@ -96,15 +105,15 @@ cd /data/chenyang/sglang-omni
 
 | Observation | Action |
 |-------------|--------|
-| No `host: …` line | Set `--host sglang-h20-ci` or `export TUNE_HOST=sglang-h20-ci`; if hostname wrong, report mismatch |
+| No `host: …` line | Set `--host sglang-h100-ci` or `export TUNE_HOST=sglang-h100-ci`; if hostname wrong, report mismatch |
 | `repo_root` missing / no `pyproject.toml` | Report; do not calibrate |
 
-Reference profile `sglang-h20-ci` (`hosts/sglang-h20-ci.yaml`):
+Reference profile `sglang-h100-ci` (`hosts/sglang-h100-ci.yaml`, current/active):
 
 | Key | Expected path |
 |-----|----------------|
-| `repo_root` | `/data/chenyang/sglang-omni` |
-| `venv_python` | `/data/chenyang/.python/omni/bin/python` |
+| `repo_root` | `/data/sglang-omni` |
+| `venv_python` | `/github/home/calibration/omni/bin/python` |
 | `physical.hf_hub` | `/root/.cache/huggingface` |
 | `physical.speaker_sim` | `/root/.cache/huggingface/speaker_sim` |
 | `physical.omni_ci_home` | `/github/home/calibration` |
@@ -116,11 +125,11 @@ may be stale.
 
 ## Gate 2 — Repo, venv, dependency pins
 
-Set from host profile (example uses `sglang-h20-ci`):
+Set from host profile (example uses `sglang-h100-ci`):
 
 ```bash
-HOST_ROOT=/data/chenyang/sglang-omni
-VENV=/data/chenyang/.python/omni/bin/python
+HOST_ROOT=/data/sglang-omni
+VENV=/github/home/calibration/omni/bin/python
 
 test -f "$HOST_ROOT/pyproject.toml" && echo PASS repo || echo FAIL repo
 test -x "$VENV" && echo PASS venv || echo FAIL venv
@@ -180,7 +189,7 @@ for calibration.
 nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv
 ```
 
-**Pass:** 2× H20 (or profile-equivalent), each **≤ 2048 MiB** used before
+**Pass:** 2× H100 (or profile-equivalent), each **≤ 2048 MiB** used before
 calibration runs (`tune.py` re-checks at run time).
 
 **Fail → report** GPU busy; do not start `tune.py run`. Precheck does not kill
@@ -220,15 +229,17 @@ Directory: `physical.speaker_sim` (default `/root/.cache/huggingface/speaker_sim
 
 ```bash
 SIM=/root/.cache/huggingface/speaker_sim
-VENV=/data/chenyang/.python/omni/bin/python
+VENV=/github/home/calibration/omni/bin/python
 
 for f in wavlm_large.pt wavlm_large_finetune.pth .complete; do
   test -f "$SIM/$f" && echo PASS "$f" || echo FAIL "$f"
 done
 
-export HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0
+# hf-mirror.com is the China default, but the H100 host is overseas and fails it
+# with LocalEntryNotFoundError — use huggingface.co for the warm-cache download.
+export HF_ENDPOINT=https://huggingface.co HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0
 export SEEDTTS_SIM_CACHE_DIR="$SIM"
-cd /data/chenyang/sglang-omni
+cd /data/sglang-omni
 $VENV -m benchmarks.metrics.speaker_similarity_assets --warm-cache
 # Must print: cache HIT at .../speaker_sim
 ```
@@ -237,6 +248,20 @@ $VENV -m benchmarks.metrics.speaker_similarity_assets --warm-cache
 
 **Fail → report**; if user asked to fix, use `speaker_similarity_bootstrap` in
 host profile. Do not re-download when `.complete` exists and warm-cache HITs.
+
+**Also warm the UTMOS asset (NOT checked by precheck).** The TTS `tts_utmos`
+metric downloads `balacoon/utmos` → `utmos.jit` on demand via
+`benchmarks.metrics.utmos.ensure_utmos_assets`, into
+`/github/home/.cache/sglang-omni/utmos`. precheck does **not** verify it, so on an
+overseas host (e.g. H100) `tts_utmos` fails **mid-run** because `hf-mirror.com`
+can't serve the file. Warm it before TTS calibration with the same overseas
+endpoint (`ensure_utmos_assets()` — a raw `huggingface-cli download` won't satisfy
+its `.utmos_cache.json` marker):
+
+```bash
+HF_ENDPOINT=https://huggingface.co $VENV -c \
+  "from benchmarks.metrics.utmos import ensure_utmos_assets; ensure_utmos_assets()"
+```
 
 ---
 
@@ -262,8 +287,8 @@ stages only if user accepts partial scope.
 Run for **each** model in Gate 0 scope:
 
 ```bash
-cd /data/chenyang/sglang-omni
-export TUNE_HOST=sglang-h20-ci   # if Gate 1 autodetect failed
+cd /data/sglang-omni
+export TUNE_HOST=sglang-h100-ci   # if Gate 1 autodetect failed
 
 python .claude/skills/tune-ci-thresholds/tune.py --model tts precheck \
   --output-dir /tmp/precheck_tts
@@ -272,12 +297,12 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck 
   --output-dir /tmp/precheck_qwen3
 ```
 
-Add `--host sglang-h20-ci` if autodetect failed in Gate 1.
+Add `--host sglang-h100-ci` if autodetect failed in Gate 1.
 
 **Pass — every line good, ends with `precheck OK`:**
 
 ```
-host: sglang-h20-ci (repo=...)
+host: sglang-h100-ci (repo=...)
 venv_python: ... [ok]
   sglang: 0.5.12.post1 (pin ...) [ok]
   torch: 2.11.0+cu130 (pin ...) [ok]
@@ -286,7 +311,7 @@ venv_python: ... [ok]
     ✓ model: ...
     ✓ dataset: ...
     ✓ speaker_sim: ... (wavlm_large.pt + wavlm_large_finetune.pth)
-  GPUs: 2× NVIDIA H20 — 2/2 free
+  GPUs: 2× NVIDIA H100 80GB HBM3 — 2/2 free
 
 precheck OK
 ```
@@ -313,8 +338,8 @@ is green or only reports one missing repo.
 Only if time permits or user requested; not a substitute for Gate 8.
 
 ```bash
-cd /data/chenyang/sglang-omni
-source /data/chenyang/.python/omni/bin/activate
+cd /data/sglang-omni
+source /github/home/calibration/omni/bin/activate
 source .github/scripts/ci_env.sh
 export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp PYTHONPATH=$PWD
 export NO_PROXY=localhost,127.0.0.1,::1

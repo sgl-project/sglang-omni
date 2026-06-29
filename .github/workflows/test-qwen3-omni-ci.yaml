@@ -2,6 +2,12 @@ name: Qwen3-Omni CI
 
 on:
   workflow_call:
+    inputs:
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -10,9 +16,10 @@ permissions:
 
 env:
   OMNI_CI_HOME: >-
-    ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}', github.event.pull_request.number)
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
         || format('/github/home/run-{0}', github.run_id) }}
+  PYTORCH_ALLOC_CONF: expandable_segments:True
 
 # Invoked by omni-ci.yaml after TTS CI (last benchmark suite in the omni-ci
 # sequence: PR Test → TTS → Qwen3-Omni). Restores omni only.
@@ -20,12 +27,14 @@ env:
 jobs:
   stage-1-thinker:
     name: stage 1 - thinker length integration
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -45,7 +54,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -56,12 +65,14 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -79,7 +90,7 @@ jobs:
           source omni/bin/activate
           python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
 
       - name: Run TTS CI (speed + WER + SIM)
@@ -90,7 +101,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -109,12 +120,14 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -134,7 +147,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -149,12 +162,14 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -174,7 +189,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -189,12 +204,14 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -214,7 +231,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -230,12 +247,14 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -255,7 +274,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -270,12 +289,14 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -295,7 +316,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -310,12 +331,14 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -335,7 +358,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -350,12 +373,14 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
+        --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
@@ -375,7 +400,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -388,56 +413,17 @@ jobs:
           artifact-upload-name: qwen3-omni-videoamme-results
           artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
 
-  stage-10-videoamme-talker:
-    name: stage 10 - Video-AMME Talker
-    runs-on: [self-hosted]
-    timeout-minutes: 30
-    container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
-      options: >-
-        --gpus all --rm
-        -v /dev/shm:/dev/shm
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Run Video-AMME Talker CI (WER + speed)
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: Video-AMME Talker (WER + speed)
-          artifact-path-globs: |
-            */videoamme_audio*/videoamme_results.json
-          artifact-upload-name: qwen3-omni-videoamme-talker-results
-          artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
-
-  stage-11-thinker-tp2:
-    name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
-    runs-on: [self-hosted]
+  stage-10-videoamme-talker-tp2:
+    name: stage 10 - FP8 Thinker TP=2 (Video-AMME Talker)
+    runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -458,11 +444,8 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-          # note (Yue Yin): GPU 1 co-locates thinker rank-1 + talker + code2wav under TP=2;
-          # expandable_segments reduces allocator fragmentation (issue #765).
-          PYTORCH_ALLOC_CONF: expandable_segments:True
 
       - name: Post-stage cleanup
         if: always()
@@ -471,5 +454,5 @@ jobs:
           stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
           artifact-path-globs: |
             */videoamme_audio*/videoamme_results.json
-          artifact-upload-name: qwen3-omni-thinker-tp2-results
+          artifact-upload-name: qwen3-omni-videoamme-talker-tp2-results
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json

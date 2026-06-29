@@ -49,9 +49,9 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
-  - "/data/chenyang/.python/omni/bin/python"
-  - "/sgl-workspace/sglang-omni/omni/bin/python"
+  # H100 CI calibration venv (first match wins).
   - "/github/home/calibration/omni/bin/python"
+  - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/omni/bin/python"
 auto_env:
   HOME: "/github/home"
