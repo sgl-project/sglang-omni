@@ -83,6 +83,8 @@ def test_serialize_value_detaches_tensor_to_cpu() -> None:
 
 
 def test_tts_pipeline_states_share_base_usage_contract() -> None:
+    import dataclasses
+
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
@@ -90,7 +92,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 
-    # All six in-scope TTS models route their state through PipelineStateBase.
+    # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
         S2ProState,
         HiggsTtsState,
@@ -99,9 +101,23 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         Qwen3TTSState,
         VoxtralTTSState,
     )
+    base_fields = {
+        "sample_rate",
+        "prompt_tokens",
+        "completion_tokens",
+        "engine_time_s",
+        "schema_version",
+    }
 
     for state_cls in state_classes:
-        assert issubclass(state_cls, PipelineStateBase)
+        assert issubclass(state_cls, PipelineStateBase), state_cls.__name__
+        # The shared usage/serialization fields are actually inherited...
+        field_names = {f.name for f in dataclasses.fields(state_cls)}
+        missing = base_fields - field_names
+        assert not missing, f"{state_cls.__name__} missing base fields: {missing}"
+        # ...and the structural serialization interface is present.
+        assert callable(getattr(state_cls, "to_dict", None)), state_cls.__name__
+        assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
 
 
 def test_schema_version_guard_is_opt_in() -> None:
