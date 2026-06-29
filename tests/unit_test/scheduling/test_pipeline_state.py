@@ -10,8 +10,6 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import (
     PipelineStateBase,
     build_usage,
-    decode_typed_tensor,
-    encode_typed_tensor,
     load_state,
     store_state,
 )
@@ -142,38 +140,3 @@ def test_base_requires_to_dict_and_from_dict() -> None:
         PipelineStateBase().to_dict()
     with pytest.raises(NotImplementedError):
         PipelineStateBase.from_dict({})
-
-
-def test_typed_tensor_round_trip_preserves_values() -> None:
-    codes = torch.tensor([[1, 2, 3], [4, 5, 6]])
-
-    data = encode_typed_tensor(codes, key="audio_codes")
-
-    assert set(data) == {
-        "audio_codes_bytes",
-        "audio_codes_shape",
-        "audio_codes_dtype",
-    }
-    restored = decode_typed_tensor(data, key="audio_codes")
-    assert restored is not None
-    assert restored.dtype == torch.int64
-    assert restored.tolist() == [[1, 2, 3], [4, 5, 6]]
-
-
-def test_typed_tensor_picks_int32_for_large_values() -> None:
-    codes = torch.tensor([[70000, 1]])
-
-    data = encode_typed_tensor(codes, key="audio_codes")
-
-    assert data["audio_codes_dtype"] == "int32"
-    assert decode_typed_tensor(data, key="audio_codes").tolist() == [[70000, 1]]
-
-
-def test_typed_tensor_legacy_list_fallback_and_missing() -> None:
-    restored = decode_typed_tensor(
-        {"audio_codes": [[1, 2], [3, 4]]},
-        key="audio_codes",
-        legacy_key="audio_codes",
-    )
-    assert restored.tolist() == [[1, 2], [3, 4]]
-    assert decode_typed_tensor({}, key="audio_codes") is None

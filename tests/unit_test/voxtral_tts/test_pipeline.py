@@ -153,14 +153,15 @@ def test_voxtral_audio_waveform_payload_is_compact() -> None:
     assert payload["audio_waveform_dtype"] == "float32"
 
 
-def test_voxtral_audio_codes_payload_is_compact() -> None:
+def test_voxtral_audio_codes_kept_as_cpu_tensor_for_relay() -> None:
     state = VoxtralTTSState(audio_codes=torch.tensor([[1, 2], [3, 4]]))
 
     data = state.to_dict()
     restored = VoxtralTTSState.from_dict(data)
 
-    assert "audio_codes_bytes" in data
-    assert "audio_codes" not in data
+    # Kept as a CPU tensor so relay ships it on the data-plane side-channel.
+    assert isinstance(data["audio_codes"], torch.Tensor)
+    assert data["audio_codes"].device.type == "cpu"
     assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
 
 

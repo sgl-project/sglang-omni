@@ -7,11 +7,7 @@ from typing import Any
 
 import torch
 
-from sglang_omni.scheduling.pipeline_state import (
-    PipelineStateBase,
-    decode_typed_tensor,
-    encode_typed_tensor,
-)
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
 
 
 @dataclass
@@ -43,7 +39,8 @@ class VoxtralTTSState(PipelineStateBase):
             data["voice"] = self.voice
         data["max_new_tokens"] = self.max_new_tokens
         if self.audio_codes is not None:
-            data.update(encode_typed_tensor(self.audio_codes, key="audio_codes"))
+            # Keep a CPU tensor so relay ships it on the data-plane side-channel.
+            data["audio_codes"] = self.serialize_value(self.audio_codes)
         self.append_usage_fields(data)
         if self.audio_samples is not None:
             data["audio_samples"] = self._tensor_to_list(self.audio_samples)
@@ -56,9 +53,7 @@ class VoxtralTTSState(PipelineStateBase):
             input_ids=data.get("input_ids"),
             voice=data.get("voice"),
             max_new_tokens=data.get("max_new_tokens", 4096),
-            audio_codes=decode_typed_tensor(
-                data, key="audio_codes", legacy_key="audio_codes"
-            ),
+            audio_codes=data.get("audio_codes"),
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             engine_time_s=float(data.get("engine_time_s", 0.0)),
