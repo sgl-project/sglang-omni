@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TypedTensor: exact bytes+dtype+shape round-trip for pipeline-state tensors.
+"""Exact bytes+dtype+shape round-trip for integer code tensors in pipeline state.
 
-This is the primary escape hatch for :class:`PipelineStateBase` subclasses
-whose tensor fields must survive serialization byte-for-byte across the relay
-side-channel without a lossy ``tolist()``. The integer code tensor is packed as
-``{key}_bytes`` / ``{key}_shape`` / ``{key}_dtype`` (narrowest of uint16/int32
-that holds the values), and decoded back to an int64 tensor. ``legacy_key``
-keeps payloads written before this encoding readable.
-
-Reference implementation: Voxtral TTS ``audio_codes`` (``models/voxtral_tts``).
+Packs as {key}_bytes/_shape/_dtype (narrowest of uint16/int32), decodes to int64.
+The escape hatch for subclasses needing exact serialization instead of tolist().
 """
 
 from __future__ import annotations
@@ -20,11 +14,7 @@ import torch
 
 
 def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
-    """Pack an integer code tensor/array as ``{key}_bytes/_shape/_dtype``.
-
-    Picks the narrowest of uint16/int32 that holds the values so the payload
-    stays compact. Returns a dict the caller merges into ``StagePayload.data``.
-    """
+    """Pack an integer code tensor as {key}_bytes/_shape/_dtype (merge into payload.data)."""
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
     array = np.asarray(value)
@@ -45,11 +35,7 @@ def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
 def decode_typed_tensor(
     data: dict[str, Any], *, key: str, legacy_key: str | None = None
 ) -> torch.Tensor | None:
-    """Inverse of :func:`encode_typed_tensor`; returns an int64 tensor or None.
-
-    ``legacy_key`` keeps backward compatibility with payloads that stored a
-    plain list/tensor under a single key before the bytes encoding existed.
-    """
+    """Inverse of encode_typed_tensor; legacy_key reads pre-encoding list/tensor payloads."""
     if legacy_key is not None:
         legacy = data.get(legacy_key)
         if legacy is not None:

@@ -24,7 +24,6 @@ class VoxtralTTSState(PipelineStateBase):
     max_new_tokens: int = 4096
 
     # Generation output: list of [num_codebooks] tensors, one per frame.
-    # Carried exactly via the TypedTensor bytes wrapper (escape hatch).
     audio_codes: Any | None = None
 
     # Vocoder output

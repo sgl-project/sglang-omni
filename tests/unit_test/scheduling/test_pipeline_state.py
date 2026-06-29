@@ -111,11 +111,9 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
 
     for state_cls in state_classes:
         assert issubclass(state_cls, PipelineStateBase), state_cls.__name__
-        # The shared usage/serialization fields are actually inherited...
         field_names = {f.name for f in dataclasses.fields(state_cls)}
         missing = base_fields - field_names
         assert not missing, f"{state_cls.__name__} missing base fields: {missing}"
-        # ...and the structural serialization interface is present.
         assert callable(getattr(state_cls, "to_dict", None)), state_cls.__name__
         assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
 
@@ -137,6 +135,13 @@ def test_schema_version_opt_in_writes_tag() -> None:
     data: dict[str, Any] = {}
     PipelineStateBase(schema_version=3).append_schema_version(data)
     assert data["schema_version"] == 3
+
+
+def test_base_requires_to_dict_and_from_dict() -> None:
+    with pytest.raises(NotImplementedError):
+        PipelineStateBase().to_dict()
+    with pytest.raises(NotImplementedError):
+        PipelineStateBase.from_dict({})
 
 
 def test_typed_tensor_round_trip_preserves_values() -> None:

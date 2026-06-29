@@ -11,8 +11,6 @@ from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_type
 
 StateT = TypeVar("StateT", bound="PipelineStateBase")
 
-# Re-exported so subclasses can reach the exact-round-trip escape hatch from the
-# same module as the base they extend. See ``scheduling/typed_tensor.py``.
 __all__ = [
     "PipelineStateBase",
     "build_usage",
@@ -25,24 +23,22 @@ __all__ = [
 
 @dataclass
 class PipelineStateBase:
-    """Common mechanics for model-specific pipeline states.
-
-    Tensor handling is intentionally *not* a base policy — a subclass keeps its
-    own strategy (``.tolist()`` round-trip, keep a CPU tensor via
-    :meth:`serialize_value`, or the exact ``encode_typed_tensor`` /
-    ``decode_typed_tensor`` bytes wrapper). The base only owns the structural
-    dedup: usage fields, the opt-in ``schema_version`` guard, and the
-    ``load_state`` / ``store_state`` / ``build_usage`` helpers.
-    """
+    """Shared usage/serialization mechanics; tensor strategy stays subclass-owned."""
 
     sample_rate: int = 24000
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
-    # Opt-in fail-fast guard. ``None`` = no guard, which preserves today's
-    # behavior; a subclass sets a class-level value only when it wants the
-    # check, and adding it is a behavior change, not free.
-    schema_version: int | None = None
+    schema_version: int | None = None  # opt-in guard; None = no check
+
+    # Note(Chenchen Hong): subclasses must override; the stub turns a forgotten
+    # override into a clear contract error rather than an AttributeError in store_state.
+    def to_dict(self) -> dict[str, Any]:
+        raise NotImplementedError(f"{type(self).__name__} must implement to_dict()")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PipelineStateBase":
+        raise NotImplementedError(f"{cls.__name__} must implement from_dict()")
 
     @staticmethod
     def serialize_value(value: Any) -> Any:
@@ -69,12 +65,7 @@ class PipelineStateBase:
 
     @staticmethod
     def check_schema_version(data: dict[str, Any], expected: int) -> None:
-        """Fail-fast guard for subclasses that opt into versioning.
-
-        Raises ``ValueError`` if the payload carries a different
-        ``schema_version``. A payload with no tag is accepted (forward path
-        from before the guard existed).
-        """
+        """Raise if the payload's schema_version differs from expected; untagged is ok."""
         found = data.get("schema_version")
         if found is not None and int(found) != int(expected):
             raise ValueError(
