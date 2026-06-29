@@ -2,7 +2,11 @@
 """Exact bytes+dtype+shape round-trip for integer code tensors in pipeline state.
 
 Packs as {key}_bytes/_shape/_dtype (narrowest of uint16/int32), decodes to int64.
-The escape hatch for subclasses needing exact serialization instead of tolist().
+
+Note(Chenchen Hong): these bytes ride the control plane (pickled in payload.data),
+not the relay tensor side-channel. Use only when byte-exact dtype compaction
+matters (e.g. int64->uint16). For a plain exact round-trip, keep a CPU tensor
+(PipelineStateBase.serialize_value) so relay ships it on the data plane instead.
 """
 
 from __future__ import annotations
