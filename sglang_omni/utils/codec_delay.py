@@ -35,9 +35,7 @@ def reverse_delay_pattern(
             f"delayed has L={length}, N={num_codebooks}; need L >= N so at "
             f"least one data row can be recovered."
         )
-    out = torch.empty(
-        (rows, num_codebooks), device=delayed.device, dtype=delayed.dtype
-    )
+    out = torch.empty((rows, num_codebooks), device=delayed.device, dtype=delayed.dtype)
     for c in range(num_codebooks):
         out[:, c] = delayed[c : c + rows, c]
     return out

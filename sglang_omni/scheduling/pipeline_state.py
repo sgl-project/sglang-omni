@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.typed_tensor import (
-    decode_typed_tensor,
-    encode_typed_tensor,
-)
+from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
 
 StateT = TypeVar("StateT", bound="PipelineStateBase")
 

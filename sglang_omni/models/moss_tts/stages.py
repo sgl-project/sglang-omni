@@ -34,7 +34,6 @@ from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_s
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
