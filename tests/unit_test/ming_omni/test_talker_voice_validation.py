@@ -288,6 +288,219 @@ def _fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
     return SimpleNamespace(encoder=encoder, config=config)
 
 
+def test_process_segment_streams_every_internal_segment():
+    import torch as _torch
+
+    talker = object.__new__(MingOmniTalker)
+    talker.normalizer = SimpleNamespace(normalize=lambda text: text)
+    talker.patch_size = 2
+    detok = _fake_detokenizer(sample_rate=100)
+    recorded_stream_flags = []
+
+    def fake_tts_job(**kwargs):
+        recorded_stream_flags.append(kwargs["stream"])
+        for _ in range(4):
+            yield {"tts_speech": _torch.zeros(1, 10, dtype=_torch.float32)}
+
+    talker.tts_job = fake_tts_job
+    cache_position = {}
+
+    first_outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "First segment.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=0,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+    second_outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "Second segment.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=1,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+
+    assert recorded_stream_flags == [True, True]
+    assert len(first_outputs) == 4
+    assert len(second_outputs) == 4
+    assert cache_position[0] == (0, len("First segment.") - 1)
+    assert cache_position[1] == (
+        len("First segment."),
+        len("First segment.") + len("Second segment.") - 1,
+    )
+    assert "0_0" in cache_position
+    assert "0_3" in cache_position
+    assert "1_0" in cache_position
+    assert "1_3" in cache_position
+    assert first_outputs[0][2][0] == 0
+    assert second_outputs[0][2][0] == len("First segment.")
+
+
+def test_tts_job_stream_applies_silence_holder(monkeypatch):
+    import threading as _threading
+
+    import torch as _torch
+
+    import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
+
+    class _NullStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _DoneFuture:
+        def done(self):
+            return True
+
+        def exception(self):
+            return None
+
+        def result(self):
+            return None
+
+        def cancel(self):
+            return False
+
+    class _FakeExecutor:
+        def submit(self, fn, *args, **kwargs):
+            token_queue = kwargs["token_queue"]
+            token_queue.put((_torch.ones(1, 1), False))
+            token_queue.put((_torch.ones(1, 1), True))
+            token_queue.put(talker_mod._TOKEN_DONE)
+            return _DoneFuture()
+
+    monkeypatch.setattr(_torch.cuda, "stream", lambda s: _NullStream())
+    monkeypatch.setattr(_torch.cuda, "Stream", lambda device=None: object())
+    monkeypatch.setattr(_torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        MingOmniTalker,
+        "device",
+        property(lambda self: "cpu"),
+        raising=False,
+    )
+
+    talker = object.__new__(MingOmniTalker)
+    talker.executor = _FakeExecutor()
+    talker.lock = _threading.Lock()
+    talker.tts_speech_token_dict = {}
+    talker.llm_end_dict = {}
+    talker.vae_cache = {}
+    talker.sil_holder_cache = {}
+    token2wav_last_chunks = []
+    silence_holder_last_chunks = []
+
+    def fake_token2wav(**kwargs):
+        token2wav_last_chunks.append(kwargs["last_chunk"])
+        return _torch.ones(1, 10, dtype=_torch.float32), kwargs["cache"]
+
+    def fake_silence_holder(speech, sample_rate, sil_cache, last_chunk):
+        silence_holder_last_chunks.append(last_chunk)
+        if not last_chunk:
+            return _torch.zeros(0, dtype=speech.dtype), {"held": True}
+        return speech * 2, {"held": False}
+
+    talker.token2wav = fake_token2wav
+    talker.silence_holder = fake_silence_holder
+
+    outputs = list(
+        MingOmniTalker.tts_job(
+            talker,
+            prompt=None,
+            text="hello",
+            spk_emb=None,
+            instruction=None,
+            audio_detokenizer=_fake_detokenizer(sample_rate=100),
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+        )
+    )
+
+    assert token2wav_last_chunks == [False, True]
+    assert silence_holder_last_chunks == [False, True]
+    assert len(outputs) == 1
+    assert _torch.equal(outputs[0]["tts_speech"], _torch.full((1, 10), 2.0))
+
+
+def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch):
+    import torch as _torch
+
+    import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
+
+    talker = object.__new__(MingOmniTalker)
+    talker.normalizer = SimpleNamespace(normalize=lambda text: text)
+    talker.patch_size = 2
+    detok = _fake_detokenizer(sample_rate=10)
+    recorded_stream_flags = []
+
+    def fake_tts_job(**kwargs):
+        recorded_stream_flags.append(kwargs["stream"])
+        yield {"tts_speech": _torch.zeros(10, dtype=_torch.float32)}
+
+    monkeypatch.setattr(
+        talker_mod,
+        "cut_text_by_semantic_length",
+        lambda text, max_length: {"fragments": ["Alpha.", "Beta."]},
+    )
+    talker.tts_job = fake_tts_job
+    cache_position = {}
+
+    outputs = list(
+        MingOmniTalker._process_segment(
+            talker,
+            "Alpha. Beta.",
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=True,
+            count=0,
+            cache_position=cache_position,
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+
+    assert recorded_stream_flags == [True, True]
+    assert outputs[0][2] == (0, len("Alpha.") - 1)
+    assert outputs[1][2] == (len("Alpha."), len("Alpha.") + len("Beta.") - 1)
+    assert cache_position[0] == (0, len("Alpha.") - 1)
+    assert cache_position[1] == (len("Alpha."), len("Alpha.") + len("Beta.") - 1)
+    assert cache_position["0_0"] == outputs[0][2]
+    assert cache_position["1_0"] == outputs[1][2]
+
+
 def test_duration_capped_steps_short_text_uses_floor():
     talker = object.__new__(MingOmniTalker)
     talker.patch_size = 2

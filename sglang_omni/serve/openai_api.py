@@ -1063,12 +1063,18 @@ def _build_generate_response(
         type=finish_type,
         length=completion_tokens if finish_type == "length" else None,
     )
-    if req.return_logprob and result.output_token_logprobs is None:
+    # (Jingwen): Validate that return_logprob has a backend carrier: text token
+    # logprobs or omni_rollout action logprobs, depending on modality.
+    if result.omni_rollout is None and (
+        req.return_omni_rollout
+        or (req.return_logprob and result.output_token_logprobs is None)
+    ):
         raise HTTPException(
-            status_code=500,
+            status_code=501,
             detail=(
-                "backend did not return output_token_logprobs "
-                "for return_logprob=true"
+                "backend did not return requested logprobs; expected "
+                "output_token_logprobs for text or meta_info.omni_rollout for "
+                "audio (set return_omni_rollout=true for audio logprobs)"
             ),
         )
     if (
@@ -1084,12 +1090,6 @@ def _build_generate_response(
                 f"completion_tokens={completion_tokens}"
             ),
         )
-    if req.return_omni_rollout and result.omni_rollout is None:
-        raise HTTPException(
-            status_code=501,
-            detail="backend did not return omni_rollout for return_omni_rollout=true",
-        )
-
     audio: GenerateAudio | None = None
     if result.audio is not None:
         audio = GenerateAudio(data=result.audio.data, format=audio_format)

@@ -40,8 +40,13 @@ class HiggsTtsState(PipelineStateBase):
     top_k: int | None = None
     seed: int | None = None
 
+    # RL rollout controls
+    return_logprob: bool = False
+    return_omni_rollout: bool = False
+
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
+    omni_rollout: dict[str, Any] | None = None
 
     # vocoder
     audio_samples: Any | None = None
@@ -72,8 +77,13 @@ class HiggsTtsState(PipelineStateBase):
             value = getattr(self, key)
             if value is not None:
                 data[key] = value
+        for key in ("return_logprob", "return_omni_rollout"):
+            if getattr(self, key):
+                data[key] = True
         if self.output_codes_delayed is not None:
             data["output_codes_delayed"] = self.output_codes_delayed
+        if self.omni_rollout is not None:
+            data["omni_rollout"] = self.omni_rollout
         self.append_usage_fields(data)
         if self.audio_samples is not None:
             data["audio_samples"] = self.audio_samples
@@ -98,7 +108,10 @@ class HiggsTtsState(PipelineStateBase):
             top_p=data.get("top_p"),
             top_k=data.get("top_k"),
             seed=data.get("seed"),
+            return_logprob=data.get("return_logprob", False),
+            return_omni_rollout=data.get("return_omni_rollout", False),
             output_codes_delayed=data.get("output_codes_delayed"),
+            omni_rollout=data.get("omni_rollout"),
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             engine_time_s=data.get("engine_time_s", 0.0),

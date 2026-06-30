@@ -56,6 +56,8 @@ def _build_runner(
     runner._async_enabled = async_enabled
     runner._staging_slot = 0
     runner._host_staging_buffers = []
+    runner._logprob_host_buffers = None
+    runner._logprob_slot = 0
     runner._async_query_hit = 0
     runner._async_query_miss = 0
     runner.model = SimpleNamespace(
@@ -83,7 +85,14 @@ def _build_runner(
         for i in range(n)
     ]
     datas = [
-        SimpleNamespace(req=reqs[i], output_codes=[], generation_done=False)
+        SimpleNamespace(
+            req=reqs[i],
+            output_codes=[],
+            output_logprobs=[],
+            return_omni_rollout=False,
+            return_logprob=False,
+            generation_done=False,
+        )
         for i in range(n)
     ]
     sched = [SimpleNamespace(request_id=f"req{i}", data=datas[i]) for i in range(n)]
@@ -282,6 +291,8 @@ def test_async_real_pinned_path_matches_sync():
         runner._async_enabled = async_enabled
         runner._staging_slot = 0
         runner._host_staging_buffers = []
+        runner._logprob_host_buffers = None
+        runner._logprob_slot = 0
         runner._async_query_hit = 0
         runner._async_query_miss = 0
         runner.model = SimpleNamespace(
@@ -311,7 +322,14 @@ def test_async_real_pinned_path_matches_sync():
             for c in (1, 0, 0, 0)
         ]
         datas = [
-            SimpleNamespace(req=reqs[i], output_codes=[], generation_done=False)
+            SimpleNamespace(
+                req=reqs[i],
+                output_codes=[],
+                output_logprobs=[],
+                return_omni_rollout=False,
+                return_logprob=False,
+                generation_done=False,
+            )
             for i in range(n)
         ]
         sched = [SimpleNamespace(request_id=f"req{i}", data=datas[i]) for i in range(n)]

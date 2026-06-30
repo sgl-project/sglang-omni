@@ -305,6 +305,8 @@ def create_preprocessing_executor(
             top_p=params.get("top_p"),
             top_k=params.get("top_k"),
             seed=params.get("seed"),
+            return_logprob=bool(params.get("return_logprob", False)),
+            return_omni_rollout=bool(params.get("return_omni_rollout", False)),
         )
         payload.data = state.to_dict()
         return payload
