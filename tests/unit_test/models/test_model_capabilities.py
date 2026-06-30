@@ -58,6 +58,13 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
     ),
+    "CosyVoice3ForCausalLM": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
+    ),
 }
 
 
