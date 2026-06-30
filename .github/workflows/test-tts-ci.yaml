@@ -62,6 +62,17 @@ jobs:
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
           QWEN3_ASR_MODEL_PATH: ${{ env.QWEN3_ASR_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+          QWEN3_ASR_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/qwen3-asr-results
+
+      - name: Upload Qwen3-ASR per-sample artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage1-asr-per-sample
+          path: ${{ env.OMNI_CI_HOME }}/qwen3-asr-results/qwen3_asr_results.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
 
       - name: Post-stage cleanup
         if: always()
@@ -122,6 +133,30 @@ jobs:
           retention-days: 7
           overwrite: true
 
+      - name: Upload non-streaming ASR debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-nonstream-asr-debug
+          path: |
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/asr_speed_results.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/asr_speed_per_sample.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/wer_results.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/generated.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+
+      - name: Upload non-streaming generated audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-nonstream-audio
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/audio/**
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
@@ -173,6 +208,30 @@ jobs:
           name: tts-stage-stream-speed-results
           path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/speed_results.json
           if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+      - name: Upload streaming ASR debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-stream-asr-debug
+          path: |
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/asr_speed_results.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/asr_speed_per_sample.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/wer_results.json
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/generated.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+
+      - name: Upload streaming generated audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-stage-stream-audio
+          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/audio/**
+          if-no-files-found: warn
           retention-days: 7
           overwrite: true
 

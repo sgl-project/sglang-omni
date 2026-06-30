@@ -688,6 +688,9 @@ def similarity_checkpoint() -> str | None:
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_generated_audio_fixture():
     yield
+    # keep generated audio in CI staging mode so the upload step can read it
+    if os.environ.get(TTS_STAGE_OUTPUT_ROOT_ENV):
+        return
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
             audio_dir = Path(output_dir) / "audio"

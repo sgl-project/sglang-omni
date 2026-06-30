@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -166,8 +168,18 @@ def test_qwen3_asr_matches_seedtts_reference_text(
     print_asr_wer_summary(summary, QWEN3_ASR_CI_MODEL_PATH)
     print_asr_speed_summary(speed, QWEN3_ASR_CI_MODEL_PATH)
 
-    results_path = tmp_path_factory.getbasetemp() / "qwen3_asr_results.json"
-    results_path.write_text(json.dumps({"summary": summary, "speed": speed}, indent=2))
+    results_dir = os.environ.get("QWEN3_ASR_RESULTS_DIR")
+    if results_dir:
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        results_path = Path(results_dir) / "qwen3_asr_results.json"
+    else:
+        results_path = tmp_path_factory.getbasetemp() / "qwen3_asr_results.json"
+    results_path.write_text(
+        json.dumps(
+            {"summary": summary, "speed": speed, "per_sample": results["per_sample"]},
+            indent=2,
+        )
+    )
 
     corpus_wer = summary["corpus_wer"]
     throughput_samples_per_s = speed["throughput_samples_per_s"]

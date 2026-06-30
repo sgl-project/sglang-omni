@@ -1050,6 +1050,26 @@ def run_seedtts_transcribe(
 
     save_wer_results(outputs, wer_metrics, wer_config, config.output_dir)
     save_json_results(asr_metrics, config.output_dir, "asr_speed_results.json")
+    save_json_results(
+        [
+            {
+                "sample_id": o.sample_id,
+                "is_success": o.is_success,
+                "audio_duration_s": round(o.audio_duration_s, 4),
+                "asr_latency_s": round(o.asr_latency_s, 4),
+                "rtf": (
+                    round(o.asr_latency_s / o.audio_duration_s, 4)
+                    if o.audio_duration_s > 0
+                    else None
+                ),
+                "wer": round(o.wer, 6) if o.is_success else None,
+                "error": o.error or None,
+            }
+            for o in outputs
+        ],
+        config.output_dir,
+        "asr_speed_per_sample.json",
+    )
 
     return {
         "wer_summary": wer_metrics,
