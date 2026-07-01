@@ -97,6 +97,9 @@ class Environ:
     # logging
     SGLOMNI_LOG_LEVEL = EnvStr("INFO")
 
+    SGLANG_OMNI_ENABLE_THINKER_PD = EnvBool(False)
+    SGLANG_OMNI_THINKER_PD_READY_DECODE_LIMIT = EnvInt(32)
+
     def __new__(cls):
         # single instance
         if cls._instance is None:

@@ -99,6 +99,7 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        stage_name="thinker",
     )
 
 

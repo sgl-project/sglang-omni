@@ -27,10 +27,12 @@ from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.managers.scheduler import set_schedule_time_batch
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
+from sglang_omni.environ import OMNIENV
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
 from sglang_omni.proto.admin import (
@@ -112,6 +114,7 @@ class OmniScheduler:
         stream_chunk_handler: Callable | None = None,
         stream_done_handler: Callable | None = None,
         abort_callback: Callable[[str], None] | None = None,
+        stage_name: str | None = None,
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 2,
@@ -130,6 +133,7 @@ class OmniScheduler:
         self._stream_chunk_handler = stream_chunk_handler
         self._stream_done_handler = stream_done_handler
         self._abort_callback = abort_callback
+        self.stage_name = stage_name
         self._request_admission_lock = threading.RLock()
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
@@ -376,6 +380,29 @@ class OmniScheduler:
         self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
+        self._pd_ready_decode_batches: deque[Any] = deque()
+        self._pd_prefill_admission_active = False
+        self._pd_ready_decode_limit = max(
+            1, int(OMNIENV.SGLANG_OMNI_THINKER_PD_READY_DECODE_LIMIT.get() or 1)
+        )
+        self._enable_thinker_pd = (
+            stage_name == "thinker"
+            and bool(OMNIENV.SGLANG_OMNI_ENABLE_THINKER_PD.get())
+            and not enable_overlap
+            and not enable_async_decode
+        )
+        if stage_name == "thinker" and bool(
+            OMNIENV.SGLANG_OMNI_ENABLE_THINKER_PD.get()
+        ) and not self._enable_thinker_pd:
+            logger.warning(
+                "Thinker local PD scheduler requested but disabled because "
+                "overlap/async decode is enabled"
+            )
+        if self._enable_thinker_pd:
+            logger.info(
+                "Thinker local PD scheduler enabled: ready_decode_limit=%s",
+                self._pd_ready_decode_limit,
+            )
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
@@ -810,6 +837,175 @@ class OmniScheduler:
             )
         )
 
+    def get_num_allocatable_reqs(self, running_bs):
+        if (
+            getattr(self, "_enable_thinker_pd", False)
+            and getattr(self, "_pd_prefill_admission_active", False)
+        ):
+            ready_room = self._pd_ready_decode_limit - self._pd_ready_decode_req_count()
+            if ready_room > 0:
+                decode_capacity = max(int(self.max_running_requests), 1)
+                return min(
+                    ready_room,
+                    decode_capacity,
+                    self.req_to_token_pool.available_size(),
+                )
+        return _Upstream.get_num_allocatable_reqs(self, running_bs)
+
+    def get_next_batch_to_run(self):
+        if not getattr(self, "_enable_thinker_pd", False):
+            return _Upstream.get_next_batch_to_run(self)
+        return self._get_next_batch_to_run_local_pd()
+
+    def _get_next_batch_to_run_local_pd(self):
+        self._abort_on_waiting_timeout()
+        self._abort_on_running_timeout()
+
+        stashed_prefill = self._pd_stash_last_prefill_batch()
+
+        if self.running_batch.is_prefill_only:
+            self.running_batch.filter_batch()
+            if self.running_batch.is_empty():
+                self.running_batch.batch_is_full = False
+
+        ret = None
+        if self._pd_should_run_decode_before_prefill(stashed_prefill):
+            ret = self._pd_get_decode_batch()
+
+        new_batch = None
+        if ret is None and self._pd_can_schedule_prefill():
+            new_batch = self._pd_get_new_batch_prefill()
+
+        if new_batch is not None:
+            ret = new_batch
+        elif ret is None:
+            ret = self._pd_get_decode_batch()
+
+        ret = self.maybe_prepare_mlp_sync_batch(ret, need_sync=self.require_mlp_sync)
+        ret = self._maybe_prepare_ngram_embedding(ret)
+        if ret:
+            set_schedule_time_batch(ret)
+        return ret
+
+    def _pd_can_schedule_prefill(self) -> bool:
+        if not self._pd_waiting_or_chunked_prefill():
+            return False
+        return self._pd_ready_decode_req_count() < self._pd_ready_decode_limit
+
+    def _pd_should_run_decode_before_prefill(self, stashed_prefill: bool) -> bool:
+        if stashed_prefill:
+            return True
+        if self._pd_ready_decode_req_count() >= self._pd_ready_decode_limit:
+            return True
+        return self.running_batch.is_empty() and bool(self._pd_ready_decode_batches)
+
+    def _pd_get_decode_batch(self):
+        self._pd_admit_ready_decode_batches()
+        if self.running_batch.is_empty() or self.running_batch.is_prefill_only:
+            return None
+        self.running_batch = self.update_running_batch(self.running_batch)
+        return self.running_batch if not self.running_batch.is_empty() else None
+
+    def _pd_get_new_batch_prefill(self):
+        self._pd_prefill_admission_active = True
+        is_mixed_chunk = self.is_mixed_chunk
+        try:
+            self.running_batch.batch_is_full = False
+            self.is_mixed_chunk = False
+            return _Upstream.get_new_batch_prefill(self)
+        finally:
+            self.is_mixed_chunk = is_mixed_chunk
+            self._pd_prefill_admission_active = False
+
+    def _pd_waiting_or_chunked_prefill(self) -> bool:
+        return bool(self.waiting_queue) or self.chunked_req is not None
+
+    def _pd_ready_decode_req_count(self) -> int:
+        return sum(
+            batch.batch_size()
+            for batch in getattr(self, "_pd_ready_decode_batches", ())
+            if batch is not None
+        )
+
+    def _pd_stash_last_prefill_batch(self) -> bool:
+        last_batch = self.last_batch
+        if last_batch is None or not last_batch.forward_mode.is_extend():
+            return False
+        self.last_batch = None
+
+        chunked_req_to_exclude = set()
+        if self.chunked_req is not None:
+            chunked_req_to_exclude.add(self.chunked_req)
+            if getattr(self, "_chunked_req_scheduled_last_iter", False):
+                self.stash_chunked_request(self.chunked_req)
+        if last_batch.chunked_req is not None:
+            chunked_req_to_exclude.add(last_batch.chunked_req)
+
+        last_bs = last_batch.batch_size()
+        last_batch.filter_batch(chunked_req_to_exclude=list(chunked_req_to_exclude))
+        if last_batch.batch_size() < last_bs:
+            self.running_batch.batch_is_full = False
+        if last_batch.is_empty():
+            return False
+        self._pd_enqueue_ready_decode_batch(last_batch)
+        self.running_batch.batch_is_full = False
+        return True
+
+    def _pd_enqueue_ready_decode_batch(self, batch: ScheduleBatch) -> None:
+        self._pd_ready_decode_batches.append(batch)
+        queue_reqs = self._pd_ready_decode_req_count()
+        for req in batch.reqs:
+            _emit_event(
+                request_id=req.rid,
+                stage=None,
+                event_name="scheduler_pd_ready_decode_enter",
+                metadata={"ready_decode_reqs": queue_reqs},
+            )
+
+    def _pd_filter_running_batch_for_decode_slots(self) -> None:
+        if self.running_batch is None or self.running_batch.is_empty():
+            return
+        initial_bs = self.running_batch.batch_size()
+        self.running_batch.filter_batch(v1_spec_info_filtered=True)
+        if self.running_batch.is_empty():
+            self.running_batch.batch_is_full = False
+            return
+        if self.running_batch.batch_size() < initial_bs:
+            self.running_batch.batch_is_full = False
+
+    def _pd_decode_slots_available(self) -> int:
+        running_bs = 0 if self.running_batch is None else self.running_batch.batch_size()
+        return max(int(self.max_running_requests) - running_bs, 0)
+
+    def _pd_admit_ready_decode_batches(self) -> None:
+        if not self._pd_ready_decode_batches:
+            return
+
+        self._pd_filter_running_batch_for_decode_slots()
+        available = self._pd_decode_slots_available()
+        while self._pd_ready_decode_batches and available > 0:
+            batch = self._pd_ready_decode_batches[0]
+            batch_size = batch.batch_size()
+            if batch_size > available:
+                break
+            self._pd_ready_decode_batches.popleft()
+            if self.running_batch.is_empty():
+                self.running_batch = batch
+                self.running_batch.batch_is_full = False
+            else:
+                self.running_batch.merge_batch(batch)
+            available -= batch_size
+            ready_reqs = self._pd_ready_decode_req_count()
+            for req in batch.reqs:
+                _emit_event(
+                    request_id=req.rid,
+                    stage=None,
+                    event_name="scheduler_pd_decode_admit",
+                    metadata={"ready_decode_reqs": ready_reqs},
+                )
+        if self._pd_ready_decode_batches and available <= 0:
+            self.running_batch.batch_is_full = True
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
@@ -1094,6 +1290,7 @@ class OmniScheduler:
             _remove_from_batch(self.cur_batch, request_id)
             _remove_from_batch(self.last_batch, request_id)
             _remove_from_batch(self._async_pending_batch(), request_id)
+            self._remove_from_pd_ready_decode(request_id)
         self._drain_inbox_for_request(request_id)
 
     def admin(
@@ -1479,6 +1676,11 @@ class OmniScheduler:
                 rid = getattr(req, "rid", None)
                 if rid is not None and not req.finished():
                     request_ids.add(rid)
+        for batch in getattr(self, "_pd_ready_decode_batches", ()):
+            for req in getattr(batch, "reqs", []) or []:
+                rid = getattr(req, "rid", None)
+                if rid is not None and not req.finished():
+                    request_ids.add(rid)
         return sorted(request_ids)
 
     def _can_update_active_requests(
@@ -1560,6 +1762,12 @@ class OmniScheduler:
             if batch is None:
                 continue
             for req in batch.reqs:
+                if req.rid != request_id or id(req) in seen:
+                    continue
+                seen.add(id(req))
+                self._release_request_kv_cache(req)
+        for batch in getattr(self, "_pd_ready_decode_batches", ()):
+            for req in getattr(batch, "reqs", []) or []:
                 if req.rid != request_id or id(req) in seen:
                     continue
                 seen.add(id(req))
@@ -1832,6 +2040,17 @@ class OmniScheduler:
         for msg in retained:
             self.inbox.put(msg)
 
+    def _remove_from_pd_ready_decode(self, request_id: str) -> None:
+        ready_batches = getattr(self, "_pd_ready_decode_batches", None)
+        if not ready_batches:
+            return
+        retained = deque()
+        for batch in ready_batches:
+            _remove_from_batch(batch, request_id)
+            if batch is not None and getattr(batch, "reqs", None):
+                retained.append(batch)
+        self._pd_ready_decode_batches = retained
+
     def _find_request_data(self, request_id: str) -> Any | None:
         # Scan all batches a live req can sit in during prefill→decode handoff.
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
@@ -1843,6 +2062,10 @@ class OmniScheduler:
         for req in self.waiting_queue:
             if req.rid == request_id:
                 return req._omni_data
+        for batch in getattr(self, "_pd_ready_decode_batches", ()):
+            for req in getattr(batch, "reqs", ()):
+                if req.rid == request_id:
+                    return req._omni_data
         return None
 
     @staticmethod
