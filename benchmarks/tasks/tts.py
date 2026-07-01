@@ -889,78 +889,7 @@ def build_base_url(config: ServerEndpointConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-def _transcribe_one_entry(
-    entry: dict,
-    asr: dict,
-    lang: str,
-    device: str,
-) -> SampleOutput:
-    """Transcribe a single ``generated.json`` entry and compute its WER."""
-    output = SampleOutput(
-        sample_id=entry["sample_id"],
-        target_text=entry["target_text"],
-    )
-    if not entry.get("is_success", False):
-        output.error = f"Generation failed: {entry.get('error', 'unknown')}"
-        return output
-
-    output.latency_s = entry.get("latency_s", 0.0)
-    output.audio_duration_s = entry.get("audio_duration_s", 0.0)
-    asr_t0 = time.perf_counter()
-    output = transcribe_and_compute_wer(output, entry["wav_path"], asr, lang, device)
-    output.asr_latency_s = time.perf_counter() - asr_t0
-    return output
-
-
 ASR_WARMUP_MULTIPLIER = 2
-
-
-def _transcribe_generated_local(
-    generated: list[dict],
-    asr: dict,
-    lang: str,
-    device: str,
-    concurrency: int,
-    tqdm_desc: str,
-    log_per_sample: bool,
-) -> tuple[list[SampleOutput], float]:
-    outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
-    start_s = time.perf_counter()
-    if concurrency == 1:
-        for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
-            output = _transcribe_one_entry(entry, asr, lang, device)
-            outputs_by_idx[idx] = output
-            _log_transcribe_result(
-                idx=idx,
-                total=len(generated),
-                entry=entry,
-                output=output,
-                log_per_sample=log_per_sample,
-            )
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=concurrency,
-        ) as executor:
-            future_to_idx = {
-                executor.submit(_transcribe_one_entry, entry, asr, lang, device): idx
-                for idx, entry in enumerate(generated)
-            }
-            with tqdm(total=len(generated), desc=tqdm_desc) as progress:
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    entry = generated[idx]
-                    output = future.result()
-                    outputs_by_idx[idx] = output
-                    _log_transcribe_result(
-                        idx=idx,
-                        total=len(generated),
-                        entry=entry,
-                        output=output,
-                        log_per_sample=log_per_sample,
-                    )
-                    progress.update(1)
-    wall_s = time.perf_counter() - start_s
-    return [o for o in outputs_by_idx if o is not None], wall_s
 
 
 def _transcribe_generated_via_runner(
@@ -1021,34 +950,6 @@ def _resolve_asr_concurrency(config: SeedttsTranscribeConfig) -> int:
     return max(1, int(value))
 
 
-def _log_transcribe_result(
-    *,
-    idx: int,
-    total: int,
-    entry: dict,
-    output: SampleOutput,
-    log_per_sample: bool,
-) -> None:
-    if output.is_success:
-        if log_per_sample:
-            logger.info(
-                f"[{idx + 1}/{total}] "
-                f"WER={output.wer:.3f}  "
-                f"asr={output.asr_latency_s:.3f}s  "
-                f"ref={output.ref_norm[:50]}  "
-                f"hyp={output.hyp_norm[:50]}",
-            )
-        return
-
-    # Only warn for post-generation transcription failures; generation
-    # failures are surfaced at speed-benchmark time and already logged.
-    if entry.get("is_success", False):
-        logger.warning(
-            f"[{idx + 1}/{total}] Transcription failed: "
-            f"{entry['sample_id']} -- {output.error}",
-        )
-
-
 def run_seedtts_transcribe(
     config: SeedttsTranscribeConfig,
     *,
@@ -1074,32 +975,15 @@ def run_seedtts_transcribe(
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
     asr_model_path = getattr(config, "asr_model_path", QWEN3_ASR_MODEL_PATH)
-    asr = _resolve_asr_backend(
-        config.lang,
-        config.device,
-        asr_router_port=asr_router_port,
-        asr_model_path=asr_model_path,
-        generation_mode=generation_mode,
-    )
-
-    tqdm_desc = (
-        f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
-    )
+    if asr_router_port is None or _is_whisper_asr_model(asr_model_path):
+        raise ValueError(
+            "run_seedtts_transcribe now supports only Qwen3-ASR over an ASR router. "
+            "Pass asr_router_port and a Qwen3-ASR model."
+        )
     asr_concurrency = _resolve_asr_concurrency(config)
-    if asr_router_port is not None and not _is_whisper_asr_model(asr_model_path):
-        outputs, asr_wall_time_s = _transcribe_generated_via_runner(
-            generated, asr_router_port, asr_model_path, config.lang, asr_concurrency
-        )
-    else:
-        outputs, asr_wall_time_s = _transcribe_generated_local(
-            generated,
-            asr,
-            config.lang,
-            config.device,
-            asr_concurrency,
-            tqdm_desc,
-            log_per_sample,
-        )
+    outputs, asr_wall_time_s = _transcribe_generated_via_runner(
+        generated, asr_router_port, asr_model_path, config.lang, asr_concurrency
+    )
 
     wer_metrics = calculate_wer_metrics(outputs, config.lang)
     asr_metrics = calculate_asr_speed_metrics(outputs, wall_time_s=asr_wall_time_s)
