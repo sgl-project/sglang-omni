@@ -260,6 +260,10 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
 
+    @classmethod
+    def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+        return {THINKER_STAGE}
+
 
 class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):
     """6-stage text-only pipeline."""

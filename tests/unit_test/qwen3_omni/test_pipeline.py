@@ -989,11 +989,15 @@ def test_thinker_tp_disable_custom_all_reduce_uses_shared_config_hook() -> None:
         ) == {"disable_custom_all_reduce": True}
 
 
-def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args() -> None:
+def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args(monkeypatch) -> None:
     """End-to-end: the CLI TP pass writes disable_custom_all_reduce into the
     thinker stage server args when TP>1 is configured (issue #760)."""
     from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
 
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: True,
+    )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     apply_parallelism_cli_overrides(
         config,
@@ -1009,6 +1013,28 @@ def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args() -> None:
     )
     assert "disable_custom_all_reduce" not in _server_args_overrides(
         config, "audio_encoder"
+    )
+
+
+def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
+    from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
+
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: False,
+    )
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=2,
+        thinker_gpus="0,1",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+    _apply_tensor_parallel_server_args_overrides(config)
+
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
     )
 
 

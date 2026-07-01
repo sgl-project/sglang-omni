@@ -282,6 +282,11 @@ class PipelineConfig(BaseModel):
             return {"disable_custom_all_reduce": True}
         return {}
 
+    @classmethod
+    def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+        """Stages whose TP custom all-reduce disable is topology-relaxable."""
+        return set()
+
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         """Return whether non-default TTS voice names must be uploaded voices."""
         return False
