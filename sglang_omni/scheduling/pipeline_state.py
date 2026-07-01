@@ -7,15 +7,12 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
 
 StateT = TypeVar("StateT", bound="PipelineStateBase")
 
 __all__ = [
     "PipelineStateBase",
     "build_usage",
-    "decode_typed_tensor",
-    "encode_typed_tensor",
     "load_state",
     "store_state",
 ]
@@ -29,7 +26,6 @@ class PipelineStateBase:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
-    schema_version: int | None = None  # opt-in guard; None = no check
 
     # Note(Chenchen Hong): subclasses must override; the stub turns a forgotten
     # override into a clear contract error rather than an AttributeError in store_state.
@@ -57,24 +53,6 @@ class PipelineStateBase:
             data["completion_tokens"] = int(self.completion_tokens)
         if self.engine_time_s:
             data["engine_time_s"] = float(self.engine_time_s)
-
-    def append_schema_version(self, data: dict[str, Any]) -> None:
-        """Write the schema tag only when a subclass opts in (non-None)."""
-        if self.schema_version is not None:
-            data["schema_version"] = int(self.schema_version)
-
-    @staticmethod
-    def check_schema_version(data: dict[str, Any], expected: int) -> None:
-        """Raise if the payload's schema_version differs from expected; untagged is ok."""
-        found = data.get("schema_version")
-        if found is not None and int(found) != int(expected):
-            raise ValueError(
-                "pipeline-state schema_version mismatch: "
-                f"payload={found}, expected={expected}"
-            )
-
-    def usage_dict(self) -> dict[str, Any] | None:
-        return build_usage(self)
 
 
 def load_state(payload: StagePayload, state_cls: type[StateT]) -> StateT:

@@ -10,11 +10,10 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import (
     PipelineStateBase,
     build_usage,
-    decode_typed_tensor,
-    encode_typed_tensor,
     load_state,
     store_state,
 )
+from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
 
 
 @dataclass
@@ -106,7 +105,6 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         "prompt_tokens",
         "completion_tokens",
         "engine_time_s",
-        "schema_version",
     }
 
     for state_cls in state_classes:
@@ -118,23 +116,133 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
 
 
-def test_schema_version_guard_is_opt_in() -> None:
-    # Default None -> no tag written, preserving today's behavior.
-    data: dict[str, Any] = {}
-    PipelineStateBase().append_schema_version(data)
-    assert "schema_version" not in data
+def _normalize_payload_value(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return {
+            "dtype": str(value.dtype),
+            "shape": list(value.shape),
+            "data": value.detach().cpu().tolist(),
+        }
+    if isinstance(value, dict):
+        return {key: _normalize_payload_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_payload_value(item) for item in value]
+    return value
 
-    # check_schema_version accepts untagged payloads and matching tags.
-    PipelineStateBase.check_schema_version({}, 2)
-    PipelineStateBase.check_schema_version({"schema_version": 2}, 2)
-    with pytest.raises(ValueError):
-        PipelineStateBase.check_schema_version({"schema_version": 1}, 2)
+
+def _assert_round_trip_preserves_payload(state: PipelineStateBase) -> None:
+    before = state.to_dict()
+    restored = type(state).from_dict(before)
+    after = restored.to_dict()
+
+    assert set(after) == set(before), type(state).__name__
+    assert _normalize_payload_value(after) == _normalize_payload_value(before)
 
 
-def test_schema_version_opt_in_writes_tag() -> None:
-    data: dict[str, Any] = {}
-    PipelineStateBase(schema_version=3).append_schema_version(data)
-    assert data["schema_version"] == 3
+def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+    from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+    from sglang_omni.models.moss_tts.payload_types import MossTTSState
+    from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
+    from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+    from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+
+    states = [
+        S2ProState(
+            input_ids=[1, 2, 3],
+            vq_mask_tokens=[False, True, False],
+            vq_parts=[torch.tensor([[1, 2], [3, 4]])],
+            output_codes=torch.tensor([[0, 1], [2, 3]]),
+            prompt_tokens=3,
+            completion_tokens=5,
+            engine_time_s=0.125,
+            finish_reason="stop",
+            audio_samples=[0.1, 0.2],
+        ),
+        HiggsTtsState(
+            prompt_token_ids=[10, 11],
+            reference_codes_delayed=[[1, 2], [3, 4]],
+            target_text="target",
+            reference_text="reference",
+            reference_waveform=torch.tensor([[[0.1, 0.2]]]),
+            reference_code_cache_key="cache-key",
+            uploaded_voice_name="voice",
+            uploaded_voice_created_at=123,
+            top_p=0.9,
+            top_k=10,
+            seed=7,
+            return_logprob=True,
+            return_omni_rollout=True,
+            output_codes_delayed=[[5, 6], [7, 8]],
+            omni_rollout={"tokens": [1, 2], "logprobs": [-0.1, -0.2]},
+            prompt_tokens=2,
+            completion_tokens=4,
+            engine_time_s=0.25,
+            audio_samples=torch.tensor([0.3, 0.4]),
+        ),
+        MossTTSState(
+            text="hello",
+            ref_audio={"path": "ref.wav"},
+            ref_text="ref",
+            language="en",
+            instructions="calm",
+            token_count=6,
+            generation_kwargs={"temperature": 0.7},
+            delayed_audio_codes=torch.tensor([[1, 2], [3, 4]]),
+            assistant_start_length=2,
+            prompt_tokens=6,
+            completion_tokens=8,
+            engine_time_s=0.375,
+        ),
+        MossTTSLocalState(
+            text="hello",
+            ref_audio={"path": "ref.wav"},
+            ref_text="ref",
+            language="en",
+            instructions="bright",
+            token_count=5,
+            generation_kwargs={"top_p": 0.8},
+            audio_codes=torch.tensor([[1, 2, 3], [4, 5, 6]]),
+            prompt_tokens=5,
+            completion_tokens=7,
+            engine_time_s=0.5,
+        ),
+        Qwen3TTSState(
+            text="hello",
+            task_type="Instruct",
+            task_type_explicit=True,
+            language="en",
+            voice="voice",
+            instructions="fast",
+            ref_audio={"path": "ref.wav"},
+            ref_text="ref",
+            uploaded_voice_name="uploaded",
+            uploaded_voice_created_at=456,
+            x_vector_only_mode=True,
+            non_streaming_mode=True,
+            generation_kwargs={"seed": 9},
+            seed=9,
+            audio_codes=torch.tensor([[1, 2], [3, 4]]),
+            ref_code_len=1,
+            audio_samples=torch.tensor([0.5, 0.6]),
+            prompt_tokens=9,
+            completion_tokens=11,
+            engine_time_s=0.625,
+        ),
+        VoxtralTTSState(
+            input_ids=[1, 2],
+            voice="voice",
+            max_new_tokens=16,
+            audio_codes=torch.tensor([[1, 2], [3, 4]]),
+            prompt_tokens=2,
+            completion_tokens=3,
+            engine_time_s=0.75,
+            audio_samples=torch.tensor([0.7, 0.8]),
+        ),
+    ]
+
+    for state in states:
+        _assert_round_trip_preserves_payload(state)
 
 
 def test_base_requires_to_dict_and_from_dict() -> None:

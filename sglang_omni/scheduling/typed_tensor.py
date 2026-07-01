@@ -15,13 +15,17 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-import torch
-
 
 def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
     """Pack an integer code tensor as {key}_bytes/_shape/_dtype (merge into payload.data)."""
-    if isinstance(value, torch.Tensor):
+    import numpy as np
+
+    try:
+        import torch
+    except ImportError:
+        torch = None
+
+    if torch is not None and isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
     array = np.asarray(value)
     if array.size == 0:
@@ -40,8 +44,11 @@ def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
 
 def decode_typed_tensor(
     data: dict[str, Any], *, key: str, legacy_key: str | None = None
-) -> torch.Tensor | None:
+) -> Any | None:
     """Inverse of encode_typed_tensor; legacy_key reads pre-encoding list/tensor payloads."""
+    import numpy as np
+    import torch
+
     if legacy_key is not None:
         legacy = data.get(legacy_key)
         if legacy is not None:

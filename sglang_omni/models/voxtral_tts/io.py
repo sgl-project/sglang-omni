@@ -7,11 +7,8 @@ from typing import Any
 
 import torch
 
-from sglang_omni.scheduling.pipeline_state import (
-    PipelineStateBase,
-    decode_typed_tensor,
-    encode_typed_tensor,
-)
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
 
 
 @dataclass

@@ -34,18 +34,6 @@ logger = logging.getLogger(__name__)
 _SOURCE_HINT = "MOSS-TTS Local"
 
 
-def _resolve_sample_rate(processor: Any) -> int:
-    return int(
-        getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
-        or getattr(
-            getattr(getattr(processor, "audio_tokenizer", None), "config", None),
-            "sampling_rate",
-            0,
-        )
-        or 48000
-    )
-
-
 class _CodecStreamSession:
     """Persistent batched ``codec.streaming()`` session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
 
