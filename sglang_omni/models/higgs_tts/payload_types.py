@@ -9,12 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 @dataclass
-class HiggsTtsState:
+class HiggsTtsState(PipelineStateBase):
     """Per-request state threaded through preprocessing → audio_encoder →
     tts_engine → vocoder. Fields populate lazily so a deserialised state is
     valid at any stage boundary."""
+
+    sample_rate: int = 24000
 
     # preprocessing / audio_encoder
     prompt_token_ids: list[int] = field(default_factory=list)
@@ -43,13 +47,9 @@ class HiggsTtsState:
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
     omni_rollout: dict[str, Any] | None = None
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
 
     # vocoder
     audio_samples: Any | None = None
-    sample_rate: int = 24000
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -84,10 +84,7 @@ class HiggsTtsState:
             data["output_codes_delayed"] = self.output_codes_delayed
         if self.omni_rollout is not None:
             data["omni_rollout"] = self.omni_rollout
-        for key in ("prompt_tokens", "completion_tokens", "engine_time_s"):
-            value = getattr(self, key)
-            if value:
-                data[key] = value
+        self.append_usage_fields(data)
         if self.audio_samples is not None:
             data["audio_samples"] = self.audio_samples
             data["sample_rate"] = self.sample_rate

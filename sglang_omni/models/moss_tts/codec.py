@@ -7,25 +7,7 @@ from typing import Any
 
 import torch
 
-
-def apply_de_delay_pattern(delayed_codes: torch.Tensor) -> torch.Tensor:
-    """Convert delayed RVQ rows back to normal ``[time, n_vq]`` codes."""
-
-    if delayed_codes.ndim != 2:
-        raise ValueError("MOSS-TTS delayed audio codes must be rank-2")
-    if delayed_codes.shape[0] < delayed_codes.shape[1]:
-        return delayed_codes.new_empty((0, delayed_codes.shape[1]))
-
-    tokens = delayed_codes.new_full(
-        (
-            delayed_codes.shape[0] - delayed_codes.shape[1] + 1,
-            delayed_codes.shape[1],
-        ),
-        0,
-    )
-    for idx in range(delayed_codes.shape[1]):
-        tokens[:, idx] = delayed_codes[idx : idx + tokens.shape[0], idx]
-    return tokens
+from sglang_omni.utils.codec_delay import reverse_delay_pattern
 
 
 def split_moss_audio_segments(
@@ -44,7 +26,7 @@ def split_moss_audio_segments(
     if delayed_audio_codes.numel() == 0:
         return []
 
-    audio_codes = apply_de_delay_pattern(delayed_audio_codes)
+    audio_codes = reverse_delay_pattern(delayed_audio_codes, allow_short=True)
     if audio_codes.numel() == 0:
         return []
 

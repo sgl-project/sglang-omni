@@ -8,10 +8,14 @@ from typing import Any
 
 import torch
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 @dataclass
-class S2ProState:
+class S2ProState(PipelineStateBase):
     """Per-request pipeline state for S2-Pro TTS."""
+
+    sample_rate: int = 44100
 
     # -- From preprocessing ------------------------------------------------
     input_ids: Any = None  # [seq_len] as list
@@ -33,14 +37,10 @@ class S2ProState:
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any | None = None  # [num_codebooks+1, T] as nested list
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
     finish_reason: str | None = None
 
     # -- From vocoder ------------------------------------------------------
     audio_samples: Any | None = None
-    sample_rate: int = 44100
 
     # -- Helpers -----------------------------------------------------------
 
@@ -72,12 +72,7 @@ class S2ProState:
             data["seed"] = self.seed
         if self.output_codes is not None:
             data["output_codes"] = self._tensor_to_list(self.output_codes)
-        if self.prompt_tokens:
-            data["prompt_tokens"] = self.prompt_tokens
-        if self.completion_tokens:
-            data["completion_tokens"] = self.completion_tokens
-        if self.engine_time_s:
-            data["engine_time_s"] = self.engine_time_s
+        self.append_usage_fields(data)
         if self.finish_reason is not None:
             data["finish_reason"] = self.finish_reason
         if self.audio_samples is not None:

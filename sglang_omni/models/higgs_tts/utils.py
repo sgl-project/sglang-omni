@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Utilities shared across the Higgs TTS pipeline.
 
-- Delay pattern: :func:`apply_delay_pattern` / :func:`reverse_delay_pattern`
-  shift codebook ``c`` by ``c`` steps, BOC/EOC padding inside the codebook
-  vocab (ids 1024 / 1025 for the default 1026 vocab).
+- Delay pattern: :func:`apply_delay_pattern` (forward) shifts codebook ``c``
+  by ``c`` steps with BOC/EOC padding inside the codebook vocab (ids 1024 /
+  1025 for the default 1026 vocab). The reverse (de-delay) transform is shared
+  in :func:`sglang_omni.utils.codec_delay.reverse_delay_pattern`.
 - :func:`truncate_rope_to_bf16` matches sglang's fp32 RoPE cache to Higgs's
   bf16 training-time RoPE.
 - Stage helpers: checkpoint snapshot, codec cache, ref-codes coercion,
@@ -17,12 +18,12 @@ from typing import Any
 
 import numpy as np
 import torch
-from huggingface_hub import snapshot_download
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.base import _is_url
 from sglang_omni.preprocessing.resource_connector import global_http_connection
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 # Codec-vocab specials (inside the [N*V] codebook space, NOT the text vocab).
 BOC_ID = 1024
@@ -46,25 +47,6 @@ def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
     for c in range(N):
         out[t_idx < c, c] = BOC_ID
         out[c : c + T, c] = codes_TN[:, c]
-    return out
-
-
-def reverse_delay_pattern(delayed_LN: torch.Tensor) -> torch.Tensor:
-    """``[L, N]`` delayed (L >= N) → ``[L - (N - 1), N]`` raw codes."""
-    if delayed_LN.ndim != 2:
-        raise ValueError(
-            f"delayed_LN must be 2-D [L, N], got shape {tuple(delayed_LN.shape)}"
-        )
-    L, N = delayed_LN.shape
-    T = L - (N - 1)
-    if T <= 0:
-        raise ValueError(
-            f"delayed_LN has L={L}, N={N}; need L >= N so at least one "
-            f"data row can be recovered."
-        )
-    out = torch.empty((T, N), device=delayed_LN.device, dtype=delayed_LN.dtype)
-    for c in range(N):
-        out[:, c] = delayed_LN[c : c + T, c]
     return out
 
 
@@ -98,13 +80,6 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             cache = module.cos_sin_cache
             truncated = cache.to(torch.bfloat16).to(cache.dtype)
             cache.copy_(truncated)
-
-
-def resolve_checkpoint(checkpoint: str) -> str:
-    """Local dir or HF repo id → local snapshot path."""
-    if Path(checkpoint).is_dir():
-        return checkpoint
-    return snapshot_download(checkpoint)
 
 
 def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
@@ -176,7 +151,6 @@ __all__ = [
     "get_or_load_codec",
     "load_audio_to_24k",
     "resolve_checkpoint",
-    "reverse_delay_pattern",
     "to_codes_TN",
     "truncate_rope_to_bf16",
 ]

@@ -43,6 +43,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_mm_aggregate_wait_sources,
     resolve_preprocessing_next_stages,
 )
+from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
@@ -1146,6 +1147,37 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
         "video": "video:image-cache",
         "audio": "audio:audio-cache",
     }
+
+
+def test_qwen_merge_preserves_unresolved_video_tensor_ref() -> None:
+    """A lazily-externalized video_embeds ref survives merge unresolved."""
+    ref = TensorRef(
+        ref_id="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        request_id="req-qwen",
+        producer_stage="image_encoder",
+        consumer_stage="thinker",
+        path="encoder_outs.image_encoder.video_embeds",
+        shape=(4, 8),
+        dtype="torch.bfloat16",
+        nbytes=4 * 8 * 2,
+        blob_key="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        blob_metadata={"relay_info": {}, "tensor_shape": [4, 8]},
+    )
+    image_state = Qwen3OmniPipelineState(
+        encoder_outs={"image_encoder": {"video_embeds": ref.to_dict()}}
+    )
+
+    merged = merge_for_thinker(
+        {
+            "preprocessing": make_qwen_payload(make_qwen_state()),
+            "image_encoder": make_qwen_payload(image_state),
+        }
+    )
+    merged_state = Qwen3OmniPipelineState.from_dict(merged.data)
+
+    video_embeds = merged_state.thinker_inputs["model_inputs"]["video_embeds"]
+    assert is_tensor_ref_dict(video_embeds)
+    assert video_embeds == ref.to_dict()
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:
