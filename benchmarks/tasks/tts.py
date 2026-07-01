@@ -329,6 +329,23 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
     raise ValueError(f"Unknown ASR type: {asr['type']}")
 
 
+def _apply_wer(output: SampleOutput, hyp_text: str, lang: str) -> SampleOutput:
+    output.whisper_text = hyp_text
+    output.ref_norm = normalize_text(output.target_text, lang)
+    output.hyp_norm = normalize_text(hyp_text, lang)
+    if not output.ref_norm:
+        output.error = "Empty reference after normalization"
+        return output
+    measures = process_words(output.ref_norm, output.hyp_norm)
+    output.wer = measures.wer
+    output.substitutions = measures.substitutions
+    output.deletions = measures.deletions
+    output.insertions = measures.insertions
+    output.hits = measures.hits
+    output.is_success = True
+    return output
+
+
 def transcribe_and_compute_wer(
     output: SampleOutput,
     wav_path: str,
@@ -343,23 +360,7 @@ def transcribe_and_compute_wer(
         output.error = f"Transcription failed: {exc}"
         logger.error(f"[{output.sample_id}] {output.error}")
         return output
-
-    output.whisper_text = hyp_text
-    output.ref_norm = normalize_text(output.target_text, lang)
-    output.hyp_norm = normalize_text(hyp_text, lang)
-
-    if not output.ref_norm:
-        output.error = "Empty reference after normalization"
-        return output
-
-    measures = process_words(output.ref_norm, output.hyp_norm)
-    output.wer = measures.wer
-    output.substitutions = measures.substitutions
-    output.deletions = measures.deletions
-    output.insertions = measures.insertions
-    output.hits = measures.hits
-    output.is_success = True
-    return output
+    return _apply_wer(output, hyp_text, lang)
 
 
 def compute_text_audio_consistency(
@@ -914,24 +915,103 @@ def _transcribe_one_entry(
 ASR_WARMUP_MULTIPLIER = 2
 
 
-def _warmup_asr(
+def _transcribe_generated_local(
     generated: list[dict],
     asr: dict,
     lang: str,
     device: str,
     concurrency: int,
-) -> None:
-    count = min(concurrency * ASR_WARMUP_MULTIPLIER, len(generated))
-    entries = [e for e in generated if e.get("is_success", False)][:count]
-    if not entries:
-        return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        list(
-            executor.map(
-                lambda entry: _transcribe_one_entry(entry, asr, lang, device),
-                entries,
+    tqdm_desc: str,
+    log_per_sample: bool,
+) -> tuple[list[SampleOutput], float]:
+    outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
+    start_s = time.perf_counter()
+    if concurrency == 1:
+        for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
+            output = _transcribe_one_entry(entry, asr, lang, device)
+            outputs_by_idx[idx] = output
+            _log_transcribe_result(
+                idx=idx,
+                total=len(generated),
+                entry=entry,
+                output=output,
+                log_per_sample=log_per_sample,
             )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=concurrency,
+        ) as executor:
+            future_to_idx = {
+                executor.submit(_transcribe_one_entry, entry, asr, lang, device): idx
+                for idx, entry in enumerate(generated)
+            }
+            with tqdm(total=len(generated), desc=tqdm_desc) as progress:
+                for future in concurrent.futures.as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    entry = generated[idx]
+                    output = future.result()
+                    outputs_by_idx[idx] = output
+                    _log_transcribe_result(
+                        idx=idx,
+                        total=len(generated),
+                        entry=entry,
+                        output=output,
+                        log_per_sample=log_per_sample,
+                    )
+                    progress.update(1)
+    wall_s = time.perf_counter() - start_s
+    return [o for o in outputs_by_idx if o is not None], wall_s
+
+
+def _transcribe_generated_via_runner(
+    generated: list[dict],
+    router_port: int,
+    model_path: str,
+    lang: str,
+    concurrency: int,
+) -> tuple[list[SampleOutput], float]:
+    from benchmarks.eval.benchmark_qwen3_asr_concurrency import run_asr_transcription
+
+    done = [e for e in generated if e.get("is_success", False)]
+    samples = [
+        SampleInput(
+            sample_id=e["sample_id"],
+            ref_text=e["target_text"],
+            ref_audio=e["wav_path"],
+            target_text=e["target_text"],
         )
+        for e in done
+    ]
+    results, wall_s = asyncio.run(
+        run_asr_transcription(
+            samples,
+            port=router_port,
+            model_path=model_path,
+            lang=lang,
+            concurrency=concurrency,
+            warmup=concurrency * ASR_WARMUP_MULTIPLIER,
+        )
+    )
+    result_by_id = {r.request_id: r for r in results}
+    outputs: list[SampleOutput] = []
+    for e in generated:
+        output = SampleOutput(
+            sample_id=e["sample_id"], target_text=e.get("target_text", "")
+        )
+        output.latency_s = e.get("latency_s", 0.0)
+        output.audio_duration_s = e.get("audio_duration_s", 0.0)
+        if not e.get("is_success", False):
+            output.error = f"Generation failed: {e.get('error', 'unknown')}"
+            outputs.append(output)
+            continue
+        result = result_by_id.get(e["sample_id"])
+        if result is None or not result.is_success:
+            output.error = (result.error if result else "") or "No transcription"
+            outputs.append(output)
+            continue
+        output.asr_latency_s = result.latency_s
+        outputs.append(_apply_wer(output, result.text, lang))
+    return outputs, wall_s
 
 
 def _resolve_asr_concurrency(config: SeedttsTranscribeConfig) -> int:
@@ -1006,51 +1086,20 @@ def run_seedtts_transcribe(
         f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
     )
     asr_concurrency = _resolve_asr_concurrency(config)
-    outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
-    _warmup_asr(generated, asr, config.lang, config.device, asr_concurrency)
-    asr_wall_start_s = time.perf_counter()
-    if asr_concurrency == 1:
-        for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
-            output = _transcribe_one_entry(entry, asr, config.lang, config.device)
-            outputs_by_idx[idx] = output
-            _log_transcribe_result(
-                idx=idx,
-                total=len(generated),
-                entry=entry,
-                output=output,
-                log_per_sample=log_per_sample,
-            )
+    if asr_router_port is not None and not _is_whisper_asr_model(asr_model_path):
+        outputs, asr_wall_time_s = _transcribe_generated_via_runner(
+            generated, asr_router_port, asr_model_path, config.lang, asr_concurrency
+        )
     else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=asr_concurrency,
-        ) as executor:
-            future_to_idx = {
-                executor.submit(
-                    _transcribe_one_entry,
-                    entry,
-                    asr,
-                    config.lang,
-                    config.device,
-                ): idx
-                for idx, entry in enumerate(generated)
-            }
-            with tqdm(total=len(generated), desc=tqdm_desc) as progress:
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    entry = generated[idx]
-                    output = future.result()
-                    outputs_by_idx[idx] = output
-                    _log_transcribe_result(
-                        idx=idx,
-                        total=len(generated),
-                        entry=entry,
-                        output=output,
-                        log_per_sample=log_per_sample,
-                    )
-                    progress.update(1)
-
-    asr_wall_time_s = time.perf_counter() - asr_wall_start_s
-    outputs = [output for output in outputs_by_idx if output is not None]
+        outputs, asr_wall_time_s = _transcribe_generated_local(
+            generated,
+            asr,
+            config.lang,
+            config.device,
+            asr_concurrency,
+            tqdm_desc,
+            log_per_sample,
+        )
 
     wer_metrics = calculate_wer_metrics(outputs, config.lang)
     asr_metrics = calculate_asr_speed_metrics(outputs, wall_time_s=asr_wall_time_s)
