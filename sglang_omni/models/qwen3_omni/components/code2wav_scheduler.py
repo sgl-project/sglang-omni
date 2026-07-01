@@ -173,11 +173,14 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         full_audio = None if stream_enabled else self._concat_audio_parts(audio_parts)
         payload = self._payloads[request_id]
         if logger.isEnabledFor(logging.DEBUG):
+            emitted_samples = sum(self._audio_numel(part) for part in audio_parts)
             logger.debug(
-                "Code2Wav finalize req=%s code_chunks=%s audio_parts=%s final_samples=%s",
+                "Code2Wav finalize req=%s code_chunks=%s audio_parts=%s "
+                "emitted_samples=%s final_payload_samples=%s",
                 request_id,
                 len(self._code_chunks[request_id]),
                 len(audio_parts),
+                emitted_samples,
                 0 if full_audio is None else self._audio_numel(full_audio),
             )
         # Streaming clients already received per-chunk audio; final result is
