@@ -275,6 +275,8 @@ class _LocalStreamState:
 class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     """Decode MOSS-TTS Local codec rows incrementally on the v2 codec."""
 
+    _can_batch_stream_chunks = True
+
     def __init__(
         self,
         codec: Any,
@@ -322,6 +324,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         self._codec = codec
         self._nonstream_decoder = nonstream_decoder
         self._stream_slots = int(stream_slots)
+        # Coalesce up to one full set of streaming lanes per pump, not the offline batch width.
+        self._stream_chunk_batch_max = self._stream_slots
         self._stream_chunk_frames = int(stream_chunk_frames)
         self._default_initial_chunk_frames = max(
             0, min(int(initial_chunk_frames), int(stream_chunk_frames))
@@ -399,6 +403,28 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     def on_stream_chunk(
         self, request_id: str, item: StreamItem
     ) -> list[OutgoingMessage]:
+        self._ingest_chunk(request_id, item)
+        self._pump_streams()
+        return []
+
+    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
+        failed: list[str] = []
+        with self._state_lock:
+            for request_id, item in items:
+                if self._is_aborted(request_id):
+                    continue
+                try:
+                    self._ingest_chunk(request_id, item)
+                except Exception as exc:
+                    self._emit_error(request_id, exc)
+                    self._abort_state(request_id)
+                    failed.append(request_id)
+            self._pump_streams()
+        # Run the external abort callback off the GPU-serializing lock, matching the serving loop.
+        for request_id in failed:
+            self._cleanup_aborted_request(request_id)
+
+    def _ingest_chunk(self, request_id: str, item: StreamItem) -> None:
         state = self._stream_states.setdefault(request_id, _LocalStreamState())
         self._latch_stream_metadata(request_id, state, item.metadata)
 
@@ -418,8 +444,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         # Row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
         state.pending.append(row[1 : 1 + n_vq])
         self._ensure_slot(state)
-        self._pump_streams()
-        return []
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         payload = self._stream_payloads[request_id]
@@ -645,9 +669,11 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 for entry in slotted
                 if self._can_join_coalesced_step(entry[1], floor)
             ]
+            # Cap at the steady chunk size (= CUDA-graph capture ceiling) so coalesced backlogs
+            # stay on the graphed fast path; the while-loop re-pumps any remainder.
             step_t = min(
                 min(len(state.pending) for _, state in participants),
-                self._max_step_frames,
+                self._stream_chunk_frames,
             )
             plan: dict[int, torch.Tensor] = {}
             for _, state in participants:
