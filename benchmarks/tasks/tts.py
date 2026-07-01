@@ -911,6 +911,29 @@ def _transcribe_one_entry(
     return output
 
 
+ASR_WARMUP_MULTIPLIER = 2
+
+
+def _warmup_asr(
+    generated: list[dict],
+    asr: dict,
+    lang: str,
+    device: str,
+    concurrency: int,
+) -> None:
+    count = min(concurrency * ASR_WARMUP_MULTIPLIER, len(generated))
+    entries = [e for e in generated if e.get("is_success", False)][:count]
+    if not entries:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        list(
+            executor.map(
+                lambda entry: _transcribe_one_entry(entry, asr, lang, device),
+                entries,
+            )
+        )
+
+
 def _resolve_asr_concurrency(config: SeedttsTranscribeConfig) -> int:
     value = getattr(config, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY)
     if value is None:
@@ -984,6 +1007,7 @@ def run_seedtts_transcribe(
     )
     asr_concurrency = _resolve_asr_concurrency(config)
     outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
+    _warmup_asr(generated, asr, config.lang, config.device, asr_concurrency)
     asr_wall_start_s = time.perf_counter()
     if asr_concurrency == 1:
         for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
