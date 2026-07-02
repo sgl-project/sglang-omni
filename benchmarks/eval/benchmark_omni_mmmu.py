@@ -84,7 +84,7 @@ from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.mmmu import compute_mmmu_metrics, print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import (
+from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     compute_text_audio_consistency,
 )

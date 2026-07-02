@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TTS task utilities: voice-clone API clients, ASR evaluation, and HTTP send functions.
+"""TTS task utilities: voice-clone API clients, seed-tts eval stages, and HTTP send functions.
+
+ASR transcription and WER scoring live in benchmarks.tasks.asr. This module
+maps generated audio into ASR samples and reuses that layer.
 
 Replaces tasks/tts_speed.py and tasks/voice_clone.py.
 """
@@ -9,25 +12,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import concurrent.futures
 import csv
-import functools
 import io
 import json
 import logging
 import os
-import string
 import time
 import wave
-from dataclasses import dataclass
 from typing import AsyncIterator, Protocol
 
 import aiohttp
 import numpy as np
-import requests
 import soundfile as sf
 import torch
-from jiwer import process_words
 from tqdm import tqdm
 
 from benchmarks.benchmarker.data import RequestResult
@@ -49,10 +46,17 @@ from benchmarks.metrics.speaker_similarity_assets import (
     ensure_speaker_similarity_assets,
 )
 from benchmarks.metrics.wer import (
+    SampleOutput,
     calculate_asr_speed_metrics,
     calculate_wer_metrics,
     print_asr_speed_summary,
     print_wer_summary,
+)
+from benchmarks.tasks.asr import (
+    ASR_WARMUP_MULTIPLIER,
+    apply_wer,
+    run_asr_transcription,
+    transcribe_and_compute_wer,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,421 +71,8 @@ UTMOS_BATCH_SIZE = 8
 
 
 # ---------------------------------------------------------------------------
-# ASR / WER utilities
+# WER result persistence
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class SampleOutput:
-    sample_id: str = ""
-    target_text: str = ""
-    whisper_text: str = ""
-    ref_norm: str = ""
-    hyp_norm: str = ""
-    wer: float = 0.0
-    substitutions: int = 0
-    deletions: int = 0
-    insertions: int = 0
-    hits: int = 0
-    audio_duration_s: float = 0.0
-    latency_s: float = 0.0
-    asr_latency_s: float = 0.0
-    is_success: bool = False
-    error: str = ""
-
-
-@functools.lru_cache(maxsize=1)
-def _get_en_normalizer():
-    """Lazy-load the required English WER normalizer from openai-whisper."""
-    try:
-        from whisper.normalizers import EnglishTextNormalizer
-    except ImportError as exc:
-        raise RuntimeError(
-            "English WER requires openai-whisper "
-            "(whisper.normalizers.EnglishTextNormalizer). "
-            "Install pinned deps with `uv pip install -e .`."
-        ) from exc
-
-    return EnglishTextNormalizer()
-
-
-def normalize_text(text: str, lang: str) -> str:
-    if lang == "zh":
-        from zhon.hanzi import punctuation as zh_punct
-
-        all_punct = zh_punct + string.punctuation
-        for ch in all_punct:
-            if ch == "'":
-                continue
-            text = text.replace(ch, "")
-        text = text.replace(" ", "").replace("\u3000", "").strip()
-        text = " ".join(list(text))
-        return text
-
-    normalizer = _get_en_normalizer()
-    return normalizer(text)
-
-
-OMNI_WHISPER_MODEL_PATH = "openai/whisper-large-v3"
-OMNI_WHISPER_REQUEST_TIMEOUT_S = 300
-# Whisper encoder accepts at most ~30 s per request (nb_max_frames=3000).
-# transformers pipeline uses chunk_length_s=30; mirror that for long talker audio.
-OMNI_WHISPER_CHUNK_LENGTH_S = 30
-OMNI_WHISPER_CHUNK_STRIDE_S = 25
-OMNI_WHISPER_SAMPLE_RATE = 16000
-
-
-def _load_wav_mono_16k(wav_path: str) -> torch.Tensor:
-    import torchaudio
-
-    audio, sample_rate = torchaudio.load(wav_path)
-    if audio.ndim == 2 and audio.shape[0] > 1:
-        audio = audio.mean(dim=0, keepdim=True)
-    audio = audio.squeeze(0).to(torch.float32)
-    if sample_rate != OMNI_WHISPER_SAMPLE_RATE:
-        audio = torchaudio.functional.resample(
-            audio, sample_rate, OMNI_WHISPER_SAMPLE_RATE
-        )
-    return audio
-
-
-def _wav_bytes_from_mono_16k(audio: torch.Tensor) -> bytes:
-    pcm16 = (audio.clamp(-1.0, 1.0) * 32767.0).to(torch.int16).cpu()
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(OMNI_WHISPER_SAMPLE_RATE)
-        wav_file.writeframes(pcm16.numpy().tobytes())
-    return buffer.getvalue()
-
-
-def _post_omni_whisper_transcription(
-    asr: dict,
-    audio_bytes: bytes,
-    filename: str,
-    lang: str,
-) -> str:
-    response = requests.post(
-        f"http://127.0.0.1:{asr['router_port']}/v1/audio/transcriptions",
-        data={
-            "model": asr["model_path"],
-            "language": "en" if lang == "en" else lang,
-            "temperature": "0",
-        },
-        files={
-            "file": (
-                filename,
-                audio_bytes,
-                "audio/wav",
-            )
-        },
-        timeout=OMNI_WHISPER_REQUEST_TIMEOUT_S,
-        proxies={"http": None, "https": None},
-    )
-    response.raise_for_status()
-    return str(response.json()["text"])
-
-
-def _transcribe_omni_whisper(asr: dict, wav_path: str, lang: str) -> str:
-    audio = _load_wav_mono_16k(wav_path)
-    duration_s = float(audio.shape[0]) / OMNI_WHISPER_SAMPLE_RATE
-    if duration_s <= OMNI_WHISPER_CHUNK_LENGTH_S:
-        with open(wav_path, "rb") as audio_file:
-            return _post_omni_whisper_transcription(
-                asr,
-                audio_file.read(),
-                os.path.basename(wav_path),
-                lang,
-            )
-
-    chunk_samples = OMNI_WHISPER_CHUNK_LENGTH_S * OMNI_WHISPER_SAMPLE_RATE
-    stride_samples = OMNI_WHISPER_CHUNK_STRIDE_S * OMNI_WHISPER_SAMPLE_RATE
-    chunk_texts: list[str] = []
-    for start in range(0, int(audio.shape[0]), stride_samples):
-        chunk = audio[start : start + chunk_samples]
-        if chunk.numel() == 0:
-            break
-        chunk_bytes = _wav_bytes_from_mono_16k(chunk)
-        chunk_texts.append(
-            _post_omni_whisper_transcription(
-                asr,
-                chunk_bytes,
-                f"{os.path.basename(wav_path)}.chunk{start // stride_samples}.wav",
-                lang,
-            ).strip()
-        )
-        if start + chunk_samples >= audio.shape[0]:
-            break
-    return " ".join(text for text in chunk_texts if text)
-
-
-def load_omni_whisper_asr(
-    router_port: int,
-    *,
-    model_path: str = OMNI_WHISPER_MODEL_PATH,
-) -> dict:
-    """Return an ASR handle that transcribes via SGLang Omni Whisper router."""
-    return {
-        "type": "omni_whisper",
-        "router_port": router_port,
-        "model_path": model_path,
-    }
-
-
-QWEN3_ASR_MODEL_PATH = os.getenv("QWEN3_ASR_MODEL_PATH", "Qwen/Qwen3-ASR-1.7B")
-QWEN3_ASR_REQUEST_TIMEOUT_S = 300
-QWEN3_ASR_MAX_NEW_TOKENS = int(os.getenv("QWEN3_ASR_MAX_NEW_TOKENS", "128"))
-# ASR transcription fan-out for WER, not TTS generation concurrency.
-DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = int(
-    os.getenv("QWEN3_ASR_CONCURRENCY", os.getenv("SEEDTTS_ASR_CONCURRENCY", "32"))
-)
-
-
-def load_qwen3_asr(
-    router_port: int,
-    *,
-    model_path: str = QWEN3_ASR_MODEL_PATH,
-) -> dict:
-    """Return an ASR handle that transcribes via a Qwen3-ASR sglang-omni router."""
-    return {
-        "type": "qwen3_asr",
-        "router_port": router_port,
-        "model_path": model_path,
-    }
-
-
-def _is_whisper_asr_model(model_path: str) -> bool:
-    return "whisper" in model_path.lower()
-
-
-def load_router_asr(
-    router_port: int,
-    *,
-    model_path: str = QWEN3_ASR_MODEL_PATH,
-) -> dict:
-    """Return an ASR handle backed by a running SGLang Omni ASR server."""
-    if _is_whisper_asr_model(model_path):
-        return load_omni_whisper_asr(router_port, model_path=model_path)
-    return load_qwen3_asr(router_port, model_path=model_path)
-
-
-def _transcribe_qwen3_asr(asr: dict, wav_path: str, lang: str) -> str:
-    """Transcribe one wav via the Qwen3-ASR server's /v1/audio/transcriptions.
-
-    Note: do NOT send temperature=0 — Qwen3-ASR degenerates under pure greedy
-    (the server bumps it to 0.01). ``language`` selects the forced prefix.
-    """
-    with open(wav_path, "rb") as audio_file:
-        response = requests.post(
-            f"http://127.0.0.1:{asr['router_port']}/v1/audio/transcriptions",
-            data={
-                "model": asr["model_path"],
-                "language": "en" if lang == "en" else lang,
-                "response_format": "json",
-                "max_new_tokens": str(QWEN3_ASR_MAX_NEW_TOKENS),
-            },
-            files={"file": (os.path.basename(wav_path), audio_file, "audio/wav")},
-            timeout=QWEN3_ASR_REQUEST_TIMEOUT_S,
-            proxies={"http": None, "https": None},
-        )
-    response.raise_for_status()
-    return str(response.json()["text"])
-
-
-def _resolve_asr_backend(
-    lang: str,
-    asr_device: str,
-    *,
-    asr_router_port: int | None = None,
-    asr_model_path: str = QWEN3_ASR_MODEL_PATH,
-    generation_mode: str | None = None,
-) -> dict:
-    if asr_router_port is not None:
-        return load_router_asr(asr_router_port, model_path=asr_model_path)
-    return load_asr_model(lang, asr_device, generation_mode)
-
-
-def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
-    """Legacy local ASR entry point.
-
-    WER now runs through SGLang Omni's OpenAI-compatible transcription endpoint.
-    Start an ASR server with ``sglang_omni.cli serve`` and pass its port instead
-    of loading local ASR backends in-process.
-    """
-    mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
-    del device
-    if lang not in {"en", "zh"}:
-        raise ValueError(f"Unsupported language: {lang}")
-    raise ValueError(
-        "WER transcription requires a running SGLang Omni ASR server"
-        f"{mode_suffix}. Start Qwen3-ASR (default "
-        f"{QWEN3_ASR_MODEL_PATH}) or {OMNI_WHISPER_MODEL_PATH} and pass "
-        "asr_router_port."
-    )
-
-
-def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
-    if asr["type"] == "qwen3_asr":
-        return _transcribe_qwen3_asr(asr, wav_path, lang)
-    if asr["type"] == "omni_whisper":
-        return _transcribe_omni_whisper(asr, wav_path, lang)
-    raise ValueError(f"Unknown ASR type: {asr['type']}")
-
-
-def transcribe_and_compute_wer(
-    output: SampleOutput,
-    wav_path: str,
-    asr: dict,
-    lang: str,
-    device: str,
-) -> SampleOutput:
-    """Transcribe audio and compute per-sample WER metrics."""
-    try:
-        hyp_text = transcribe(asr, wav_path, lang, device)
-    except Exception as exc:
-        output.error = f"Transcription failed: {exc}"
-        logger.error(f"[{output.sample_id}] {output.error}")
-        return output
-
-    output.whisper_text = hyp_text
-    output.ref_norm = normalize_text(output.target_text, lang)
-    output.hyp_norm = normalize_text(hyp_text, lang)
-
-    if not output.ref_norm:
-        output.error = "Empty reference after normalization"
-        return output
-
-    measures = process_words(output.ref_norm, output.hyp_norm)
-    output.wer = measures.wer
-    output.substitutions = measures.substitutions
-    output.deletions = measures.deletions
-    output.insertions = measures.insertions
-    output.hits = measures.hits
-    output.is_success = True
-    return output
-
-
-def compute_text_audio_consistency(
-    request_results: list[RequestResult],
-    lang: str,
-    asr_device: str,
-    *,
-    asr_router_port: int | None = None,
-    asr_model_path: str = QWEN3_ASR_MODEL_PATH,
-    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-) -> dict:
-    """WER between each request's text output (ref) and ASR-transcribed audio (hyp)."""
-    asr = _resolve_asr_backend(
-        lang,
-        asr_device,
-        asr_router_port=asr_router_port,
-        asr_model_path=asr_model_path,
-    )
-
-    outputs_by_idx: list[SampleOutput | None] = [None] * len(request_results)
-    pending: list[tuple[int, RequestResult, SampleOutput]] = []
-    for idx, result in enumerate(request_results):
-        ref_text = " ".join(result.text.split())
-        out = SampleOutput(
-            sample_id=result.request_id,
-            target_text=ref_text,
-            latency_s=result.latency_s,
-            audio_duration_s=result.audio_duration_s,
-        )
-        if not result.is_success or not result.wav_path:
-            out.error = result.error or "No audio in response"
-            outputs_by_idx[idx] = out
-            continue
-        pending.append((idx, result, out))
-
-    def _transcribe_pending(
-        result: RequestResult,
-        output: SampleOutput,
-    ) -> SampleOutput:
-        asr_t0 = time.perf_counter()
-        output = transcribe_and_compute_wer(
-            output,
-            result.wav_path,
-            asr,
-            lang,
-            asr_device,
-        )
-        output.asr_latency_s = time.perf_counter() - asr_t0
-        return output
-
-    asr_concurrency = max(1, int(asr_concurrency))
-    if asr_concurrency == 1:
-        for idx, result, output in pending:
-            outputs_by_idx[idx] = _transcribe_pending(result, output)
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=asr_concurrency,
-        ) as executor:
-            future_to_idx = {
-                executor.submit(_transcribe_pending, result, output): idx
-                for idx, result, output in pending
-            }
-            for future in concurrent.futures.as_completed(future_to_idx):
-                outputs_by_idx[future_to_idx[future]] = future.result()
-
-    outputs = [output for output in outputs_by_idx if output is not None]
-
-    per_sample = [
-        {
-            "id": o.sample_id,
-            "is_success": o.is_success,
-            "wer": o.wer if o.is_success else None,
-            "ref_text": o.target_text[:100],
-            "hyp_text": o.whisper_text[:100],
-            "ref_norm": o.ref_norm,
-            "hyp_norm": o.hyp_norm,
-            "audio_duration_s": o.audio_duration_s,
-            "error": o.error,
-        }
-        for o in outputs
-    ]
-    return {"summary": calculate_wer_metrics(outputs, lang), "per_sample": per_sample}
-
-
-def compute_text_audio_consistency_from_records(
-    per_sample: list[dict],
-    lang: str,
-    asr_device: str,
-    *,
-    audio_dir: str | None = None,
-    sample_id_key: str = "sample_id",
-    text_key: str = "raw_response",
-    asr_router_port: int | None = None,
-    asr_model_path: str = QWEN3_ASR_MODEL_PATH,
-    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-) -> dict:
-    """Compute WER from saved eval records after the inference server is stopped."""
-    request_results: list[RequestResult] = []
-    for record in per_sample:
-        sample_id = record.get(sample_id_key)
-        wav_path = record.get("wav_path") or ""
-        if not wav_path and audio_dir and sample_id:
-            wav_path = os.path.join(audio_dir, f"{sample_id}.wav")
-        request_results.append(
-            RequestResult(
-                request_id=str(sample_id or ""),
-                text=str(record.get(text_key) or ""),
-                is_success=bool(record.get("is_success")),
-                latency_s=float(record.get("latency_s") or 0),
-                audio_duration_s=float(record.get("audio_duration_s") or 0),
-                wav_path=wav_path,
-                error=str(record.get("error") or ""),
-            )
-        )
-    return compute_text_audio_consistency(
-        request_results,
-        lang,
-        asr_device,
-        asr_router_port=asr_router_port,
-        asr_model_path=asr_model_path,
-        asr_concurrency=asr_concurrency,
-    )
 
 
 def save_wer_results(
@@ -888,36 +479,6 @@ def build_base_url(config: ServerEndpointConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-def _transcribe_one_entry(
-    entry: dict,
-    asr: dict,
-    lang: str,
-    device: str,
-) -> SampleOutput:
-    """Transcribe a single ``generated.json`` entry and compute its WER."""
-    output = SampleOutput(
-        sample_id=entry["sample_id"],
-        target_text=entry["target_text"],
-    )
-    if not entry.get("is_success", False):
-        output.error = f"Generation failed: {entry.get('error', 'unknown')}"
-        return output
-
-    output.latency_s = entry.get("latency_s", 0.0)
-    output.audio_duration_s = entry.get("audio_duration_s", 0.0)
-    asr_t0 = time.perf_counter()
-    output = transcribe_and_compute_wer(output, entry["wav_path"], asr, lang, device)
-    output.asr_latency_s = time.perf_counter() - asr_t0
-    return output
-
-
-def _resolve_asr_concurrency(config: SeedttsTranscribeConfig) -> int:
-    value = getattr(config, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY)
-    if value is None:
-        value = 1
-    return max(1, int(value))
-
-
 def _log_transcribe_result(
     *,
     idx: int,
@@ -937,13 +498,72 @@ def _log_transcribe_result(
             )
         return
 
-    # Only warn for post-generation transcription failures; generation
-    # failures are surfaced at speed-benchmark time and already logged.
+    # note (aaron): only warn for post-generation transcription failures.
+    # Generation failures are surfaced at speed-benchmark time and already logged.
     if entry.get("is_success", False):
         logger.warning(
             f"[{idx + 1}/{total}] Transcription failed: "
             f"{entry['sample_id']} -- {output.error}",
         )
+
+
+def _transcribe_generated_via_runner(
+    generated: list[dict],
+    router_port: int,
+    model_path: str,
+    lang: str,
+    concurrency: int,
+    *,
+    log_per_sample: bool = False,
+) -> tuple[list[SampleOutput], float]:
+    done = [e for e in generated if e.get("is_success", False)]
+    samples = [
+        SampleInput(
+            sample_id=e["sample_id"],
+            ref_text=e["target_text"],
+            ref_audio=e["wav_path"],
+            target_text=e["target_text"],
+        )
+        for e in done
+    ]
+    results, wall_s = asyncio.run(
+        run_asr_transcription(
+            samples,
+            port=router_port,
+            model_path=model_path,
+            lang=lang,
+            concurrency=concurrency,
+            warmup=concurrency * ASR_WARMUP_MULTIPLIER,
+        )
+    )
+    result_by_id = {r.request_id: r for r in results}
+    outputs: list[SampleOutput] = []
+    total = len(generated)
+    for idx, e in enumerate(generated):
+        output = SampleOutput(
+            sample_id=e["sample_id"], target_text=e.get("target_text", "")
+        )
+        output.latency_s = e.get("latency_s", 0.0)
+        output.audio_duration_s = e.get("audio_duration_s", 0.0)
+        if not e.get("is_success", False):
+            output.error = f"Generation failed: {e.get('error', 'unknown')}"
+            outputs.append(output)
+            continue
+        result = result_by_id.get(e["sample_id"])
+        if result is None or not result.is_success:
+            output.error = (result.error if result else "") or "No transcription"
+        else:
+            output.asr_latency_s = result.latency_s
+            output = apply_wer(output, result.text, lang)
+        _log_transcribe_result(
+            idx=idx,
+            total=total,
+            entry=e,
+            output=output,
+            log_per_sample=log_per_sample,
+        )
+        outputs.append(output)
+    return outputs, wall_s
 
 
 def run_seedtts_transcribe(
@@ -970,63 +590,16 @@ def run_seedtts_transcribe(
         generated: list[dict] = json.load(f)
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
-    asr_model_path = getattr(config, "asr_model_path", QWEN3_ASR_MODEL_PATH)
-    asr = _resolve_asr_backend(
+    asr_model_path = config.asr_model_path
+    asr_concurrency = max(1, int(config.asr_concurrency))
+    outputs, asr_wall_time_s = _transcribe_generated_via_runner(
+        generated,
+        asr_router_port,
+        asr_model_path,
         config.lang,
-        config.device,
-        asr_router_port=asr_router_port,
-        asr_model_path=asr_model_path,
-        generation_mode=generation_mode,
+        asr_concurrency,
+        log_per_sample=log_per_sample,
     )
-
-    tqdm_desc = (
-        f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
-    )
-    asr_concurrency = _resolve_asr_concurrency(config)
-    outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
-    asr_wall_start_s = time.perf_counter()
-    if asr_concurrency == 1:
-        for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
-            output = _transcribe_one_entry(entry, asr, config.lang, config.device)
-            outputs_by_idx[idx] = output
-            _log_transcribe_result(
-                idx=idx,
-                total=len(generated),
-                entry=entry,
-                output=output,
-                log_per_sample=log_per_sample,
-            )
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=asr_concurrency,
-        ) as executor:
-            future_to_idx = {
-                executor.submit(
-                    _transcribe_one_entry,
-                    entry,
-                    asr,
-                    config.lang,
-                    config.device,
-                ): idx
-                for idx, entry in enumerate(generated)
-            }
-            with tqdm(total=len(generated), desc=tqdm_desc) as progress:
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    entry = generated[idx]
-                    output = future.result()
-                    outputs_by_idx[idx] = output
-                    _log_transcribe_result(
-                        idx=idx,
-                        total=len(generated),
-                        entry=entry,
-                        output=output,
-                        log_per_sample=log_per_sample,
-                    )
-                    progress.update(1)
-
-    asr_wall_time_s = time.perf_counter() - asr_wall_start_s
-    outputs = [output for output in outputs_by_idx if output is not None]
 
     wer_metrics = calculate_wer_metrics(outputs, config.lang)
     asr_metrics = calculate_asr_speed_metrics(outputs, wall_time_s=asr_wall_time_s)

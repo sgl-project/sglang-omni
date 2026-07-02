@@ -107,14 +107,14 @@ from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
 from benchmarks.metrics.mmsu import compute_mmsu_metrics, print_mmsu_summary
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    compute_text_audio_consistency,
+)
 from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
     make_mmsu_send_fn,
     save_mmsu_results,
-)
-from benchmarks.tasks.tts import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    compute_text_audio_consistency,
 )
 
 logging.basicConfig(

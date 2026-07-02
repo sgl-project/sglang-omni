@@ -19,12 +19,12 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.benchmark_qwen3_asr_concurrency import (
+from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summary
+from benchmarks.tasks.asr import (
+    QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )
-from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summary
-from benchmarks.tasks.tts import QWEN3_ASR_MODEL_PATH
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     launch_managed_router,
