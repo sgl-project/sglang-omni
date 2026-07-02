@@ -943,13 +943,6 @@ def _transcribe_generated_via_runner(
     return outputs, wall_s
 
 
-def _resolve_asr_concurrency(config: SeedttsTranscribeConfig) -> int:
-    value = getattr(config, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY)
-    if value is None:
-        value = 1
-    return max(1, int(value))
-
-
 def run_seedtts_transcribe(
     config: SeedttsTranscribeConfig,
     *,
@@ -974,13 +967,8 @@ def run_seedtts_transcribe(
         generated: list[dict] = json.load(f)
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
-    asr_model_path = getattr(config, "asr_model_path", QWEN3_ASR_MODEL_PATH)
-    if asr_router_port is None or _is_whisper_asr_model(asr_model_path):
-        raise ValueError(
-            "run_seedtts_transcribe now supports only Qwen3-ASR over an ASR router. "
-            "Pass asr_router_port and a Qwen3-ASR model."
-        )
-    asr_concurrency = _resolve_asr_concurrency(config)
+    asr_model_path = config.asr_model_path
+    asr_concurrency = max(1, int(config.asr_concurrency))
     outputs, asr_wall_time_s = _transcribe_generated_via_runner(
         generated, asr_router_port, asr_model_path, config.lang, asr_concurrency
     )
