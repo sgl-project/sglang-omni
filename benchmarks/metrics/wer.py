@@ -14,7 +14,7 @@ from benchmarks.metrics._format import (
 )
 
 if TYPE_CHECKING:
-    from benchmarks.tasks.tts import SampleOutput
+    from benchmarks.tasks.asr import SampleOutput
 
 
 def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
