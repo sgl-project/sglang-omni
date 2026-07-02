@@ -140,8 +140,57 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
     assert specs["thinker"].same_gpu_targets == {"talker"}
     assert specs["preprocess"].same_process_targets == {"thinker", "aggregate"}
     assert specs["thinker"].same_process_targets == {"aggregate", "talker"}
+    assert specs["thinker"].factory_arg_defaults["model_path"] == "global-model"
     assert specs["thinker"].factory_args["model_path"] == "runtime-model"
     assert specs["thinker"].factory_args["extra"] == "rt"
+
+
+def test_runner_specs_defer_factory_signature_import_to_child(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sglang_omni.config.runtime as runtime_config
+
+    def fail_parent_factory_import(path: str):
+        raise AssertionError(f"factory imported in parent process: {path}")
+
+    monkeypatch.setattr(runtime_config, "import_string", fail_parent_factory_import)
+
+    config = PipelineConfig(
+        model_path="global-model",
+        name="contract",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[
+            stage(
+                "thinker",
+                factory=fake_factory_path("runtime_factory"),
+                gpu=1,
+                terminal=True,
+            ),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        group = _build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            name_map=prep.name_map,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )[0]
+    finally:
+        assert prep.runtime_dir is not None
+        prep.runtime_dir.close()
+
+    spec = group.specs[0]
+    assert spec.factory == fake_factory_path("runtime_factory")
+    assert spec.factory_arg_defaults["model_path"] == "global-model"
+    assert spec.factory_arg_defaults["gpu_id"] == 1
+    assert spec.gpu_id == 1
+    assert "model_path" not in spec.factory_args
+    assert "gpu_id" not in spec.factory_args
 
 
 def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:

@@ -426,7 +426,7 @@ def test_pipeline_stage_wiring():
     split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
     split_stages = {stage.name: stage for stage in split.stages}
     assert split_stages["preprocessing"].factory_args["device"] == "cuda:1"
-    assert split_stages["tts_engine"].factory_args["gpu_id"] == 0
+    assert split_stages["tts_engine"].gpu == 0
     split_runtime = split_stages["tts_engine"].runtime
     assert split_runtime.resources.total_gpu_memory_fraction is None
     assert split_runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)

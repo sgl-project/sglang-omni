@@ -167,7 +167,16 @@ def test_qwen3_asr_matches_seedtts_reference_text(
     print_asr_speed_summary(speed, QWEN3_ASR_CI_MODEL_PATH)
 
     results_path = tmp_path_factory.getbasetemp() / "qwen3_asr_results.json"
-    results_path.write_text(json.dumps({"summary": summary, "speed": speed}, indent=2))
+    results_path.write_text(
+        json.dumps(
+            {
+                "summary": summary,
+                "speed": speed,
+                "router_ready_s": qwen3_asr_router_server.router_ready_s,
+            },
+            indent=2,
+        )
+    )
 
     corpus_wer = summary["corpus_wer"]
     throughput_samples_per_s = speed["throughput_samples_per_s"]
