@@ -12,9 +12,9 @@ This script transcribes the SeedTTS *reference* clips directly (no TTS
 generation step), so it isolates ASR behavior from TTS.
 
 This file is the executable CLI wrapper: the shared transcription/scoring
-layer (``run_asr_transcription`` + ``build_asr_eval_results``) lives in
-``benchmarks.tasks.asr`` and is imported here and by the Qwen3-ASR correctness
-gate (``tests/test_model/test_qwen3_asr_ci.py``), so the gate is just this
+layer (run_asr_transcription and build_asr_eval_results) lives in
+benchmarks.tasks.asr and is imported here and by the Qwen3-ASR correctness
+gate (tests/test_model/test_qwen3_asr_ci.py), so the gate is just this
 benchmark run plus thresholds.
 
 Usage:

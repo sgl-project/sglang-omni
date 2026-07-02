@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """TTS task utilities: voice-clone API clients, seed-tts eval stages, and HTTP send functions.
 
-ASR transcription and WER scoring live in :mod:`benchmarks.tasks.asr`. This
-module maps generated audio into ASR samples and reuses that layer.
+ASR transcription and WER scoring live in benchmarks.tasks.asr. This module
+maps generated audio into ASR samples and reuses that layer.
 
 Replaces tasks/tts_speed.py and tasks/voice_clone.py.
 """
@@ -498,8 +498,8 @@ def _log_transcribe_result(
             )
         return
 
-    # Only warn for post-generation transcription failures; generation
-    # failures are surfaced at speed-benchmark time and already logged.
+    # note (aaron): only warn for post-generation transcription failures.
+    # Generation failures are surfaced at speed-benchmark time and already logged.
     if entry.get("is_success", False):
         logger.warning(
             f"[{idx + 1}/{total}] Transcription failed: "

@@ -2,9 +2,9 @@
 """Shared ASR task layer: transcription, WER scoring, and ASR speed assembly.
 
 Owns the ASR/WER primitives shared by the standalone ASR benchmark
-(``benchmarks/eval/benchmark_qwen3_asr_concurrency.py``), the Qwen3-ASR CI gate
-(``tests/test_model/test_qwen3_asr_ci.py``), the TTS WER stage
-(``benchmarks.tasks.tts.run_seedtts_transcribe``), and the talker WER paths.
+(benchmarks/eval/benchmark_qwen3_asr_concurrency.py), the Qwen3-ASR CI gate
+(tests/test_model/test_qwen3_asr_ci.py), the TTS WER stage
+(benchmarks.tasks.tts.run_seedtts_transcribe), and the talker WER paths.
 """
 
 from __future__ import annotations
@@ -36,20 +36,18 @@ logger = logging.getLogger(__name__)
 
 OMNI_WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 OMNI_WHISPER_REQUEST_TIMEOUT_S = 300
-# Whisper encoder accepts at most ~30 s per request (nb_max_frames=3000).
-# transformers pipeline uses chunk_length_s=30; mirror that for long talker audio.
+# note (aaron): the Whisper encoder accepts at most ~30 s per request
+# (nb_max_frames=3000). The transformers pipeline uses chunk_length_s=30 and
+# long talker audio mirrors that.
 OMNI_WHISPER_CHUNK_LENGTH_S = 30
 OMNI_WHISPER_CHUNK_STRIDE_S = 25
 OMNI_WHISPER_SAMPLE_RATE = 16000
 
-QWEN3_ASR_MODEL_PATH = os.getenv("QWEN3_ASR_MODEL_PATH", "Qwen/Qwen3-ASR-1.7B")
+QWEN3_ASR_MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 QWEN3_ASR_REQUEST_TIMEOUT_S = 300
-QWEN3_ASR_MAX_NEW_TOKENS = int(os.getenv("QWEN3_ASR_MAX_NEW_TOKENS", "128"))
-# ASR transcription fan-out for WER, not TTS generation concurrency.
-DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = int(
-    os.getenv("QWEN3_ASR_CONCURRENCY", os.getenv("SEEDTTS_ASR_CONCURRENCY", "32"))
-)
-# Warmup requests sent before the timed window, per unit of concurrency.
+# note (aaron): ASR transcription fan-out for WER, not TTS generation concurrency.
+DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
+# note (aaron): warmup requests sent before the timed window, per unit of concurrency.
 ASR_WARMUP_MULTIPLIER = 2
 
 
@@ -81,7 +79,7 @@ def _get_en_normalizer():
         raise RuntimeError(
             "English WER requires openai-whisper "
             "(whisper.normalizers.EnglishTextNormalizer). "
-            "Install pinned deps with `uv pip install -e .`."
+            "Install pinned deps with uv pip install -e ."
         ) from exc
 
     return EnglishTextNormalizer()
@@ -191,7 +189,6 @@ def _transcribe_omni_whisper(asr: dict, wav_path: str, lang: str) -> str:
 
 def load_omni_whisper_asr(
     router_port: int,
-    *,
     model_path: str = OMNI_WHISPER_MODEL_PATH,
 ) -> dict:
     """Return an ASR handle that transcribes via SGLang Omni Whisper router."""
@@ -204,7 +201,6 @@ def load_omni_whisper_asr(
 
 def load_qwen3_asr(
     router_port: int,
-    *,
     model_path: str = QWEN3_ASR_MODEL_PATH,
 ) -> dict:
     """Return an ASR handle that transcribes via a Qwen3-ASR sglang-omni router."""
@@ -221,7 +217,6 @@ def _is_whisper_asr_model(model_path: str) -> bool:
 
 def load_router_asr(
     router_port: int,
-    *,
     model_path: str = QWEN3_ASR_MODEL_PATH,
 ) -> dict:
     """Return an ASR handle backed by a running SGLang Omni ASR server."""
@@ -233,8 +228,9 @@ def load_router_asr(
 def _transcribe_qwen3_asr(asr: dict, wav_path: str, lang: str) -> str:
     """Transcribe one wav via the Qwen3-ASR server's /v1/audio/transcriptions.
 
-    Note: do NOT send temperature=0 — Qwen3-ASR degenerates under pure greedy
-    (the server bumps it to 0.01). ``language`` selects the forced prefix.
+    Note: do not send temperature=0 because Qwen3-ASR degenerates under pure
+    greedy (the server bumps it to 0.01). The language field selects the
+    forced prefix. max_new_tokens comes from the Qwen3 ASR pipeline config.
     """
     with open(wav_path, "rb") as audio_file:
         response = requests.post(
@@ -243,7 +239,6 @@ def _transcribe_qwen3_asr(asr: dict, wav_path: str, lang: str) -> str:
                 "model": asr["model_path"],
                 "language": "en" if lang == "en" else lang,
                 "response_format": "json",
-                "max_new_tokens": str(QWEN3_ASR_MAX_NEW_TOKENS),
             },
             files={"file": (os.path.basename(wav_path), audio_file, "audio/wav")},
             timeout=QWEN3_ASR_REQUEST_TIMEOUT_S,
@@ -270,7 +265,7 @@ def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """Legacy local ASR entry point.
 
     WER now runs through SGLang Omni's OpenAI-compatible transcription endpoint.
-    Start an ASR server with ``sglang_omni.cli serve`` and pass its port instead
+    Start an ASR server with sglang_omni.cli serve and pass its port instead
     of loading local ASR backends in-process.
     """
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
@@ -294,7 +289,7 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
 
 
 def apply_wer(output: SampleOutput, hyp_text: str, lang: str) -> SampleOutput:
-    """Fill ``output`` with normalized texts and per-sample WER fields."""
+    """Fill output with normalized texts and per-sample WER fields."""
     output.whisper_text = hyp_text
     output.ref_norm = normalize_text(output.target_text, lang)
     output.hyp_norm = normalize_text(hyp_text, lang)
@@ -331,15 +326,14 @@ def transcribe_and_compute_wer(
 def make_asr_send_fn(
     model_name: str,
     api_url: str,
-    *,
     lang: str = "en",
-    max_new_tokens: int = QWEN3_ASR_MAX_NEW_TOKENS,
 ) -> SendFn:
-    """Return a *send_fn(session, sample) -> RequestResult* that transcribes one
-    SeedTTS reference clip via the Omni ``/v1/audio/transcriptions`` endpoint.
+    """Return a send_fn(session, sample) -> RequestResult that transcribes one
+    SeedTTS reference clip via the Omni /v1/audio/transcriptions endpoint.
 
-    Note: do NOT send temperature=0 — Qwen3-ASR degenerates under pure greedy
-    (the server bumps it to 0.01). ``language`` selects the forced prefix.
+    Note: do not send temperature=0 because Qwen3-ASR degenerates under pure
+    greedy (the server bumps it to 0.01). The language field selects the
+    forced prefix. max_new_tokens comes from the Qwen3 ASR pipeline config.
     """
 
     async def send_fn(
@@ -358,7 +352,6 @@ def make_asr_send_fn(
         form.add_field("model", model_name)
         form.add_field("language", "en" if lang == "en" else lang)
         form.add_field("response_format", "json")
-        form.add_field("max_new_tokens", str(max_new_tokens))
         form.add_field(
             "file",
             audio_bytes,
@@ -398,9 +391,9 @@ async def run_asr_transcription(
     request_timeout_s: int = QWEN3_ASR_REQUEST_TIMEOUT_S,
     disable_tqdm: bool = True,
 ) -> tuple[list[RequestResult], float]:
-    """Transcribe ``samples`` against a running ASR router at one concurrency.
+    """Transcribe samples against a running ASR router at one concurrency.
 
-    Returns ``(outputs, wall_clock_s)`` via the shared ``BenchmarkRunner``.
+    Returns (outputs, wall_clock_s) via the shared BenchmarkRunner.
     """
     api_url = f"http://{host}:{port}/v1/audio/transcriptions"
     send_fn = make_asr_send_fn(model_path, api_url, lang=lang)
@@ -427,9 +420,9 @@ def build_asr_eval_results(
 ) -> dict:
     """Score transcriptions and assemble WER + speed metrics.
 
-    Returns ``{"summary": wer, "speed": speed, "per_sample": [...]}`` with the
-    exact ``summary.*`` / ``speed.*`` keys the Qwen3-ASR gate writes and the
-    tune-ci-thresholds config reads. WER/speed reuse ``benchmarks.metrics``.
+    Returns {"summary": wer, "speed": speed, "per_sample": [...]} with the
+    exact summary.* and speed.* keys the Qwen3-ASR gate writes and the
+    tune-ci-thresholds config reads. WER/speed reuse benchmarks.metrics.
     """
     result_by_id = {result.request_id: result for result in outputs}
     sample_outputs: list[SampleOutput] = []
