@@ -20,6 +20,7 @@ import string
 import time
 import wave
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import AsyncIterator, Protocol
 
 import aiohttp
@@ -53,6 +54,13 @@ from benchmarks.metrics.wer import (
     calculate_wer_metrics,
     print_asr_speed_summary,
     print_wer_summary,
+)
+from benchmarks.tasks.asr_transcription import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MAX_NEW_TOKENS,
+    QWEN3_ASR_MODEL_PATH,
+    QWEN3_ASR_REQUEST_TIMEOUT_S,
+    run_asr_transcription,
 )
 
 logger = logging.getLogger(__name__)
@@ -229,15 +237,6 @@ def load_omni_whisper_asr(
     }
 
 
-QWEN3_ASR_MODEL_PATH = os.getenv("QWEN3_ASR_MODEL_PATH", "Qwen/Qwen3-ASR-1.7B")
-QWEN3_ASR_REQUEST_TIMEOUT_S = 300
-QWEN3_ASR_MAX_NEW_TOKENS = int(os.getenv("QWEN3_ASR_MAX_NEW_TOKENS", "128"))
-# ASR transcription fan-out for WER, not TTS generation concurrency.
-DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = int(
-    os.getenv("QWEN3_ASR_CONCURRENCY", os.getenv("SEEDTTS_ASR_CONCURRENCY", "32"))
-)
-
-
 def load_qwen3_asr(
     router_port: int,
     *,
@@ -287,6 +286,67 @@ def _transcribe_qwen3_asr(asr: dict, wav_path: str, lang: str) -> str:
         )
     response.raise_for_status()
     return str(response.json()["text"])
+
+
+def _build_sample_output_from_transcription_result(
+    output: SampleOutput,
+    result: RequestResult,
+    lang: str,
+) -> SampleOutput:
+    if not result.is_success:
+        output.error = f"Transcription failed: {result.error or 'unknown'}"
+        logger.error(f"[{output.sample_id}] {output.error}")
+        return output
+
+    output.whisper_text = result.text
+    output.ref_norm = normalize_text(output.target_text, lang)
+    output.hyp_norm = normalize_text(result.text, lang)
+
+    if not output.ref_norm:
+        output.error = "Empty reference after normalization"
+        return output
+
+    measures = process_words(output.ref_norm, output.hyp_norm)
+    output.wer = measures.wer
+    output.substitutions = measures.substitutions
+    output.deletions = measures.deletions
+    output.insertions = measures.insertions
+    output.hits = measures.hits
+    output.is_success = True
+    return output
+
+
+async def _transcribe_qwen3_asr_entries_async(
+    pending: list[tuple[int, dict, SampleOutput]],
+    asr: dict,
+    lang: str,
+    *,
+    concurrency: int,
+) -> list[tuple[int, dict, SampleOutput]]:
+    samples = [
+        SimpleNamespace(
+            sample_id=entry["sample_id"],
+            ref_audio=entry["wav_path"],
+        )
+        for _idx, entry, _output in pending
+    ]
+    results, _wall_clock_s = await run_asr_transcription(
+        samples,
+        host="127.0.0.1",
+        port=asr["router_port"],
+        model_path=asr["model_path"],
+        lang=lang,
+        concurrency=concurrency,
+        request_timeout_s=QWEN3_ASR_REQUEST_TIMEOUT_S,
+        disable_tqdm=False,
+    )
+    outputs: list[tuple[int, dict, SampleOutput]] = []
+    for item, result in zip(pending, results, strict=True):
+        idx, entry, output = item
+        output.asr_latency_s = result.latency_s
+        output = _build_sample_output_from_transcription_result(output, result, lang)
+        outputs.append((idx, entry, output))
+    return outputs
 
 
 def _resolve_asr_backend(
@@ -344,22 +404,12 @@ def transcribe_and_compute_wer(
         logger.error(f"[{output.sample_id}] {output.error}")
         return output
 
-    output.whisper_text = hyp_text
-    output.ref_norm = normalize_text(output.target_text, lang)
-    output.hyp_norm = normalize_text(hyp_text, lang)
-
-    if not output.ref_norm:
-        output.error = "Empty reference after normalization"
-        return output
-
-    measures = process_words(output.ref_norm, output.hyp_norm)
-    output.wer = measures.wer
-    output.substitutions = measures.substitutions
-    output.deletions = measures.deletions
-    output.insertions = measures.insertions
-    output.hits = measures.hits
-    output.is_success = True
-    return output
+    result = RequestResult(
+        request_id=output.sample_id,
+        text=hyp_text,
+        is_success=True,
+    )
+    return _build_sample_output_from_transcription_result(output, result, lang)
 
 
 def compute_text_audio_consistency(
@@ -985,7 +1035,47 @@ def run_seedtts_transcribe(
     asr_concurrency = _resolve_asr_concurrency(config)
     outputs_by_idx: list[SampleOutput | None] = [None] * len(generated)
     asr_wall_start_s = time.perf_counter()
-    if asr_concurrency == 1:
+    if asr["type"] == "qwen3_asr":
+        pending: list[tuple[int, dict, SampleOutput]] = []
+        for idx, entry in enumerate(generated):
+            output = SampleOutput(
+                sample_id=entry["sample_id"],
+                target_text=entry["target_text"],
+            )
+            if not entry.get("is_success", False):
+                output.error = f"Generation failed: {entry.get('error', 'unknown')}"
+                outputs_by_idx[idx] = output
+                _log_transcribe_result(
+                    idx=idx,
+                    total=len(generated),
+                    entry=entry,
+                    output=output,
+                    log_per_sample=log_per_sample,
+                )
+                continue
+            output.latency_s = entry.get("latency_s", 0.0)
+            output.audio_duration_s = entry.get("audio_duration_s", 0.0)
+            pending.append((idx, entry, output))
+
+        if pending:
+            async_outputs = asyncio.run(
+                _transcribe_qwen3_asr_entries_async(
+                    pending,
+                    asr,
+                    config.lang,
+                    concurrency=asr_concurrency,
+                )
+            )
+            for idx, entry, output in async_outputs:
+                outputs_by_idx[idx] = output
+                _log_transcribe_result(
+                    idx=idx,
+                    total=len(generated),
+                    entry=entry,
+                    output=output,
+                    log_per_sample=log_per_sample,
+                )
+    elif asr_concurrency == 1:
         for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
             output = _transcribe_one_entry(entry, asr, config.lang, config.device)
             outputs_by_idx[idx] = output
