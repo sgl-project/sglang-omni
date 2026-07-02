@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 
 import pytest
 import torch
@@ -13,6 +14,12 @@ from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
+from sglang_omni.pipeline.tensor_ref import (
+    TensorRef,
+    TensorRefPolicy,
+    is_tensor_ref_dict,
+)
+from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -270,6 +277,263 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         msg = control_plane.sent_to_stage[0][2]
         assert msg.shm_metadata["chunk_metadata"]["token_id"] == 1
         assert "hidden" in msg.shm_metadata["chunk_metadata_tensors"]
+
+    asyncio.run(_run())
+
+
+def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
+    monkeypatch,
+) -> None:
+    """TP followers get the unresolved ref; the local scheduler gets the resolved tensor."""
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(6, dtype=torch.float32)
+        blob_metadata, blob_op = await relay_io.write_blob(relay, "req-1:blob", tensor)
+        await blob_op.wait_for_completion()
+        ref = TensorRef(
+            ref_id="req-1:blob",
+            request_id="req-1",
+            producer_stage="image_encoder",
+            consumer_stage="thinker",
+            path="video_embeds",
+            shape=tuple(tensor.shape),
+            dtype=str(tensor.dtype),
+            nbytes=tensor.numel() * tensor.element_size(),
+            blob_key="req-1:blob",
+            blob_metadata=blob_metadata,
+        )
+        payload = make_stage_payload(
+            request_id="req-1", data={"video_embeds": ref.to_dict()}
+        )
+
+        scheduler = FakeScheduler()
+        scheduler.requires_tp_work_fanout = True
+        follower_queue: queue.Queue = queue.Queue()
+        tp_fanout = TPLeaderFanout(
+            "thinker",
+            follower_work_queues=[follower_queue],
+            follower_abort_queues=[],
+        )
+        stage_obj = make_stage(
+            name="thinker",
+            role="leader",
+            scheduler=scheduler,
+            relay=relay,
+            tp_fanout=tp_fanout,
+        )
+
+        await stage_obj._execute(payload)
+
+        follower_msg = follower_queue.get_nowait()
+        assert is_tensor_ref_dict(follower_msg.data.data["video_embeds"])
+
+        scheduled = scheduler.inbox.get_nowait()
+        assert torch.equal(scheduled.data.data["video_embeds"], tensor)
+
+    asyncio.run(_run())
+
+
+def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob(
+    monkeypatch,
+) -> None:
+    """The small envelope op completes without waiting on the deferred blob op."""
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+    monkeypatch.setenv(
+        "SGLANG_OMNI_TENSOR_REF_EDGES", "image_encoder:mm_aggregate:thinker"
+    )
+    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_PATHS", "big")
+    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB", "0")
+
+    async def _run() -> None:
+        gate = asyncio.Event()
+
+        class GatedRelay(FakeRelay):
+            async def put_async(self, tensor, request_id=None, dst_rank=None):
+                op = await super().put_async(
+                    tensor, request_id=request_id, dst_rank=dst_rank
+                )
+                if request_id and ":tensor_ref:" in request_id:
+                    real_wait = op.wait_for_completion
+
+                    async def gated_wait(timeout: float = 30.0):
+                        await gate.wait()
+                        await real_wait(timeout=timeout)
+
+                    op.wait_for_completion = gated_wait
+                return op
+
+        relay = GatedRelay()
+        stage_obj = make_stage(
+            name="image_encoder",
+            endpoints={"mm_aggregate": "inproc://mm"},
+            relay=relay,
+        )
+        payload = make_stage_payload(request_id="req-1", data={"big": torch.randn(4)})
+
+        await asyncio.wait_for(
+            stage_obj._send_to_stage("req-1", "mm_aggregate", payload),
+            timeout=1.0,
+        )
+
+        assert len(relay_io._BACKGROUND_REF_TASKS) == 1
+        task = next(iter(relay_io._BACKGROUND_REF_TASKS))
+        gate.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        await asyncio.sleep(0)
+        assert relay_io._BACKGROUND_REF_TASKS == set()
+
+    asyncio.run(_run())
+
+
+def test_stage_discards_aborted_tensor_ref_payload_releases_blob() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        payload = make_stage_payload(request_id="req-1", data={"video_embeds": tensor})
+        policy = TensorRefPolicy(
+            threshold_bytes=1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+        blob_key = metadata["tensor_ref_blobs"][0]["blob_key"]
+        assert blob_key in relay.storage
+
+        stage_obj = make_stage(name="mm_aggregate", relay=relay)
+        stage_obj._record_aborted_request_id("req-1")
+        await stage_obj._on_data_ready(
+            DataReadyMessage("req-1", "image_encoder", "mm_aggregate", metadata)
+        )
+
+        assert blob_key not in relay.storage
+
+        for task in list(relay_io._BACKGROUND_REF_TASKS):
+            await task
+
+    asyncio.run(_run())
+
+
+def test_stage_abort_releases_tracked_unresolved_tensor_ref_payload() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        payload = make_stage_payload(request_id="req-1", data={"video_embeds": tensor})
+        policy = TensorRefPolicy(
+            threshold_bytes=1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+        blob_key = metadata["tensor_ref_blobs"][0]["blob_key"]
+        mid_payload = await relay_io.read_payload(relay, payload.request_id, metadata)
+        assert blob_key in relay.storage
+
+        stage_obj = make_stage(name="mm_aggregate", relay=relay)
+        await stage_obj._receive_payload_from_stage(
+            "req-1", "image_encoder", mid_payload
+        )
+        stage_obj._on_abort("req-1")
+
+        assert blob_key not in relay.storage
+
+        for task in list(relay_io._BACKGROUND_REF_TASKS):
+            await task
+
+    asyncio.run(_run())
+
+
+def test_stage_abort_preserves_tracked_refs_across_ref_free_fanin(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        blob_metadata, blob_op = await relay_io.write_blob(relay, "req-1:blob", tensor)
+        await blob_op.wait_for_completion()
+        ref = TensorRef(
+            ref_id="req-1:blob",
+            request_id="req-1",
+            producer_stage="image_encoder",
+            consumer_stage="thinker",
+            path="video_embeds",
+            shape=tuple(tensor.shape),
+            dtype=str(tensor.dtype),
+            nbytes=tensor.numel() * tensor.element_size(),
+            blob_key="req-1:blob",
+            blob_metadata=blob_metadata,
+        )
+
+        def _merge(payloads):
+            image_payload = payloads["image_encoder"]
+            return make_stage_payload(
+                request_id="req-1",
+                data={"video_embeds": image_payload.data["video_embeds"]},
+            )
+
+        stage_obj = make_stage(
+            name="mm_aggregate",
+            relay=relay,
+            input_handler=AggregatedInput({"image_encoder", "preprocessing"}, _merge),
+        )
+        started_materialize = asyncio.Event()
+        release_materialize = asyncio.Event()
+        original_materialize = relay_io.materialize_payload_tensor_refs
+
+        async def _blocking_materialize(relay_arg, payload, *, current_stage):
+            started_materialize.set()
+            await release_materialize.wait()
+            return await original_materialize(
+                relay_arg, payload, current_stage=current_stage
+            )
+
+        monkeypatch.setattr(
+            relay_io, "materialize_payload_tensor_refs", _blocking_materialize
+        )
+        await stage_obj._receive_payload_from_stage(
+            "req-1",
+            "image_encoder",
+            make_stage_payload(
+                request_id="req-1", data={"video_embeds": ref.to_dict()}
+            ),
+        )
+        assert "req-1:blob" in relay.storage
+
+        second_payload = asyncio.create_task(
+            stage_obj._receive_payload_from_stage(
+                "req-1",
+                "preprocessing",
+                make_stage_payload(request_id="req-1", data={"plain": 1}),
+            )
+        )
+        await asyncio.wait_for(started_materialize.wait(), timeout=2.0)
+
+        stage_obj._on_abort("req-1")
+        assert "req-1:blob" not in relay.storage
+
+        release_materialize.set()
+        await asyncio.wait_for(second_payload, timeout=2.0)
 
     asyncio.run(_run())
 

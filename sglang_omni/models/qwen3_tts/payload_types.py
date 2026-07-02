@@ -6,10 +6,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 @dataclass
-class Qwen3TTSState:
+class Qwen3TTSState(PipelineStateBase):
     """Per-request state for Qwen3-TTS generation."""
+
+    sample_rate: int = 24000
 
     text: str = ""
     task_type: str = "Base"
@@ -28,10 +32,6 @@ class Qwen3TTSState:
     audio_codes: Any | None = None
     ref_code_len: int = 0
     audio_samples: Any | None = None
-    sample_rate: int = 24000
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
 
     @staticmethod
     def _tensor_to_list(value: Any) -> Any:
@@ -74,12 +74,7 @@ class Qwen3TTSState:
             data["ref_code_len"] = self.ref_code_len
         if self.audio_samples is not None:
             data["audio_samples"] = self._tensor_to_list(self.audio_samples)
-        if self.prompt_tokens:
-            data["prompt_tokens"] = self.prompt_tokens
-        if self.completion_tokens:
-            data["completion_tokens"] = self.completion_tokens
-        if self.engine_time_s:
-            data["engine_time_s"] = self.engine_time_s
+        self.append_usage_fields(data)
         return data
 
     @classmethod

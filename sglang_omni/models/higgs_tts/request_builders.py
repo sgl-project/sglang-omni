@@ -13,6 +13,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.higgs_tts.rollout_trace import build_omni_rollout_trace
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -27,6 +28,8 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     num_codebooks: int = 8
     codebook_size: int = 1026
     output_codes: list[torch.Tensor] = field(default_factory=list)
+    output_logprobs: list[torch.Tensor] = field(default_factory=list)
+    return_omni_rollout: bool = False
     generation_done: bool = False
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
@@ -111,6 +114,8 @@ def build_sglang_higgs_request(
         temperature=float(state.temperature),
         top_p=float(state.top_p) if state.top_p is not None else 1.0,
         top_k=int(state.top_k) if state.top_k is not None else -1,
+        return_logprob=bool(state.return_logprob),
+        return_omni_rollout=bool(state.return_omni_rollout),
     )
 
 
@@ -146,12 +151,27 @@ def build_higgs_stream_metadata(
 
 
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
+    num_codebooks = int(data.num_codebooks)
     if data.output_codes:
         codes = torch.stack(data.output_codes, dim=0).to(torch.long)
         state.output_codes_delayed = codes.tolist()
         state.completion_tokens = int(codes.shape[0])
     else:
+        codes = torch.empty((0, num_codebooks), dtype=torch.long)
         state.output_codes_delayed = None
+
+    if data.return_omni_rollout:
+        logprobs = (
+            torch.stack(data.output_logprobs, dim=0).to(torch.float32)
+            if (data.return_logprob and data.output_logprobs)
+            else None
+        )
+        state.omni_rollout = build_omni_rollout_trace(
+            codes,
+            num_codebooks=num_codebooks,
+            codebook_vocab_size=int(data.codebook_size),
+            delayed_logprobs=logprobs,
+        )
     state.prompt_tokens = len(data.input_ids)
 
 

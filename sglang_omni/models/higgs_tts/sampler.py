@@ -39,11 +39,6 @@ class HiggsSamplerState:
     last_codes: torch.Tensor | None = None
 
 
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-compatible) sampler state
-# ---------------------------------------------------------------------------
-
-
 class HiggsBatchedSamplerState:
     """Per-request sampler state stored as ``[max_bs, ...]`` GPU tensors.
 
@@ -223,11 +218,6 @@ def step(
     return codes_N
 
 
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-friendly) sampler step
-# ---------------------------------------------------------------------------
-
-
 def _sample_independent_batched(
     logits_BNV: torch.Tensor,
     *,
@@ -297,6 +287,29 @@ def _sample_independent_batched(
     return torch.where(greedy_B1, argmax_BN, sampled_BN).to(torch.long)
 
 
+def selected_token_logprobs(
+    logits_BNV: torch.Tensor,
+    codes_BN: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_k_buf: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Selected-action log-prob ``[B, N]`` of the sampled codes"""
+    B = logits_BNV.shape[0]
+    logits = logits_BNV.float()
+
+    greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
+    if top_k_buf is not None:
+        greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+
+    safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
+    eff_temp = torch.where(
+        greedy_B1.unsqueeze(-1), torch.ones_like(safe_temp), safe_temp
+    )
+    logprobs_full = torch.log_softmax(logits / eff_temp, dim=-1)
+    return logprobs_full.gather(-1, codes_BN.long().unsqueeze(-1)).squeeze(-1)
+
+
 def batched_step(
     logits_BNV: torch.Tensor,
     state: HiggsBatchedSamplerState,
@@ -311,6 +324,8 @@ def batched_step(
     """Eager-path wrapper: gather pool state by ``row_indices``, call
     :func:`batched_step_direct`, scatter the new state back. Done rows
     return :data:`STOP_CODE` with state untouched.
+
+    Returns ``out_codes``.
     """
     delay_count = state.delay_count[row_indices]
     eoc_countdown = state.eoc_countdown[row_indices]
@@ -365,7 +380,12 @@ def batched_step_direct(
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
 ) -> tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
 ]:
     """CG-friendly state machine: state in/out as direct ``[B, ...]`` tensors,
     no ``state``/``row_indices`` indirection. Caller persists the returned
@@ -374,7 +394,7 @@ def batched_step_direct(
     ``seeds``/``step_count`` (both ``[B]``) make seeded rows reproducible; the
     returned ``new_step_count`` advances active rows for the next step.
     """
-    B, N, V = logits_BNV.shape
+    B, N, _ = logits_BNV.shape
     device = logits_BNV.device
 
     delay_count = delay_count.to(torch.long)
@@ -388,7 +408,6 @@ def batched_step_direct(
         seeds_B=seeds,
         step_B=step_count,
     )
-
     cb_idx = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
     in_delay = (delay_count < N).unsqueeze(-1)
     delay_mask = in_delay & (cb_idx > delay_count.unsqueeze(-1))
@@ -443,5 +462,6 @@ __all__ = [
     "HiggsSamplerState",
     "batched_step",
     "batched_step_direct",
+    "selected_token_logprobs",
     "step",
 ]

@@ -169,7 +169,6 @@ class HiggsTTSModel(nn.Module):
             range(self._sampler_pool_max_running_requests)
         )
         self._output_codes: dict[str, list[torch.Tensor]] = {}
-
         cg_device = self.backbone.model.embed_tokens.weight.device
         self._cg_row_indices = torch.zeros(
             pool_size, dtype=torch.long, device=cg_device

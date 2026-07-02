@@ -44,6 +44,7 @@ class ManagedRouterHandle:
     launcher_config: Path | None = None
     cleanup_manifest: Path | None = None
     is_router: bool = True
+    router_ready_s: float | None = None
     stopped: bool = False
 
     def stop(self) -> None:
@@ -120,6 +121,7 @@ def launch_managed_router(
     handle: ManagedRouterHandle | None = None
 
     try:
+        startup_t0 = time.perf_counter()
         router_cmd = [
             sys.executable,
             "-m",
@@ -154,6 +156,7 @@ def launch_managed_router(
             expected_workers=num_workers,
             timeout=wait_timeout,
         )
+        router_ready_s = time.perf_counter() - startup_t0
         print(
             "[Omni Router CI] topology "
             f"router_port={router_port} worker_ports={worker_ports} "
@@ -166,6 +169,7 @@ def launch_managed_router(
             log_file=router_log,
             launcher_config=launcher_config,
             cleanup_manifest=cleanup_manifest,
+            router_ready_s=router_ready_s,
         )
         yield handle
     finally:

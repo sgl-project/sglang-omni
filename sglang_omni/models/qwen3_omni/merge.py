@@ -12,6 +12,7 @@ from sglang_omni.models.qwen3_omni.payload_types import (
     Qwen3OmniPipelineState,
     ThinkerOutput,
 )
+from sglang_omni.pipeline.tensor_ref import is_tensor_ref_dict, tensor_ref_numel
 from sglang_omni.proto import StagePayload
 
 IMAGE_STAGE = "image_encoder"
@@ -26,8 +27,14 @@ def _cast_tensor(
     return value.to(dtype=dtype) if dtype is not None else value
 
 
-def _non_empty(tensor: torch.Tensor | None) -> bool:
-    return tensor is not None and tensor.numel() > 0
+def _non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if is_tensor_ref_dict(value):
+        return tensor_ref_numel(value) > 0
+    if isinstance(value, torch.Tensor):
+        return value.numel() > 0
+    return False
 
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:

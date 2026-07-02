@@ -223,6 +223,10 @@ class _MingOmniBasePipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": THINKER_STAGE}
 
+    @classmethod
+    def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+        return {THINKER_STAGE}
+
 
 class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
     """6-stage text pipeline."""
