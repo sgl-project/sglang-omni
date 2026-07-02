@@ -46,6 +46,7 @@ from benchmarks.metrics.speaker_similarity_assets import (
     ensure_speaker_similarity_assets,
 )
 from benchmarks.metrics.wer import (
+    SampleOutput,
     calculate_asr_speed_metrics,
     calculate_wer_metrics,
     print_asr_speed_summary,
@@ -53,7 +54,6 @@ from benchmarks.metrics.wer import (
 )
 from benchmarks.tasks.asr import (
     ASR_WARMUP_MULTIPLIER,
-    SampleOutput,
     apply_wer,
     run_asr_transcription,
     transcribe_and_compute_wer,

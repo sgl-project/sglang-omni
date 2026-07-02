@@ -18,7 +18,6 @@ import os
 import string
 import time
 import wave
-from dataclasses import dataclass
 
 import aiohttp
 import requests
@@ -30,7 +29,11 @@ from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.metrics.wer import calculate_asr_speed_metrics, calculate_wer_metrics
+from benchmarks.metrics.wer import (
+    SampleOutput,
+    calculate_asr_speed_metrics,
+    calculate_wer_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,25 +52,6 @@ QWEN3_ASR_REQUEST_TIMEOUT_S = 300
 DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.
 ASR_WARMUP_MULTIPLIER = 2
-
-
-@dataclass
-class SampleOutput:
-    sample_id: str = ""
-    target_text: str = ""
-    whisper_text: str = ""
-    ref_norm: str = ""
-    hyp_norm: str = ""
-    wer: float = 0.0
-    substitutions: int = 0
-    deletions: int = 0
-    insertions: int = 0
-    hits: int = 0
-    audio_duration_s: float = 0.0
-    latency_s: float = 0.0
-    asr_latency_s: float = 0.0
-    is_success: bool = False
-    error: str = ""
 
 
 @functools.lru_cache(maxsize=1)
