@@ -191,7 +191,9 @@ def build_encoder_request(
         )
     cache_key = inputs.get("cache_key")
     model_inputs = {
-        k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
+        k: v
+        for k, v in inputs.items()
+        if k not in ("cache_key", "_active", "_cache_only")
     }
     return EncoderRequestData(
         model_inputs=model_inputs,
@@ -375,6 +377,8 @@ def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
         return False
     if stage_inputs.get("_active") is False:
         return False
+    if stage_inputs.get("_cache_only") and stage_inputs.get("cache_key") is not None:
+        return True
     if stage_name == IMAGE_STAGE:
         return (
             stage_inputs.get("pixel_values") is not None

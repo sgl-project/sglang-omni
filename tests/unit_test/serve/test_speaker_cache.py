@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from sglang_omni.cache import CacheKey, LocalCachePlane
 from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 
 
@@ -44,3 +45,26 @@ def test_speaker_cache_evicts_oldest_entry_under_memory_pressure() -> None:
     assert cache.get(first) is None
     assert cache.get(second) is not None
     assert cache.stats()["eviction_count"] == 1
+
+
+def test_speaker_cache_registers_artifacts_with_cache_plane() -> None:
+    plane = LocalCachePlane()
+    cache = SpeakerArtifactCache(max_bytes=1024, cache_plane=plane)
+    key = SpeakerCacheKey("higgs", "guide", 7, "reference_codes")
+
+    cache.put(key, np.arange(4, dtype=np.float32))
+    plane_key = CacheKey(
+        namespace="speaker_artifacts",
+        kind="speaker_artifact",
+        digest="higgs\x1fguide\x1f7\x1freference_codes",
+        stage_name="speaker_artifacts",
+    )
+
+    entry = plane.lookup(plane_key)
+
+    assert entry is not None
+    assert entry.meta.size_bytes == 16
+
+    cache.clear_voice("GUIDE")
+
+    assert plane.lookup(plane_key) is None

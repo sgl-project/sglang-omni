@@ -16,6 +16,7 @@ from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _await_speech_response,
+    _build_chat_generate_request,
     _chat_stream,
     _speech_audio_response,
     build_transcription_generate_request,
@@ -140,6 +141,19 @@ class EmptyStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
+
+
+def test_chat_generate_request_preserves_session_media_metadata() -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "Follow up on the image."}],
+        metadata={"session_id": "session-1", "reuse_session_media": True},
+    )
+
+    generated = _build_chat_generate_request(req)
+
+    assert generated.metadata["session_id"] == "session-1"
+    assert generated.metadata["reuse_session_media"] is True
 
 
 class EmptyDeltaStreamingSpeechClient:

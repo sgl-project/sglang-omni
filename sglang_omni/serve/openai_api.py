@@ -886,8 +886,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.videos:
         videos = req.videos
 
-    # Merge audio config, audios, images, and videos into metadata
-    metadata: dict[str, Any] = {}
+    # Merge request metadata, audio config, audios, images, and videos into metadata
+    metadata: dict[str, Any] = dict(req.metadata) if req.metadata else {}
     if req.audio:
         metadata["audio_config"] = req.audio
     if audios:

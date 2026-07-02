@@ -94,6 +94,7 @@ class ChatCompletionRequest(BaseModel):
     # Misc
     request_id: str | None = None
     user: str | None = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def effective_max_tokens(self) -> int | None:

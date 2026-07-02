@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,13 @@ import torch
 import typer
 
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
+from sglang_omni.cache import (
+    ArtifactHandle,
+    CacheKey,
+    CacheOwner,
+    LocalCachePlane,
+    get_global_cache_plane,
+)
 from sglang_omni.cli.serve import (
     apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
@@ -36,6 +45,7 @@ from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_thinker_result,
+    build_encoder_request,
     build_sglang_thinker_request,
     project_preprocessing_to_mm_aggregate,
     project_talker_to_code2wav,
@@ -43,14 +53,20 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_mm_aggregate_wait_sources,
     resolve_preprocessing_next_stages,
 )
+from sglang_omni.models.qwen3_omni.session_media import (
+    SessionMediaEntry,
+    SessionMediaRegistry,
+)
 from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.qwen_fakes import (
+    FakeAudioEncoderModel,
     FakeQwenTokenizer,
     make_qwen_payload,
     make_qwen_state,
@@ -67,6 +83,112 @@ def _server_args_overrides(config: PipelineConfig, name: str) -> dict[str, objec
 
 def _runtime_mem_fraction_static(config, name: str) -> float | None:
     return _stage(config, name).runtime.sglang_server_args.mem_fraction_static
+
+
+class _FakeCachedMediaProcessor:
+    def __init__(self) -> None:
+        self.template_messages = None
+        self.called_multimodal_processor = False
+
+    def apply_chat_template(self, messages, **kwargs):
+        del kwargs
+        self.template_messages = messages
+        return "<image> describe"
+
+    def replace_multimodal_special_tokens(
+        self,
+        text,
+        audio_lengths,
+        image_grid_thw,
+        video_grid_thw,
+        video_second_per_grid,
+        use_audio_in_video,
+        position_id_per_seconds,
+        seconds_per_chunk,
+    ):
+        del (
+            audio_lengths,
+            video_grid_thw,
+            video_second_per_grid,
+            use_audio_in_video,
+            position_id_per_seconds,
+            seconds_per_chunk,
+        )
+        processed = []
+        for sample in text:
+            for grid in image_grid_thw:
+                sample = sample.replace(
+                    "<image>",
+                    "<image>" * int(grid.to(dtype=torch.long).prod().item()),
+                    1,
+                )
+            processed.append(sample)
+        return processed
+
+    def __call__(self, *args, **kwargs):
+        del args, kwargs
+        self.called_multimodal_processor = True
+        raise AssertionError("cached session media fast path should not decode media")
+
+
+class _FakeCachedMediaTokenizer:
+    def __call__(self, text, **kwargs):
+        del kwargs
+        token_count = max(1, text.count("<image>") + 1)
+        return {
+            "input_ids": torch.arange(token_count, dtype=torch.long).unsqueeze(0),
+            "attention_mask": torch.ones((1, token_count), dtype=torch.long),
+        }
+
+
+class _FakeMetadataMediaProcessor:
+    def __init__(self) -> None:
+        self.images = None
+
+    def apply_chat_template(self, messages, **kwargs):
+        del messages, kwargs
+        return "<image> describe"
+
+    def __call__(self, *, text, images, videos, audio, **kwargs):
+        del text, videos, audio, kwargs
+        self.images = images
+        return {
+            "input_ids": torch.tensor([[101, 102]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1, 1]], dtype=torch.long),
+            "pixel_values": torch.ones((1, 3), dtype=torch.float32),
+            "image_grid_thw": torch.tensor([[1, 1, 1]], dtype=torch.long),
+        }
+
+
+def _fake_qwen_preprocessor_for_cached_media():
+    from sglang_omni.models.qwen3_omni.components.preprocessor import (
+        Qwen3OmniPreprocessor,
+    )
+
+    pre = object.__new__(Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.processor = _FakeCachedMediaProcessor()
+    pre.tokenizer = _FakeCachedMediaTokenizer()
+    pre.session_media = SessionMediaRegistry()
+    return pre
+
+
+def _fake_qwen_preprocessor_for_metadata_media():
+    from sglang_omni.models.qwen3_omni.components.preprocessor import (
+        Qwen3OmniPreprocessor,
+    )
+
+    pre = object.__new__(Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.default_video_fps = None
+    pre.default_video_max_frames = None
+    pre.default_video_min_pixels = None
+    pre.default_video_max_pixels = None
+    pre.default_video_total_pixels = None
+    pre.processor = _FakeMetadataMediaProcessor()
+    pre.tokenizer = _FakeCachedMediaTokenizer()
+    pre.session_media = SessionMediaRegistry()
+    return pre
 
 
 def test_qwen_pipeline_config_and_state_contracts() -> None:
@@ -279,6 +401,331 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     assert state.prompt["attention_mask"].tolist() == [1, 1, 1]
     assert state.encoder_inputs["image_encoder"]["_skip"] is True
     assert state.encoder_inputs["audio_encoder"]["_skip"] is True
+
+
+def test_qwen_preprocessor_reuses_ready_session_media_without_decoding() -> None:
+    pre = _fake_qwen_preprocessor_for_cached_media()
+    cache_key = "image:session-media"
+    pre.session_media.put(
+        "session-1",
+        SessionMediaEntry(
+            raw_images=["tests/data/cars.jpg"],
+            image_cache_key=cache_key,
+            num_images=1,
+            image_grid_thw=torch.tensor([[1, 1, 2]], dtype=torch.long),
+        ),
+    )
+    get_global_cache_plane().publish(
+        CacheKey(
+            namespace="qwen3_omni",
+            kind="image_encoder_output",
+            digest=cache_key,
+            stage_name="image_encoder",
+        ),
+        ArtifactHandle(backend="stage_output", ref={"key": cache_key}),
+        owner=CacheOwner(stage_name="image_encoder", device="cuda:0"),
+        size_bytes=128,
+    )
+    payload = StagePayload(
+        request_id="req-session-media",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "What is in the picture?"}],
+            },
+            metadata={"session_id": "session-1", "reuse_session_media": True},
+        ),
+        data=None,
+    )
+
+    result = asyncio.run(pre._call_impl(payload))
+    state = Qwen3OmniPipelineState.from_dict(result.data)
+    image_inputs = state.encoder_inputs["image_encoder"]
+
+    assert pre.processor.called_multimodal_processor is False
+    assert image_inputs == {
+        "cache_key": cache_key,
+        "_active": True,
+        "_cache_only": True,
+    }
+    assert state.encoder_inputs["audio_encoder"]["_skip"] is True
+    assert state.prompt["input_ids"].numel() == 3
+    assert resolve_preprocessing_next_stages("req-session-media", result) == [
+        "image_encoder",
+        "mm_aggregate",
+    ]
+    encoder_request = build_encoder_request(state, stage_name="image_encoder")
+    assert encoder_request.cache_key == cache_key
+    assert encoder_request.model_inputs == {}
+
+
+def test_qwen_preprocessor_session_media_reuse_requires_ready_cache_or_raw_refs() -> (
+    None
+):
+    pre = _fake_qwen_preprocessor_for_cached_media()
+    pre.session_media.put(
+        "session-1",
+        SessionMediaEntry(image_cache_key="image:evicted", num_images=1),
+    )
+    payload = StagePayload(
+        request_id="req-session-media-miss",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "What is in the picture?"}],
+            },
+            metadata={"session_id": "session-1", "reuse_session_media": True},
+        ),
+        data=None,
+    )
+
+    with pytest.raises(RuntimeError, match="resend media"):
+        asyncio.run(pre._call_impl(payload))
+
+
+def test_qwen_preprocessor_reads_openai_metadata_media_for_message_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import preprocessor as pre_mod
+
+    async def fake_images(raw_images):
+        assert raw_images == ["tests/data/cars.jpg"]
+        return ["decoded-image"]
+
+    async def fake_videos(raw_videos, **kwargs):
+        del raw_videos, kwargs
+        return [], None, None
+
+    async def fake_audios(raw_audios, **kwargs):
+        del raw_audios, kwargs
+        return []
+
+    monkeypatch.setattr(pre_mod, "ensure_image_list_async", fake_images)
+    monkeypatch.setattr(pre_mod, "ensure_video_list_async", fake_videos)
+    monkeypatch.setattr(pre_mod, "ensure_audio_list_async", fake_audios)
+
+    pre = _fake_qwen_preprocessor_for_metadata_media()
+    payload = StagePayload(
+        request_id="req-openai-media",
+        request=OmniRequest(
+            inputs=[{"role": "user", "content": "What is in the image?"}],
+            metadata={
+                "session_id": "session-openai",
+                "images": ["tests/data/cars.jpg"],
+            },
+        ),
+        data=None,
+    )
+
+    result = asyncio.run(pre._call_impl(payload))
+    state = Qwen3OmniPipelineState.from_dict(result.data)
+    image_inputs = state.encoder_inputs["image_encoder"]
+    session_entry = pre.session_media.get("session-openai")
+
+    assert pre.processor.images == ["decoded-image"]
+    assert torch.equal(image_inputs["pixel_values"], torch.ones((1, 3)))
+    assert image_inputs["cache_key"].startswith("image:")
+    assert session_entry is not None
+    assert session_entry.raw_images == ["tests/data/cars.jpg"]
+    assert session_entry.num_images == 1
+
+
+def test_qwen_preprocessor_openai_session_reuse_falls_back_to_raw_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import preprocessor as pre_mod
+
+    async def fake_images(raw_images):
+        assert raw_images == ["tests/data/cars.jpg"]
+        return ["decoded-image"]
+
+    async def fake_videos(raw_videos, **kwargs):
+        del raw_videos, kwargs
+        return [], None, None
+
+    async def fake_audios(raw_audios, **kwargs):
+        del raw_audios, kwargs
+        return []
+
+    monkeypatch.setattr(pre_mod, "ensure_image_list_async", fake_images)
+    monkeypatch.setattr(pre_mod, "ensure_video_list_async", fake_videos)
+    monkeypatch.setattr(pre_mod, "ensure_audio_list_async", fake_audios)
+
+    pre = _fake_qwen_preprocessor_for_metadata_media()
+    pre.session_media.put(
+        "session-openai",
+        SessionMediaEntry(
+            raw_images=["tests/data/cars.jpg"],
+            image_cache_key="image:previous",
+            num_images=1,
+        ),
+    )
+    payload = StagePayload(
+        request_id="req-openai-reuse",
+        request=OmniRequest(
+            inputs=[{"role": "user", "content": "Answer again."}],
+            metadata={
+                "session_id": "session-openai",
+                "reuse_session_media": True,
+            },
+        ),
+        data=None,
+    )
+
+    result = asyncio.run(pre._call_impl(payload))
+    state = Qwen3OmniPipelineState.from_dict(result.data)
+    image_inputs = state.encoder_inputs["image_encoder"]
+
+    assert pre.processor.images == ["decoded-image"]
+    assert torch.equal(image_inputs["pixel_values"], torch.ones((1, 3)))
+    assert image_inputs["cache_key"].startswith("image:")
+
+
+def _encoder_payload(
+    *,
+    stage_name: str,
+    request_id: str,
+    cache_key: str,
+    inputs: dict[str, object],
+) -> StagePayload:
+    return make_qwen_payload(
+        make_qwen_state(
+            encoder_inputs={
+                stage_name: {
+                    "cache_key": cache_key,
+                    **inputs,
+                }
+            }
+        ),
+        request_id=request_id,
+    )
+
+
+def test_qwen_single_encoder_payload_singleflights_concurrent_cache_miss() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingAudioModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            entered.set()
+            assert release.wait(timeout=1.0)
+            return {
+                "audio_embeds": torch.ones((2, 2), dtype=torch.float32),
+                "audio_feature_lengths": torch.tensor([2], dtype=torch.long),
+                "audio_output_lengths": torch.tensor([2], dtype=torch.long),
+            }
+
+    cache = StageOutputCache(
+        cache_plane=LocalCachePlane(),
+        cache_namespace="qwen3_omni",
+        cache_kind="audio_encoder_output",
+        cache_owner=CacheOwner(stage_name="audio_encoder"),
+    )
+    model = BlockingAudioModel()
+    payloads = [
+        _encoder_payload(
+            stage_name="audio_encoder",
+            request_id="req-a",
+            cache_key="audio:shared",
+            inputs={
+                "input_features": torch.ones((1, 2, 3), dtype=torch.float32),
+                "audio_feature_lengths": torch.tensor([2], dtype=torch.long),
+            },
+        ),
+        _encoder_payload(
+            stage_name="audio_encoder",
+            request_id="req-b",
+            cache_key="audio:shared",
+            inputs={
+                "input_features": torch.ones((1, 2, 3), dtype=torch.float32),
+                "audio_feature_lengths": torch.tensor([2], dtype=torch.long),
+            },
+        ),
+    ]
+    results: list[StagePayload] = []
+    errors: list[BaseException] = []
+
+    def run(payload: StagePayload) -> None:
+        try:
+            results.append(
+                qwen_stages._run_single_encoder_payload(
+                    payload,
+                    stage_name="audio_encoder",
+                    model=model,
+                    cache=cache,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    leader = threading.Thread(target=run, args=(payloads[0],))
+    follower = threading.Thread(target=run, args=(payloads[1],))
+    leader.start()
+    assert entered.wait(timeout=1.0)
+    follower.start()
+    release.set()
+    leader.join(timeout=1.0)
+    follower.join(timeout=1.0)
+
+    assert not leader.is_alive()
+    assert not follower.is_alive()
+    assert errors == []
+    assert len(results) == 2
+    assert model.calls == 1
+    for result in results:
+        state = Qwen3OmniPipelineState.from_dict(result.data)
+        assert torch.equal(
+            state.encoder_outs["audio_encoder"]["audio_embeds"],
+            torch.ones((2, 2), dtype=torch.float32),
+        )
+
+
+def test_qwen_audio_encoder_batch_dedups_duplicate_cache_keys() -> None:
+    model = FakeAudioEncoderModel()
+    cache = StageOutputCache(cache_device="cpu")
+    payloads = [
+        _encoder_payload(
+            stage_name="audio_encoder",
+            request_id="req-a",
+            cache_key="audio:duplicate",
+            inputs={
+                "input_features": torch.ones((1, 2, 3), dtype=torch.float32),
+                "audio_feature_lengths": torch.tensor([2], dtype=torch.long),
+            },
+        ),
+        _encoder_payload(
+            stage_name="audio_encoder",
+            request_id="req-b",
+            cache_key="audio:duplicate",
+            inputs={
+                "input_features": torch.ones((1, 2, 3), dtype=torch.float32),
+                "audio_feature_lengths": torch.tensor([2], dtype=torch.long),
+            },
+        ),
+    ]
+
+    results = qwen_stages._batch_audio_encoder_payloads(
+        payloads,
+        model=model,
+        cache=cache,
+    )
+
+    assert len(results) == 2
+    assert len(model.calls) == 1
+    for result in results:
+        state = Qwen3OmniPipelineState.from_dict(result.data)
+        audio_out = state.encoder_outs["audio_encoder"]
+        assert torch.equal(
+            audio_out["audio_embeds"],
+            torch.arange(4, dtype=torch.float32).reshape(2, 2),
+        )
+        assert torch.equal(
+            audio_out["audio_output_lengths"],
+            torch.tensor([2], dtype=torch.long),
+        )
 
 
 def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:

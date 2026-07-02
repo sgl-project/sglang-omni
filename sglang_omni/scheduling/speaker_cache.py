@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from sglang_omni.cache import CacheOwner, LocalCachePlane
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 DEFAULT_SPEAKER_CACHE_BYTES = 512 * 1024 * 1024
@@ -29,13 +30,21 @@ class SpeakerCacheKey:
 class SpeakerArtifactCache:
     """Process-wide bounded LRU for voice features shared by TTS stages."""
 
-    def __init__(self, max_bytes: int = DEFAULT_SPEAKER_CACHE_BYTES) -> None:
+    def __init__(
+        self,
+        max_bytes: int = DEFAULT_SPEAKER_CACHE_BYTES,
+        cache_plane: LocalCachePlane | None = None,
+    ) -> None:
         if max_bytes <= 0:
             raise ValueError("speaker cache max_bytes must be positive")
         self.max_bytes = int(max_bytes)
         self._cache = StageOutputCache(
             max_bytes=self.max_bytes,
             size_fn=estimate_cache_bytes,
+            cache_plane=cache_plane,
+            cache_namespace="speaker_artifacts",
+            cache_kind="speaker_artifact",
+            cache_owner=CacheOwner(stage_name="speaker_artifacts"),
         )
         self._hit_count = 0
         self._miss_count = 0

@@ -5,6 +5,7 @@ Each factory returns either:
 - A callable (compute_fn) for simple stages
 - An OmniScheduler for AR stages
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,6 +16,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.cache import CacheOwner
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -161,6 +163,16 @@ def store_state(payload: StagePayload, state: Qwen3OmniPipelineState) -> StagePa
     return payload
 
 
+def _payload_session_id(payload: StagePayload) -> str | None:
+    metadata = payload.request.metadata
+    if not isinstance(metadata, dict):
+        return None
+    session_id = metadata.get("session_id")
+    if session_id is None:
+        return None
+    return str(session_id)
+
+
 def _run_single_encoder_payload(
     payload: StagePayload,
     *,
@@ -178,25 +190,74 @@ def _run_single_encoder_payload(
             request_id=payload.request_id,
             stage_name=stage_name,
             cache=cache,
+            session_id=_payload_session_id(payload),
         )
         if result is None:
-            with torch.no_grad():
-                result = model(**request.model_inputs)
-            _store_cached_encoder_output(
+            if not request.model_inputs:
+                raise RuntimeError(
+                    f"{stage_name} cache-only request missed cache for key "
+                    f"{request.cache_key!r}; resend media or disable "
+                    "session media reuse"
+                )
+            result, computed = _compute_uncached_encoder_output(
                 request=request,
                 request_id=payload.request_id,
                 stage_name=stage_name,
+                model=model,
                 cache=cache,
-                result=result,
             )
+            if computed:
+                _store_cached_encoder_output(
+                    request=request,
+                    request_id=payload.request_id,
+                    stage_name=stage_name,
+                    cache=cache,
+                    result=result,
+                    session_id=_payload_session_id(payload),
+                )
     apply_encoder_result(state, stage_name=stage_name, result=result)
     return store_state(payload, state)
+
+
+def _compute_uncached_encoder_output(
+    *,
+    request: Any,
+    request_id: str,
+    stage_name: str,
+    model: Any,
+    cache: StageOutputCache | None,
+) -> tuple[Any, bool]:
+    build_leader = cache is None or request.cache_key is None
+    if cache is not None and request.cache_key is not None:
+        while True:
+            build_leader = cache.start_build(request.cache_key)
+            if build_leader:
+                break
+            result = cache.wait_ready(request.cache_key)
+            if result is not None:
+                _trace_encoder_cache(
+                    stage_name,
+                    "wait_hit",
+                    request_id=request_id,
+                    cache_key=request.cache_key,
+                    input_bytes=_nested_tensor_bytes(request.model_inputs),
+                    output_bytes=_nested_tensor_bytes(result),
+                )
+                return result, False
+    try:
+        with torch.no_grad():
+            return model(**request.model_inputs), True
+    except Exception as exc:
+        if build_leader and cache is not None and request.cache_key is not None:
+            cache.fail_build(request.cache_key, exc)
+        raise
 
 
 def _image_request_is_batchable(request: Any) -> bool:
     if request.skip_result is not None:
         return False
     input_dict = request.model_inputs
+    has_visual_tensor = False
     for key in (
         "pixel_values",
         "image_grid_thw",
@@ -206,7 +267,9 @@ def _image_request_is_batchable(request: Any) -> bool:
         value = input_dict.get(key)
         if value is not None and not isinstance(value, torch.Tensor):
             return False
-    return True
+        if key in ("pixel_values", "pixel_values_videos") and value is not None:
+            has_visual_tensor = True
+    return has_visual_tensor
 
 
 def _split_visual_features(
@@ -318,6 +381,7 @@ def _lookup_cached_encoder_output(
     request_id: str,
     stage_name: str,
     cache: StageOutputCache | None,
+    session_id: str | None = None,
 ) -> Any | None:
     if cache is None or request.cache_key is None:
         return None
@@ -339,6 +403,7 @@ def _lookup_cached_encoder_output(
         input_bytes=_nested_tensor_bytes(request.model_inputs),
         output_bytes=_nested_tensor_bytes(cached),
     )
+    cache.bind_session(session_id)
     return cached
 
 
@@ -349,10 +414,12 @@ def _store_cached_encoder_output(
     stage_name: str,
     cache: StageOutputCache | None,
     result: Any,
+    session_id: str | None = None,
 ) -> None:
     if cache is None or request.cache_key is None:
         return
     cache.put(request.cache_key, result)
+    cache.bind_session(session_id)
     _trace_encoder_cache(
         stage_name,
         "store",
@@ -398,6 +465,7 @@ def _batch_image_encoder_payloads(
             request_id=payload.request_id,
             stage_name=IMAGE_STAGE,
             cache=cache,
+            session_id=_payload_session_id(payload),
         )
         if cached is not None:
             apply_encoder_result(state, stage_name=IMAGE_STAGE, result=cached)
@@ -558,6 +626,7 @@ def _batch_image_encoder_payloads(
             stage_name=IMAGE_STAGE,
             cache=cache,
             result=stage_result,
+            session_id=_payload_session_id(meta["payload"]),
         )
         if request.cache_key is not None:
             computed_by_cache_key[request.cache_key] = stage_result
@@ -640,6 +709,9 @@ def _batch_audio_encoder_payloads(
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
     active: list[tuple[int, StagePayload, Any, Any]] = []
+    duplicate_waiters: dict[str, list[tuple[int, StagePayload, Any]]] = {}
+    active_cache_keys: set[str] = set()
+    active_cache_leaders: dict[str, str] = {}
 
     for idx, payload in enumerate(payloads):
         state = load_state(payload)
@@ -658,6 +730,7 @@ def _batch_audio_encoder_payloads(
             request_id=payload.request_id,
             stage_name=AUDIO_STAGE,
             cache=cache,
+            session_id=_payload_session_id(payload),
         )
         if cached is not None:
             apply_encoder_result(state, stage_name=AUDIO_STAGE, result=cached)
@@ -673,7 +746,23 @@ def _batch_audio_encoder_payloads(
             )
             continue
 
+        cache_key = request.cache_key
+        if cache_key is not None and cache_key in active_cache_keys:
+            duplicate_waiters.setdefault(cache_key, []).append((idx, payload, state))
+            _trace_encoder_cache(
+                AUDIO_STAGE,
+                "dedup_same_batch",
+                request_id=payload.request_id,
+                cache_key=cache_key,
+                input_bytes=_nested_tensor_bytes(request.model_inputs),
+                detail=f"leader={active_cache_leaders[cache_key]}",
+            )
+            continue
+
         active.append((idx, payload, state, request))
+        if cache_key is not None:
+            active_cache_keys.add(cache_key)
+            active_cache_leaders[cache_key] = payload.request_id
 
     if not active:
         return [result for result in results if result is not None]
@@ -715,6 +804,7 @@ def _batch_audio_encoder_payloads(
     embeds = combined["audio_embeds"]
     row_cursor = 0
     token_cursor = 0
+    computed_by_cache_key: dict[str, dict[str, Any]] = {}
     for item in normalized:
         row_end = row_cursor + item["count"]
         req_output_lengths = output_lengths[row_cursor:row_end]
@@ -732,11 +822,22 @@ def _batch_audio_encoder_payloads(
             stage_name=AUDIO_STAGE,
             cache=cache,
             result=stage_result,
+            session_id=_payload_session_id(item["payload"]),
         )
+        if item["request"].cache_key is not None:
+            computed_by_cache_key[item["request"].cache_key] = stage_result
         apply_encoder_result(item["state"], stage_name=AUDIO_STAGE, result=stage_result)
         results[item["idx"]] = store_state(item["payload"], item["state"])
         row_cursor = row_end
         token_cursor = token_end
+
+    for cache_key, waiters in duplicate_waiters.items():
+        stage_result = computed_by_cache_key.get(cache_key)
+        if stage_result is None:
+            continue
+        for idx, payload, state in waiters:
+            apply_encoder_result(state, stage_name=AUDIO_STAGE, result=stage_result)
+            results[idx] = store_state(payload, state)
 
     return [result for result in results if result is not None]
 
@@ -796,6 +897,9 @@ def create_image_encoder_executor(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
+        cache_namespace="qwen3_omni",
+        cache_kind="image_encoder_output",
+        cache_owner=CacheOwner(stage_name=IMAGE_STAGE, device=device),
     )
 
     def _encode(payload: StagePayload) -> StagePayload:
@@ -868,6 +972,9 @@ def create_audio_encoder_executor(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
+        cache_namespace="qwen3_omni",
+        cache_kind="audio_encoder_output",
+        cache_owner=CacheOwner(stage_name=AUDIO_STAGE, device=device),
     )
 
     def _encode(payload: StagePayload) -> StagePayload:

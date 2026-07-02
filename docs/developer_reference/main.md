@@ -20,6 +20,7 @@ HTTP API -> Client -> Coordinator -> Stage -> Scheduler -> ModelRunner -> model 
 | [Scheduler](./pipeline.md)        | Per-stage execution loop and failure propagation to stage outbox                       |
 | [ModelRunner](./pipeline.md)      | AR forward preparation, model forward dispatch, output extraction                      |
 | [Communication](./communication.md) | Control-plane messages and relay data transfer between stages                         |
+| [Cache Plane](./cache_plane.md)   | Cache metadata, owner locality, invalidation, and lifecycle registry                  |
 | [TTS Integration](./tts_model_integration.md) | Checklist and lifecycle rules for adding TTS model families                         |
 
 Refer to the layer-specific document for specific design details.
@@ -34,6 +35,7 @@ sglang_omni/
 |-- models/         # Model-specific configs, stages, request builders, modules
 |-- config/         # PipelineConfig, StageConfig, config manager, topology
 |-- relay/          # Data transfer backends
+|-- cache/          # Cache metadata plane and local artifact registry
 |-- serve/          # HTTP server and OpenAI-compatible API adapter
 |-- client/         # Internal client used by API adapters
 `-- proto/          # Request, payload, stage, and control-plane message types

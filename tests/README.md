@@ -19,6 +19,8 @@ tests/
     │   ├── fish_fakes.py
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
+    ├── cache/
+    │   └── test_cache_plane.py
     ├── pipeline/
     │   ├── helpers.py
     │   ├── test_compile.py
