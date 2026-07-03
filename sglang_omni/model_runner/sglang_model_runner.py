@@ -101,7 +101,7 @@ class SGLModelRunner(ModelRunner):
                     importlib.import_module(module_path), attr
                 )
             except Exception as exc:
-                logger.warning("sglang-omni: skipping model %s (%s)", arch, exc)
+                logger.warning(f"sglang-omni: skipping model {arch} ({exc})")
 
         try:
             from sglang_omni.models.ming_omni.registration import (
@@ -112,7 +112,7 @@ class SGLModelRunner(ModelRunner):
             register_ming_hf_config()
             register_ming_model_registry()
         except Exception as exc:
-            logger.warning("sglang-omni: skipping Ming-Omni registration (%s)", exc)
+            logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.

@@ -152,7 +152,7 @@ async def main_async(args: argparse.Namespace) -> None:
             timeout=args.timeout,
         )
         duration = time.time() - t0
-        logger.info("Pipeline completed in %.2fs", duration)
+        logger.info(f"Pipeline completed in {duration:.2f}s")
 
         # Extract and save audio if requested
         if args.output and isinstance(result, dict):

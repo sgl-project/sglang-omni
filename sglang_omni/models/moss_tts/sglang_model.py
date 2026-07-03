@@ -437,7 +437,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             if param is not None:
                 self._load_param(param, loaded_weight)
             else:
-                logger.warning("MOSS-TTS parameter %s not found", original_name)
+                logger.warning(f"MOSS-TTS parameter {original_name} not found")
 
     @staticmethod
     def _map_audio_embedding_name(name: str) -> str | None:

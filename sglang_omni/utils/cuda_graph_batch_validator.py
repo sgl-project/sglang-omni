@@ -210,9 +210,7 @@ def read_captured_bs(model_runner: object) -> list[int] | None:
         sizes = sorted(int(b) for b in captured)
     except (TypeError, ValueError):
         logger.warning(
-            "cuda_graph_batch_validator: capture_bs is not an iterable of "
-            "ints (%r).",
-            captured,
+            f"cuda_graph_batch_validator: capture_bs is not an iterable of ints ({captured!r}).",
         )
         return None
     return sizes or None

@@ -339,9 +339,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         params_dict = dict(self.named_parameters())
         name, loaded_weight = weight
         if name not in params_dict:
-            logger.warning(
-                "%s not found in FlowMatchingAudioTransformer (UNUSED)", name
-            )
+            logger.warning(f"{name} not found in FlowMatchingAudioTransformer (UNUSED)")
             return name
         param = params_dict[name]
         weight_loader = getattr(param, "weight_loader", default_weight_loader)

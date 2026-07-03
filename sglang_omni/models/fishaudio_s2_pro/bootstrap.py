@@ -97,7 +97,7 @@ def load_audio_decoder(
         FishQwen3OmniForCausalLM,
     )
 
-    logger.info("Loading Fish audio decoder from %s", checkpoint_dir)
+    logger.info(f"Loading Fish audio decoder from {checkpoint_dir}")
     start = time.perf_counter()
 
     config = FishQwen3OmniConfig.from_pretrained(checkpoint_dir)
