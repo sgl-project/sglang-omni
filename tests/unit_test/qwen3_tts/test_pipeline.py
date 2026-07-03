@@ -920,7 +920,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         audio_codes=torch.tensor([[5, 6], [7, 8]]),
     ).to_dict()
 
-    results = scheduler._batch_fn([first, second])
+    results = asyncio.run(scheduler._batch_fn([first, second]))
 
     assert scheduler._max_batch_size == 2
     assert scheduler._max_batch_wait_s == pytest.approx(0.003)
