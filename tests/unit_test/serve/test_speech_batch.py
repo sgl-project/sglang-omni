@@ -192,6 +192,25 @@ def test_batch_speech_requires_resolved_model_and_voice_before_item_work() -> No
     assert client_impl.requests == []
 
 
+def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "one", "voice": None}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == 1
+    assert [request.prompt for request in client_impl.requests] == ["one"]
+    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [

@@ -40,6 +40,7 @@ SUPPORTED_WS_SPLIT_GRANULARITIES = {"sentence", "clause"}
 class WebSocketAudioState:
     active_sentence_duration_s: float = 0.0
     active_sentence_has_signal: bool = False
+    active_sentence_binary_frames: int = 0
 
 
 async def run_ws_scenario(
@@ -192,6 +193,7 @@ async def _expect_next_event(
                 result,
                 audio_state,
                 expect_success=expect_success,
+                min_binary_frames_per_sentence=min_binary_frames,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == expected_event or expected_event == "error"
@@ -245,6 +247,7 @@ async def _expect_audio_until_done(
                 result,
                 audio_state,
                 expect_success=expect_success,
+                min_binary_frames_per_sentence=min_binary_frames,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == "error"
@@ -302,6 +305,7 @@ async def _expect_audio_until_session_done(
                 result,
                 audio_state,
                 expect_success=expect_success,
+                min_binary_frames_per_sentence=min_binary_frames,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == "error"
@@ -345,6 +349,7 @@ def _merge_text_event(
     audio_state: WebSocketAudioState,
     *,
     expect_success: bool = True,
+    min_binary_frames_per_sentence: int = 0,
 ) -> str | None:
     try:
         event = json.loads(data)
@@ -403,6 +408,7 @@ def _merge_text_event(
         result.ws_active_sample_rate = event["sample_rate"]
         audio_state.active_sentence_duration_s = 0.0
         audio_state.active_sentence_has_signal = False
+        audio_state.active_sentence_binary_frames = 0
         result.status = "ok"
         result.capability = "pass"
         return event_type
@@ -436,6 +442,14 @@ def _merge_text_event(
                 "audio.done total_bytes must be positive for successful audio",
             )
             return event_type
+        if audio_state.active_sentence_binary_frames < min_binary_frames_per_sentence:
+            _mark_ws_protocol_error(
+                result,
+                "audio.done arrived before the required binary frames for the sentence "
+                f"(expected>={min_binary_frames_per_sentence}, "
+                f"observed={audio_state.active_sentence_binary_frames})",
+            )
+            return event_type
         if not audio_state.active_sentence_has_signal:
             _mark_ws_protocol_error(
                 result,
@@ -449,6 +463,7 @@ def _merge_text_event(
         result.ws_active_sample_rate = None
         audio_state.active_sentence_duration_s = 0.0
         audio_state.active_sentence_has_signal = False
+        audio_state.active_sentence_binary_frames = 0
         result.status = "ok"
         result.capability = "pass"
         return event_type
@@ -558,6 +573,7 @@ def _record_binary_audio(
     result.audio_bytes += len(data)
     result.ws_active_sentence_bytes += len(data)
     result.response_bytes += len(data)
+    audio_state.active_sentence_binary_frames += 1
     audio_state.active_sentence_duration_s += validation.duration_s
     audio_state.active_sentence_has_signal = (
         audio_state.active_sentence_has_signal or any(data)

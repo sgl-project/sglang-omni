@@ -516,8 +516,14 @@ class SpeechRequestValidator:
         for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
-            merged = dict(default_payload)
-            merged.update(item)
+            merged = {
+                key: value
+                for key, value in default_payload.items()
+                if value is not None
+            }
+            merged.update(
+                {key: value for key, value in item.items() if value is not None}
+            )
             _validate_required_generation_fields(merged, prefix=f"items.{index}")
 
     def _validate_batch_defaults(self, batch: CreateSpeechBatchRequest) -> None:

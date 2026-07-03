@@ -562,11 +562,6 @@ def _speech_task_type(
     index: int, spec: BenchmarkSpec, stage: LoadStage, task_type: str
 ) -> Scenario:
     payload = _base_payload(spec, BASE_TEXTS[index % len(BASE_TEXTS)])
-    expect_success = True
-    expected_status_class = "success"
-    expected_http_status = None
-    expected_error_type = None
-    capability_key = "speech.create"
     description = f"well-formed speech task_type={task_type}"
     payload.update(
         {
@@ -578,14 +573,6 @@ def _speech_task_type(
     if task_type == "Base":
         payload["ref_audio"] = _reference_audio(spec)
         payload["ref_text"] = _reference_text(spec)
-    if task_type == "CustomVoice":
-        payload["voice"] = "bench_unknown_voice"
-        expect_success = False
-        expected_status_class = "client_error"
-        expected_http_status = 404
-        expected_error_type = "NotFoundError"
-        capability_key = "speech.validation"
-        description = "unknown named CustomVoice request returns a structured error"
     if task_type == "VoiceDesign":
         payload["instructions"] = VOICE_DESIGN_INSTRUCTIONS
     return Scenario(
@@ -593,17 +580,10 @@ def _speech_task_type(
         endpoint="speech",
         category="speech_task_type",
         stage_id=stage.id,
-        capability_key=capability_key,
+        capability_key="speech.create",
         payload=payload,
-        expect_success=expect_success,
-        expected_status_class=expected_status_class,
-        expected_http_status=expected_http_status,
-        expected_error_type=expected_error_type,
         description=description,
-        planned_metadata={
-            "task_type": task_type,
-            "unknown_voice": task_type == "CustomVoice",
-        },
+        planned_metadata={"task_type": task_type},
     )
 
 
@@ -1181,9 +1161,8 @@ def _batch_item_overrides(
             "response_format": "wav",
         },
         {
-            "input": "An unknown named voice should fail only this one item.",
-            "task_type": "CustomVoice",
-            "voice": "bench_unknown_voice",
+            "input": "An invalid speed should fail only this one item.",
+            "speed": 4.5,
             "response_format": "pcm",
         },
         {"input": "", "response_format": "bogus"},

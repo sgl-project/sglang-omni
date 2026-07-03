@@ -867,6 +867,20 @@ def _voice_coverage_matrix(
         ),
         _coverage_matrix_row(
             spec,
+            "voices.named_speech",
+            tested=_has_capability(voice_scenarios, "voices.named_speech"),
+            expected=["voices.named_speech"],
+            observed=_capabilities_for(voice_scenarios, {"voices.named_speech"}),
+        ),
+        _coverage_matrix_row(
+            spec,
+            "voices.named_batch",
+            tested=_has_capability(voice_scenarios, "voices.named_batch"),
+            expected=["voices.named_batch"],
+            observed=_capabilities_for(voice_scenarios, {"voices.named_batch"}),
+        ),
+        _coverage_matrix_row(
+            spec,
             "voices.speaker_cap",
             tested=(
                 configured_speaker_cap_count > 0
@@ -1180,6 +1194,9 @@ def _voice_coverage_failures(
                     ["voices.upload_metadata"],
                 )
             )
+        for capability in ("voices.named_speech", "voices.named_batch"):
+            if not _has_capability(regular_voice_scenarios, capability):
+                failures.append(_coverage_gap(capability, [capability]))
     if cap_stage_ids and voice_upload_coverage["speaker_cap_attempts"] <= 0:
         failures.append(_coverage_gap("voices.speaker_cap", ["speaker_cap_sequence"]))
     if _configured_voice_cache_pressure_voice_count(spec) and not _has_capability(

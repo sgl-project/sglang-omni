@@ -130,7 +130,7 @@ Load-stage fields:
 | `speech` | `POST /v1/audio/speech` with response formats, task types, language handling, speed bounds, reference audio, SDK compatibility, and malformed-request classification. |
 | `speech_stream` | `POST /v1/audio/speech` with raw PCM streaming and streaming error cases. |
 | `batch` | `POST /v1/audio/speech/batch` with 1-32 item batches, per-item overrides, item-level success/error records, and oversized batch rejection. |
-| `voices` | `GET`, `POST`, and `DELETE /v1/audio/voices` with upload formats, metadata, overwrite, delete, speaker-cap, cleanup, race, and cache-pressure behavior. |
+| `voices` | `GET`, `POST`, and `DELETE /v1/audio/voices` with upload formats, metadata, overwrite, delete, named voice reuse through speech and batch synthesis, speaker-cap, cleanup, race, and cache-pressure behavior. |
 | `websocket` | `/v1/audio/speech/stream` with session configuration, incremental text input, binary audio frames, event ordering, client disconnect, malformed JSON, and missing-config errors. |
 
 Voice cache-pressure scenarios require `GET /v1/audio/voices` to expose a
@@ -223,8 +223,8 @@ The matrix is deterministic for a given spec seed. It covers:
 - malformed speech requests that must return the structured error envelope
 - multilingual and adversarial text payloads
 - batch speech creation and item-level result validation
-- uploaded-voice list, upload, overwrite, delete, metadata, speaker-cap, and
-  upload/delete race contracts
+- uploaded-voice list, upload, overwrite, delete, metadata, named speech and
+  batch reuse, speaker-cap, and upload/delete race contracts
 - voice cache pressure traffic with observable cache counters
 - WebSocket speech-stream setup, event order, audio events, and error cases
 
