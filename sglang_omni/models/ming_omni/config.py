@@ -7,7 +7,12 @@ from typing import Any, ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config.schema import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    PlacementConfig,
+    StageConfig,
+    TensorRefEdgeConfig,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -87,6 +92,12 @@ def _image_encoder_stage(
         next=AGGREGATE_STAGE,
         project_payload={
             AGGREGATE_STAGE: f"{_PKG}.stages.project_encoder_to_mm_aggregate"
+        },
+        tensor_ref_edges={
+            AGGREGATE_STAGE: TensorRefEdgeConfig(
+                consumer_stage=THINKER_STAGE,
+                paths=("video_embeds",),
+            )
         },
     )
 
