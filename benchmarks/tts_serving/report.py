@@ -12,7 +12,7 @@ from benchmarks.tts_serving.metrics import ScenarioResult
 from benchmarks.tts_serving.scenarios import (
     BATCH_OVERSIZED_SIZE,
     BATCH_SIZES,
-    LENGTH_EXTREME_TEXTS,
+    LENGTH_EXTREME_CASES,
     LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
     MALFORMED_CASE_NAMES,
     MAX_SPEECH_INPUT_CHARS,
@@ -631,13 +631,10 @@ def _speech_coverage_matrix(
         _coverage_matrix_row(
             spec,
             "speech.length_extremes",
-            tested=not _value_coverage_gap(
-                "speech.length_extremes",
-                {len(text) for text in LENGTH_EXTREME_TEXTS},
-                _metadata_values(speech_scenarios, "input_chars"),
-            ),
-            expected=sorted({len(text) for text in LENGTH_EXTREME_TEXTS}),
-            observed=sorted(_metadata_values(speech_scenarios, "input_chars")),
+            tested=not _length_extreme_missing(speech_scenarios),
+            expected=_length_extreme_rows(LENGTH_EXTREME_CASES),
+            observed=_observed_length_extreme_rows(speech_scenarios),
+            missing=_length_extreme_missing(speech_scenarios),
         ),
         _coverage_matrix_row(
             spec,
@@ -1081,13 +1078,9 @@ def _speech_coverage_failures(
             _metadata_values(speech_scenarios, "speed_boundary"),
         )
     )
-    failures.extend(
-        _value_coverage_gap(
-            "speech.length_extremes",
-            {len(text) for text in LENGTH_EXTREME_TEXTS},
-            _metadata_values(speech_scenarios, "input_chars"),
-        )
-    )
+    length_extreme_missing = _length_extreme_missing(speech_scenarios)
+    if length_extreme_missing:
+        failures.append(_coverage_gap("speech.length_extremes", length_extreme_missing))
     if long_prefill_missing:
         failures.append(
             _coverage_gap("speech.long_prefill_decode", long_prefill_missing)
@@ -1337,6 +1330,39 @@ def _coverage_gap(
 
 def _has_capability(scenarios: list[Scenario], capability_key: str) -> bool:
     return any(scenario.capability_key == capability_key for scenario in scenarios)
+
+
+def _observed_length_extreme_rows(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+    expected_keys = set(LENGTH_EXTREME_CASES)
+    observed_keys = []
+    for scenario in scenarios:
+        if scenario.category != "speech_length_extreme":
+            continue
+        metadata = scenario.planned_metadata
+        key = (metadata.get("length_case"), metadata.get("input_chars"))
+        if key in expected_keys:
+            observed_keys.append(key)
+    return _length_extreme_rows(
+        sorted(set(observed_keys), key=lambda item: str(item[0]))
+    )
+
+
+def _length_extreme_missing(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+    observed = {
+        (row["length_case"], row["input_chars"])
+        for row in _observed_length_extreme_rows(scenarios)
+    }
+    missing = [key for key in LENGTH_EXTREME_CASES if key not in observed]
+    return _length_extreme_rows(missing)
+
+
+def _length_extreme_rows(
+    keys: tuple[tuple[str, int], ...] | list[tuple[str, int]]
+) -> list[dict[str, Any]]:
+    return [
+        {"length_case": length_case, "input_chars": input_chars}
+        for length_case, input_chars in keys
+    ]
 
 
 def _long_prefill_decode_coverage(
