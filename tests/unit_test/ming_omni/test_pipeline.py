@@ -867,6 +867,45 @@ def test_ming_audio_executor_flattens_embed_batch_dim(monkeypatch) -> None:
     assert tuple(audio_embeds.shape) == (4, 8)
 
 
+def test_ming_image_executor_flattens_embed_batch_dims(monkeypatch) -> None:
+    """Image/video embeds leave the producer flat, ready for TensorRef edges."""
+    import torch
+
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.next_stage import IMAGE_STAGE
+    from sglang_omni.models.ming_omni.stages import create_image_encoder_executor
+    from sglang_omni.proto import StagePayload
+
+    class FakeEncoder:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, **kwargs):
+            return {
+                "image_embeds": torch.randn(1, 4, 8),
+                "video_embeds": torch.randn(1, 12, 8),
+            }
+
+    fake_mod = ModuleType("sglang_omni.models.ming_omni.components.image_encoder")
+    fake_mod.MingImageEncoder = FakeEncoder
+    monkeypatch.setitem(
+        sys.modules, "sglang_omni.models.ming_omni.components.image_encoder", fake_mod
+    )
+    scheduler = create_image_encoder_executor("dummy")
+
+    state = MingOmniPipelineState(
+        encoder_inputs={IMAGE_STAGE: {"pixel_values_videos": torch.randn(2, 4)}},
+    )
+    payload = StagePayload(request_id="req-1", request=None, data=state.to_dict())
+
+    out = scheduler._fn(payload)
+    out_state = MingOmniPipelineState.from_dict(out.data)
+
+    outs = out_state.encoder_outs[IMAGE_STAGE]
+    assert tuple(outs["image_embeds"].shape) == (4, 8)
+    assert tuple(outs["video_embeds"].shape) == (12, 8)
+
+
 def test_compute_video_cache_key_changes_with_decode_params() -> None:
     """Different fps/max_frames/pixel limits must produce distinct cache keys.
 
