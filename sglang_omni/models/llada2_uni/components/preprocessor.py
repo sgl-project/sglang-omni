@@ -196,7 +196,7 @@ class LLaDA2Preprocessor:
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         request = payload.request
-        raw_inputs = request.inputs if hasattr(request, "inputs") else {}
+        raw_inputs = request.inputs
         if isinstance(raw_inputs, list):
             messages = raw_inputs
             raw_images, image_counts_per_msg = self._extract_raw_images(messages)

@@ -234,7 +234,7 @@ def create_sglang_tts_engine_executor(
         generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
     )
     set_qwen3_tts_preprocessing_context(model=model, wrapper=wrapper)
-    if bool(getattr(server_args, "enable_torch_compile", False)):
+    if bool(server_args.enable_torch_compile):
         _compile_qwen3_tts_backbone(model)
         server_args.enable_torch_compile = False
     if want_cuda_graph:

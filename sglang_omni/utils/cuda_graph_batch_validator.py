@@ -284,7 +284,7 @@ def validate_stage(
         model = None
     model_cls = type(model).__name__ if model is not None else "unknown-model"
 
-    if bool(getattr(server_args, "disable_cuda_graph", False)):
+    if bool(server_args.disable_cuda_graph):
         return CudaGraphBatchReport(
             stage=f"{stage_name} ({model_cls})",
             max_running_requests=max_running_requests,

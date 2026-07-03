@@ -26,7 +26,7 @@ def configure_talker_server_args(
     re-enable graph capture after the model worker is constructed.
     """
 
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    want_cuda_graph = not bool(server_args.disable_cuda_graph)
     if feedback_enabled:
         server_args.disable_overlap_schedule = True
         if want_cuda_graph:

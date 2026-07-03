@@ -257,6 +257,8 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
             max_running_requests=overrides["max_running_requests"],
             cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
             cuda_graph_bs=overrides["cuda_graph_bs"],
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
             torch_compile_max_bs=overrides["torch_compile_max_bs"],
         )
 
@@ -328,6 +330,8 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
             max_running_requests=overrides["max_running_requests"],
             cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
             cuda_graph_bs=overrides["cuda_graph_bs"],
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
             torch_compile_max_bs=overrides["torch_compile_max_bs"],
         )
 

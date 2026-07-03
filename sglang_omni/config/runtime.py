@@ -10,8 +10,6 @@ from typing import Any
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
-_MAPPED_STAGE_RUNTIME_FIELDS = ("max_seq_len", "video_fps")
-
 
 def resolve_stage_factory_args(
     stage_cfg: StageConfig,
@@ -149,8 +147,7 @@ def _validate_runtime_sources(
         runtime_overrides,
     )
 
-    for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
-        value = getattr(stage_cfg.runtime, field_name)
+    for field_name, value in _mapped_stage_runtime_values(stage_cfg).items():
         if value is None:
             continue
         target_arg = stage_cfg.runtime_arg_map.get(field_name)
@@ -195,8 +192,7 @@ def _merge_factory_arg_overrides(
 def _apply_typed_runtime_args(args: dict[str, Any], stage_cfg: StageConfig) -> None:
     runtime = stage_cfg.runtime
 
-    for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
-        value = getattr(runtime, field_name)
+    for field_name, value in _mapped_stage_runtime_values(stage_cfg).items():
         if value is None:
             continue
         target_arg = stage_cfg.runtime_arg_map.get(field_name)
@@ -212,6 +208,14 @@ def _apply_typed_runtime_args(args: dict[str, Any], stage_cfg: StageConfig) -> N
         overrides = dict(args.get("server_args_overrides") or {})
         overrides["mem_fraction_static"] = mem_fraction_static
         args["server_args_overrides"] = overrides
+
+
+def _mapped_stage_runtime_values(stage_cfg: StageConfig) -> dict[str, Any]:
+    runtime = stage_cfg.runtime
+    return {
+        "max_seq_len": runtime.max_seq_len,
+        "video_fps": runtime.video_fps,
+    }
 
 
 def _resolve_primary_gpu_id(

@@ -169,7 +169,10 @@ def _save_audio(result: dict, output_path: str) -> None:
     import numpy as np
 
     for stage_name, payload in result.items():
-        data = getattr(payload, "data", None)
+        if isinstance(payload, dict):
+            data = payload
+        else:
+            data = payload.data
         if not isinstance(data, dict):
             continue
         waveform = data.get("audio_waveform")

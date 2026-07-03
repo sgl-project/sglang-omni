@@ -6,7 +6,7 @@ from typing import Annotated, Literal, NoReturn
 import typer
 import yaml
 
-from sglang_omni.config import PipelineConfig
+from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -480,8 +480,8 @@ def _validate_colocated_gpu_override(
         )
 
 
-def _stage_tp_gpu_ids(stage: object) -> list[int]:
-    gpu = getattr(stage, "gpu", None)
+def _stage_tp_gpu_ids(stage: StageConfig) -> list[int]:
+    gpu = stage.gpu
     if gpu is None:
         return []
     if isinstance(gpu, int):
@@ -511,7 +511,7 @@ def _gate_custom_all_reduce_on_topology(
     refined["disable_custom_all_reduce"] = False
     logger.info(
         "Enabling custom all-reduce for stage '%s': GPUs %s form a P2P mesh",
-        getattr(stage, "name", "?"),
+        stage.name,
         list(gpu_ids),
     )
     return refined

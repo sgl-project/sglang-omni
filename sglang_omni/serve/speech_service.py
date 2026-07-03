@@ -219,8 +219,9 @@ class SpeechRequestValidator:
         if request.language is not None:
             updates["language"] = _normalize_language(request.language)
 
-        for field_name in ("max_new_tokens", "token_count", "duration_tokens"):
-            _validate_positive_int(getattr(request, field_name), param=field_name)
+        _validate_positive_int(request.max_new_tokens, param="max_new_tokens")
+        _validate_positive_int(request.token_count, param="token_count")
+        _validate_positive_int(request.duration_tokens, param="duration_tokens")
         _validate_non_negative_int(
             request.initial_codec_chunk_frames,
             param=INITIAL_CODEC_CHUNK_FRAMES_PARAM,
@@ -502,8 +503,9 @@ class SpeechRequestValidator:
         )
         if batch.language is not None:
             _normalize_language(batch.language)
-        for field_name in ("max_new_tokens", "token_count", "duration_tokens"):
-            _validate_positive_int(getattr(batch, field_name), param=field_name)
+        _validate_positive_int(batch.max_new_tokens, param="max_new_tokens")
+        _validate_positive_int(batch.token_count, param="token_count")
+        _validate_positive_int(batch.duration_tokens, param="duration_tokens")
         _validate_non_negative_int(
             batch.initial_codec_chunk_frames,
             param=INITIAL_CODEC_CHUNK_FRAMES_PARAM,
@@ -625,16 +627,24 @@ class SpeechRequestValidator:
             )
             return reference.model_copy(update=updates)
 
-        for field_name in _REFERENCE_AUDIO_FIELDS:
-            value = getattr(reference, field_name)
-            if not isinstance(value, str):
-                continue
+        if isinstance(reference.audio_path, str):
             updates.update(
                 self._load_media_reference_descriptor(
-                    value, param=f"references.{field_name}"
+                    reference.audio_path, param="references.audio_path"
                 )
             )
-            break
+        elif isinstance(reference.ref_audio, str):
+            updates.update(
+                self._load_media_reference_descriptor(
+                    reference.ref_audio, param="references.ref_audio"
+                )
+            )
+        elif isinstance(reference.audio, str):
+            updates.update(
+                self._load_media_reference_descriptor(
+                    reference.audio, param="references.audio"
+                )
+            )
         return reference.model_copy(update=updates)
 
     def _load_media_reference_descriptor(

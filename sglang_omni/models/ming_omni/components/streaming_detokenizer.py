@@ -31,7 +31,7 @@ from sglang_omni.models.ming_omni.pipeline.merge import decode_events
 from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -311,13 +311,13 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     }
 
 
-def text_output_requested(request: Any) -> bool:
+def text_output_requested(request: OmniRequest) -> bool:
     """Return True if text is among the requested output modalities.
 
     Reads ``request.metadata["output_modalities"]``; defaults to True when
     the field is absent (text is always produced unless explicitly excluded).
     """
-    metadata = getattr(request, "metadata", None)
+    metadata = request.metadata
     if not isinstance(metadata, dict):
         return True
     modalities = metadata.get("output_modalities")

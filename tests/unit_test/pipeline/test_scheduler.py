@@ -224,6 +224,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             ),
         ],
         batch_is_full=True,
+        is_prefill_only=True,
+        is_extend_in_batch=False,
     )
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
@@ -267,6 +269,8 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
             SimpleNamespace(rid="req-2", _omni_data=SimpleNamespace()),
         ],
         output_ids=None,
+        is_prefill_only=False,
+        is_extend_in_batch=False,
     )
 
     result = scheduler._run_batch(batch)
@@ -301,6 +305,8 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
         return SimpleNamespace(
             reqs=[SimpleNamespace(rid="r", _omni_data=SimpleNamespace())],
             output_ids=None,
+            is_prefill_only=False,
+            is_extend_in_batch=False,
         )
 
     scheduler._run_batch(_batch())
@@ -530,7 +536,7 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     assert "scheduler_prefill_start" not in names
     assert scheduler.waiting_queue == [req]
 
-    batch = SimpleNamespace(reqs=[req], is_prefill_only=True)
+    batch = SimpleNamespace(reqs=[req], is_prefill_only=True, is_extend_in_batch=False)
     scheduler._emit_prefill_start_for_batch(batch)
     scheduler._emit_prefill_start_for_batch(batch)
 
@@ -573,7 +579,9 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         enable_mixed_chunk=False,
         schedule_policy="fcfs",
         enable_hierarchical_cache=False,
+        enable_hisparse=False,
         enable_priority_scheduling=False,
+        disable_priority_preemption=False,
         schedule_low_priority_values_first=False,
         priority_scheduling_preemption_threshold=0,
         schedule_conservativeness=1.0,

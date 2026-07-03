@@ -30,7 +30,7 @@ def create_thinker_scheduler(
 
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
     if defer_cuda_graph_capture:
         server_args.enable_return_hidden_states = True
