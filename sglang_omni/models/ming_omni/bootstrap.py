@@ -24,7 +24,7 @@ def create_thinker_scheduler(
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
-    if getattr(server_args, "tp_size", None) != tp_size:
+    if server_args.tp_size != tp_size:
         server_args.tp_size = tp_size
 
     from sglang_omni.model_runner.ming_thinker_model_runner import (

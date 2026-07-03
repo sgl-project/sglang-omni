@@ -210,9 +210,7 @@ def read_captured_bs(model_runner: object) -> list[int] | None:
         sizes = sorted(int(b) for b in captured)
     except (TypeError, ValueError):
         logger.warning(
-            "cuda_graph_batch_validator: capture_bs is not an iterable of "
-            "ints (%r).",
-            captured,
+            f"cuda_graph_batch_validator: capture_bs is not an iterable of ints ({captured!r}).",
         )
         return None
     return sizes or None
@@ -286,7 +284,7 @@ def validate_stage(
         model = None
     model_cls = type(model).__name__ if model is not None else "unknown-model"
 
-    if bool(getattr(server_args, "disable_cuda_graph", False)):
+    if bool(server_args.disable_cuda_graph):
         return CudaGraphBatchReport(
             stage=f"{stage_name} ({model_cls})",
             max_running_requests=max_running_requests,

@@ -672,7 +672,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                     self._load_param(param, loaded_weight)
                 else:
                     logger.warning(
-                        "MOSS-TTS Local parameter %s not found", original_name
+                        f"MOSS-TTS Local parameter {original_name} not found"
                     )
                 continue
 
@@ -706,7 +706,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             if param is not None:
                 self._load_param(param, loaded_weight)
             else:
-                logger.warning("MOSS-TTS Local parameter %s not found", original_name)
+                logger.warning(f"MOSS-TTS Local parameter {original_name} not found")
 
         self._zero_audio_pad_rows()
 

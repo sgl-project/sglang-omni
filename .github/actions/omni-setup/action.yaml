@@ -26,7 +26,7 @@ runs:
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
         echo "HF_HUB_ENABLE_HF_TRANSFER=0" >> "${GITHUB_ENV}"
-        echo "HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}" >> "${GITHUB_ENV}"
+        echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
         echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
@@ -42,12 +42,12 @@ runs:
           ln -sfn "${HOST}" "./${VENV_NAME}"
         fi
 
-    - name: Install dependencies
+    - name: Reconcile or install dependencies
       if: ${{ inputs.install-deps == 'true' }}
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
-      run: bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
+      run: bash .github/scripts/reconcile_omni_ci_env.sh "${VENV_NAME}"
 
     - name: Validate or recover prepared environment
       if: ${{ inputs.install-deps != 'true' }}
@@ -55,14 +55,20 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        if [ -x "${VENV_NAME}/bin/python" ] \
-          && "${VENV_NAME}/bin/python" -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-          echo "Prepared ${VENV_NAME} environment is available under ${OMNI_CI_HOME}."
+        if bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"; then
+          echo "Prepared ${VENV_NAME} environment is reusable under ${OMNI_CI_HOME}."
           exit 0
         fi
 
-        echo "::warning::Prepared ${VENV_NAME} environment is missing or incomplete under ${OMNI_CI_HOME}; rebuilding it for this job."
-        bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
+        echo "::warning::Prepared ${VENV_NAME} environment is missing or drifted under ${OMNI_CI_HOME}; rebuilding."
+        bash .github/scripts/reconcile_omni_ci_env.sh "${VENV_NAME}"
+
+    - name: Assert OMNI environment passes reuse gate
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
+
     - name: Remove stale flashinfer JIT artifacts
       shell: bash
       run: |

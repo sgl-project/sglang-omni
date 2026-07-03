@@ -378,11 +378,11 @@ class OmniScheduler:
         self._prefill_start_done: set[str] = set()
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
-        self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
+        self.enable_hisparse = bool(server_args.enable_hisparse)
         self.hisparse_coordinator = None
         self.enable_priority_preemption = bool(
-            getattr(server_args, "enable_priority_scheduling", False)
-            and not getattr(server_args, "disable_priority_preemption", False)
+            server_args.enable_priority_scheduling
+            and not server_args.disable_priority_preemption
         )
         # High-water mark, not a cap. Mirrors upstream Scheduler.__init__ (sglang/srt/managers/scheduler.py).
         self.max_prefill_bs = 0
@@ -934,13 +934,13 @@ class OmniScheduler:
             self._emit_request_error(req.rid, error)
             self.abort(req.rid, defer_running_cleanup=False)
 
-    def _emit_prefill_start_for_batch(self, batch: Any) -> None:
+    def _emit_prefill_start_for_batch(self, batch: ScheduleBatch) -> None:
         """Emit once when a request's first executable batch is selected."""
-        metadata = {}
-        for attr in ("is_prefill_only", "is_extend_in_batch"):
-            if hasattr(batch, attr):
-                metadata[attr] = bool(getattr(batch, attr))
-        for req in getattr(batch, "reqs", []) or []:
+        metadata = {
+            "is_prefill_only": bool(batch.is_prefill_only),
+            "is_extend_in_batch": bool(batch.is_extend_in_batch),
+        }
+        for req in batch.reqs:
             rid = req.rid
             if rid in self._prefill_start_done:
                 continue
@@ -970,7 +970,7 @@ class OmniScheduler:
             # Build result payload from the Req
             data = req._omni_data
             data.output_ids = list(req.output_ids)
-            data.weight_version = getattr(self.server_args, "weight_version", None)
+            data.weight_version = self.server_args.weight_version
             finished_reason = req.finished_reason
             data.finish_reason = (
                 finished_reason.to_json().get("type")
@@ -1199,9 +1199,9 @@ class OmniScheduler:
                 "running_batch_size": len(
                     getattr(self.running_batch, "reqs", []) or []
                 ),
-                "model_path": getattr(self.server_args, "model_path", None),
-                "load_format": getattr(self.server_args, "load_format", None),
-                "weight_version": getattr(self.server_args, "weight_version", None),
+                "model_path": self.server_args.model_path,
+                "load_format": self.server_args.load_format,
+                "weight_version": self.server_args.weight_version,
             }
         )
         return {"success": True, "message": "ok", "data": info}
@@ -1475,10 +1475,9 @@ class OmniScheduler:
         ):
             if batch is None:
                 continue
-            for req in getattr(batch, "reqs", []) or []:
-                rid = getattr(req, "rid", None)
-                if rid is not None and not req.finished():
-                    request_ids.add(rid)
+            for req in batch.reqs:
+                if req.rid is not None and not req.finished():
+                    request_ids.add(req.rid)
         return sorted(request_ids)
 
     def _can_update_active_requests(
@@ -1650,15 +1649,13 @@ class OmniScheduler:
                 self.self_check_during_busy()
 
     @staticmethod
-    def _batch_is_decode(batch) -> bool:
-        mode = getattr(batch, "forward_mode", None)
+    def _batch_is_decode(batch: ScheduleBatch) -> bool:
+        mode = batch.forward_mode
         if mode is None:
             return False
-        is_decode = getattr(mode, "is_decode", None)
-        if callable(is_decode):
-            return bool(is_decode())
-        is_extend = getattr(mode, "is_extend", None)
-        return (not bool(is_extend())) if callable(is_extend) else False
+        if mode.is_decode():
+            return True
+        return not bool(mode.is_extend())
 
     def _async_pending_batch(self):
         """The in-flight (launched, not yet resolved) decode batch, or None.
@@ -1837,7 +1834,7 @@ class OmniScheduler:
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
             if batch is None:
                 continue
-            for req in getattr(batch, "reqs", ()):
+            for req in batch.reqs:
                 if req.rid == request_id:
                     return req._omni_data
         for req in self.waiting_queue:

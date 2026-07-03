@@ -9,12 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 @dataclass
-class HiggsTtsState:
+class HiggsTtsState(PipelineStateBase):
     """Per-request state threaded through preprocessing → audio_encoder →
     tts_engine → vocoder. Fields populate lazily so a deserialised state is
     valid at any stage boundary."""
+
+    sample_rate: int = 24000
 
     # preprocessing / audio_encoder
     prompt_token_ids: list[int] = field(default_factory=list)
@@ -36,15 +40,16 @@ class HiggsTtsState:
     top_k: int | None = None
     seed: int | None = None
 
+    # RL rollout controls
+    return_logprob: bool = False
+    return_omni_rollout: bool = False
+
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
+    omni_rollout: dict[str, Any] | None = None
 
     # vocoder
     audio_samples: Any | None = None
-    sample_rate: int = 24000
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -72,12 +77,14 @@ class HiggsTtsState:
             value = getattr(self, key)
             if value is not None:
                 data[key] = value
+        for key in ("return_logprob", "return_omni_rollout"):
+            if getattr(self, key):
+                data[key] = True
         if self.output_codes_delayed is not None:
             data["output_codes_delayed"] = self.output_codes_delayed
-        for key in ("prompt_tokens", "completion_tokens", "engine_time_s"):
-            value = getattr(self, key)
-            if value:
-                data[key] = value
+        if self.omni_rollout is not None:
+            data["omni_rollout"] = self.omni_rollout
+        self.append_usage_fields(data)
         if self.audio_samples is not None:
             data["audio_samples"] = self.audio_samples
             data["sample_rate"] = self.sample_rate
@@ -101,7 +108,10 @@ class HiggsTtsState:
             top_p=data.get("top_p"),
             top_k=data.get("top_k"),
             seed=data.get("seed"),
+            return_logprob=data.get("return_logprob", False),
+            return_omni_rollout=data.get("return_omni_rollout", False),
             output_codes_delayed=data.get("output_codes_delayed"),
+            omni_rollout=data.get("omni_rollout"),
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             engine_time_s=data.get("engine_time_s", 0.0),

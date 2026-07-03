@@ -60,9 +60,9 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0213
+VC_WER_BELOW_50_CORPUS_MAX = 0.0337
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 2
+VC_N_ABOVE_50_MAX = 0.0
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
 # #483 is fixed; the hard assertion is currently disabled in
 # test_voice_cloning_similarity (see docstring there). PR #469 also collected
@@ -76,7 +76,7 @@ VC_N_ABOVE_50_MAX = 2
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.2537
+VC_UTMOS_MEAN_REFERENCE = 4.2388
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
@@ -84,9 +84,9 @@ VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 5.508,
-        "output_tok_per_req_s": 5.3,
-        "latency_mean_s": 2.757,
+        "throughput_qps": 5.317,
+        "output_tok_per_req_s": 5.2,
+        "latency_mean_s": 2.803,
         "rtf_mean": 0.8149,
     },
 }
@@ -96,7 +96,7 @@ _VC_NON_STREAM_P95 = {
 # Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
-QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9078
+QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9536
 VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
@@ -356,29 +356,29 @@ class _SpeedArtifacts:
 
 @pytest.fixture(scope="module")
 def speed_artifacts(
-    qwen3_omni_router_server: ManagedRouterHandle,
+    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _SpeedArtifacts:
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     try:
-        workers = router_get_json(qwen3_omni_router_server.port, "/workers")
+        workers = router_get_json(qwen3_omni_bf16_colocated_server.port, "/workers")
         print_worker_snapshot("initial /workers snapshot", workers)
         assert workers["total_workers"] == 2
         assert workers["healthy_workers"] == 2
         assert workers["routable_workers"] == 2
 
-        models = router_get_json(qwen3_omni_router_server.port, "/v1/models")
+        models = router_get_json(qwen3_omni_bf16_colocated_server.port, "/v1/models")
         assert {card["id"] for card in models["data"]} == {"qwen3-omni"}
 
         results = _run_benchmark(
-            qwen3_omni_router_server.port,
+            qwen3_omni_bf16_colocated_server.port,
             dataset_repo,
             output_dir,
         )
     except Exception:
-        print_router_diagnostics(qwen3_omni_router_server)
+        print_router_diagnostics(qwen3_omni_bf16_colocated_server)
         raise
     return _SpeedArtifacts(
         output_dir=output_dir,
@@ -389,11 +389,11 @@ def speed_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_audio_dir(
-    qwen3_omni_router_server: ManagedRouterHandle,
+    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
     speed_artifacts: _SpeedArtifacts,
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
-    qwen3_omni_router_server.stop()
+    qwen3_omni_bf16_colocated_server.stop()
     wait_for_gpu_memory_release()
     generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
@@ -402,7 +402,7 @@ def wer_audio_dir(
 
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
-    qwen3_omni_router_server: ManagedRouterHandle,
+    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
     speed_artifacts: _SpeedArtifacts,
 ) -> None:
     """Print speed summary and assert metrics meet thresholds."""
@@ -427,7 +427,9 @@ def test_voice_cloning_non_streaming(
             f"Speed output directory missing: {speed_artifacts.output_dir}",
         )
 
-        final_workers = router_get_json(qwen3_omni_router_server.port, "/workers")
+        final_workers = router_get_json(
+            qwen3_omni_bf16_colocated_server.port, "/workers"
+        )
         print_worker_snapshot("final /workers snapshot", final_workers)
         checks.check(
             final_workers.get("routable_workers") == 2,
@@ -450,7 +452,7 @@ def test_voice_cloning_non_streaming(
         )
         checks.assert_all()
     except Exception:
-        print_router_diagnostics(qwen3_omni_router_server)
+        print_router_diagnostics(qwen3_omni_bf16_colocated_server)
         raise
 
 

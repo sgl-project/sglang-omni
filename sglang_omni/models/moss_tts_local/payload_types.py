@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 def moss_tts_local_special_token_defaults(
     audio_vocab_size: int = 1024,
@@ -31,9 +33,10 @@ def moss_tts_local_special_token_defaults(
 
 
 @dataclass
-class MossTTSLocalState:
+class MossTTSLocalState(PipelineStateBase):
     """Per-request state for MOSS-TTS Local generation."""
 
+    sample_rate: int = 48000
     text: str = ""
     ref_audio: Any | None = None
     ref_text: str | None = None
@@ -42,20 +45,6 @@ class MossTTSLocalState:
     token_count: int | None = None
     generation_kwargs: dict[str, Any] = field(default_factory=dict)
     audio_codes: Any | None = None
-    sample_rate: int = 48000
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
-
-    @staticmethod
-    def _tensor_to_payload(value: Any) -> Any:
-        try:
-            import torch
-        except ImportError:
-            torch = None
-        if torch is not None and isinstance(value, torch.Tensor):
-            return value.detach().cpu()
-        return value
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -74,13 +63,8 @@ class MossTTSLocalState:
         if self.token_count is not None:
             data["token_count"] = int(self.token_count)
         if self.audio_codes is not None:
-            data["audio_codes"] = self._tensor_to_payload(self.audio_codes)
-        if self.prompt_tokens:
-            data["prompt_tokens"] = int(self.prompt_tokens)
-        if self.completion_tokens:
-            data["completion_tokens"] = int(self.completion_tokens)
-        if self.engine_time_s:
-            data["engine_time_s"] = float(self.engine_time_s)
+            data["audio_codes"] = self.serialize_value(self.audio_codes)
+        self.append_usage_fields(data)
         return data
 
     @classmethod

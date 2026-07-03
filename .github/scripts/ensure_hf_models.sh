@@ -25,7 +25,7 @@ shift
 export HOME="${HOME:-/github/home}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/github/home/.cache}"
 export HF_HOME="${HF_HOME:-/github/home/.cache/huggingface}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-/github/home/.cache/modelscope}"
@@ -182,7 +182,7 @@ def verify_hf_cache(repo_id: str, expected_snapshot: Path | None = None) -> Path
 def hf_download_endpoints() -> list[str]:
     """Prefer configured mirror, then huggingface.co (private/large weights on repro hosts)."""
     endpoints: list[str] = []
-    configured = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com").rstrip("/")
+    configured = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
     if configured:
         endpoints.append(configured)
     direct = "https://huggingface.co"

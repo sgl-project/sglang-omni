@@ -344,7 +344,10 @@ def test_batch_is_decode():
     )
     assert OmniScheduler._batch_is_decode(decode) is True
     assert OmniScheduler._batch_is_decode(extend) is False
-    assert OmniScheduler._batch_is_decode(types.SimpleNamespace()) is False  # no mode
+    assert (
+        OmniScheduler._batch_is_decode(types.SimpleNamespace(forward_mode=None))
+        is False
+    )
 
 
 def test_async_pending_batch_getattr_safe():

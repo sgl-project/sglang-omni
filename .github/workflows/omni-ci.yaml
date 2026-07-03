@@ -3,7 +3,12 @@ name: Omni CI
 # DAG:
 #   preflight ──► setup ──► pr-test ──► tts-ci ──► qwen3-omni-ci
 #                    │           │          │              │
-#                    └───────────┴──────────┴──────────────┴──► cleanup
+#                    └───────────┴──────────┴──────────────┴──► cleanup (dispatch only)
+#
+# PR-scoped homes (/github/home/pr-<N>) persist on the runner for reuse across
+# pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
+# pins, and imports before reuse; otherwise rebuilds OMNI_CI_HOME.
+# cleanup-pr-ci-home-on-close.yaml removes the home when the PR closes.
 
 
 on:
@@ -102,18 +107,32 @@ jobs:
     name: setup - omni venv
     needs: preflight
     if: needs.preflight.result == 'success'
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Assess CI environment completeness
+        id: env_state
+        shell: bash
+        run: |
+          echo "OMNI_CI_HOME=${OMNI_CI_HOME}"
+          if bash .github/scripts/validate_omni_env_reusable.sh omni; then
+            echo "action=reuse" >> "${GITHUB_OUTPUT}"
+            echo "Existing environment passes reuse gate; will refresh editable install."
+          else
+            echo "action=rebuild" >> "${GITHUB_OUTPUT}"
+            echo "Environment missing or drifted; will reconcile or rebuild."
+          fi
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -127,7 +146,7 @@ jobs:
       - name: Ensure CI model weights
         shell: bash
         env:
-          HF_ENDPOINT: https://hf-mirror.com
+          HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
         run: |
           bash .github/scripts/ensure_hf_models.sh omni \
@@ -136,6 +155,14 @@ jobs:
             "${QWEN3_ASR_MODEL_PATH}" \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}"
+
+      - name: Mark PR environment complete
+        shell: bash
+        run: bash .github/scripts/mark_omni_env_complete.sh omni
+
+      - name: Verify setup completion marker
+        shell: bash
+        run: bash .github/scripts/validate_omni_env_complete.sh omni
 
   pick-tts-model:
     name: pick TTS model
@@ -196,6 +223,10 @@ jobs:
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
       tts_ci_model: ${{ needs.pick-tts-model.outputs.tts_ci_model }}
+      omni_ci_home: >-
+        ${{ github.event_name == 'pull_request'
+            && format('/github/home/pr-{0}', github.event.pull_request.number)
+            || format('/github/home/run-{0}', github.run_id) }}
     secrets: inherit
 
   qwen3-omni-ci:
@@ -205,6 +236,11 @@ jobs:
       always() && !cancelled() &&
       needs.setup.result == 'success'
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
+    with:
+      omni_ci_home: >-
+        ${{ github.event_name == 'pull_request'
+            && format('/github/home/pr-{0}', github.event.pull_request.number)
+            || format('/github/home/run-{0}', github.run_id) }}
     secrets: inherit
 
   pr-test:
@@ -213,20 +249,27 @@ jobs:
     if: >-
       needs.setup.result == 'success'
     uses: ./.github/workflows/test.yaml
+    with:
+      omni_ci_home: >-
+        ${{ github.event_name == 'pull_request'
+            && format('/github/home/pr-{0}', github.event.pull_request.number)
+            || format('/github/home/run-{0}', github.run_id) }}
     secrets: inherit
 
   cleanup:
-    name: cleanup - reclaim host cache
+    name: cleanup - reclaim ephemeral run home
     needs: [setup, tts-ci, qwen3-omni-ci, pr-test]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success'
-    runs-on: [self-hosted]
+      needs.setup.result == 'success' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
-        --gpus all --rm
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface

@@ -222,11 +222,11 @@ class ModelWorker:
 
     def model_info(self) -> dict[str, Any]:
         return {
-            "model_path": getattr(self.server_args, "model_path", None),
-            "load_format": getattr(self.server_args, "load_format", None),
-            "weight_version": getattr(self.server_args, "weight_version", None),
+            "model_path": self.server_args.model_path,
+            "load_format": self.server_args.load_format,
+            "weight_version": self.server_args.weight_version,
             "tp_rank": self.tp_rank,
-            "tp_size": getattr(self.server_args, "tp_size", 1),
+            "tp_size": self.server_args.tp_size,
             "model_arch_override": self.model_arch_override,
             "supports_weight_update": hasattr(
                 self.model_runner, "update_weights_from_disk"
@@ -241,9 +241,7 @@ class ModelWorker:
         update = getattr(self.model_runner, "update_weights_from_disk", None)
         if update is None:
             return False, "model runner does not support update_weights_from_disk"
-        load_format = payload.get("load_format") or getattr(
-            self.server_args, "load_format", None
-        )
+        load_format = payload.get("load_format") or self.server_args.load_format
         success, message = update(
             model_path,
             load_format,
@@ -400,18 +398,16 @@ def _apply_model_worker_backend_policy(
     effective_quantization = _normalize_quantization(
         getattr(model_config, "quantization", None)
     )
-    server_quantization = _normalize_quantization(
-        getattr(server_args, "quantization", None)
-    )
+    server_quantization = _normalize_quantization(server_args.quantization)
     if server_quantization is not None:
         effective_quantization = server_quantization
 
-    moe_runner_backend = getattr(server_args, "moe_runner_backend", "auto")
+    moe_runner_backend = server_args.moe_runner_backend
     is_qwen3_omni_arch = model_arch_override in (
         "Qwen3OmniTalker",
         "Qwen3OmniThinkerForCausalLM",
     )
-    if is_qwen3_omni_arch and getattr(server_args, "ep_size", 1) != 1:
+    if is_qwen3_omni_arch and server_args.ep_size != 1:
         raise ValueError(
             "Qwen3-Omni ModelWorker does not support expert parallelism; "
             "use ep_size=1."
@@ -477,7 +473,7 @@ def _apply_model_worker_backend_policy(
         server_args.fp8_gemm_runner_backend = "triton"
         fp8_gemm_backend = server_args.fp8_gemm_runner_backend
 
-    server_quantization = getattr(server_args, "quantization", None)
+    server_quantization = server_args.quantization
     logger.info(
         f"Configured SGLang backend policy: arch={model_arch_override} "
         f"effective_quantization={effective_quantization} "

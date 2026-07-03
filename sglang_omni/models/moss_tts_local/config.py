@@ -35,7 +35,7 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             mem_fraction_static=None if colocated else _AR_MEM_FRACTION_STATIC
         ),
     )
-    tts_engine_args = {"gpu_id": 0, "dtype": "bfloat16"}
+    tts_engine_args: dict[str, Any] = {"dtype": "bfloat16"}
     if colocated:
         tts_engine_args["codec_mem_reserve"] = _COLOCATED_CODEC_MEM_RESERVE
 

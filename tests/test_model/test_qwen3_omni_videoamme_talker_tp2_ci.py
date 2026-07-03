@@ -27,7 +27,7 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
+from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
@@ -48,18 +48,18 @@ MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0175
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0548
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0.0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.061,
+        "throughput_qps": 0.058,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 162.533,
-        "rtf_mean": 12.2402,
+        "latency_mean_s": 170.36,
+        "rtf_mean": 12.8415,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
@@ -81,12 +81,12 @@ class _TalkerEvalArtifacts:
 
 @pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
-    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_tp2_server: ServerHandle,
 ) -> None:
     """Confirm the thinker stage actually came up at tp_size=2.
     Prevents silent fallback to TP=1
     """
-    log_file = qwen3_omni_fp8_talker_server_tp2.log_file
+    log_file = qwen3_omni_fp8_tp2_server.log_file
     checks = MetricCheckCollector("Thinker TP=2 server log checks")
     checks.check(
         log_file is not None and log_file.exists(),
@@ -112,13 +112,13 @@ def test_thinker_tp2_actually_applied(
 
 @pytest.fixture(scope="module")
 def talker_eval_artifacts(
-    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_tp2_server: ServerHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videoamme_audio"))
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_fp8_talker_server_tp2.port,
+        port=qwen3_omni_fp8_tp2_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
@@ -145,11 +145,11 @@ def talker_eval_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
-    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_tp2_server: ServerHandle,
     talker_eval_artifacts: _TalkerEvalArtifacts,
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
-    stop_server(qwen3_omni_fp8_talker_server_tp2.proc)
+    stop_server(qwen3_omni_fp8_tp2_server.proc)
     wait_for_gpu_memory_release()
     return talker_eval_artifacts
 

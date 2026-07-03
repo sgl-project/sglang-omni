@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 
 from sglang_omni.utils.gpu_memory import (
     _get_device_handle,
@@ -144,5 +144,81 @@ def apply_gpu_compat_env_defaults(
     overrides = get_gpu_compat_env_defaults(target_env)
     for key, value in overrides.items():
         target_env[key] = value
-        logger.info("Applied GPU compatibility env override: %s=%s", key, value)
+        logger.info(f"Applied GPU compatibility env override: {key}={value}")
     return overrides
+
+
+def gpu_ids_support_p2p_mesh(
+    logical_gpu_ids: Sequence[int],
+    env: Mapping[str, str] | None = None,
+) -> bool | None:
+    """Return whether the given logical GPUs form a full peer-to-peer mesh.
+
+    Custom (P2P/NVLink) all-reduce only works when every tensor-parallel rank can
+    directly access every other rank's memory. This queries NVML's pairwise P2P
+    status (so it does not create a CUDA context in the caller) for all ordered
+    pairs of the given logical GPU ids (resolved through ``CUDA_VISIBLE_DEVICES``).
+
+    Returns ``True`` only when every pair reports P2P-capable, ``False`` when any
+    pair is not, and ``None`` when the topology cannot be determined (pynvml
+    missing, NVML query error, or fewer than two distinct GPUs).
+    """
+    ids = list(dict.fromkeys(int(g) for g in logical_gpu_ids))
+    if len(ids) < 2:
+        return None
+
+    pynvml = _try_import_pynvml()
+    if pynvml is None:
+        return None
+
+    get_status = getattr(pynvml, "nvmlDeviceGetP2PStatus", None)
+    if get_status is None:
+        return None
+    status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
+    read_index = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
+    # note (luojiaxuan): nvidia-ml-py 13.595.45 ships a stray trailing comma
+    # (`= 0,`), making this constant a 1-tuple;
+    # nvmlDeviceGetP2PStatus needs a plain int.
+    if isinstance(read_index, tuple):
+        read_index = read_index[0]
+
+    source_env = os.environ if env is None else env
+    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+
+    try:
+        pynvml.nvmlInit()
+        handles = []
+        for logical_id in ids:
+            device_id = resolve_visible_device_id(logical_id, visible_devices)
+            handles.append(_get_device_handle(pynvml, device_id))
+        for i, handle_i in enumerate(handles):
+            for j, handle_j in enumerate(handles):
+                if i == j:
+                    continue
+                if get_status(handle_i, handle_j, read_index) != status_ok:
+                    return False
+        return True
+    except Exception as exc:
+        logger.warning(
+            f"NVML P2P mesh query failed for gpus={ids}: {exc}; keeping custom all-reduce disabled",
+        )
+        return None
+    finally:
+        _shutdown_nvml(pynvml)
+
+
+def should_disable_custom_all_reduce_for_gpus(
+    logical_gpu_ids: Sequence[int] | None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Whether to disable SGLang custom all-reduce for a TP thinker.
+
+    Custom all-reduce requires a direct P2P mesh between the tensor-parallel GPUs;
+    on topologies without it (or that can't be confirmed) it must fall back to
+    NCCL. This returns ``True`` (disable) unless NVML confirms a full P2P mesh,
+    so the safe default is preserved and custom all-reduce is only enabled on
+    capable topologies (e.g. NVLink).
+    """
+    if not logical_gpu_ids:
+        return True
+    return gpu_ids_support_p2p_mesh(logical_gpu_ids, env) is not True

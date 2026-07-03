@@ -102,6 +102,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--talker-max-seq-len",
+        type=int,
+        default=None,
+        help=(
+            "Context length for the talker_ar stage KV pool. When omitted, "
+            "uses the pipeline default (32768)."
+        ),
+    )
+    parser.add_argument(
         "--mem-fraction-static",
         type=float,
         default=None,
@@ -245,6 +254,7 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         Qwen3OmniSpeechPipelineConfig,
     )
     from sglang_omni.serve import launch_server
+    from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 
     for flag_name, value in (
         ("--mem-fraction-static", args.mem_fraction_static),
@@ -341,7 +351,11 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         _apply_stage_factory_updates(
             config,
             stage_name="thinker",
-            server_arg_updates={"disable_custom_all_reduce": True},
+            server_arg_updates={
+                "disable_custom_all_reduce": should_disable_custom_all_reduce_for_gpus(
+                    thinker_gpu_ids
+                ),
+            },
         )
     else:
         if args.gpu_thinker_tp is not None:
@@ -391,6 +405,13 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             config,
             stage_name="preprocessing",
             updates=thinker_seq_len_updates,
+        )
+
+    if args.talker_max_seq_len is not None:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="talker_ar",
+            updates={"talker_max_seq_len": int(args.talker_max_seq_len)},
         )
 
     talker_partial_start_updates: dict[str, object] = {

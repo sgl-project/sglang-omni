@@ -293,7 +293,7 @@ class SpeakerSampleStore:
         try:
             safe_open = _safetensors_safe_open()
         except SpeechAPIError as exc:
-            logger.warning("%s; uploaded voices will not be restored", exc.message)
+            logger.warning(f"{exc.message}; uploaded voices will not be restored")
             return
         candidates: list[UploadedVoice] = []
         for path in sorted(self.root_dir.glob("*.safetensors")):
@@ -301,28 +301,24 @@ class SpeakerSampleStore:
                 with safe_open(str(path), framework="np") as handle:
                     metadata = dict(handle.metadata() or {})
             except Exception as exc:
-                logger.warning("Skipping unreadable voice file %s: %s", path, exc)
+                logger.warning(f"Skipping unreadable voice file {path}: {exc}")
                 continue
             try:
                 voice = _voice_from_metadata(metadata, path)
             except SpeechAPIError as exc:
-                logger.warning("Skipping invalid voice metadata %s: %s", path, exc)
+                logger.warning(f"Skipping invalid voice metadata {path}: {exc}")
                 continue
             candidates.append(voice)
         candidates.sort(key=lambda voice: voice.created_at, reverse=True)
         for voice in candidates:
             if voice.normalized_name in restored:
                 logger.warning(
-                    "Skipping duplicate restored voice %s for name %s",
-                    voice.file_path,
-                    voice.normalized_name,
+                    f"Skipping duplicate restored voice {voice.file_path} for name {voice.normalized_name}",
                 )
                 continue
             if len(restored) >= self.max_uploaded:
                 logger.warning(
-                    "Skipping restored voice %s because SPEAKER_MAX_UPLOADED=%d",
-                    voice.file_path,
-                    self.max_uploaded,
+                    f"Skipping restored voice {voice.file_path} because SPEAKER_MAX_UPLOADED={self.max_uploaded}",
                 )
                 continue
             restored[voice.normalized_name] = voice
@@ -382,7 +378,7 @@ def _speaker_max_uploaded_from_env() -> int:
     try:
         return int(value)
     except ValueError:
-        logger.warning("Invalid SPEAKER_MAX_UPLOADED=%r; using default", value)
+        logger.warning(f"Invalid SPEAKER_MAX_UPLOADED={value!r}; using default")
         return DEFAULT_SPEAKER_MAX_UPLOADED
 
 

@@ -163,3 +163,141 @@ def test_streaming_simple_scheduler_keeps_queued_control_message_out_of_batch() 
     assert next_msg.request_id == "stream"
     assert next_msg.type == "stream_chunk"
     assert scheduler._next_message().request_id == "b"
+
+
+def _chunk(request_id: str, value: str) -> IncomingMessage:
+    return IncomingMessage(
+        request_id, "stream_chunk", StreamItem(chunk_id=0, data=value, from_stage="src")
+    )
+
+
+def _raw_chunk(request_id: str, value: object) -> IncomingMessage:
+    return IncomingMessage(request_id, "stream_chunk", value)
+
+
+class _BatchStreamingScheduler(_TestStreamingScheduler):
+    _can_batch_stream_chunks = True
+
+    def __init__(self, **kw: int) -> None:
+        self.pump_batches: list[list[str]] = []
+        super().__init__(**kw)
+
+    def on_stream_chunk_batch(self, items):
+        self.pump_batches.append([rid for rid, _ in items])
+        for request_id, item in items:
+            if self._is_aborted(request_id):
+                continue
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="stream",
+                    data={"chunk": item.data},
+                    metadata={"modality": "test"},
+                )
+            )
+
+
+class _DefaultBatchScheduler(_TestStreamingScheduler):
+    _can_batch_stream_chunks = True
+
+
+def test_stream_chunk_batch_opt_out_dispatches_one_at_a_time() -> None:
+    scheduler = _TestStreamingScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert [m.request_id for m in _drain_results(scheduler)] == ["a"]
+    assert scheduler.inbox.get_nowait().request_id == "b"
+
+
+def test_stream_chunk_batch_coalesces_queued_chunks_into_one_pump() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler.inbox.put(_chunk("c", "z"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert scheduler.pump_batches == [["a", "b", "c"]]
+    assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y", "z"]
+
+
+def test_stream_chunk_batch_stops_at_non_chunk_and_pushes_back() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler.inbox.put(IncomingMessage("c", "new_request", _payload("c")))
+    scheduler.inbox.put(_chunk("d", "w"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert scheduler.pump_batches == [["a", "b"]]
+    assert scheduler._next_message().request_id == "c"
+    assert scheduler._next_message().request_id == "d"
+
+
+def test_stream_chunk_batch_skips_aborted_requests() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=4)
+    scheduler.abort("b")
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler.inbox.put(_chunk("c", "z"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert scheduler.pump_batches == [["a", "c"]]
+    assert [m.request_id for m in _drain_results(scheduler)] == ["a", "c"]
+
+
+def test_stream_chunk_batch_respects_cap() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=2)
+    for rid in ("b", "c", "d"):
+        scheduler.inbox.put(_chunk(rid, rid))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert scheduler.pump_batches == [["a", "b"]]
+    assert scheduler._next_message().request_id == "c"
+
+
+def test_stream_chunk_batch_default_hook_emits_per_chunk_in_order() -> None:
+    scheduler = _DefaultBatchScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y"]
+
+
+class _RaisingDefaultBatchScheduler(_TestStreamingScheduler):
+    _can_batch_stream_chunks = True
+
+    def on_stream_chunk(self, request_id, item):
+        if request_id == "bad":
+            raise ValueError("boom")
+        return super().on_stream_chunk(request_id, item)
+
+
+def test_stream_chunk_batch_default_hook_isolates_failing_item() -> None:
+    scheduler = _RaisingDefaultBatchScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("bad", "y"))
+    scheduler.inbox.put(_chunk("c", "z"))
+    scheduler._handle_message(_chunk("a", "x"), None)
+    out = _drain_results(scheduler)
+    assert [m.request_id for m in out if m.type == "stream"] == ["a", "c"]
+    assert any(m.request_id == "bad" and m.type == "error" for m in out)
+    assert scheduler._is_aborted("bad")
+
+
+def test_stream_chunk_batch_validates_items_before_hook() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=4)
+    scheduler.inbox.put(_raw_chunk("bad", "not-a-stream-item"))
+    scheduler.inbox.put(_chunk("c", "z"))
+
+    scheduler._handle_message(_chunk("a", "x"), None)
+
+    out = _drain_results(scheduler)
+    assert scheduler.pump_batches == [["a", "c"]]
+    assert [m.request_id for m in out if m.type == "stream"] == ["a", "c"]
+    assert any(m.request_id == "bad" and m.type == "error" for m in out)
+    assert scheduler._is_aborted("bad")
+
+
+def test_stream_chunk_batch_filters_request_aborted_during_validation() -> None:
+    scheduler = _DefaultBatchScheduler(max_batch_size=4)
+    scheduler.inbox.put(_raw_chunk("bad", "not-a-stream-item"))
+    scheduler.inbox.put(_chunk("c", "z"))
+
+    scheduler._handle_message(_chunk("bad", "x"), None)
+
+    out = _drain_results(scheduler)
+    assert [m.request_id for m in out if m.type == "stream"] == ["c"]
+    assert any(m.request_id == "bad" and m.type == "error" for m in out)
+    assert scheduler._is_aborted("bad")
+    assert "bad" not in scheduler.stream_state

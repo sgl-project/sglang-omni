@@ -11,11 +11,11 @@ decide the right ASR fan-out for SeedTTS EN transcription / WER workloads.
 This script transcribes the SeedTTS *reference* clips directly (no TTS
 generation step), so it isolates ASR behavior from TTS.
 
-``run_asr_transcription`` + ``build_asr_eval_results`` are the shared
-transcription/scoring path; the Qwen3-ASR correctness gate
-(``tests/test_model/test_qwen3_asr_ci.py``) imports them so the gate is just
-this benchmark run plus thresholds. Both reuse the benchmark framework
-abstractions (``BenchmarkRunner``, ``benchmarks.metrics``).
+This file is the executable CLI wrapper: the shared transcription/scoring
+layer (run_asr_transcription and build_asr_eval_results) lives in
+benchmarks.tasks.asr and is imported here and by the Qwen3-ASR correctness
+gate (tests/test_model/test_qwen3_asr_ci.py), so the gate is just this
+benchmark run plus thresholds.
 
 Usage:
 
@@ -46,201 +46,18 @@ import asyncio
 import json
 import os
 import statistics
-import time
 
-import aiohttp
 import requests
-from jiwer import process_words
 
-from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
-from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.metrics.wer import calculate_asr_speed_metrics, calculate_wer_metrics
-from benchmarks.tasks.tts import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MAX_NEW_TOKENS,
+from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
-    QWEN3_ASR_REQUEST_TIMEOUT_S,
-    SampleOutput,
-    normalize_text,
+    build_asr_eval_results,
+    run_asr_transcription,
 )
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
-
-
-def make_asr_send_fn(
-    model_name: str,
-    api_url: str,
-    *,
-    lang: str = "en",
-    max_new_tokens: int = QWEN3_ASR_MAX_NEW_TOKENS,
-) -> SendFn:
-    """Return a *send_fn(session, sample) -> RequestResult* that transcribes one
-    SeedTTS reference clip via the Omni ``/v1/audio/transcriptions`` endpoint.
-
-    Note: do NOT send temperature=0 — Qwen3-ASR degenerates under pure greedy
-    (the server bumps it to 0.01). ``language`` selects the forced prefix.
-    """
-
-    async def send_fn(
-        session: aiohttp.ClientSession, sample: SampleInput
-    ) -> RequestResult:
-        result = RequestResult(request_id=sample.sample_id)
-        try:
-            with open(sample.ref_audio, "rb") as audio_file:
-                audio_bytes = audio_file.read()
-        except OSError as exc:
-            result.error = str(exc)
-            return result
-        result.audio_duration_s = get_wav_duration(audio_bytes)
-
-        form = aiohttp.FormData()
-        form.add_field("model", model_name)
-        form.add_field("language", "en" if lang == "en" else lang)
-        form.add_field("response_format", "json")
-        form.add_field("max_new_tokens", str(max_new_tokens))
-        form.add_field(
-            "file",
-            audio_bytes,
-            filename=os.path.basename(sample.ref_audio),
-            content_type="audio/wav",
-        )
-
-        start_time = time.perf_counter()
-        try:
-            async with session.post(api_url, data=form) as response:
-                if response.status != 200:
-                    result.error = f"HTTP {response.status}: {await response.text()}"
-                else:
-                    payload = await response.json()
-                    result.text = str(payload.get("text", ""))
-                    result.is_success = True
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            result.error = str(exc)
-        finally:
-            result.latency_s = time.perf_counter() - start_time
-        if result.is_success and result.audio_duration_s > 0:
-            result.rtf = result.latency_s / result.audio_duration_s
-        return result
-
-    return send_fn
-
-
-async def run_asr_transcription(
-    samples: list[SampleInput],
-    *,
-    host: str = "127.0.0.1",
-    port: int,
-    model_path: str = QWEN3_ASR_MODEL_PATH,
-    lang: str = "en",
-    concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    warmup: int = 0,
-    request_timeout_s: int = QWEN3_ASR_REQUEST_TIMEOUT_S,
-    disable_tqdm: bool = True,
-) -> tuple[list[RequestResult], float]:
-    """Transcribe ``samples`` against a running ASR router at one concurrency.
-
-    Returns ``(outputs, wall_clock_s)`` via the shared ``BenchmarkRunner``.
-    """
-    api_url = f"http://{host}:{port}/v1/audio/transcriptions"
-    send_fn = make_asr_send_fn(model_path, api_url, lang=lang)
-    runner = BenchmarkRunner(
-        RunConfig(
-            max_concurrency=concurrency,
-            warmup=warmup,
-            disable_tqdm=disable_tqdm,
-            timeout_s=request_timeout_s,
-        )
-    )
-    outputs = await runner.run(samples, send_fn)
-    return outputs, runner.wall_clock_s
-
-
-def build_asr_eval_results(
-    samples: list[SampleInput],
-    outputs: list[RequestResult],
-    wall_clock_s: float,
-    lang: str,
-    *,
-    model_path: str = QWEN3_ASR_MODEL_PATH,
-    concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-) -> dict:
-    """Score transcriptions and assemble WER + speed metrics.
-
-    Returns ``{"summary": wer, "speed": speed, "per_sample": [...]}`` with the
-    exact ``summary.*`` / ``speed.*`` keys the Qwen3-ASR gate writes and the
-    tune-ci-thresholds config reads. WER/speed reuse ``benchmarks.metrics``.
-    """
-    result_by_id = {result.request_id: result for result in outputs}
-    sample_outputs: list[SampleOutput] = []
-    per_sample: list[dict] = []
-    for sample in samples:
-        result = result_by_id.get(sample.sample_id)
-        output = SampleOutput(
-            sample_id=sample.sample_id,
-            target_text=sample.ref_text,
-        )
-        if result is None or not result.is_success:
-            output.error = (result.error if result else "") or "No transcription"
-        else:
-            output.latency_s = result.latency_s
-            output.asr_latency_s = result.latency_s
-            output.audio_duration_s = result.audio_duration_s
-            output.whisper_text = result.text
-            output.ref_norm = normalize_text(sample.ref_text, lang)
-            output.hyp_norm = normalize_text(result.text, lang)
-            if output.ref_norm:
-                measures = process_words(output.ref_norm, output.hyp_norm)
-                output.wer = measures.wer
-                output.substitutions = measures.substitutions
-                output.deletions = measures.deletions
-                output.insertions = measures.insertions
-                output.hits = measures.hits
-                output.is_success = True
-            else:
-                output.error = "Empty reference after normalization"
-        sample_outputs.append(output)
-        per_sample.append(
-            {
-                "id": output.sample_id,
-                "is_success": output.is_success,
-                "wer": output.wer if output.is_success else None,
-                "ref_text": output.target_text,
-                "hyp_text": output.whisper_text,
-                "ref_norm": output.ref_norm,
-                "hyp_norm": output.hyp_norm,
-                "audio_duration_s": output.audio_duration_s,
-                "latency_s": output.latency_s,
-                "error": output.error,
-            }
-        )
-
-    wer_summary = calculate_wer_metrics(sample_outputs, lang)
-    # note (Yue Yin): gate + tune-ci-thresholds read summary.corpus_wer
-    wer_summary["corpus_wer"] = wer_summary["wer_corpus"]
-
-    asr_speed = calculate_asr_speed_metrics(sample_outputs, wall_time_s=wall_clock_s)
-    # note (Yue Yin): compute_speed_metrics supplies rtf_p95 (the asr metrics omit it)
-    perf = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
-    speed = {
-        **asr_speed,
-        "asr_model": model_path,
-        "asr_concurrency": concurrency,
-        "asr_rtf_p95": perf.get("rtf_p95"),
-        # note (Yue Yin): plain calibration keys read by tune-ci-thresholds + gate
-        "throughput_samples_per_s": asr_speed["asr_throughput_samples_per_s"],
-        "latency_mean_s": asr_speed["asr_latency_mean_s"],
-        "latency_median_s": asr_speed["asr_latency_median_s"],
-        "latency_p95_s": asr_speed["asr_latency_p95_s"],
-        "latency_p99_s": asr_speed["asr_latency_p99_s"],
-        "rtf_mean": asr_speed["asr_rtf_mean"],
-        "rtf_median": asr_speed["asr_rtf_median"],
-        "rtf_p95": perf.get("rtf_p95"),
-    }
-    return {"summary": wer_summary, "speed": speed, "per_sample": per_sample}
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:

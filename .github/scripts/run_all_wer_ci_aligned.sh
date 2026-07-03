@@ -89,9 +89,6 @@ setup_omni_env "${LOG}"
 run_one mmmu_talker_wer "${LOG}" \
     pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py::test_mmmu_talker_wer -v -s
 
-run_one videoamme_talker_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py::test_videoamme_talker_wer -v -s
-
 run_one videomme_talker_wer "${LOG}" \
     pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py::test_videomme_talker_wer -v -s
 

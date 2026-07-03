@@ -21,6 +21,9 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
+from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
+from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +64,6 @@ def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
     )
 
 
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
-
-
 def _load_codec(checkpoint_dir: str, device: str):
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
@@ -92,12 +87,11 @@ def _load_codec(checkpoint_dir: str, device: str):
 
 
 def load_state(payload: StagePayload) -> S2ProState:
-    return S2ProState.from_dict(payload.data)
+    return _load_pipeline_state(payload, S2ProState)
 
 
 def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
-    payload.data = state.to_dict()
-    return payload
+    return _store_pipeline_state(payload, state)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +262,7 @@ def create_sglang_tts_engine_executor(
         **overrides,
     )
     server_args.disable_overlap_schedule = True
-    if getattr(server_args, "attention_backend", None) is None:
+    if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
 
     want_cuda_graph, (
@@ -305,7 +299,7 @@ def create_sglang_tts_engine_executor(
         model_buffer_bs=_resolve_s2pro_model_buffer_bs(model_worker.model_runner.model),
     )
 
-    if bool(getattr(server_args, "enable_torch_compile", False)):
+    if bool(server_args.enable_torch_compile):
         _compile_s2pro_codebook_decoder(
             model_worker.model_runner.model,
             max_batch_size=server_args.torch_compile_max_bs,

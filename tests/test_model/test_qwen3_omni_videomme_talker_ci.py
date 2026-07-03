@@ -35,7 +35,7 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_e
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
+from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
@@ -61,18 +61,18 @@ SHORT_ANSWER_PROMPT = (
 )
 
 VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0434
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.04
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
+VIDEOMME_TALKER_N_ABOVE_50_MAX = 1.0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.693,
-        "output_tok_per_req_s": 2.7,
-        "latency_mean_s": 17.648,
-        "rtf_mean": 1.8265,
+        "throughput_qps": 0.887,
+        "output_tok_per_req_s": 3.2,
+        "latency_mean_s": 13.059,
+        "rtf_mean": 1.5125,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
@@ -99,13 +99,13 @@ class _TalkerEvalArtifacts:
 
 @pytest.fixture(scope="module")
 def talker_eval_artifacts(
-    qwen3_omni_talker_server: ManagedRouterHandle,
+    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videomme_audio"))
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_talker_server.port,
+        port=qwen3_omni_bf16_disagg_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
@@ -121,7 +121,7 @@ def talker_eval_artifacts(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_talker_server,
+        qwen3_omni_bf16_disagg_server,
         label="Qwen3-Omni Video-MME Talker",
     ) as router_guard:
         results = asyncio.run(
@@ -148,11 +148,11 @@ def talker_eval_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
-    qwen3_omni_talker_server: ManagedRouterHandle,
+    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
     talker_eval_artifacts: _TalkerEvalArtifacts,
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
-    qwen3_omni_talker_server.stop()
+    qwen3_omni_bf16_disagg_server.stop()
     wait_for_gpu_memory_release()
     return talker_eval_artifacts
 

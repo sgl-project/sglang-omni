@@ -6,12 +6,13 @@ from typing import Annotated, Literal, NoReturn
 import typer
 import yaml
 
-from sglang_omni.config import PipelineConfig
+from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 
 logger = logging.getLogger(__name__)
 
@@ -479,10 +480,51 @@ def _validate_colocated_gpu_override(
         )
 
 
+def _stage_tp_gpu_ids(stage: StageConfig) -> list[int]:
+    gpu = stage.gpu
+    if gpu is None:
+        return []
+    if isinstance(gpu, int):
+        return [gpu]
+    return [int(g) for g in gpu]
+
+
+def _gate_custom_all_reduce_on_topology(
+    stage: object,
+    updates: dict[str, object],
+    *,
+    gpu_ids: tuple[int, ...],
+    should_disable: bool,
+) -> dict[str, object]:
+    """Relax a TP ``disable_custom_all_reduce=True`` override on a P2P-capable topology.
+
+    The config-level overrides disable custom all-reduce for every TP thinker.
+    Custom (P2P/NVLink) all-reduce is faster than NCCL and safe when the TP GPUs
+    form a P2P mesh, so re-enable it when the caller's topology probe confirms one
+    (``should_disable`` is False); otherwise keep it disabled. SGLang still performs
+    its own communicator support checks during worker startup before using the
+    custom all-reduce path.
+    """
+    if updates.get("disable_custom_all_reduce") is not True or should_disable:
+        return updates
+    refined = dict(updates)
+    refined["disable_custom_all_reduce"] = False
+    logger.info(
+        "Enabling custom all-reduce for stage '%s': GPUs %s form a P2P mesh",
+        stage.name,
+        list(gpu_ids),
+    )
+    return refined
+
+
 def _apply_tensor_parallel_server_args_overrides(
     pipeline_config: PipelineConfig,
 ) -> None:
     config_cls = type(pipeline_config)
+    topology_gated_custom_ar_stages = (
+        config_cls.topology_gated_custom_all_reduce_stages()
+    )
+    topology_gated_custom_ar_cache: dict[tuple[int, ...], bool] = {}
     for stage in pipeline_config.stages:
         updates = config_cls.tensor_parallel_server_args_overrides(
             stage_name=stage.name,
@@ -490,6 +532,18 @@ def _apply_tensor_parallel_server_args_overrides(
         )
         if not updates:
             continue
+        if stage.name in topology_gated_custom_ar_stages:
+            gpu_ids = tuple(_stage_tp_gpu_ids(stage))
+            if gpu_ids not in topology_gated_custom_ar_cache:
+                topology_gated_custom_ar_cache[gpu_ids] = (
+                    should_disable_custom_all_reduce_for_gpus(gpu_ids)
+                )
+            updates = _gate_custom_all_reduce_on_topology(
+                stage,
+                updates,
+                gpu_ids=gpu_ids,
+                should_disable=topology_gated_custom_ar_cache[gpu_ids],
+            )
         _apply_stage_server_args_override(
             pipeline_config,
             stage_name=stage.name,

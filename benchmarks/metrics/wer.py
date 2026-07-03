@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -13,11 +13,27 @@ from benchmarks.metrics._format import (
     print_speed_metric_line,
 )
 
-if TYPE_CHECKING:
-    from benchmarks.tasks.tts import SampleOutput
+
+@dataclass
+class SampleOutput:
+    sample_id: str = ""
+    target_text: str = ""
+    whisper_text: str = ""
+    ref_norm: str = ""
+    hyp_norm: str = ""
+    wer: float = 0.0
+    substitutions: int = 0
+    deletions: int = 0
+    insertions: int = 0
+    hits: int = 0
+    audio_duration_s: float = 0.0
+    latency_s: float = 0.0
+    asr_latency_s: float = 0.0
+    is_success: bool = False
+    error: str = ""
 
 
-def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
+def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     """Compute corpus-level WER metrics from per-sample outputs."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
@@ -210,7 +226,7 @@ def print_asr_wer_summary(metrics: dict, model_name: str) -> None:
 
 
 def calculate_asr_speed_metrics(
-    outputs: list["SampleOutput"],
+    outputs: list[SampleOutput],
     *,
     wall_time_s: float | None = None,
 ) -> dict:

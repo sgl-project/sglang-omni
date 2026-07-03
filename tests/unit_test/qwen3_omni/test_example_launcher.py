@@ -65,6 +65,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         gpu_thinker_tp=None,
         relay_backend="shm",
         thinker_max_seq_len=8192,
+        talker_max_seq_len=None,
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
@@ -95,7 +96,11 @@ def mock_launch_server():
 def test_tp2_config_contract(mock_launch_server):
     """tp_size and parallelism.tp must stay in sync for TP=2."""
     args = _make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
-    _launch_speech_server(args)
+    with patch(
+        "sglang_omni.utils.gpu_compat.should_disable_custom_all_reduce_for_gpus",
+        return_value=True,
+    ):
+        _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
     thinker = _stage(config, "thinker")
@@ -106,6 +111,23 @@ def test_tp2_config_contract(mock_launch_server):
     assert (
         thinker.factory_args["server_args_overrides"]["disable_custom_all_reduce"]
         is True
+    )
+
+
+def test_tp2_enables_custom_all_reduce_on_p2p_mesh(mock_launch_server):
+    """A P2P-capable (e.g. NVLink) TP thinker keeps custom all-reduce enabled."""
+    args = _make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
+    with patch(
+        "sglang_omni.utils.gpu_compat.should_disable_custom_all_reduce_for_gpus",
+        return_value=False,
+    ):
+        _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    thinker = _stage(config, "thinker")
+    assert (
+        thinker.factory_args["server_args_overrides"]["disable_custom_all_reduce"]
+        is False
     )
 
 
@@ -138,6 +160,16 @@ def test_mem_fractions_applied(mock_launch_server):
 
     assert thinker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.55
     assert talker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.20
+
+
+def test_talker_max_seq_len_applied(mock_launch_server):
+    args = _make_args(talker_max_seq_len=128)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["talker_max_seq_len"] == 128
 
 
 def test_partial_start_updates_talker_factory_args(mock_launch_server):

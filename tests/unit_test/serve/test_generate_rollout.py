@@ -80,6 +80,7 @@ def test_generate_returns_miles_meta_info() -> None:
 
 def test_generate_returns_omni_rollout_when_present() -> None:
     result = _text_result()
+    result.output_token_logprobs = None
     result.omni_rollout = {
         "version": 1,
         "model_family": "qwen3_omni",
@@ -191,8 +192,28 @@ def test_generate_rejects_missing_logprobs_when_requested() -> None:
         },
     )
 
-    assert resp.status_code == 500
+    assert resp.status_code == 501
     assert "output_token_logprobs" in resp.text
+
+
+def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
+    result = _text_result()
+    result.output_token_logprobs = None
+    result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="higgs-audio"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "sampling_params": {},
+            "output_modalities": ["audio"],
+        },
+    )
+
+    assert resp.status_code == 501
+    assert "return_omni_rollout=true" in resp.text
 
 
 def test_generate_rejects_logprob_length_mismatch() -> None:

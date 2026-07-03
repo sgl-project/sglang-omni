@@ -13,6 +13,7 @@ from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.request_builders import build_higgs_stream_metadata
+from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.utils import EOC_ID, apply_delay_pattern
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
@@ -493,7 +494,14 @@ def test_higgs_model_runner_marks_sampler_finish() -> None:
         finished_reason=None,
         finished=lambda: False,
     )
-    data = SimpleNamespace(req=req, output_codes=[], generation_done=False)
+    data = SimpleNamespace(
+        req=req,
+        output_codes=[],
+        output_logprobs=[],
+        return_omni_rollout=False,
+        return_logprob=False,
+        generation_done=False,
+    )
     result = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(1, 4))
     )
@@ -525,6 +533,9 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
     data = SimpleNamespace(
         req=req,
         output_codes=[],
+        output_logprobs=[],
+        return_omni_rollout=False,
+        return_logprob=False,
         generation_done=False,
         stream_metadata={
             "modality": "audio_codes",
@@ -601,7 +612,14 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
         ),
     )
     req = SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False)
-    data = SimpleNamespace(req=req, output_codes=[], generation_done=False)
+    data = SimpleNamespace(
+        req=req,
+        output_codes=[],
+        output_logprobs=[],
+        return_omni_rollout=False,
+        return_logprob=False,
+        generation_done=False,
+    )
     result = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(1, 4))
     )
@@ -654,7 +672,15 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
         SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False),
     ]
     datas = [
-        SimpleNamespace(req=r, output_codes=[], generation_done=False) for r in reqs
+        SimpleNamespace(
+            req=r,
+            output_codes=[],
+            output_logprobs=[],
+            return_omni_rollout=False,
+            return_logprob=False,
+            generation_done=False,
+        )
+        for r in reqs
     ]
     result = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(n, 4))
@@ -678,6 +704,66 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     assert all(reqs[i].finished_reason is None for i in (0, 1, 2))
 
 
+def test_higgs_model_runner_collects_rollout_logprobs_only_when_requested() -> None:
+    n, k, vocab = 1, 3, 8
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner._outbox = None
+    runner._vocoder_target = "vocoder"
+    logits = torch.randn(n, k, vocab)
+
+    runner.model = SimpleNamespace(
+        modality_head=SimpleNamespace(
+            generate=lambda hidden: logits[: hidden.shape[0]]
+        ),
+        _num_codebooks=k,
+        _cg_row_indices=torch.arange(n),
+        _cg_temperature=torch.ones(n),
+        _cg_top_k_buf=torch.full((n,), K_MAX, dtype=torch.long),
+        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        _cg_active_generation_done=torch.tensor([False]),
+        _cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
+        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
+        _cg_was_done=torch.tensor([False]),
+        _cg_codes_BN=torch.tensor([[2, 3, 4]]),
+        _cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
+        _sampler_pool=SimpleNamespace(
+            delay_count=torch.zeros(n, dtype=torch.int32),
+            eoc_countdown=torch.zeros(n, dtype=torch.int32),
+            generation_done=torch.zeros(n, dtype=torch.bool),
+            step_count=torch.zeros(n, dtype=torch.long),
+            last_codes=torch.zeros((n, k), dtype=torch.long),
+        ),
+    )
+    req = SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False)
+    data = SimpleNamespace(
+        req=req,
+        output_codes=[],
+        output_logprobs=[],
+        return_omni_rollout=True,
+        return_logprob=True,
+        generation_done=False,
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(
+            next_token_logits=torch.zeros(n, 4),
+            hidden_states=torch.zeros(n, 5),
+        )
+    )
+
+    runner._collect_step_outputs_cg(
+        result,
+        SimpleNamespace(batch_size=n),
+        [SimpleNamespace(request_id="req", data=data)],
+    )
+
+    expected = torch.log_softmax(logits, dim=-1).gather(
+        -1, torch.tensor([[[2], [3], [4]]])
+    )
+    assert len(data.output_logprobs) == 1
+    assert torch.allclose(data.output_logprobs[0], expected.squeeze(-1)[0])
+
+
 def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
@@ -692,7 +778,13 @@ def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
         finished_reason=object(),
         finished=lambda: True,
     )
-    data = SimpleNamespace(req=req, output_codes=[], generation_done=True)
+    data = SimpleNamespace(
+        req=req,
+        output_codes=[],
+        return_omni_rollout=False,
+        return_logprob=False,
+        generation_done=True,
+    )
     result = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(1, 4))
     )

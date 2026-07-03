@@ -85,7 +85,7 @@ from benchmarks.metrics.video import (
     print_videomme_accuracy_summary,
 )
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import (
+from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     compute_text_audio_consistency,
 )

@@ -321,7 +321,7 @@ class MingPreprocessor:
     async def __call__(self, payload: StagePayload) -> StagePayload:
         """Process a chat completion request into pipeline state."""
         request = payload.request
-        raw_inputs = request.inputs if hasattr(request, "inputs") else {}
+        raw_inputs = request.inputs
         if isinstance(raw_inputs, list):
             # OpenAI API passes messages list directly as inputs
             messages = raw_inputs

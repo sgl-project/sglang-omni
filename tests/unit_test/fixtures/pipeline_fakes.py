@@ -91,6 +91,27 @@ class FakeRelay:
         self.log.append("relay_close")
 
 
+class DestructiveFakeRelay(FakeRelay):
+    """FakeRelay whose ``get_async`` unlinks the blob after a single read,
+    modeling the SHM backend (``ShmGetOperation`` unlinks on read). A second
+    read of the same key fails -- so this exposes multi-consumer ref-resolve
+    bugs that the non-destructive ``FakeRelay`` cannot.
+    """
+
+    async def get_async(
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
+    ) -> FakeOp:
+        key = str(metadata.get("key", request_id))
+        if key not in self.storage:
+            raise RuntimeError(f"relay blob {key} not found (already consumed)")
+        op = await super().get_async(metadata, dest_tensor, request_id=request_id)
+        del self.storage[key]
+        return op
+
+
 class FakeScheduler:
     def __init__(self, *, fail_start: BaseException | None = None):
         self.inbox: queue.Queue[IncomingMessage] = queue.Queue()

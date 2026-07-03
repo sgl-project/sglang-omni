@@ -19,12 +19,12 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.benchmark_qwen3_asr_concurrency import (
+from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summary
+from benchmarks.tasks.asr import (
+    QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )
-from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summary
-from benchmarks.tasks.tts import QWEN3_ASR_MODEL_PATH
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     launch_managed_router,
@@ -38,13 +38,13 @@ QWEN3_ASR_WARMUP_REQUESTS = QWEN3_ASR_CONCURRENCY * 2
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 1088
 
 # P95 reference values calibrated by tune.py (worst-of-N).
-SEEDTTS_ASR_CORPUS_WER_MAX = 0.014
+SEEDTTS_ASR_CORPUS_WER_MAX = 0.0138
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.2858
-QWEN3_ASR_THROUGHPUT_MIN = 49.781955608635656
-QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.639
-QWEN3_ASR_LATENCY_P95_MAX_S = 0.8901181474560871
-QWEN3_ASR_RTF_MEAN_MAX = 0.1382
-QWEN3_ASR_RTF_P95_MAX = 0.1976
+QWEN3_ASR_THROUGHPUT_MIN = 93.506
+QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.34028885086916166
+QWEN3_ASR_LATENCY_P95_MAX_S = 0.455045491317287
+QWEN3_ASR_RTF_MEAN_MAX = 0.0737
+QWEN3_ASR_RTF_P95_MAX = 0.1018
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1
@@ -167,7 +167,16 @@ def test_qwen3_asr_matches_seedtts_reference_text(
     print_asr_speed_summary(speed, QWEN3_ASR_CI_MODEL_PATH)
 
     results_path = tmp_path_factory.getbasetemp() / "qwen3_asr_results.json"
-    results_path.write_text(json.dumps({"summary": summary, "speed": speed}, indent=2))
+    results_path.write_text(
+        json.dumps(
+            {
+                "summary": summary,
+                "speed": speed,
+                "router_ready_s": qwen3_asr_router_server.router_ready_s,
+            },
+            indent=2,
+        )
+    )
 
     corpus_wer = summary["corpus_wer"]
     throughput_samples_per_s = speed["throughput_samples_per_s"]

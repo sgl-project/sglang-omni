@@ -1,7 +1,8 @@
 name: Omni Cleanup Host
 description: >
-  Reclaim a PR-scoped CI home directory on the self-hosted runner. Model
-  weights under /github/home/.cache/huggingface are never removed.
+  Reclaim an ephemeral CI home directory (run-*) on the self-hosted runner.
+  PR-scoped homes (pr-*) are preserved across pushes and removed on PR close or
+  by runner TTL; do not pass pr-* paths here after normal PR CI runs.
 
 inputs:
   ci-home:

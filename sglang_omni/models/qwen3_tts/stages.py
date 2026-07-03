@@ -24,8 +24,12 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
+from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +41,11 @@ _QWEN_TTS_INSTALL_HINT = (
 
 
 def load_state(payload: StagePayload) -> Qwen3TTSState:
-    return Qwen3TTSState.from_dict(payload.data)
+    return _load_pipeline_state(payload, Qwen3TTSState)
 
 
 def store_state(payload: StagePayload, state: Qwen3TTSState) -> StagePayload:
-    payload.data = state.to_dict()
-    return payload
-
-
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
+    return _store_pipeline_state(payload, state)
 
 
 def _load_qwen3_tts_tokenizer(
@@ -147,19 +142,6 @@ def _audio_to_list(audio: Any) -> list[float]:
         ) from exc
 
 
-def _build_usage(state: Qwen3TTSState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-    usage = {
-        "prompt_tokens": state.prompt_tokens,
-        "completion_tokens": state.completion_tokens,
-        "total_tokens": state.prompt_tokens + state.completion_tokens,
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
-
-
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
     return SimpleScheduler(
@@ -252,7 +234,7 @@ def create_sglang_tts_engine_executor(
         generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
     )
     set_qwen3_tts_preprocessing_context(model=model, wrapper=wrapper)
-    if bool(getattr(server_args, "enable_torch_compile", False)):
+    if bool(server_args.enable_torch_compile):
         _compile_qwen3_tts_backbone(model)
         server_args.enable_torch_compile = False
     if want_cuda_graph:
@@ -340,7 +322,7 @@ def create_vocoder_executor(
         payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
-        usage = _build_usage(state)
+        usage = build_usage(state)
         if usage is not None:
             payload.data["usage"] = usage
         return payload

@@ -54,7 +54,7 @@ def create_sglang_infrastructure(
         server_args.page_size,
     )
 
-    enable_overlap = not getattr(server_args, "disable_overlap_schedule", False)
+    enable_overlap = not server_args.disable_overlap_schedule
 
     prefill_mgr = PrefillManager(
         page_size=server_args.page_size,
@@ -112,7 +112,7 @@ def create_sglang_infrastructure_defer_cuda_graph(
     The caller finishes stage-specific decode setup, then runs
     init_device_graphs() only when this returns that CUDA graphs were requested.
     """
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    want_cuda_graph = not bool(server_args.disable_cuda_graph)
     if want_cuda_graph:
         server_args.disable_cuda_graph = True
     try:

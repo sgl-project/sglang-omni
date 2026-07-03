@@ -674,7 +674,7 @@ class VoxtralTTSAudioTokenizer(nn.Module):
                 self.quantizer.semantic_codebook.embedding_sum = loaded_weight
                 return name
             else:
-                logger.warning("Weight %s not found in audio tokenizer", name)
+                logger.warning(f"Weight {name} not found in audio tokenizer")
                 return name
         param = params_dict[name]
         param.data.copy_(loaded_weight)

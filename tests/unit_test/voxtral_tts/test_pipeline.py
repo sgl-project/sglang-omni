@@ -30,8 +30,6 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
-    assert config.stages[1].factory_args["gpu_id"] == 0
-    assert config.stages[2].factory_args["gpu_id"] == 0
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")

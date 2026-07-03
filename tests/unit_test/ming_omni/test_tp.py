@@ -250,7 +250,8 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
             assert {spec.tp_size for spec in specs} == {2}
             assert specs[0].nccl_port is not None
             assert specs[0].nccl_port == specs[1].nccl_port
-            assert [spec.factory_args["gpu_id"] for spec in specs] == [0, 1]
+            assert all("gpu_id" not in spec.factory_args for spec in specs)
+            assert [spec.factory_arg_defaults["gpu_id"] for spec in specs] == [0, 1]
             assert [spec.factory_args["tp_rank"] for spec in specs] == [0, 1]
             assert {spec.factory_args["tp_size"] for spec in specs} == {2}
             assert specs[0].factory_args["nccl_port"] == specs[0].nccl_port

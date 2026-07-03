@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+
 
 def moss_tts_special_token_defaults(
     audio_vocab_size: int = 1024,
@@ -25,9 +27,10 @@ def moss_tts_special_token_defaults(
 
 
 @dataclass
-class MossTTSState:
+class MossTTSState(PipelineStateBase):
     """Per-request state for MOSS-TTS Delay generation."""
 
+    sample_rate: int = 24000
     text: str = ""
     ref_audio: Any | None = None
     ref_text: str | None = None
@@ -37,20 +40,6 @@ class MossTTSState:
     generation_kwargs: dict[str, Any] = field(default_factory=dict)
     delayed_audio_codes: Any | None = None
     assistant_start_length: int = 0
-    sample_rate: int = 24000
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    engine_time_s: float = 0.0
-
-    @staticmethod
-    def _tensor_to_payload(value: Any) -> Any:
-        try:
-            import torch
-        except ImportError:
-            torch = None
-        if torch is not None and isinstance(value, torch.Tensor):
-            return value.detach().cpu()
-        return value
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -69,17 +58,10 @@ class MossTTSState:
         if self.token_count is not None:
             data["token_count"] = int(self.token_count)
         if self.delayed_audio_codes is not None:
-            data["delayed_audio_codes"] = self._tensor_to_payload(
-                self.delayed_audio_codes
-            )
+            data["delayed_audio_codes"] = self.serialize_value(self.delayed_audio_codes)
         if self.assistant_start_length:
             data["assistant_start_length"] = int(self.assistant_start_length)
-        if self.prompt_tokens:
-            data["prompt_tokens"] = int(self.prompt_tokens)
-        if self.completion_tokens:
-            data["completion_tokens"] = int(self.completion_tokens)
-        if self.engine_time_s:
-            data["engine_time_s"] = float(self.engine_time_s)
+        self.append_usage_fields(data)
         return data
 
     @classmethod

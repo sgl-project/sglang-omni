@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 
+from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -53,6 +54,7 @@ class StageLaunchConfig:
     # Factory
     factory: str = ""
     factory_args: dict[str, Any] = field(default_factory=dict)
+    factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     env_defaults: dict[str, str] = field(default_factory=dict)
 
     # Routing: static next stage(s)
@@ -115,7 +117,6 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
-    gpu_id: int | None = None
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -424,7 +425,7 @@ def _run_process(
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             for stage in stages:
-                if getattr(stage, "_running", False):
+                if stage._running:
                     await stage.stop()
 
     asyncio.run(_start_and_run())
@@ -435,11 +436,7 @@ def _construct_stage(
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
-    gpu_id = spec.relay_config.get("gpu_id")
-    if gpu_id is None:
-        gpu_id = spec.factory_args.get("gpu_id")
-    if gpu_id is None and _factory_args_use_cuda(spec.factory_args):
-        gpu_id = spec.gpu_id
+    gpu_id = spec.gpu_id
     if gpu_id is not None:
         import torch
 
@@ -635,19 +632,17 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    factory_args = resolve_factory_signature_args(
+        factory,
+        spec.factory_args,
+        defaults=spec.factory_arg_defaults,
+    )
     if gpu_id is None:
-        return factory(**spec.factory_args)
+        return factory(**factory_args)
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**spec.factory_args)
-
-
-def _factory_args_use_cuda(factory_args: Mapping[str, Any]) -> bool:
-    for value in factory_args.values():
-        if isinstance(value, str) and value.startswith("cuda"):
-            return True
-    return False
+        return factory(**factory_args)
 
 
 def get_stage_process_env(
@@ -714,11 +709,11 @@ def _prepare_cuda_environment(
 
 
 def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
-    if "gpu_id" in spec.factory_args:
-        spec.factory_args["gpu_id"] = 0
+    spec.gpu_id = 0
+    if "gpu_id" in spec.factory_arg_defaults:
+        spec.factory_arg_defaults["gpu_id"] = 0
     if "gpu_id" in spec.relay_config:
         spec.relay_config["gpu_id"] = 0
-    spec.gpu_id = 0
 
 
 def _process_name(spec: StageWorkerProcessSpec) -> str:

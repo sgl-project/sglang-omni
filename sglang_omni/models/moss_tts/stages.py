@@ -29,6 +29,9 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
+from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -42,12 +45,11 @@ _MOSS_TTS_INSTALL_HINT = (
 
 
 def load_state(payload: StagePayload) -> MossTTSState:
-    return MossTTSState.from_dict(payload.data)
+    return _load_pipeline_state(payload, MossTTSState)
 
 
 def store_state(payload: StagePayload, state: MossTTSState) -> StagePayload:
-    payload.data = state.to_dict()
-    return payload
+    return _store_pipeline_state(payload, state)
 
 
 def _torch_dtype(dtype: str | torch.dtype) -> torch.dtype:
@@ -71,7 +73,7 @@ def _load_moss_processor(
     dtype: str | torch.dtype = "float32",
 ) -> Any:
     checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info("Loading MOSS-TTS processor from %s on %s", checkpoint_dir, device)
+    logger.info(f"Loading MOSS-TTS processor from {checkpoint_dir} on {device}")
     try:
         with moss_transformers_processor_compat():
             processor_cls = load_moss_processor_class(checkpoint_dir)
@@ -93,19 +95,6 @@ def _load_moss_processor(
                 kwargs["dtype"] = _torch_dtype(dtype)
             audio_tokenizer.to(**kwargs)
     return processor
-
-
-def _build_usage(state: MossTTSState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-    usage = {
-        "prompt_tokens": int(state.prompt_tokens),
-        "completion_tokens": int(state.completion_tokens),
-        "total_tokens": int(state.prompt_tokens + state.completion_tokens),
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
 
 
 def create_preprocessing_executor(
@@ -293,7 +282,7 @@ def create_vocoder_executor(
         payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
-        usage = _build_usage(state)
+        usage = build_usage(state)
         if usage is not None:
             payload.data["usage"] = usage
         return payload

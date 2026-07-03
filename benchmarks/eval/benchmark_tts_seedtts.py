@@ -186,10 +186,12 @@ from benchmarks.metrics.performance import (
     compute_speed_metrics,
     print_speed_summary,
 )
-from benchmarks.tasks.tts import (
+from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    MOSS_TTS_TOKEN_COUNT_AUTO,
     QWEN3_ASR_MODEL_PATH,
+)
+from benchmarks.tasks.tts import (
+    MOSS_TTS_TOKEN_COUNT_AUTO,
     build_base_url,
     make_tts_send_fn,
     run_seedtts_similarity,
