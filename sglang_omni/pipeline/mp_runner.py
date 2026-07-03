@@ -123,7 +123,8 @@ def _build_stage_groups(
             name_map=name_map,
             tensor_ref_policies=_build_tensor_ref_policies(stage_cfg, name_map),
             resolve_tensor_refs=(
-                name_map.get(stage_cfg.name, stage_cfg.name) in tensor_ref_consumer_stages
+                name_map.get(stage_cfg.name, stage_cfg.name)
+                in tensor_ref_consumer_stages
             ),
         )
         if tp_size == 1:

@@ -283,6 +283,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
 
 def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs() -> None:
     """TP followers get the unresolved ref; the local scheduler gets the resolved tensor."""
+
     async def _run() -> None:
         relay = FakeRelay()
         tensor = torch.arange(6, dtype=torch.float32)
@@ -334,6 +335,7 @@ def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs() ->
 
 def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob() -> None:
     """The small envelope op completes without waiting on the deferred blob op."""
+
     async def _run() -> None:
         gate = asyncio.Event()
 
