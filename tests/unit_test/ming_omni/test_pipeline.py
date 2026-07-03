@@ -806,6 +806,67 @@ def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     assert result["media_cache_keys"]["video"] == "video:img:abc|vid:def"
 
 
+def test_ming_merge_preserves_unresolved_video_tensor_ref() -> None:
+    """A lazily-externalized video_embeds ref must survive merge unresolved."""
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.merge import build_thinker_inputs
+    from sglang_omni.models.ming_omni.pipeline.next_stage import IMAGE_STAGE
+    from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
+
+    ref = TensorRef(
+        ref_id="req-ming:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        request_id="req-ming",
+        producer_stage="image_encoder",
+        consumer_stage="thinker",
+        path="encoder_outs.image_encoder.video_embeds",
+        shape=(12, 8),
+        dtype="torch.bfloat16",
+        nbytes=12 * 8 * 2,
+        blob_key="req-ming:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        blob_metadata={"relay_info": {}, "tensor_shape": [12, 8]},
+    )
+    state = MingOmniPipelineState()
+    encoder_outs = {IMAGE_STAGE: {"video_embeds": ref.to_dict()}}
+
+    result = build_thinker_inputs(state, encoder_outs)
+
+    video_embeds = result["model_inputs"]["video_embeds"]
+    assert is_tensor_ref_dict(video_embeds)
+    assert video_embeds == ref.to_dict()
+
+
+def test_ming_audio_executor_flattens_embed_batch_dim(monkeypatch) -> None:
+    """Producer emits flat [T', H] embeds so mm_aggregate stays a pure relay."""
+    import torch
+
+    from sglang_omni.models.ming_omni.components import audio_encoder as audio_mod
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE
+    from sglang_omni.models.ming_omni.stages import create_audio_encoder_executor
+    from sglang_omni.proto import StagePayload
+
+    class FakeEncoder:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, **kwargs):
+            return {"audio_embeds": torch.randn(1, 4, 8)}
+
+    monkeypatch.setattr(audio_mod, "MingAudioEncoder", FakeEncoder)
+    scheduler = create_audio_encoder_executor("dummy")
+
+    state = MingOmniPipelineState(
+        encoder_inputs={AUDIO_STAGE: {"audio_feats": torch.randn(1, 4, 16)}},
+    )
+    payload = StagePayload(request_id="req-1", request=None, data=state.to_dict())
+
+    out = scheduler._fn(payload)
+    out_state = MingOmniPipelineState.from_dict(out.data)
+
+    audio_embeds = out_state.encoder_outs[AUDIO_STAGE]["audio_embeds"]
+    assert tuple(audio_embeds.shape) == (4, 8)
+
+
 def test_compute_video_cache_key_changes_with_decode_params() -> None:
     """Different fps/max_frames/pixel limits must produce distinct cache keys.
 

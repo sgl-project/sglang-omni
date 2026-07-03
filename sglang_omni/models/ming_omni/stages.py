@@ -149,6 +149,7 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
 ):
     from sglang_omni.models.ming_omni.components.audio_encoder import MingAudioEncoder
+    from sglang_omni.models.ming_omni.pipeline.merge import flatten_embed_batch_dims
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     model = MingAudioEncoder(model_path=model_path, device=device, dtype=dtype)
@@ -165,7 +166,9 @@ def create_audio_encoder_executor(
             _meta = {"cache_key", "audio_placeholder_loc_lens"}
             model_inputs = {k: v for k, v in inputs.items() if k not in _meta}
             result = model(**model_inputs)
-        state.encoder_outs[AUDIO_STAGE] = result if isinstance(result, dict) else {}
+        state.encoder_outs[AUDIO_STAGE] = (
+            flatten_embed_batch_dims(result) if isinstance(result, dict) else {}
+        )
         state.engine_outputs[AUDIO_STAGE] = state.encoder_outs[AUDIO_STAGE]
         payload.data = state.to_dict()
         return payload
@@ -183,6 +186,7 @@ def create_image_encoder_executor(
     nccl_port: int | None = None,
 ):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+    from sglang_omni.models.ming_omni.pipeline.merge import flatten_embed_batch_dims
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     model = MingImageEncoder(
@@ -205,7 +209,9 @@ def create_image_encoder_executor(
         else:
             model_inputs = {k: v for k, v in inputs.items() if k != "cache_key"}
             result = model(**model_inputs)
-        state.encoder_outs[IMAGE_STAGE] = result if isinstance(result, dict) else {}
+        state.encoder_outs[IMAGE_STAGE] = (
+            flatten_embed_batch_dims(result) if isinstance(result, dict) else {}
+        )
         state.engine_outputs[IMAGE_STAGE] = state.encoder_outs[IMAGE_STAGE]
         payload.data = state.to_dict()
         return payload

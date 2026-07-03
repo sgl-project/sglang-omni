@@ -13,22 +13,28 @@ from sglang_omni.models.ming_omni.io import (
     ThinkerOutput,
 )
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
+from sglang_omni.pipeline.tensor_ref import is_tensor_ref_dict, tensor_ref_numel
 from sglang_omni.proto import StagePayload
 
 
-def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | None:
+def flatten_embed_batch_dims(result: dict[str, Any]) -> dict[str, Any]:
+    """Producer-side [B, T', H] -> [T', H] so mm_aggregate forwards opaquely."""
+    out = dict(result)
+    for key in ("audio_embeds", "image_embeds", "video_embeds"):
+        value = out.get(key)
+        if isinstance(value, torch.Tensor) and value.dim() == 3:
+            out[key] = value.squeeze(0)
+    return out
+
+
+def _non_empty(value: Any) -> bool:
     if value is None:
-        return None
+        return False
+    if is_tensor_ref_dict(value):
+        return tensor_ref_numel(value) > 0
     if isinstance(value, torch.Tensor):
-        return value.to(dtype=dtype) if dtype is not None else value
-    try:
-        return torch.as_tensor(value, dtype=dtype)
-    except Exception:
-        return None
-
-
-def _non_empty(tensor: torch.Tensor | None) -> bool:
-    return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
+        return value.numel() > 0
+    return False
 
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
@@ -81,39 +87,19 @@ def build_thinker_inputs(
         encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
     )
 
-    audio_embeds = (
-        _as_tensor(audio_out.get("audio_embeds"))
-        if isinstance(audio_out, dict)
-        else None
-    )
-    image_embeds = (
-        _as_tensor(image_out.get("image_embeds"))
-        if isinstance(image_out, dict)
-        else None
-    )
-    video_embeds = (
-        _as_tensor(image_out.get("video_embeds"))
-        if isinstance(image_out, dict)
-        else None
-    )
+    audio_embeds = audio_out.get("audio_embeds")
+    image_embeds = image_out.get("image_embeds")
+    video_embeds = image_out.get("video_embeds")
 
     thinker_model_inputs: dict[str, Any] = {}
 
     if _non_empty(audio_embeds):
-        # Flatten: [B, T', H] -> [T', H] (remove batch dim for SGLang injection)
-        if audio_embeds.dim() == 3:
-            audio_embeds = audio_embeds.squeeze(0)
         thinker_model_inputs["audio_embeds"] = audio_embeds
 
     if _non_empty(image_embeds):
-        # Flatten: [B, T', H] -> [T', H] if needed
-        if image_embeds.dim() == 3:
-            image_embeds = image_embeds.squeeze(0)
         thinker_model_inputs["image_embeds"] = image_embeds
 
     if _non_empty(video_embeds):
-        if video_embeds.dim() == 3:
-            video_embeds = video_embeds.squeeze(0)
         thinker_model_inputs["video_embeds"] = video_embeds
 
     media_cache_keys: dict[str, str] = {}
