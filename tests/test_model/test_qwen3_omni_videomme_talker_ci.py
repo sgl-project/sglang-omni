@@ -35,7 +35,7 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_e
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
+from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,

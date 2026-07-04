@@ -31,7 +31,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from benchmarks.metrics.mmsu import print_mmsu_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
+from benchmarks.tasks.asr import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,

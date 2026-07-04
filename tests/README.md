@@ -11,7 +11,7 @@ tests/
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
-│   └── test_qwen3_asr_ci.py
+│   └── test_asr_ci.py
 └── unit_test/
     ├── benchmarks/
     │   └── test_dataset_regressions.py
@@ -19,6 +19,8 @@ tests/
     │   ├── fish_fakes.py
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
+    ├── utils/
+    │   └── test_audio.py
     ├── pipeline/
     │   ├── helpers.py
     │   ├── test_compile.py
@@ -62,6 +64,9 @@ tests/
     ├── qwen3_asr/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── moss_transcribe_diarize/
+    │   ├── test_request_builders.py
+    │   └── test_transcription_adapter.py
     ├── qwen3_tts/
     │   └── test_pipeline.py
     ├── higgs_tts/
@@ -162,7 +167,7 @@ Relevant model CI ownership:
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
-- `test_qwen3_asr_ci.py`: Qwen3-ASR correctness + speed via SGLang Omni
+- `test_asr_ci.py`: Qwen3-ASR correctness + speed via SGLang Omni
   router (`/v1/audio/transcriptions`). Uses the full 1088-sample English
   SeedTTS set; writes `qwen3_asr_results.json` for threshold calibration
   (`qwen3-asr-v1` in `tune-ci-thresholds`). Its stdout uses the same boxed
@@ -270,12 +275,20 @@ that happened to contain an older version of the test.
   - scheduler callable contracts, including sync wrappers and callable objects
     that return awaitables.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests.
+- `unit_test/utils/`: Shared utility tests:
+  - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
+    and mono/channel preservation.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory concurrency defaults
   - single-source audio token length formula used by both processor and
     request builder paths
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
+- `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
+  - request builder audio-source resolution, single-audio enforcement, audio
+    token padding, and default transcribe+diarize prompt injection
+  - verbose_json transcription adapter: architecture-based resolution, special
+    token stripping, and speaker/timestamp segment parsing with fallback.
 - `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
 
   - public CLI/config behavior

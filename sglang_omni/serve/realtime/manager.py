@@ -23,14 +23,14 @@ class RealtimeSessionManager:
             model_name=self.model_name,
         )
         self.sessions[session.session_id] = session
-        logger.info("Realtime session opened: %s", session.session_id)
+        logger.info(f"Realtime session opened: {session.session_id}")
         return session
 
     async def close(self, session_id: str) -> None:
         session = self.sessions[session_id]
         await session.teardown()
         del self.sessions[session_id]
-        logger.info("Realtime session closed: %s", session_id)
+        logger.info(f"Realtime session closed: {session_id}")
 
     def active_sessions(self) -> list[str]:
         return list(self.sessions.keys())

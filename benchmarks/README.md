@@ -176,7 +176,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_qwen3_asr_concurrency.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -196,11 +196,11 @@ and MOSS-TTS. MOSS-TTS additionally supports duration control through
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
 
-`benchmark_qwen3_asr_concurrency.py` is a standalone ASR fan-out sweep (issue
-#646): it transcribes the SeedTTS *reference* clips directly against a running
-Qwen3-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. Use it to measure how ASR concurrency affects throughput,
-latency, and WER for a given workload.
+`benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
+transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
+router and reports WER + speed + per-worker routing balance per concurrency
+level. Use it to measure how ASR concurrency affects throughput, latency, and
+WER for a given workload.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

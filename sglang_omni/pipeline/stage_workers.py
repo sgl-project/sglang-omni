@@ -425,7 +425,7 @@ def _run_process(
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             for stage in stages:
-                if getattr(stage, "_running", False):
+                if stage._running:
                     await stage.stop()
 
     asyncio.run(_start_and_run())

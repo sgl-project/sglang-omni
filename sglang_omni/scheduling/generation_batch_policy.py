@@ -76,23 +76,23 @@ def validate_generation_batch_policy(
 ) -> None:
     errors: list[str] = []
 
-    max_running_requests = _read_positive_int(
-        server_args,
+    max_running_requests = _validate_positive_int(
         "max_running_requests",
+        server_args.max_running_requests,
         errors,
     )
-    cuda_graph_enabled = not bool(getattr(server_args, "disable_cuda_graph", False))
+    cuda_graph_enabled = not bool(server_args.disable_cuda_graph)
 
     cuda_graph_max_bs: int | None = None
     cuda_graph_bs: tuple[int, ...] | None = None
     if cuda_graph_enabled:
-        cuda_graph_max_bs = _read_positive_int(
-            server_args,
+        cuda_graph_max_bs = _validate_positive_int(
             "cuda_graph_max_bs",
+            server_args.cuda_graph_max_bs,
             errors,
             required=True,
         )
-        cuda_graph_bs_value = getattr(server_args, "cuda_graph_bs", None)
+        cuda_graph_bs_value = server_args.cuda_graph_bs
         if cuda_graph_bs_value is None:
             errors.append("cuda_graph_bs must be explicit when CUDA graph is enabled")
         else:
@@ -115,10 +115,10 @@ def validate_generation_batch_policy(
                 f"({cuda_graph_max_bs} < {max_running_requests})"
             )
 
-    torch_compile_enabled = bool(getattr(server_args, "enable_torch_compile", False))
-    torch_compile_max_bs = _read_positive_int(
-        server_args,
+    torch_compile_enabled = bool(server_args.enable_torch_compile)
+    torch_compile_max_bs = _validate_positive_int(
         "torch_compile_max_bs",
+        server_args.torch_compile_max_bs,
         errors,
         required=torch_compile_enabled,
     )
@@ -153,14 +153,13 @@ def validate_generation_batch_policy(
         )
 
 
-def _read_positive_int(
-    obj: Any,
+def _validate_positive_int(
     field: str,
+    value: Any,
     errors: list[str],
     *,
     required: bool = True,
 ) -> int | None:
-    value = getattr(obj, field, None)
     if value is None:
         if required:
             errors.append(f"{field} must be explicit")

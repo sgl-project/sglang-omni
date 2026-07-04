@@ -73,7 +73,7 @@ def _load_moss_processor(
     dtype: str | torch.dtype = "float32",
 ) -> Any:
     checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info("Loading MOSS-TTS processor from %s on %s", checkpoint_dir, device)
+    logger.info(f"Loading MOSS-TTS processor from {checkpoint_dir} on {device}")
     try:
         with moss_transformers_processor_compat():
             processor_cls = load_moss_processor_class(checkpoint_dir)

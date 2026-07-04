@@ -1,7 +1,7 @@
 # Model-specific config for the TTS CI threshold skill.
 #
 # Notes:
-# - Stage 1 (Qwen3-ASR): test_qwen3_asr_ci.py runs in parallel with Higgs
+# - Stage 1 (Qwen3-ASR): test_asr_ci.py runs in parallel with Higgs
 #   stages in the CI DAG and writes the Qwen3-ASR WER/speed baselines.
 #   Uses the same ASR transcribe fan-out as other WER stages
 #   (QWEN3_ASR_WER_CONCURRENCY / DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32).
@@ -39,7 +39,7 @@ name: tts
 description: "TTS CI (Qwen3-ASR + Higgs/MOSS SeedTTS EN)"
 hf_model_id: "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
 hf_model_ids_by_test:
-  test_qwen3_asr_ci.py:
+  test_asr_ci.py:
     - "Qwen/Qwen3-ASR-1.7B"
   test_tts_ci.py:
     - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
@@ -69,10 +69,10 @@ auto_env:
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 # TTS CI stage 1 (Qwen3-ASR) + model-dependent stages share omni venv.
 gpus_per_test:
-  test_qwen3_asr_ci.py: 2
+  test_asr_ci.py: 2
   test_tts_ci.py: 2
 test_globs:
-  - "tests/test_model/test_qwen3_asr_ci.py"
+  - "tests/test_model/test_asr_ci.py"
   - "tests/test_model/test_tts_ci.py"
 extra_env: {}
 pytest_extra_args:
@@ -83,7 +83,7 @@ stage_base_strip_prefix: "test_"
 stage_base_strip_suffix: "_ci"
 stage_base_docs_override: "tts_docs"
 metric_sources:
-  test_qwen3_asr_ci.py:
+  test_asr_ci.py:
     json_file: "qwen3_asr_results.json"
     # discover → expected_samples from SEEDTTS_ASR_CORRECTNESS_SAMPLES
     sample_counts:

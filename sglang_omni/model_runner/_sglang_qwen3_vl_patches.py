@@ -216,8 +216,7 @@ def apply_qwen3_vl_hf_parity_patches() -> None:
         setattr(Qwen3VLMoeVisionModel, _PATCHED_FLAG, True)
 
     logger.info(
-        "Applied rot_pos_emb HF-parity patch to %s.%s "
-        "(see sglang-omni issue #434 for context).",
-        Qwen3VLMoeVisionModel.__module__,
-        Qwen3VLMoeVisionModel.__name__,
+        f"Applied rot_pos_emb HF-parity patch to "
+        f"{Qwen3VLMoeVisionModel.__module__}.{Qwen3VLMoeVisionModel.__name__} "
+        f"(see sglang-omni issue #434 for context).",
     )

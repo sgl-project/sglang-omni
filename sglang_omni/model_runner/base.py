@@ -20,6 +20,7 @@ from sglang_omni.sampling.seed import (
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
+    SchedulerRequest,
     sampled_logprobs_to_list,
 )
 
@@ -35,15 +36,8 @@ def _current_sglang_sampling_backend() -> str | None:
         return None
 
 
-def _rank_shared_unseeded_sampling_seed(request: Any, row_idx: int) -> int:
-    request_id = getattr(request, "request_id", None)
-    if request_id is None:
-        request_id = getattr(getattr(request, "data", None), "request_id", None)
-    if request_id is None:
-        req = getattr(getattr(request, "data", None), "req", None)
-        request_id = getattr(req, "rid", None)
-    if request_id is None:
-        request_id = f"row-{row_idx}"
+def _rank_shared_unseeded_sampling_seed(request: SchedulerRequest, row_idx: int) -> int:
+    request_id = request.request_id or f"row-{row_idx}"
     return derive_sampling_seed("sglang-omni-unseeded-row", request_id)
 
 

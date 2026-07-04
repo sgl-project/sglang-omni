@@ -154,9 +154,11 @@ from benchmarks.metrics.performance import (
     compute_speed_metrics,
     print_speed_summary,
 )
-from benchmarks.tasks.tts import (
+from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
+)
+from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,

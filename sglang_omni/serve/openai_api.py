@@ -19,8 +19,10 @@ Provides the following endpoints:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -89,6 +91,7 @@ from sglang_omni.serve.protocol import (
     RolloutSamplingParams,
     SpeechBatchResponse,
     TranscriptionResponse,
+    TranscriptionUsage,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
     UsageResponse,
@@ -105,6 +108,7 @@ from sglang_omni.serve.speech_errors import (
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import MAX_VOICE_UPLOAD_BYTES, SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
+from sglang_omni.serve.transcription_adapters import resolve_adapter
 
 logger = logging.getLogger(__name__)
 STREAM_DONE_SENTINEL = "[DONE]"
@@ -180,6 +184,7 @@ def create_app(
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    architectures: list[str] | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -219,6 +224,7 @@ def create_app(
     # Store references in app state for access from route handlers
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
+    app.state.architectures = [a for a in (architectures or []) if a]
     app.state.realtime_enabled = enable_realtime
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechRequestValidator(
@@ -1146,7 +1152,7 @@ def _register_speech(app: FastAPI) -> None:
                 reference_descriptors=prepared.reference_descriptors,
                 uploaded_voice=prepared.uploaded_voice,
             )
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             return speech_error_response(
                 bad_request("speech request body must be valid JSON")
             )
@@ -1545,7 +1551,46 @@ def _register_transcriptions(app: FastAPI) -> None:
                     f"{response_format!r}"
                 ),
             )
-        return JSONResponse(content=TranscriptionResponse(text=text).model_dump())
+
+        adapter = resolve_adapter(getattr(app.state, "architectures", None))
+        text = adapter.postprocess_text(text)
+        duration_s = _probe_audio_duration(audio_bytes)
+        usage = (
+            TranscriptionUsage(seconds=math.ceil(duration_s))
+            if duration_s > 0
+            else None
+        )
+        if normalized_response_format == "verbose_json":
+            response = adapter.build_verbose_response(
+                text=text,
+                language=language,
+                audio_duration_s=duration_s,
+            )
+            response.usage = usage
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+        return JSONResponse(
+            content=TranscriptionResponse(text=text, usage=usage).model_dump(
+                exclude_none=True
+            )
+        )
+
+
+def _probe_audio_duration(audio_bytes: bytes) -> float:
+    """Best-effort audio duration (seconds) from raw upload bytes.
+
+    Uses ``soundfile.info`` (metadata only, no full decode; torchaudio removed
+    its ``info`` API in 2.x). Returns 0.0 if the duration cannot be
+    determined; callers treat 0.0 as "unknown".
+    """
+    try:
+        import soundfile as sf
+
+        info = sf.info(io.BytesIO(audio_bytes))
+        if info.samplerate:
+            return max(info.frames / float(info.samplerate), 0.0)
+    except (RuntimeError, ValueError):
+        logger.debug("Could not probe audio duration", exc_info=True)
+    return 0.0
 
 
 def build_transcription_generate_request(

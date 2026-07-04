@@ -65,11 +65,11 @@ def _find_available_port(host: str, port: int) -> int:
             return port
     except OSError:
         pass
-    logger.warning("Port %d is already in use on %s.", port, host)
+    logger.warning(f"Port {port} is already in use on {host}.")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         free_port = s.getsockname()[1]
-    logger.warning("Using port %d instead.", free_port)
+    logger.warning(f"Using port {free_port} instead.")
     return free_port
 
 
@@ -323,8 +323,7 @@ async def _run_server(
         pipeline_config,
     )
     logger.info(
-        "Resolved placement/topology plan: placement=%s",
-        placement_summary,
+        f"Resolved placement/topology plan: placement={placement_summary}",
     )
     logger.info(
         "Pipeline '%s' started (%d GPU(s))",
@@ -348,6 +347,7 @@ async def _run_server(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
+            architectures=[pipeline_config.architecture],
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)

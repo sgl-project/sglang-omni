@@ -203,6 +203,7 @@ class PipelineConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
 

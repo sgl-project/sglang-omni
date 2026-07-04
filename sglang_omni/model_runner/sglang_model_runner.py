@@ -89,6 +89,7 @@ class SGLModelRunner(ModelRunner):
             "Qwen3TTSTalker": "sglang_omni.models.qwen3_tts.sglang_model:Qwen3TTSTalker",
             "MossTTSDelaySGLangModel": "sglang_omni.models.moss_tts.sglang_model:MossTTSDelaySGLangModel",
             "MossTTSLocalSGLangModel": "sglang_omni.models.moss_tts_local.sglang_model:MossTTSLocalSGLangModel",
+            "MossTranscribeDiarizeForConditionalGeneration": "sglang_omni.models.moss_transcribe_diarize.sglang_model:MossTranscribeDiarizeForConditionalGeneration",
             "VoxtralSGLangTTSModel": "sglang_omni.models.voxtral_tts.sglang_model:VoxtralSGLangTTSModel",
             "LLaDA2MoeModelLM": "sglang_omni.models.llada2_uni.components.thinker:LLaDA2MoeModelLM",
             "WhisperForConditionalGeneration": "sglang_omni.models.whisper_asr.sglang_model:WhisperForConditionalGeneration",
@@ -101,7 +102,7 @@ class SGLModelRunner(ModelRunner):
                     importlib.import_module(module_path), attr
                 )
             except Exception as exc:
-                logger.warning("sglang-omni: skipping model %s (%s)", arch, exc)
+                logger.warning(f"sglang-omni: skipping model {arch} ({exc})")
 
         try:
             from sglang_omni.models.ming_omni.registration import (
@@ -112,7 +113,7 @@ class SGLModelRunner(ModelRunner):
             register_ming_hf_config()
             register_ming_model_registry()
         except Exception as exc:
-            logger.warning("sglang-omni: skipping Ming-Omni registration (%s)", exc)
+            logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.

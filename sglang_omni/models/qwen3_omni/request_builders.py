@@ -49,7 +49,9 @@ def _resolve_seed(params: dict[str, Any]) -> int | None:
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
-    metadata = getattr(request, "metadata", None)
+    if request is None:
+        return None
+    metadata = request.metadata
     if not isinstance(metadata, dict):
         return None
     modalities = metadata.get("output_modalities")

@@ -144,7 +144,7 @@ def apply_gpu_compat_env_defaults(
     overrides = get_gpu_compat_env_defaults(target_env)
     for key, value in overrides.items():
         target_env[key] = value
-        logger.info("Applied GPU compatibility env override: %s=%s", key, value)
+        logger.info(f"Applied GPU compatibility env override: {key}={value}")
     return overrides
 
 
@@ -200,10 +200,7 @@ def gpu_ids_support_p2p_mesh(
         return True
     except Exception as exc:
         logger.warning(
-            "NVML P2P mesh query failed for gpus=%s: %s; "
-            "keeping custom all-reduce disabled",
-            ids,
-            exc,
+            f"NVML P2P mesh query failed for gpus={ids}: {exc}; keeping custom all-reduce disabled",
         )
         return None
     finally:

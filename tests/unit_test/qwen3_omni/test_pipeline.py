@@ -638,7 +638,9 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
 
-    server_args = SimpleNamespace(disable_cuda_graph=False)
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False, enable_return_hidden_states=False
+    )
     infrastructure_saw_graph_disabled: list[bool] = []
     capture_hidden_layers_seen: list[list[int] | None] = []
     init_graph_calls = 0
@@ -712,7 +714,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert infrastructure_saw_graph_disabled == [expected_infrastructure_graph_disabled]
     assert capture_hidden_layers_seen == [expected_capture_hidden_layers]
     assert init_graph_calls == expected_init_graph_calls
-    assert getattr(server_args, "enable_return_hidden_states", False) is speech_enabled
+    assert server_args.enable_return_hidden_states is speech_enabled
     assert server_args.disable_cuda_graph is False
     assert scheduler.server_args is server_args
 

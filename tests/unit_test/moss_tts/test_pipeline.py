@@ -155,6 +155,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
             max_running_requests=kwargs["max_running_requests"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             cuda_graph_bs=kwargs["cuda_graph_bs"],
+            enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs.get("torch_compile_max_bs"),
         )
 

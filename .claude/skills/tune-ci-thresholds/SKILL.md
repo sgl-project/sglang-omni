@@ -688,7 +688,7 @@ python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
 
 `test-tts-ci.yaml` DAG: **`stage-1-qwen3-asr` is independent**; `stage-2-non-streaming`
 and `stage-3-streaming` run in parallel; `stage-4-consistency` `needs`
-[stage-2, stage-3]. So `test_qwen3_asr_ci.py` runs in parallel with the Higgs
+[stage-2, stage-3]. So `test_asr_ci.py` runs in parallel with the Higgs
 stages. Full `--model tts --stages ALL` calibration
 **must** include the Qwen3-ASR stages — never calibrate Higgs thresholds alone
 while leaving Qwen3-ASR on stale literals.
