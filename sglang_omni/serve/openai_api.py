@@ -476,7 +476,7 @@ async def send_voice_upload_too_large(
 
 
 def register_metrics(app: FastAPI) -> None:
-    @app.get("/metrics")
+    @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
         """Prometheus-compatible metrics endpoint."""
         omni_metrics: OmniPrometheusMetrics = app.state.omni_metrics

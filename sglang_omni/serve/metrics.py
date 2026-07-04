@@ -43,7 +43,10 @@ GAUGE_FAMILIES = (
     MetricFamily(
         "sglang_omni_pipeline_tracked_requests",
         "gauge",
-        "Number of requests tracked by the Omni coordinator health snapshot.",
+        (
+            "Number of currently tracked requests according to the Omni "
+            "coordinator health snapshot."
+        ),
     ),
     MetricFamily(
         "sglang_omni_pipeline_pending_completions",
@@ -69,7 +72,11 @@ HTTP_REQUESTS_FAMILY = MetricFamily(
 HTTP_DURATION_FAMILY = MetricFamily(
     "sglang_omni_http_request_duration_seconds",
     "histogram",
-    "HTTP request handler duration in seconds for the Omni API server.",
+    (
+        "HTTP handler duration in seconds for the Omni API server. "
+        "For streaming responses, this does not represent full end-to-end "
+        "stream duration."
+    ),
 )
 METRIC_FAMILIES = (*GAUGE_FAMILIES, HTTP_REQUESTS_FAMILY, HTTP_DURATION_FAMILY)
 GAUGE_FAMILY_NAMES = frozenset(family.name for family in GAUGE_FAMILIES)
@@ -132,8 +139,10 @@ class OmniPrometheusMetrics:
                     {"model_name": self.model_name, "state": state_label},
                     state_value,
                 )
-        else:
+        elif "total_requests" in info:
             tracked_requests = _float_or_zero(info.get("total_requests"))
+        else:
+            tracked_requests = 0.0
 
         self._set_gauge(
             "sglang_omni_pipeline_tracked_requests",

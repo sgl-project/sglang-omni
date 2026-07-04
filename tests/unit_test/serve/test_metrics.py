@@ -215,3 +215,30 @@ def test_metrics_instances_do_not_share_state() -> None:
     assert 'model_name="second-model"' not in first_metrics
     assert 'model_name="second-model"' in second_metrics
     assert 'model_name="first-model"' not in second_metrics
+
+
+def test_rendered_metrics_are_parseable_when_prometheus_client_is_available() -> None:
+    prometheus_parser = pytest.importorskip("prometheus_client.parser")
+    metrics = OmniPrometheusMetrics(model_name="moss-tts-local-v15")
+
+    metrics.update_from_health(MetricsClient().health())
+    metrics.observe_http_request(
+        method="GET",
+        route="/health",
+        status="200",
+        duration_seconds=0.01,
+    )
+
+    families = list(
+        prometheus_parser.text_string_to_metric_families(metrics.render_text())
+    )
+    family_names = {family.name for family in families}
+    sample_names = {
+        sample.name
+        for family in families
+        for sample in getattr(family, "samples", ())
+    }
+
+    assert "sglang_omni_pipeline_running" in family_names
+    assert "sglang_omni_http_requests_total" in sample_names
+    assert "sglang_omni_http_request_duration_seconds_bucket" in sample_names

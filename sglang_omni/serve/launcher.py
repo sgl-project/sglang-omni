@@ -656,7 +656,9 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
-        enable_metrics: If True, expose the Prometheus /metrics endpoint.
+        enable_metrics: If True, expose the Omni API/coordinator Prometheus
+            /metrics endpoint. This does not enable or aggregate
+            underlying SGLang stage metrics.
         allowed_local_media_path: Directory that local media references in TTS
             requests must resolve inside. ``file://`` references are disabled
             when omitted; bare local paths remain allowed by default but are
