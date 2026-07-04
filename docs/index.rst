@@ -107,3 +107,4 @@ Supported Models
    developer_reference/communication.md
    developer_reference/profiler.md
    developer_reference/rl_admin_control.md
+   developer_reference/ci_runner_capacity.md

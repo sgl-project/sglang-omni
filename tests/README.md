@@ -183,6 +183,9 @@ Relevant model CI ownership:
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
   setup: TTS CI → Qwen3-Omni CI → PR Test (`test.yaml` unit tests). A failure in
   an earlier suite does not skip later ones; only a failed setup blocks the chain.
+  H100 queue delays are controlled by GitHub Actions runner-worker capacity,
+  not only by GPU idleness; see
+  `docs/developer_reference/ci_runner_capacity.md`.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
