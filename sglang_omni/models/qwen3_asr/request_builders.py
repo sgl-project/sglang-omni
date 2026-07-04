@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
 import time
+import wave
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -44,6 +46,10 @@ _AUDIO_START = "<|audio_start|>"
 _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_END = "<|audio_end|>"
 _ASR_TEXT = "<asr_text>"
+
+
+class _UnsupportedPCMFastPath(Exception):
+    pass
 
 
 @dataclass
@@ -77,9 +83,93 @@ def load_audio(source: Any) -> np.ndarray:
     if isinstance(source, bytearray):
         source = bytes(source)
 
+    soundfile_source: Any
+    audio: torch.Tensor | None = None
+    if isinstance(source, bytes):
+        try:
+            audio_np, sample_rate = _read_pcm_wav_bytes(source)
+        except (wave.Error, EOFError, _UnsupportedPCMFastPath):
+            soundfile_source = io.BytesIO(source)
+        else:
+            audio = _audio_numpy_to_tensor(audio_np)
+    elif isinstance(source, (str, os.PathLike)):
+        soundfile_source = source
+    else:
+        raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
+
+    if audio is None:
+        try:
+            audio_np, sample_rate = _read_audio_with_soundfile(soundfile_source)
+        except Exception:
+            audio, sample_rate = _load_audio_with_torchaudio(source)
+        else:
+            audio = _audio_numpy_to_tensor(audio_np)
+
+    if sample_rate != _SAMPLE_RATE:
+        audio = torchaudio.functional.resample(audio, sample_rate, _SAMPLE_RATE)
+    return np.ascontiguousarray(audio.cpu().numpy(), dtype=np.float32)
+
+
+def _audio_numpy_to_tensor(audio_np: np.ndarray) -> torch.Tensor:
+    if audio_np.ndim == 2:
+        audio_np = audio_np.mean(axis=1)
+    return torch.from_numpy(np.ascontiguousarray(audio_np, dtype=np.float32))
+
+
+def _read_pcm_wav_bytes(source: bytes) -> tuple[np.ndarray, int]:
+    with wave.open(io.BytesIO(source), "rb") as wav_file:
+        num_channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        num_frames = wav_file.getnframes()
+        frames = wav_file.readframes(num_frames)
+
+    if num_channels < 1 or sample_rate <= 0:
+        raise _UnsupportedPCMFastPath("invalid PCM WAV metadata")
+    if sample_width not in (1, 2, 3, 4):
+        raise _UnsupportedPCMFastPath(f"unsupported PCM sample width: {sample_width}")
+    if len(frames) % sample_width != 0:
+        raise EOFError
+
+    num_samples = len(frames) // sample_width
+    if num_samples % num_channels != 0:
+        raise EOFError
+
+    if sample_width == 1:
+        audio = (
+            np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0
+        ) / 128.0
+    elif sample_width == 2:
+        audio = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    elif sample_width == 3:
+        raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        values = raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)
+        values = np.where(values & 0x800000, values - 0x1000000, values)
+        audio = values.astype(np.float32) / 8388608.0
+    else:
+        audio = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2147483648.0
+
+    if num_channels > 1:
+        audio = audio.reshape(-1, num_channels)
+    return np.ascontiguousarray(audio, dtype=np.float32), sample_rate
+
+
+def _read_audio_with_soundfile(source: Any) -> tuple[np.ndarray, int]:
+    import soundfile as sf
+
+    return sf.read(
+        source,
+        dtype="float32",
+        always_2d=False,
+    )
+
+
+def _load_audio_with_torchaudio(source: Any) -> tuple[torch.Tensor, int]:
+    import torchaudio
+
     if isinstance(source, bytes):
         audio, sample_rate = torchaudio.load(io.BytesIO(source))
-    elif isinstance(source, str):
+    elif isinstance(source, (str, os.PathLike)):
         audio, sample_rate = torchaudio.load(source)
     else:
         raise ValueError(f"Unsupported Qwen3-ASR audio input: {type(source).__name__}")
@@ -87,9 +177,7 @@ def load_audio(source: Any) -> np.ndarray:
     if audio.ndim == 2 and audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)
     audio = audio.squeeze(0).to(torch.float32)
-    if sample_rate != _SAMPLE_RATE:
-        audio = torchaudio.functional.resample(audio, sample_rate, _SAMPLE_RATE)
-    return audio.cpu().numpy()
+    return audio, sample_rate
 
 
 def _audio_fingerprint(audio: np.ndarray) -> str:
