@@ -146,6 +146,15 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
     --enable-audio --asr-device cuda:0 --asr-concurrency 32
 
+# 7c. Qwen3-Omni — Video-AMME Talker stress (sustained full-chain load)
+python -m benchmarks.eval.benchmark_omni_videoamme_talker_stress \
+    --model qwen3-omni --port 8000 \
+    --repo-id zhaochenyang20/Video_AMME_ci \
+    --max-samples 50 --request-count 150 \
+    --concurrency-levels 8,16,32 --request-rate 1.0 \
+    --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
+    --output-dir results/videoamme_stress
+
 # 8a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
 # For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
 python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -176,6 +185,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_videoamme_talker_stress.py` | Video-AMME Talker sustained-load stress | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_qwen3_asr_concurrency.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
@@ -203,6 +213,15 @@ concurrency level. Use it to measure how ASR concurrency affects throughput,
 latency, and WER for a given workload.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
+
+`benchmark_omni_videoamme_talker_stress.py` reuses the Video-AMME Talker task
+shape but repeats the subset across sustained load stages. It reports the usual
+accuracy and speed summaries plus per-request scheduled/start/finish timing,
+client admission delay, latency/RTF drift, audio return rate, and time-bucket
+summaries. Use it when diagnosing input buildup, stage backlog, or
+thinker/talker/codec2wav imbalance; keep
+`benchmark_omni_videoamme.py --enable-audio` as the shorter correctness and
+WER gate.
 
 ## TTS Quality Evaluation
 
