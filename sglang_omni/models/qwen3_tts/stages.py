@@ -275,9 +275,7 @@ class _Qwen3TTSVocoder(BatchVocoderBase):
     def __init__(self, tokenizer: Any) -> None:
         self._tokenizer = tokenizer
 
-    def prepare_item(
-        self, payload: StagePayload
-    ) -> tuple[Qwen3TTSState, torch.Tensor]:
+    def prepare_item(self, payload: StagePayload) -> tuple[Qwen3TTSState, torch.Tensor]:
         state = load_state(payload)
         if state.audio_codes is None:
             raise RuntimeError("Qwen3-TTS vocoder requires audio_codes from tts_engine")

@@ -213,9 +213,7 @@ class _MossTTSVocoder(BatchVocoderBase):
         self._processor = processor
         self._device = device
 
-    def prepare_item(
-        self, payload: StagePayload
-    ) -> tuple[MossTTSState, torch.Tensor]:
+    def prepare_item(self, payload: StagePayload) -> tuple[MossTTSState, torch.Tensor]:
         state = load_state(payload)
         if state.delayed_audio_codes is None:
             raise RuntimeError("MOSS-TTS vocoder requires delayed_audio_codes")
