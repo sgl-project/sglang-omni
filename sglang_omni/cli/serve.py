@@ -1284,7 +1284,11 @@ def serve(
         typer.Option(
             "--enable-metrics",
             "--enable_metrics",
-            help="Expose the Prometheus-compatible /metrics endpoint.",
+            help=(
+                "Expose the Omni API/coordinator Prometheus-compatible "
+                "/metrics endpoint. This does not enable or aggregate "
+                "underlying SGLang stage metrics."
+            ),
         ),
     ] = False,
     decode_mode: Annotated[
