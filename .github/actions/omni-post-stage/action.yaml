@@ -115,6 +115,21 @@ runs:
         if-no-files-found: ${{ inputs.artifact-if-no-files-found }}
         retention-days: 7
 
+    - name: Persist CI metric audit
+      if: always()
+      shell: bash
+      env:
+        STAGE_LABEL: ${{ inputs.stage-label }}
+        ARTIFACT_SEARCH_ROOT: ${{ inputs.artifact-search-root }}
+        ARTIFACT_PATH_GLOBS: ${{ inputs.artifact-path-globs }}
+        MATCHES_FILE: ${{ steps.collect.outputs.matches_file }}
+      run: |
+        bash .github/scripts/omni_ci_metric_audit_publish.sh \
+          --stage-label "${STAGE_LABEL}" \
+          --matches-file "${MATCHES_FILE}" \
+          --artifact-search-root "${ARTIFACT_SEARCH_ROOT}" \
+          --artifact-path-globs "${ARTIFACT_PATH_GLOBS}"
+
     - name: Kill GPU processes
       shell: bash
       run: |
