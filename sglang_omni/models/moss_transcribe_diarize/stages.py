@@ -58,6 +58,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    enable_encoder_torch_compile: bool = False,
+    encoder_torch_compile_mode: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -115,6 +117,10 @@ def create_sglang_moss_transcribe_diarize_executor(
         model_arch_override="MossTranscribeDiarizeForConditionalGeneration",
     )
 
+    model = model_worker.model_runner.model
+    if enable_encoder_torch_compile:
+        model.compile_audio_encoder(mode=encoder_torch_compile_mode)
+
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
 
@@ -123,7 +129,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
         capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
+        model=model,
     )
     request_builder, result_adapter = make_moss_transcribe_diarize_scheduler_adapters(
         processor=processor,

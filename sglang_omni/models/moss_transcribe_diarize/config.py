@@ -30,6 +30,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 "max_running_requests": 16,
                 "request_build_max_workers": 2,
                 "request_build_max_pending": 16,
+                "enable_encoder_torch_compile": False,
             },
             gpu=0,
             terminal=True,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
@@ -83,6 +84,33 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             prefix=add_prefix("model.language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._audio_encoder_compiled = False
+
+    def compile_audio_encoder(
+        self,
+        *,
+        mode: str | None = None,
+        dynamic: bool = True,
+    ) -> None:
+        if self._audio_encoder_compiled:
+            return
+
+        from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+        set_torch_compile_config()
+        compile_mode = mode or os.environ.get("SGLANG_TORCH_COMPILE_MODE", "default")
+        self.whisper_encoder = torch.compile(
+            self.whisper_encoder,
+            mode=compile_mode,
+            dynamic=dynamic,
+        )
+        self._audio_encoder_compiled = True
+        logger.info(
+            "Compiled MOSS-Transcribe-Diarize Whisper encoder "
+            "(mode=%s, dynamic=%s)",
+            compile_mode,
+            dynamic,
+        )
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
