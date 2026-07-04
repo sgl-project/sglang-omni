@@ -60,6 +60,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     enable_torch_compile: bool = False,
     enable_encoder_torch_compile: bool = False,
     encoder_torch_compile_mode: str | None = None,
+    encoder_torch_compile_target: str = "whisper_layers",
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -119,7 +120,10 @@ def create_sglang_moss_transcribe_diarize_executor(
 
     model = model_worker.model_runner.model
     if enable_encoder_torch_compile:
-        model.compile_audio_encoder(mode=encoder_torch_compile_mode)
+        model.compile_audio_encoder(
+            mode=encoder_torch_compile_mode,
+            target=encoder_torch_compile_target,
+        )
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
