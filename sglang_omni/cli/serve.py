@@ -1279,6 +1279,14 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
+    enable_metrics: Annotated[
+        bool,
+        typer.Option(
+            "--enable-metrics",
+            "--enable_metrics",
+            help="Expose the Prometheus-compatible /metrics endpoint.",
+        ),
+    ] = False,
     decode_mode: Annotated[
         str | None,
         typer.Option(
@@ -1504,6 +1512,7 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        enable_metrics=enable_metrics,
         allowed_local_media_path=_validate_allowed_local_media_path(
             allowed_local_media_path
         ),
