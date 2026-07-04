@@ -417,9 +417,8 @@ tts_wer:
   group: wer
   extra_env: {}
   context_vars:
-    - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: f118b29d905975eb11c2c83cd5ed90bdf94d04b5c267b36d1f924ac8d7c4c909
+  test_file_sha256: 0190ac8527e0d28dd444b05b708738c95d8fbbdca372e6a02d9e7503a7a5f1dc
   last_discovered_at: 2026-06-27T11:49:15Z
   expected_samples: 50
   sample_counts:
@@ -450,15 +449,42 @@ tts_wer:
         scale: 1
         digits: 0
       status: OK
+tts_similarity:
+  test: tests/test_model/test_qwen3_omni_tts_ci.py
+  title: "TTS Similarity"
+  group: similarity
+  extra_env: {}
+  context_vars:
+    - CONCURRENCY
+  test_file_sha256: 0190ac8527e0d28dd444b05b708738c95d8fbbdca372e6a02d9e7503a7a5f1dc
+  last_discovered_at: 2026-06-27T11:49:15Z
+  expected_samples: 20
+  sample_counts:
+    total:
+      json_file: "vc_nonstream0/voice_copy_margin_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "vc_nonstream0/voice_copy_margin_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    similarity_margin:
+      source: "VC_SIMILARITY_MARGIN_MIN"
+      json_file: "vc_nonstream0/voice_copy_margin_results.json"
+      json_path: "summary.speaker_similarity_margin_mean"
+      worst: min
+      display:
+        label: "Speaker sim margin"
+        scale: 1
+        digits: 4
+      status: OK
 tts_utmos:
   test: tests/test_model/test_qwen3_omni_tts_ci.py
   title: "TTS Utmos"
   group: utmos
   extra_env: {}
   context_vars:
-    - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: f118b29d905975eb11c2c83cd5ed90bdf94d04b5c267b36d1f924ac8d7c4c909
+  test_file_sha256: 0190ac8527e0d28dd444b05b708738c95d8fbbdca372e6a02d9e7503a7a5f1dc
   last_discovered_at: 2026-06-27T11:49:15Z
   expected_samples: 50
   sample_counts:
@@ -485,9 +511,8 @@ tts_speed:
   group: speed
   extra_env: {}
   context_vars:
-    - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: f118b29d905975eb11c2c83cd5ed90bdf94d04b5c267b36d1f924ac8d7c4c909
+  test_file_sha256: 0190ac8527e0d28dd444b05b708738c95d8fbbdca372e6a02d9e7503a7a5f1dc
   last_discovered_at: 2026-06-27T11:49:15Z
   expected_samples: 50
   sample_counts:

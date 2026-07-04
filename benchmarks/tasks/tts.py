@@ -154,6 +154,7 @@ class SeedttsSimilarityConfig(Protocol):
     meta: str
     lang: str
     output_dir: str
+    max_samples: int | None
     device: str
     similarity_checkpoint: str | None
 

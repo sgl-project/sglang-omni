@@ -24,6 +24,7 @@ from benchmarks.eval.benchmark_omni_seedtts import (
     run_omni_seedtts_benchmark,
 )
 from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.voice_copy_margin import compute_seedtts_voice_copy_margin
 from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
@@ -51,6 +52,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 CONCURRENCY = 16
 MAX_SAMPLES = 50
+SIMILARITY_MARGIN_MAX_SAMPLES = 20
 # Optional user override: a path to a custom fine-tuned WavLM checkpoint.
 # When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
 # auto-downloads the official weights into the shared cache directory.
@@ -74,6 +76,11 @@ VC_N_ABOVE_50_MAX = 0.0
 # five with the standard slack margin. See the "Speaker similarity
 # calibration" section of the PR description for the per-run numbers.
 VC_SIMILARITY_MEAN_MIN = 60.0
+# note (luojiaxuan): This is intentionally a margin floor, not a naked
+# similarity floor. H200 worst-of-5 on SeedTTS-50 EN first 20 was negative
+# (worst=-1.7332, mean=-1.3416), so this is only a regression floor and not
+# evidence that voice-copy is better than no-copy.
+VC_SIMILARITY_MARGIN_MIN = -1.7333
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
 VC_UTMOS_MEAN_REFERENCE = 4.2388
@@ -108,15 +115,18 @@ def _run_benchmark(
     port: int,
     meta: str,
     output_dir: str,
+    *,
+    voice_clone: bool = True,
+    max_samples: int = MAX_SAMPLES,
 ) -> dict:
     config = OmniSeedttsBenchmarkConfig(
         model="qwen3-omni",
         port=port,
         meta=meta,
         output_dir=output_dir,
-        max_samples=MAX_SAMPLES,
+        max_samples=max_samples,
         max_concurrency=CONCURRENCY,
-        voice_clone=True,
+        voice_clone=voice_clone,
     )
     speed_results = asyncio.run(run_omni_seedtts_benchmark(config))
     assert (
@@ -183,6 +193,7 @@ def _run_similarity(
     output_dir: str,
     checkpoint_path: str | None,
     *,
+    max_samples: int | None = None,
     device: str = "cuda:0",
 ) -> dict:
     """Compute SeedTTS speaker similarity in CI (mirrors WER subprocess pattern)."""
@@ -202,6 +213,8 @@ def _run_similarity(
     ]
     if checkpoint_path is not None:
         cmd += ["--similarity-checkpoint", checkpoint_path]
+    if max_samples is not None:
+        cmd += ["--max-samples", str(max_samples)]
 
     env = no_proxy_env()
     existing = env.get("PYTHONPATH", "")
@@ -350,6 +363,7 @@ class _SpeedArtifacts:
     """
 
     output_dir: str
+    no_copy_output_dir: str
     summary: dict
     per_request: list
 
@@ -362,6 +376,7 @@ def speed_artifacts(
 ) -> _SpeedArtifacts:
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
+    no_copy_output_dir = str(tmp_path_factory.mktemp("vc_nocopy"))
     try:
         workers = router_get_json(qwen3_omni_bf16_colocated_server.port, "/workers")
         print_worker_snapshot("initial /workers snapshot", workers)
@@ -377,11 +392,20 @@ def speed_artifacts(
             dataset_repo,
             output_dir,
         )
+        no_copy_results = _run_benchmark(
+            qwen3_omni_router_server.port,
+            dataset_repo,
+            no_copy_output_dir,
+            voice_clone=False,
+            max_samples=SIMILARITY_MARGIN_MAX_SAMPLES,
+        )
+        assert no_copy_results.get("per_request"), "No-copy margin run produced no rows"
     except Exception:
         print_router_diagnostics(qwen3_omni_bf16_colocated_server)
         raise
     return _SpeedArtifacts(
         output_dir=output_dir,
+        no_copy_output_dir=no_copy_output_dir,
         summary=results["summary"],
         per_request=results["per_request"],
     )
@@ -448,7 +472,7 @@ def test_voice_cloning_non_streaming(
             "router worker traffic",
             assert_workers_served_requests,
             final_workers,
-            min_total_requests=MAX_SAMPLES,
+            min_total_requests=MAX_SAMPLES + SIMILARITY_MARGIN_MAX_SAMPLES,
         )
         checks.assert_all()
     except Exception:
@@ -482,45 +506,52 @@ def test_voice_cloning_wer(
 @pytest.mark.benchmark
 def test_voice_cloning_similarity(
     wer_audio_dir: str,
+    speed_artifacts: _SpeedArtifacts,
     dataset_repo: str,
     similarity_checkpoint: str | None,
 ) -> None:
-    """Speaker similarity for Qwen3-Omni voice-clone output.
-
-    Quality gating against ``VC_SIMILARITY_MEAN_MIN`` is intentionally
-    DISABLED while upstream issue sgl-project/sglang-omni#483 is open:
-    Qwen3-Omni currently emits a default voice (multimodal prompt
-    features do not reach talker prefill ``input_embeds``), so a
-    50-sample EN dry-run measures SIM mean ~3 vs ~64 for S2-Pro on the
-    same samples.
-
-    The test still runs and persists ``similarity_results.json`` so the
-    metric tracks longitudinally and will catch the day #483 is fixed.
-    Once #483 lands, swap the structural assert below back to
-    ``_assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)``.
-    """
-    results = _run_similarity(
+    """Gate voice-copy quality by paired similarity margin over no-copy."""
+    copy_results = _run_similarity(
         dataset_repo,
         wer_audio_dir,
         similarity_checkpoint,
+        max_samples=SIMILARITY_MARGIN_MAX_SAMPLES,
     )
-    # Structural sanity only — quality gate disabled per docstring above.
-    # `skipped == 0` is a structural assertion (generation succeeded and WAVs
-    # are on disk), not a voice-quality gate, so it stays enabled even while
-    # #483 keeps the similarity-mean assertion soft.
-    summary = results.get("summary", {})
-    checks = MetricCheckCollector("Qwen3-Omni speaker similarity structure")
+    no_copy_results = _run_similarity(
+        dataset_repo,
+        speed_artifacts.no_copy_output_dir,
+        similarity_checkpoint,
+        max_samples=SIMILARITY_MARGIN_MAX_SAMPLES,
+    )
+    margin_results = compute_seedtts_voice_copy_margin(
+        copy_results,
+        no_copy_results,
+        output_dir=wer_audio_dir,
+    )
+
+    summary = margin_results.get("summary", {})
+    checks = MetricCheckCollector("Qwen3-Omni voice-copy similarity margin")
     checks.check(
-        summary.get("speaker_similarity_mean") is not None,
-        "Missing speaker_similarity_mean in summary",
+        summary.get("evaluated") == SIMILARITY_MARGIN_MAX_SAMPLES,
+        f"similarity margin evaluated {summary.get('evaluated')} samples "
+        f"!= {SIMILARITY_MARGIN_MAX_SAMPLES}",
     )
     checks.check(
-        bool(results.get("per_sample")),
-        "Expected per-sample speaker similarity results",
+        summary.get("skipped") == 0,
+        f"similarity margin skipped {summary.get('skipped')} samples != 0",
     )
+    margin_mean = summary.get("speaker_similarity_margin_mean")
+    if margin_mean is None:
+        checks.fail("Missing speaker_similarity_margin_mean in summary")
+    else:
+        checks.check(
+            margin_mean >= VC_SIMILARITY_MARGIN_MIN,
+            f"speaker_similarity_margin_mean {margin_mean:.4f} "
+            f"< threshold {VC_SIMILARITY_MARGIN_MIN:.4f}",
+        )
     checks.check(
-        summary.get("skipped", 0) == 0,
-        f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
+        bool(margin_results.get("per_sample")),
+        "Expected per-sample voice-copy margin results",
     )
     checks.assert_all()
 

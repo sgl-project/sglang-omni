@@ -69,6 +69,7 @@ from tests.utils import (
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
+NO_COPY_OUTPUT_DIRS: dict[int, str] = {}
 
 
 _MODEL_NAME, _TTS_CI_PRESET = select_tts_ci_preset()
@@ -144,6 +145,7 @@ def _run_benchmark(
     concurrency: int,
     max_samples: int | None = None,
     stream: bool = False,
+    voice_clone: bool = True,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
@@ -153,6 +155,7 @@ def _run_benchmark(
         concurrency=concurrency,
         max_samples=max_samples,
         stream=stream,
+        voice_clone=voice_clone,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
     )
@@ -285,30 +288,142 @@ def _run_similarity(
     return similarity_results
 
 
-def _assert_similarity_results(
+def _similarity_rows_by_id(results: dict) -> dict[str, float]:
+    rows: dict[str, float] = {}
+    for row in results.get("per_sample") or []:
+        sample_id = row.get("id")
+        similarity = row.get("speaker_similarity")
+        if row.get("is_success") is True and sample_id and similarity is not None:
+            rows[str(sample_id)] = float(similarity)
+    return rows
+
+
+def _build_voice_copy_margin_results(
+    copy_results: dict,
+    no_copy_results: dict,
+) -> dict:
+    copy_rows = _similarity_rows_by_id(copy_results)
+    no_copy_rows = _similarity_rows_by_id(no_copy_results)
+    shared_ids = sorted(set(copy_rows) & set(no_copy_rows))
+    per_sample = [
+        {
+            "id": sample_id,
+            "copy_similarity": copy_rows[sample_id],
+            "no_copy_similarity": no_copy_rows[sample_id],
+            "speaker_similarity_margin": copy_rows[sample_id] - no_copy_rows[sample_id],
+        }
+        for sample_id in shared_ids
+    ]
+
+    copy_summary = copy_results.get("summary") or {}
+    no_copy_summary = no_copy_results.get("summary") or {}
+    total_samples = max(
+        int(copy_summary.get("total_samples") or 0),
+        int(no_copy_summary.get("total_samples") or 0),
+        len(copy_rows),
+        len(no_copy_rows),
+    )
+    skipped = total_samples - len(per_sample)
+    margin_scores = [row["speaker_similarity_margin"] for row in per_sample]
+    copy_scores = [row["copy_similarity"] for row in per_sample]
+    no_copy_scores = [row["no_copy_similarity"] for row in per_sample]
+    summary = {
+        "speaker_similarity_copy_mean": (
+            sum(copy_scores) / len(copy_scores) if copy_scores else None
+        ),
+        "speaker_similarity_no_copy_mean": (
+            sum(no_copy_scores) / len(no_copy_scores) if no_copy_scores else None
+        ),
+        "speaker_similarity_margin_mean": (
+            sum(margin_scores) / len(margin_scores) if margin_scores else None
+        ),
+        "total_samples": total_samples,
+        "evaluated": len(per_sample),
+        "skipped": skipped,
+        "copy_evaluated": copy_summary.get("evaluated"),
+        "copy_skipped": copy_summary.get("skipped"),
+        "no_copy_evaluated": no_copy_summary.get("evaluated"),
+        "no_copy_skipped": no_copy_summary.get("skipped"),
+        "missing_from_copy": sorted(set(no_copy_rows) - set(copy_rows)),
+        "missing_from_no_copy": sorted(set(copy_rows) - set(no_copy_rows)),
+    }
+    return {"summary": summary, "per_sample": per_sample}
+
+
+def _save_voice_copy_margin_results(output_dir: str, results: dict) -> dict:
+    output_path = Path(output_dir) / "voice_copy_margin_results.json"
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    return results
+
+
+def _assert_similarity_margin_results(
     results: dict,
-    min_mean: float,
+    min_margin: float,
     *,
+    expected_samples: int,
     collector: MetricCheckCollector | None = None,
 ) -> None:
-    checks = collector or MetricCheckCollector("speaker similarity")
-    summary = results["summary"]
-    per_sample = results["per_sample"]
-    checks.check(bool(per_sample), "Expected per-sample speaker similarity results")
+    checks = collector or MetricCheckCollector("speaker similarity margin")
+    summary = results.get("summary") or {}
     checks.check(
-        summary.get("skipped", 0) == 0,
-        f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
+        summary.get("evaluated") == expected_samples,
+        f"speaker similarity margin: evaluated={summary.get('evaluated')}, "
+        f"expected {expected_samples}",
     )
-    mean = summary.get("speaker_similarity_mean")
+    checks.check(
+        summary.get("skipped") == 0,
+        f"speaker similarity margin: skipped={summary.get('skipped')} != 0",
+    )
+    mean = summary.get("speaker_similarity_margin_mean")
     if mean is None:
-        checks.fail("Missing speaker_similarity_mean in summary")
+        checks.fail("Missing speaker_similarity_margin_mean in summary")
     else:
         checks.check(
-            mean >= min_mean,
-            f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}",
+            mean >= min_margin,
+            f"speaker_similarity_margin_mean {mean:.4f} < threshold {min_margin:.4f}",
         )
     if collector is None:
         checks.assert_all()
+
+
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
+def test_voice_copy_margin_results_pair_by_sample_id() -> None:
+    copy_results = {
+        "summary": {"total_samples": 3, "evaluated": 2, "skipped": 1},
+        "per_sample": [
+            {"id": "sample-a", "speaker_similarity": 70.0, "is_success": True},
+            {"id": "sample-b", "speaker_similarity": 50.0, "is_success": True},
+            {"id": "sample-c", "speaker_similarity": None, "is_success": False},
+        ],
+    }
+    no_copy_results = {
+        "summary": {"total_samples": 3, "evaluated": 2, "skipped": 1},
+        "per_sample": [
+            {"id": "sample-b", "speaker_similarity": 5.0, "is_success": True},
+            {"id": "sample-d", "speaker_similarity": 7.0, "is_success": True},
+            {"id": "sample-c", "speaker_similarity": None, "is_success": False},
+        ],
+    }
+
+    results = _build_voice_copy_margin_results(copy_results, no_copy_results)
+
+    assert results["summary"]["speaker_similarity_copy_mean"] == 50.0
+    assert results["summary"]["speaker_similarity_no_copy_mean"] == 5.0
+    assert results["summary"]["speaker_similarity_margin_mean"] == 45.0
+    assert results["summary"]["total_samples"] == 3
+    assert results["summary"]["evaluated"] == 1
+    assert results["summary"]["skipped"] == 2
+    assert results["summary"]["missing_from_copy"] == ["sample-d"]
+    assert results["summary"]["missing_from_no_copy"] == ["sample-a"]
+    assert results["per_sample"] == [
+        {
+            "id": "sample-b",
+            "copy_similarity": 50.0,
+            "no_copy_similarity": 5.0,
+            "speaker_similarity_margin": 45.0,
+        }
+    ]
 
 
 def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
@@ -380,6 +495,16 @@ def _load_speed_results(results_path: Path) -> dict:
         speed_results = json.load(f)
     _validate_speed_results_keys(speed_results)
     return speed_results
+
+
+def _resolve_no_copy_output_dir(concurrency: int, copy_output_dir: str) -> str | None:
+    output_dir = NO_COPY_OUTPUT_DIRS.get(concurrency)
+    if output_dir is not None:
+        return output_dir
+    candidate = Path(copy_output_dir).parent / f"vc_nonstream_no_copy_c{concurrency}"
+    if (candidate / "generated.json").exists():
+        return str(candidate)
+    return None
 
 
 def _assert_tts_audio_result_integrity(
@@ -693,6 +818,10 @@ def cleanup_generated_audio_fixture():
             audio_dir = Path(output_dir) / "audio"
             if audio_dir.exists():
                 shutil.rmtree(audio_dir)
+    for output_dir in NO_COPY_OUTPUT_DIRS.values():
+        audio_dir = Path(output_dir) / "audio"
+        if audio_dir.exists():
+            shutil.rmtree(audio_dir)
 
 
 @pytest.fixture(scope="module")
@@ -793,6 +922,39 @@ def test_voice_cloning_non_streaming(
             results=results,
             collector=checks,
         )
+        _print_stage(
+            "TTS no-copy",
+            "non-streaming",
+            concurrency,
+            f"generate {TTS_SIMILARITY_MAX_SAMPLES} WAVs for voice-copy margin",
+        )
+        no_copy_output_dir = _resolve_stage_output_dir(
+            tmp_path, f"vc_nonstream_no_copy_c{concurrency}"
+        )
+        try:
+            no_copy_results = _run_benchmark(
+                router_server.port,
+                dataset_repo,
+                no_copy_output_dir,
+                concurrency=concurrency,
+                max_samples=TTS_SIMILARITY_MAX_SAMPLES,
+                voice_clone=False,
+            )
+        except Exception:
+            print_router_diagnostics(router_server)
+            raise
+        _assert_tts_audio_result_integrity(
+            no_copy_results["summary"],
+            no_copy_results["per_request"],
+            label=f"TTS no-copy non-stream c{concurrency}",
+            collector=checks,
+        )
+        checks.check(
+            len(no_copy_results["per_request"]) == TTS_SIMILARITY_MAX_SAMPLES,
+            f"TTS no-copy non-stream c{concurrency}: generated "
+            f"{len(no_copy_results['per_request'])}/{TTS_SIMILARITY_MAX_SAMPLES}",
+        )
+        NO_COPY_OUTPUT_DIRS[concurrency] = no_copy_output_dir
         checks.assert_all()
 
 
@@ -927,17 +1089,37 @@ def test_voice_cloning_similarity(
             "SIM",
             "non-streaming",
             concurrency,
-            "score speed-stage WAVs",
+            "score voice-copy and no-copy WAVs",
         )
-        results = _run_similarity(
+        copy_output_dir = wer_input_dirs["non_stream"][concurrency]
+        no_copy_output_dir = _resolve_no_copy_output_dir(concurrency, copy_output_dir)
+        if no_copy_output_dir is None:
+            checks.fail(
+                f"TTS no-copy non-streaming output missing for concurrency {concurrency}"
+            )
+            continue
+        copy_results = _run_similarity(
             dataset_repo,
-            wer_input_dirs["non_stream"][concurrency],
+            copy_output_dir,
             similarity_checkpoint,
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
+        no_copy_results = _run_similarity(
+            dataset_repo,
+            no_copy_output_dir,
+            similarity_checkpoint,
+            max_samples=TTS_SIMILARITY_MAX_SAMPLES,
+        )
+        margin_results = _save_voice_copy_margin_results(
+            copy_output_dir,
+            _build_voice_copy_margin_results(copy_results, no_copy_results),
+        )
         if _PRESET.gate_thresholds:
-            _assert_similarity_results(
-                results, _THRESHOLDS.similarity_mean_min, collector=checks
+            _assert_similarity_margin_results(
+                margin_results,
+                _THRESHOLDS.similarity_margin_min,
+                expected_samples=TTS_SIMILARITY_MAX_SAMPLES,
+                collector=checks,
             )
     checks.assert_all()
 

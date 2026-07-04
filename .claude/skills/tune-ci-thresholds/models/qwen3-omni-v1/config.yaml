@@ -210,6 +210,9 @@ metric_sources:
       wer:
         total: "vc_nonstream0/wer_results.json::summary.total_samples"
         ok: "vc_nonstream0/wer_results.json::summary.evaluated"
+      similarity:
+        total: "vc_nonstream0/voice_copy_margin_results.json::summary.total_samples"
+        ok: "vc_nonstream0/voice_copy_margin_results.json::summary.evaluated"
       utmos:
         total: "vc_nonstream0/utmos_results.json::summary.total_samples"
         ok: "vc_nonstream0/utmos_results.json::summary.evaluated"
@@ -224,4 +227,5 @@ metric_sources:
       per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
       wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
       n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"
+      similarity_margin: "vc_nonstream0/voice_copy_margin_results.json::summary.speaker_similarity_margin_mean"
       utmos_mean: "vc_nonstream0/utmos_results.json::summary.utmos_mean"

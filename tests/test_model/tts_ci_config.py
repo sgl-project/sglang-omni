@@ -27,7 +27,7 @@ class TtsCiThresholdPreset:
     stream_speed: dict[int, dict[str, float]]
     wer_corpus: float
     stream_wer_corpus: float
-    similarity_mean_min: float
+    similarity_margin_min: float
     utmos_mean_min: float
 
 
@@ -49,7 +49,7 @@ HIGGS_VC_WER_MAX_CORPUS = 0.0123
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
 HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0131
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.590424118042
+HIGGS_VC_SIMILARITY_MARGIN_MIN = 60.636281912326815
 HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1453
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
@@ -83,7 +83,7 @@ MOSS_VC_WER_MAX_CORPUS = 0.0257
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
 MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0246
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 63.716178512573244
+MOSS_VC_SIMILARITY_MARGIN_MIN = 54.81295958429575
 MOSS_VC_UTMOS_MEAN_REFERENCE = 3.955
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
@@ -115,14 +115,14 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "higgs": TtsCiPreset(
         model=TtsCiModelPreset(
-            model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+            model_path="bosonai/higgs-audio-v3-tts-4b",
         ),
         thresholds=TtsCiThresholdPreset(
             non_stream_speed=HIGGS_VC_NON_STREAM_THRESHOLDS,
             stream_speed=HIGGS_VC_STREAM_THRESHOLDS,
             wer_corpus=HIGGS_VC_WER_CORPUS_THRESHOLD,
             stream_wer_corpus=HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD,
-            similarity_mean_min=HIGGS_VC_SIMILARITY_MEAN_MIN,
+            similarity_margin_min=HIGGS_VC_SIMILARITY_MARGIN_MIN,
             utmos_mean_min=HIGGS_VC_UTMOS_MEAN_MIN,
         ),
     ),
@@ -138,7 +138,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_speed=MOSS_VC_STREAM_THRESHOLDS,
             wer_corpus=MOSS_VC_WER_CORPUS_THRESHOLD,
             stream_wer_corpus=MOSS_VC_STREAM_WER_CORPUS_THRESHOLD,
-            similarity_mean_min=MOSS_VC_SIMILARITY_MEAN_MIN,
+            similarity_margin_min=MOSS_VC_SIMILARITY_MARGIN_MIN,
             utmos_mean_min=MOSS_VC_UTMOS_MEAN_MIN,
         ),
     ),

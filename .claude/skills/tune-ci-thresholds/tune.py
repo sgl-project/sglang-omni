@@ -100,6 +100,7 @@ METRIC_SPECS = {
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
     "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
     "similarity_mean":      dict(worst="min", label="Speaker sim mean",      digits=4, scale=1,   group="similarity"),
+    "similarity_margin":    dict(worst="min", label="Speaker sim margin",    digits=4, scale=1,   group="similarity"),
     "utmos_mean":           dict(worst="min", label="UTMOS mean",            digits=4, scale=1,   group="utmos"),
 }
 _NESTED = {
@@ -145,6 +146,7 @@ _BENCHMARK_PATH_OVERRIDES = {
 _TTS_FIXED_PRESETS = frozenset({
     "SEEDTTS_EN_FULLSET_SAMPLES",
     "TTS_SIMILARITY_MAX_SAMPLES",
+    "SIMILARITY_MARGIN_MAX_SAMPLES",
     "STREAMING_BENCHMARK_MAX_SAMPLES",
 })
 
@@ -162,6 +164,8 @@ def match_metric(name, nested):
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if name == "TTS_MAX_FAILED_REQUESTS" or "MAX_FAILED_REQUESTS" in name:
         return "failed_requests"
+    if "SIMILARITY_MARGIN" in name and name.endswith("_MIN"):
+        return "similarity_margin"
     if "SIMILARITY" in name and name.endswith("_MIN"):
         return "similarity_mean"
     if "UTMOS" in name and name.endswith("_REFERENCE"):
@@ -1110,12 +1114,20 @@ def _expected_samples(
     context_vars: list[str] | None,
 ) -> int | None:
     """Resolve CI sample scope from test-file constants (written to stages.yaml)."""
-    for const_name in context_vars or []:
-        value = _int_constant(tree, const_name)
-        if isinstance(value, int):
-            return value
     if group == "similarity":
-        value = _int_constant(tree, "TTS_SIMILARITY_MAX_SAMPLES")
+        for name in ("SIMILARITY_MARGIN_MAX_SAMPLES", "TTS_SIMILARITY_MAX_SAMPLES"):
+            value = _int_constant(tree, name)
+            if isinstance(value, int):
+                return value
+    if group in ("wer", "speed", "utmos"):
+        for name in ("MAX_SAMPLES", "SEEDTTS_EN_FULLSET_SAMPLES"):
+            value = _int_constant(tree, name)
+            if isinstance(value, int):
+                return value
+    for const_name in context_vars or []:
+        if "CONCURRENCY" in const_name:
+            continue
+        value = _int_constant(tree, const_name)
         if isinstance(value, int):
             return value
     if variant == "stream":
@@ -1125,10 +1137,6 @@ def _expected_samples(
         fullset = _int_constant(tree, "SEEDTTS_EN_FULLSET_SAMPLES")
         if isinstance(fullset, int):
             return fullset
-    if group in ("wer", "speed", "utmos"):
-        value = _int_constant(tree, "SEEDTTS_EN_FULLSET_SAMPLES")
-        if isinstance(value, int):
-            return value
     value = _int_constant(tree, "SEEDTTS_ASR_CORRECTNESS_SAMPLES")
     if isinstance(value, int):
         return value
