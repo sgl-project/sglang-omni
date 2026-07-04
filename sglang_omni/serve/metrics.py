@@ -98,11 +98,15 @@ class OmniPrometheusMetrics:
         self._gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
         self._known_states: set[str] = set()
         self._known_stages: set[str] = set()
-        self._http_requests_total: defaultdict[tuple[str, str, str], float] = defaultdict(
+        self._http_requests_total: defaultdict[tuple[str, str, str], float] = (
+            defaultdict(float)
+        )
+        self._http_duration_count: defaultdict[tuple[str, str], float] = defaultdict(
             float
         )
-        self._http_duration_count: defaultdict[tuple[str, str], float] = defaultdict(float)
-        self._http_duration_sum: defaultdict[tuple[str, str], float] = defaultdict(float)
+        self._http_duration_sum: defaultdict[tuple[str, str], float] = defaultdict(
+            float
+        )
         self._http_duration_buckets: defaultdict[tuple[str, str, float], float] = (
             defaultdict(float)
         )
@@ -225,7 +229,12 @@ class OmniPrometheusMetrics:
             lines.append(
                 _render_sample(
                     "sglang_omni_http_requests_total",
-                    {"method": method, "route": route, "status": status},
+                    {
+                        "method": method,
+                        "model_name": self.model_name,
+                        "route": route,
+                        "status": status,
+                    },
                     self._http_requests_total[(method, route, status)],
                 )
             )
@@ -234,7 +243,11 @@ class OmniPrometheusMetrics:
     def _render_http_duration_samples(self) -> list[str]:
         lines = []
         for method, route in sorted(self._http_duration_count):
-            base_labels = {"method": method, "route": route}
+            base_labels = {
+                "method": method,
+                "model_name": self.model_name,
+                "route": route,
+            }
             for bucket in self.duration_buckets:
                 lines.append(
                     _render_sample(
@@ -300,8 +313,7 @@ def _render_family_header(family: MetricFamily) -> list[str]:
 
 def _render_sample(name: str, labels: Mapping[str, str], value: float) -> str:
     rendered_labels = ",".join(
-        f'{key}="{_escape_label_value(value)}"'
-        for key, value in sorted(labels.items())
+        f'{key}="{_escape_label_value(value)}"' for key, value in sorted(labels.items())
     )
     suffix = f"{{{rendered_labels}}}" if rendered_labels else ""
     return f"{name}{suffix} {_format_value(value)}"

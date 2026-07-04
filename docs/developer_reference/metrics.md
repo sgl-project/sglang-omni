@@ -21,9 +21,8 @@ metrics.
 
 The endpoint intentionally does not expose request IDs, prompts, file paths,
 voice names, or arbitrary user input as Prometheus labels. HTTP request metrics
-also omit `model_name`; an Omni API server process serves one configured model,
-and Prometheus target labels such as `job` and `instance` should identify the
-scrape target.
+include the service-level `model_name` label so Kubernetes deployments with many
+Omni API server replicas can aggregate request rates and latency by model.
 
 The HTTP duration histogram measures request handler duration. For streaming
 responses, it does not represent full end-to-end stream duration.

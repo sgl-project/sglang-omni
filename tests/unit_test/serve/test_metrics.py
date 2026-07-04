@@ -67,8 +67,7 @@ def test_metrics_endpoint_renders_snapshot_when_enabled_and_api_importable() -> 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain")
     assert (
-        'sglang_omni_pipeline_running{model_name="moss-tts-local-v15"} 1.0'
-        in resp.text
+        'sglang_omni_pipeline_running{model_name="moss-tts-local-v15"} 1.0' in resp.text
     )
 
 
@@ -93,10 +92,7 @@ def test_coordinator_snapshot_gauges_reset_missing_state_and_stage() -> None:
     )
     text = metrics.render_text()
 
-    assert (
-        'sglang_omni_pipeline_running{model_name="moss-tts-local-v15"} 1.0'
-        in text
-    )
+    assert 'sglang_omni_pipeline_running{model_name="moss-tts-local-v15"} 1.0' in text
     assert (
         'sglang_omni_pipeline_tracked_requests{model_name="moss-tts-local-v15"} 1.0'
         in text
@@ -143,8 +139,8 @@ def test_histogram_buckets_are_cumulative() -> None:
     assert _http_duration_bucket(le="0.025") + " 1.0" in text
     assert _http_duration_bucket(le="+Inf") + " 1.0" in text
     assert (
-        'sglang_omni_http_request_duration_seconds_count{method="POST",route="/v1/audio/speech"} 1.0'
-        in text
+        'sglang_omni_http_request_duration_seconds_count{method="POST",'
+        'model_name="moss-tts-local-v15",route="/v1/audio/speech"} 1.0' in text
     )
 
 
@@ -188,16 +184,18 @@ def test_http_middleware_records_statuses_routes_and_skips_metrics_scrape() -> N
 
 def _http_duration_bucket(*, le: str) -> str:
     return (
-        'sglang_omni_http_request_duration_seconds_bucket{'
-        f'le="{le}",method="POST",route="/v1/audio/speech"'
+        "sglang_omni_http_request_duration_seconds_bucket{"
+        f'le="{le}",method="POST",model_name="moss-tts-local-v15",'
+        'route="/v1/audio/speech"'
         "}"
     )
 
 
 def _http_requests_total(*, route: str, status: str) -> str:
     return (
-        'sglang_omni_http_requests_total{'
-        f'method="GET",route="{route}",status="{status}"'
+        "sglang_omni_http_requests_total{"
+        f'method="GET",model_name="moss-tts-local-v15",route="{route}",'
+        f'status="{status}"'
         "}"
     )
 
@@ -234,9 +232,7 @@ def test_rendered_metrics_are_parseable_when_prometheus_client_is_available() ->
     )
     family_names = {family.name for family in families}
     sample_names = {
-        sample.name
-        for family in families
-        for sample in getattr(family, "samples", ())
+        sample.name for family in families for sample in getattr(family, "samples", ())
     }
 
     assert "sglang_omni_pipeline_running" in family_names
