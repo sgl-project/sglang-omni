@@ -33,6 +33,12 @@ from sglang_omni.scheduling.sglang_backend import (
 # Note (yichi): Budget for long-form input and let the checkpoint window cap it.
 _LONG_FORM_PROMPT_TOKENS = 72000
 
+# Note (yijiang): Encoder CUDA-graph chunk-count buckets (1 chunk = one 30s audio
+# window). Chunk count depends on audio length (no config field to derive it
+# from). Larger counts will fall back to eager. Overridable via the
+# ``encoder_graph_chunk_buckets``.
+_DEFAULT_ENCODER_GRAPH_CHUNK_BUCKETS = [1, 2, 4, 8, 16, 32]
+
 
 @contextmanager
 def _missing_additional_chat_templates_compat() -> Iterator[None]:
@@ -94,6 +100,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     mem_fraction_static: float | None = 0.80,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    encoder_graph_chunk_buckets: list[int] | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -154,6 +161,13 @@ def create_sglang_moss_transcribe_diarize_executor(
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
+        buckets = (
+            encoder_graph_chunk_buckets
+            if encoder_graph_chunk_buckets is not None
+            else _DEFAULT_ENCODER_GRAPH_CHUNK_BUCKETS
+        )
+        input_feature_len = int(processor.feature_extractor.nb_max_frames)
+        model_worker.model_runner.model.init_encoder_graphs(buckets, input_feature_len)
 
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
 

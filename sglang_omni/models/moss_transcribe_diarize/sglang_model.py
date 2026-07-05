@@ -83,12 +83,36 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             prefix=add_prefix("model.language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._encoder_graph_runner = None
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
+
+    def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
+        """Capture per-chunk-count CUDA graphs for the Whisper encoder.
+
+        Called from the stage factory after the model is on-device and CUDA
+        graphs are enabled. ``input_feature_len`` is the fixed length of the
+        encoder's ``input_features`` time axis for one 30s window
+        (WhisperFeatureExtractor.nb_max_frames).
+        """
+        buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
+        if not buckets:
+            return
+        from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
+            WhisperEncoderCudaGraphRunner,
+        )
+
+        runner = WhisperEncoderCudaGraphRunner(
+            self.whisper_encoder,
+            num_mel_bins=int(self.config.audio_config.num_mel_bins),
+            input_feature_len=int(input_feature_len),
+        )
+        runner.capture(buckets)
+        self._encoder_graph_runner = runner
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
@@ -145,11 +169,18 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             device=input_features.device,
             dtype=torch.long,
         )
-        whisper_features = self.whisper_encoder(
-            input_features,
-            encoder_position_ids,
-            forward_batch,
-        )
+        if self._encoder_graph_runner is not None:
+            whisper_features = self._encoder_graph_runner.run(
+                input_features,
+                encoder_position_ids,
+                forward_batch,
+            )
+        else:
+            whisper_features = self.whisper_encoder(
+                input_features,
+                encoder_position_ids,
+                forward_batch,
+            )
 
         audio_feature_lengths_list = audio_feature_lengths.tolist()
         audio_chunk_mapping_list = audio_chunk_mapping.tolist()
