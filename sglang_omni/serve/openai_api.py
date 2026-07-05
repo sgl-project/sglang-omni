@@ -1608,8 +1608,9 @@ def build_transcription_generate_request(
         params["language"] = language
     if prompt is not None:
         params["prompt"] = prompt
-    if temperature is not None:
-        params["temperature"] = temperature
+    # note (aaron): the client layer fills in the SamplingParams default of 1.0
+    # when this key is absent. 0.0 (greedy) matches the OpenAI API, see issue #959.
+    params["temperature"] = temperature if temperature is not None else 0.0
 
     return GenerateRequest(
         model=model,
