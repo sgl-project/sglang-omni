@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ASR correctness CI for SGLang Omni.
+"""SeedTTS ASR correctness CI for Qwen3-ASR.
 
 The test uses the full English SeedTTS set as the speech corpus. It compares
 normalized transcriptions from the SGLang Omni Qwen3-ASR router against the

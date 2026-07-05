@@ -20,17 +20,21 @@ runs:
     - name: Align CI cache home
       shell: bash
       run: |
-        echo "HOME=${OMNI_CI_HOME}" >> "${GITHUB_ENV}"
+        echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
-        echo "CUDA_CACHE_PATH=${OMNI_CI_HOME}/.nv/ComputeCache" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
         echo "HF_HUB_ENABLE_HF_TRANSFER=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
-        echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
+        # uv cache and the uv-managed CPython interpreter must live on the
+        # persistent /data/omni-ci mount: the venv's bin/python is a symlink into
+        # UV_PYTHON_INSTALL_DIR, so if that dir sat under /github/home (wiped every
+        # job by the runner) the reused venv would break with "python not found".
+        echo "UV_CACHE_DIR=/data/omni-ci/uv-cache" >> "${GITHUB_ENV}"
+        echo "UV_PYTHON_INSTALL_DIR=/data/omni-ci/uv-python" >> "${GITHUB_ENV}"
 
     - name: Restore cache
       shell: bash

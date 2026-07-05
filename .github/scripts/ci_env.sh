@@ -1,12 +1,11 @@
 # Source CI-aligned env for all Omni benchmark tests (unit, Qwen3, TTS, Qwen3-ASR).
 # Matches GitHub Actions omni-setup + tune-ci-thresholds auto_env.
 set -a
+export HOME=/github/home
 export OMNI_CI_HOME="${OMNI_CI_HOME:-/github/home/calibration}"
-export HOME="${OMNI_CI_HOME}"
 export HF_HOME=/github/home/.cache/huggingface
 export MODELSCOPE_CACHE=/github/home/.cache/modelscope
 export XDG_CACHE_HOME="${OMNI_CI_HOME}/.cache"
-export CUDA_CACHE_PATH="${OMNI_CI_HOME}/.nv/ComputeCache"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=0

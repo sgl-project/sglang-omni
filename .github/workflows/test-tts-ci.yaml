@@ -16,71 +16,24 @@ env:
   OMNI_CI_HOME: >-
     ${{ inputs.omni_ci_home != ''
         && inputs.omni_ci_home
-        || format('/github/home/run-{0}', github.run_id) }}
-  QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after PR Test (second suite in the omni-ci sequence:
-# PR Test -> TTS -> Qwen3-Omni). Restores omni only.
+# Invoked by omni-ci.yaml after ASR CI. Restores omni only.
 # DAG:
-#   stage-1-qwen3-asr            (independent)
-#   stage-2-non-streaming --+
-#   stage-3-streaming ------+
-#                           +--> stage-4-consistency
+#   stage-1-non-streaming -> stage-2-streaming -> stage-3-consistency
 
 jobs:
-  stage-1-qwen3-asr:
-    name: stage 1 - Qwen3-ASR correctness
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 30
-    container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
-      options: >-
-        --rm
-        --user 1004:1004
-        -e NVIDIA_VISIBLE_DEVICES=6,7
-        -v /dev/shm:/dev/shm
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Run Qwen3-ASR correctness
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_asr_ci.py -v -s -x
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          HF_HUB_DISABLE_XET: "1"
-          HF_HUB_ENABLE_HF_TRANSFER: "0"
-          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-          QWEN3_ASR_MODEL_PATH: ${{ env.QWEN3_ASR_MODEL_PATH }}
-          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: TTS stage 1 (Qwen3-ASR correctness)
-
-  stage-2-non-streaming:
-    name: stage 2 - non-streaming
+  stage-1-non-streaming:
+    name: stage 1 - non-streaming
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        --user 1004:1004
         -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
@@ -109,7 +62,7 @@ jobs:
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-1-nonstream
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
@@ -128,24 +81,26 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 2 (non-streaming)
+          stage-label: TTS stage 1 (non-streaming)
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
             */similarity_results.json
 
-  stage-3-streaming:
-    name: stage 3 - streaming
+  stage-2-streaming:
+    name: stage 2 - streaming
+    needs: stage-1-non-streaming
+    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        --user 1004:1004
         -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
@@ -165,7 +120,7 @@ jobs:
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-2-stream
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
           TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -183,24 +138,25 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 3 (streaming)
+          stage-label: TTS stage 2 (streaming)
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
 
-  stage-4-consistency:
-    name: stage 4 - consistency
-    needs: [stage-2-non-streaming, stage-3-streaming]
+  stage-3-consistency:
+    name: stage 3 - consistency
+    needs: stage-2-streaming
+    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        --user 1004:1004
         -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
@@ -240,4 +196,4 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 4 (consistency)
+          stage-label: TTS stage 3 (consistency)

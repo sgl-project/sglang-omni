@@ -16,10 +16,6 @@ import torch
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
-)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -185,89 +181,15 @@ def create_generation_executor(
 ) -> Any:
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
-    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
-    from sglang_omni.models.voxtral_tts.request_builders import (
-        make_voxtral_scheduler_adapters,
-    )
-    from sglang_omni.scheduling.bootstrap import (
-        create_sglang_infrastructure_defer_cuda_graph,
-    )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.sglang_backend import (
-        SGLangOutputProcessor,
-        build_sglang_server_args,
+    from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
+        VoxtralTtsEngineBuilder,
     )
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-
-    overrides = build_generation_batch_overrides(
-        max_running_requests=16,
+    return VoxtralTtsEngineBuilder().build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
         server_args_overrides=server_args_overrides,
-        dtype="bfloat16",
-        disable_cuda_graph=False,
-        disable_overlap_schedule=True,
-        decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
-        enable_torch_compile=True,
-        mem_fraction_static=0.85,
-        max_prefill_tokens=8192,
-        sampling_backend="pytorch",
-    )
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=8192,
-        **overrides,
-    )
-
-    if server_args.enable_torch_compile:
-        _enable_inductor_gemm_autotune()
-
-    want_cuda_graph, (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure_defer_cuda_graph(server_args, gpu_id)
-
-    validate_generation_batch_policy(
-        model_name="Voxtral TTS",
-        server_args=server_args,
-    )
-
-    voice_embeddings = _load_voxtral_voice_embeddings(checkpoint_dir, device)
-    model = model_worker.model_runner.model
-    if want_cuda_graph:
-        # Voxtral uses SGLang's native compile path during graph capture.
-        model_worker.model_runner.init_device_graphs()
-
-    request_builder, result_adapter = make_voxtral_scheduler_adapters(
-        model=model,
-        voice_embeddings=voice_embeddings,
-    )
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model,
-    )
-
-    return OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=VoxtralTTSModelRunner(model_worker, output_proc),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
     )
 
 

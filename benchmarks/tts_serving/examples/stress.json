@@ -1,6 +1,6 @@
 {
   "base_url": "http://127.0.0.1:8000",
-  "model_name": "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+  "model_name": "bosonai/higgs-tts-3-4b",
   "test_type": "engine",
   "seed": 0,
   "params": {

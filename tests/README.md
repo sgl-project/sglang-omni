@@ -11,7 +11,8 @@ tests/
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
-│   └── test_asr_ci.py
+│   ├── test_asr_ci_multi_speaker.py
+│   └── test_asr_ci_seedtts.py
 └── unit_test/
     ├── benchmarks/
     │   └── test_dataset_regressions.py
@@ -95,6 +96,9 @@ tests/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   └── test_openai_api.py
+    ├── scheduling/
+    │   ├── test_engine_factory.py
+    │   └── test_pipeline_state.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
     │   ├── test_streaming_vocoder.py
@@ -167,10 +171,15 @@ Relevant model CI ownership:
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
-- `test_asr_ci.py`: Qwen3-ASR correctness + speed via SGLang Omni
+- `test_asr_ci_multi_speaker.py`: MOSS-Transcribe-Diarize multi-speaker
+  ASR/diarization correctness + speed via the managed router at DP=2. It
+  reuses the movies800 benchmark path, writes
+  `moss_transcribe_diarize_results.json`, and enforces calibrated
+  accuracy/speed thresholds generated from `tune-ci-thresholds`.
+- `test_asr_ci_seedtts.py`: Qwen3-ASR correctness + speed via SGLang Omni
   router (`/v1/audio/transcriptions`). Uses the full 1088-sample English
   SeedTTS set; writes `qwen3_asr_results.json` for threshold calibration
-  (`qwen3-asr-v1` in `tune-ci-thresholds`). Its stdout uses the same boxed
+  (`asr` in `tune-ci-thresholds`). Its stdout uses the same boxed
   summary style as the other benchmark stages: `ASR WER Benchmark Result`
   followed by `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
@@ -186,8 +195,9 @@ Relevant model CI ownership:
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
-  setup: TTS CI → Qwen3-Omni CI → PR Test (`test.yaml` unit tests). A failure in
-  an earlier suite does not skip later ones; only a failed setup blocks the chain.
+  setup: PR Test (`test.yaml` unit tests) → ASR CI → TTS CI → Qwen3-Omni CI. A
+  failure in an earlier suite does not skip later ones; only a failed setup
+  blocks the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
@@ -285,6 +295,7 @@ that happened to contain an older version of the test.
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
+  - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
     token padding, and default transcribe+diarize prompt injection
   - verbose_json transcription adapter: architecture-based resolution, special

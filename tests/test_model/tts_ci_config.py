@@ -115,7 +115,7 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "higgs": TtsCiPreset(
         model=TtsCiModelPreset(
-            model_path="boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+            model_path="bosonai/higgs-tts-3-4b",
         ),
         thresholds=TtsCiThresholdPreset(
             non_stream_speed=HIGGS_VC_NON_STREAM_THRESHOLDS,

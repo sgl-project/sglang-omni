@@ -33,9 +33,7 @@ import torchaudio.functional as F_audio
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
-from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-from sglang_omni.models.higgs_tts.request_builders import make_higgs_scheduler_adapters
 from sglang_omni.models.higgs_tts.text_tokenizer import HiggsTokenizerAdapter
 from sglang_omni.models.higgs_tts.utils import (
     apply_delay_pattern,
@@ -43,7 +41,6 @@ from sglang_omni.models.higgs_tts.utils import (
     load_audio_to_24k,
     resolve_checkpoint,
     to_codes_TN,
-    truncate_rope_to_bf16,
 )
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
@@ -57,16 +54,6 @@ from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
-)
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend import (
-    SGLangOutputProcessor,
-    build_sglang_server_args,
-)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
@@ -408,77 +395,19 @@ def create_sglang_tts_engine_executor(
     async_decode_min_batch_size: int = 2,
 ):
     """sglang-backed AR engine for Higgs TTS."""
-    checkpoint_dir = resolve_checkpoint(model_path)
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+    from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
 
-    overrides = build_generation_batch_overrides(
+    return HiggsTtsEngineBuilder(
+        max_new_tokens=max_new_tokens,
         max_running_requests=max_running_requests,
         cuda_graph_max_bs=cuda_graph_max_bs,
-        server_args_overrides=server_args_overrides,
-        disable_cuda_graph=False,
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        dtype="bfloat16",
-        # note (luojiaxuan): Radix cache is namespaced per ref-audio via
-        # Req.extra_key (set in build_sglang_higgs_request); shared -100
-        # placeholder prefixes from different ref audios can't cross-contaminate
-        # the KV tree.
-    )
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=4096,
-        **overrides,
-    )
-    server_args.disable_overlap_schedule = True
-
-    (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure(server_args, gpu_id)
-
-    model = model_worker.model_runner.model
-    truncate_rope_to_bf16(model)
-    validate_generation_batch_policy(
-        model_name="Higgs TTS",
-        server_args=server_args,
-        model_buffer_bs=model.sampler_pool_max_running_requests,
-    )
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model,
-    )
-    model_runner = HiggsTTSModelRunner(model_worker, output_proc)
-    request_builder, result_adapter = make_higgs_scheduler_adapters(
-        model,
-        max_new_tokens_cap=max_new_tokens,
-    )
-
-    scheduler = OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=model_runner,
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        abort_callback=model.reset_request,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+    ).build(
+        model_path,
+        device=device,
+        server_args_overrides=server_args_overrides,
     )
-    model_runner.set_stream_outbox(scheduler.outbox)
-    return scheduler
 
 
 def create_vocoder_executor(

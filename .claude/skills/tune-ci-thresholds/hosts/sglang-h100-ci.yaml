@@ -28,8 +28,9 @@ precheck_checklist:
     files: [wavlm_large.pt, wavlm_large_finetune.pth, .complete]
   omni_ci_home: /github/home/calibration
   tune_py:
+    - "python .claude/skills/tune-ci-thresholds/tune.py --model asr precheck --output-dir /tmp/precheck_asr"
     - "python .claude/skills/tune-ci-thresholds/tune.py --model tts precheck --output-dir /tmp/precheck_tts"
-    - "python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck --output-dir /tmp/precheck_qwen3"
+    - "python .claude/skills/tune-ci-thresholds/tune.py --model omni precheck --output-dir /tmp/precheck_omni"
 
 speaker_similarity_bootstrap:
   warm_cache:
@@ -48,7 +49,7 @@ agent_policy:
   poll_interval_max_s: 120
 
 handoff:
-  goal: "Full CI calibration — tts ALL r5, then qwen3-omni-v1 ALL r5"
+  goal: "Full CI calibration — asr ALL r5, then tts ALL r5, then omni ALL r5"
   speaker_sim_complete: false
   calibration_started: false
   run_dirs: []

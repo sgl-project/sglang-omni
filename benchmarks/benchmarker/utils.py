@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -232,10 +233,12 @@ def managed_omni_server(
     log_file: Path | None,
     max_running_requests: int | None = None,
     cuda_graph_max_bs: int | None = None,
+    mem_fraction_static: float | None = None,
     timeout: int = STARTUP_TIMEOUT,
     wait_for_gpu_release: bool = True,
 ) -> Iterator[None]:
     """Start an ``sglang_omni.cli serve`` process and clean it up on exit."""
+    _ensure_port_available(host, port)
     cmd = [
         sys.executable,
         "-m",
@@ -252,6 +255,8 @@ def managed_omni_server(
         cmd.extend(["--max-running-requests", str(max_running_requests)])
     if cuda_graph_max_bs is not None:
         cmd.extend(["--cuda-graph-max-bs", str(cuda_graph_max_bs)])
+    if mem_fraction_static is not None:
+        cmd.extend(["--mem-fraction-static", str(mem_fraction_static)])
     logger.info(f"Starting server: {' '.join(cmd)}")
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +268,17 @@ def managed_omni_server(
         stop_server(proc)
         if wait_for_gpu_release:
             wait_for_gpu_memory_release()
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    probe_host = "" if host in {"0.0.0.0", "::"} else host
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((probe_host, port))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Port {port} is already in use on {host}; pass a free --port."
+        ) from exc
 
 
 def get_wav_duration(wav_bytes: bytes) -> float:

@@ -1,15 +1,12 @@
 # Model-specific config for the TTS CI threshold skill.
 #
 # Notes:
-# - Stage 1 (Qwen3-ASR): test_asr_ci.py runs in parallel with Higgs
-#   stages in the CI DAG and writes the Qwen3-ASR WER/speed baselines.
-#   Uses the same ASR transcribe fan-out as other WER stages
-#   (QWEN3_ASR_WER_CONCURRENCY / DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32).
-#   Calibrate via `--model tts --stages qwen3_asr` or full `--stages ALL`.
-# - test_tts_ci.py runs the model-dependent TTS stages (nonstream / stream /
-#   in-file consistency) controlled by --tts-stage in CI. Calibration does not
-#   use CI's random model pick. It expands every calibration_preset below and
-#   runs the full test file once per preset per repeat.
+# - ASR CI is calibrated separately via `--model asr`.
+#   This TTS model owns only `test_tts_ci.py` thresholds.
+# - test_tts_ci.py runs the model-dependent TTS stages (nonstream / stream)
+#   controlled by --tts-stage in CI. Calibration does not use CI's random
+#   model pick. It expands every calibration_preset below and runs the full
+#   test file once per preset per repeat.
 # - CI random-pick coverage and calibration coverage are intentionally
 #   different: CI samples one TTS model per commit; calibration must run every
 #   TTS model preset and compute worst-of-N for each.
@@ -36,13 +33,11 @@
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
 #   weights are already present in the configured HF cache.
 name: tts
-description: "TTS CI (Qwen3-ASR + Higgs/MOSS SeedTTS EN)"
-hf_model_id: "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+description: "TTS CI (Higgs/MOSS SeedTTS EN)"
+hf_model_id: "bosonai/higgs-tts-3-4b"
 hf_model_ids_by_test:
-  test_asr_ci.py:
-    - "Qwen/Qwen3-ASR-1.7B"
   test_tts_ci.py:
-    - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+    - "bosonai/higgs-tts-3-4b"
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
@@ -59,7 +54,7 @@ auto_env:
   HF_HOME: "/github/home/.cache/huggingface"
   MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
   XDG_CACHE_HOME: "/github/home/calibration/.cache"
-  HF_ENDPOINT: "https://hf-mirror.com"
+  HF_ENDPOINT: "https://huggingface.co"
   HF_HUB_DISABLE_XET: "1"
   HF_HUB_ENABLE_HF_TRANSFER: "0"
   UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"
@@ -67,12 +62,9 @@ auto_env:
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
-# TTS CI stage 1 (Qwen3-ASR) + model-dependent stages share omni venv.
 gpus_per_test:
-  test_asr_ci.py: 2
   test_tts_ci.py: 2
 test_globs:
-  - "tests/test_model/test_asr_ci.py"
   - "tests/test_model/test_tts_ci.py"
 extra_env: {}
 pytest_extra_args:
@@ -83,20 +75,6 @@ stage_base_strip_prefix: "test_"
 stage_base_strip_suffix: "_ci"
 stage_base_docs_override: "tts_docs"
 metric_sources:
-  test_asr_ci.py:
-    json_file: "qwen3_asr_results.json"
-    # discover → expected_samples from SEEDTTS_ASR_CORRECTNESS_SAMPLES
-    sample_counts:
-      total: "summary.total_samples"
-      ok: "summary.evaluated"
-    paths:
-      corpus_wer: "summary.corpus_wer"
-      per_sample_wer_max: "summary.wer_per_sample_max"
-      throughput_qps: "speed.throughput_samples_per_s"
-      latency_mean_s: "speed.latency_mean_s"
-      latency_p95_s: "speed.latency_p95_s"
-      rtf_mean: "speed.rtf_mean"
-      rtf_p95: "speed.rtf_p95"
   test_tts_ci.py:
     threshold_file: "tests/test_model/tts_ci_config.py"
     calibration_presets:
@@ -107,7 +85,7 @@ metric_sources:
         # discover: only Higgs HIGGS_VC_* constants (never MOSS_VC_*)
         constant_filter: "^HIGGS_VC_"
         hf_model_ids:
-          - "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+          - "bosonai/higgs-tts-3-4b"
           - "Qwen/Qwen3-ASR-1.7B"
       moss:
         extra_env:

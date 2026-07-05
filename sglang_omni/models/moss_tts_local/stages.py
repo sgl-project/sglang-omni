@@ -31,7 +31,6 @@ from sglang_omni.models.moss_tts_local.payload_types import (
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
     cleanup_prepared_moss_tts_local_request,
-    make_moss_tts_local_scheduler_adapters,
     preprocess_moss_tts_local_payload,
     set_moss_tts_local_preprocessing_context,
 )
@@ -41,10 +40,6 @@ from sglang_omni.models.moss_tts_local.streaming_vocoder import (
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
-)
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
@@ -621,140 +616,22 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
 ) -> Any:
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-    from sglang_omni.scheduling.bootstrap import (
-        create_sglang_infrastructure_defer_cuda_graph,
-    )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.sglang_backend import (
-        SGLangOutputProcessor,
-        build_sglang_server_args,
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
     )
 
-    checkpoint_dir = resolve_moss_checkpoint(model_path)
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-
-    stage_defaults: dict[str, Any] = {
-        "dtype": dtype,
-        "disable_cuda_graph": False,
-        "disable_overlap_schedule": True,
-        "enable_torch_compile": False,
-        "max_prefill_tokens": 8192,
-        "sampling_backend": "pytorch",
-        "trust_remote_code": True,
-    }
-    if total_gpu_memory_fraction is None:
-        # note (luojiaxuan): Without a typed stage budget, this path cannot use
-        # process-scoped colocated profiling, so keep the legacy static fraction
-        # for split/custom deployments.
-        stage_defaults["mem_fraction_static"] = (
-            0.6 if torch.cuda.device_count() > 1 else 0.5
-        )
-    overrides = build_generation_batch_overrides(
-        max_running_requests=16,
-        server_args_overrides=server_args_overrides,
-        **stage_defaults,
-    )
-    memory_budget = _apply_colocated_ar_memory_budget(
-        overrides,
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        codec_mem_reserve=codec_mem_reserve,
-    )
-    profile_total_gpu_memory_fraction = (
-        memory_budget.effective_total_gpu_memory_fraction
-    )
-    if profile_total_gpu_memory_fraction is not None:
-        from sglang_omni.utils.gpu_memory import get_process_gpu_memory_bytes
-
-        if get_process_gpu_memory_bytes(gpu_id) is None:
-            logger.warning(
-                f"MOSS-TTS Local colocated process memory accounting is unavailable; "
-                f"falling back to upstream SGLang free-memory profiling. "
-                f"effective_total_gpu_memory_fraction={profile_total_gpu_memory_fraction}"
-            )
-            profile_total_gpu_memory_fraction = None
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=8192,
-        **overrides,
-    )
-
-    logger.info(
-        f"MOSS-TTS Local SGLang startup: gpu_id={gpu_id} "
-        f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
-        f"effective_total_gpu_memory_fraction="
-        f"{memory_budget.effective_total_gpu_memory_fraction} "
-        f"codec_mem_reserve={memory_budget.applied_codec_mem_reserve:.3f} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
-        f"profile_total_gpu_memory_fraction={profile_total_gpu_memory_fraction}"
-    )
-
-    want_cuda_graph, (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure_defer_cuda_graph(
-        server_args,
-        gpu_id,
-        model_arch_override="MossTTSLocalSGLangModel",
-        total_gpu_memory_fraction=profile_total_gpu_memory_fraction,
-    )
-
-    validate_generation_batch_policy(
-        model_name="MOSS-TTS Local",
-        server_args=server_args,
-    )
-
-    model = model_worker.model_runner.model
-    if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
-        # note (luojiaxuan): Also graph the per-frame local-transformer decode
-        # (1 + n_vq micro-steps and 13 seeded sampling passes per frame):
-        # eager it is kernel-launch-bound at ~22 ms/frame independent of batch
-        # size.
-        model.init_frame_decode_graphs(list(server_args.cuda_graph_bs))
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model,
-    )
-    request_builder, result_adapter = make_moss_tts_local_scheduler_adapters(
-        model=model
-    )
-
-    def abort_request(request_id: str) -> None:
-        # Drop any prepared handoff and release any held pool row; both are
-        # idempotent no-ops if the request never reached them.
-        cleanup_prepared_moss_tts_local_request(request_id)
-        model.reset_request(request_id)
-
-    model_runner = MossTTSLocalModelRunner(model_worker, output_proc)
-    scheduler = OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=model_runner,
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        abort_callback=abort_request,
+    return MossTtsLocalEngineBuilder(
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        codec_mem_reserve=codec_mem_reserve,
+    ).build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype,
+        server_args_overrides=server_args_overrides,
     )
-    model_runner.set_stream_outbox(scheduler.outbox)
-    return scheduler
 
 
 def create_tts_engine_executor(*args, **kwargs) -> Any:

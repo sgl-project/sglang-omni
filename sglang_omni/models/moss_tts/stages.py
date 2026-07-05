@@ -20,15 +20,10 @@ from sglang_omni.models.moss_tts.payload_types import (
 )
 from sglang_omni.models.moss_tts.request_builders import (
     cleanup_prepared_moss_tts_request,
-    make_moss_tts_scheduler_adapters,
     preprocess_moss_tts_payload,
     set_moss_tts_preprocessing_context,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
-)
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
@@ -124,82 +119,14 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
-    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-    from sglang_omni.scheduling.bootstrap import (
-        create_sglang_infrastructure_defer_cuda_graph,
-    )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.sglang_backend import (
-        SGLangOutputProcessor,
-        build_sglang_server_args,
-    )
+    from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 
-    checkpoint_dir = resolve_moss_checkpoint(model_path)
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-
-    overrides = build_generation_batch_overrides(
-        max_running_requests=16,
-        server_args_overrides=server_args_overrides,
+    return MossTtsEngineBuilder().build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
-        disable_cuda_graph=False,
-        disable_overlap_schedule=True,
-        enable_torch_compile=False,
-        max_prefill_tokens=8192,
-        sampling_backend="pytorch",
-        trust_remote_code=True,
-    )
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=8192,
-        **overrides,
-    )
-
-    want_cuda_graph, (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure_defer_cuda_graph(
-        server_args,
-        gpu_id,
-        model_arch_override="MossTTSDelaySGLangModel",
-    )
-
-    validate_generation_batch_policy(
-        model_name="MOSS-TTS",
-        server_args=server_args,
-    )
-
-    model = model_worker.model_runner.model
-    if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model,
-    )
-    request_builder, result_adapter = make_moss_tts_scheduler_adapters(model=model)
-
-    return OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=MossTTSModelRunner(model_worker, output_proc),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        abort_callback=cleanup_prepared_moss_tts_request,
+        server_args_overrides=server_args_overrides,
     )
 
 
