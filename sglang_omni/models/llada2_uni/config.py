@@ -12,13 +12,14 @@ _PKG = "sglang_omni.models.llada2_uni"
 PREPROCESSING_STAGE = "preprocessing"
 IMAGE_STAGE = "image_encoder"
 THINKER_STAGE = "thinker"
+IMAGE_DECODE_STAGE = "image_decode"
 DECODE_STAGE = "decode"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
-    """4-stage DLLM pipeline: preprocessing → image_encoder → thinker → decode."""
+    """5-stage DLLM pipeline with optional image token decoding."""
 
     architecture: ClassVar[str] = "LLaDA2MoeModelLM"
 
@@ -49,6 +50,14 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
             process="pipeline",
             factory=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory_args={"thinker_max_seq_len": 8192},
+            gpu=0,
+            next=IMAGE_DECODE_STAGE,
+        ),
+        StageConfig(
+            name=IMAGE_DECODE_STAGE,
+            process="pipeline",
+            factory=f"{_PKG}.stages.create_image_decode_executor",
+            factory_args={"device": "cuda", "dtype": None},
             gpu=0,
             next=DECODE_STAGE,
         ),

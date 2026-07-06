@@ -71,6 +71,7 @@ from sglang_omni.serve.protocol import (
     AdminRequestBase,
     ChatCompletionAudio,
     ChatCompletionChoice,
+    ChatCompletionImage,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionStreamChoice,
@@ -81,6 +82,7 @@ from sglang_omni.serve.protocol import (
     DestroyWeightsUpdateGroupRequest,
     GenerateAudio,
     GenerateFinishReason,
+    GenerateImage,
     GenerateMetaInfo,
     GenerateResponse,
     InitWeightsUpdateGroupRequest,
@@ -701,7 +703,19 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "content" not in message and "audio" not in message:
+    if "image" in requested_modalities and result.images:
+        message["images"] = [
+            ChatCompletionImage(
+                data=image.data,
+                format=image.format,
+                width=image.width,
+                height=image.height,
+                mime_type=image.mime_type,
+            ).model_dump(exclude_none=True)
+            for image in result.images
+        ]
+
+    if "content" not in message and "audio" not in message and "images" not in message:
         message["content"] = result.text
 
     # Build usage
@@ -770,6 +784,10 @@ async def _chat_stream(
                 chunk.modality == "audio"
                 and chunk.audio_b64 is not None
                 and "audio" in requested_modalities
+            ) or (
+                chunk.modality == "image"
+                and bool(chunk.images)
+                and "image" in requested_modalities
             )
             if not has_payload:
                 continue
@@ -798,6 +816,14 @@ async def _chat_stream(
                 id=f"audio-{request_id}",
                 data=chunk.audio_b64,
             )
+            emit = True
+
+        if chunk.modality == "image" and chunk.images and "image" in requested_modalities:
+            delta.images = [
+                ChatCompletionImage(**image)
+                for image in chunk.images
+                if isinstance(image, dict)
+            ]
             emit = True
 
         if not emit:
@@ -896,6 +922,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
+    if req.image:
+        metadata["image_config"] = req.image
     if audios:
         metadata["audios"] = audios
     if images:
@@ -1073,7 +1101,11 @@ def _build_generate_response(
     # logprobs or omni_rollout action logprobs, depending on modality.
     if result.omni_rollout is None and (
         req.return_omni_rollout
-        or (req.return_logprob and result.output_token_logprobs is None)
+        or (
+            req.return_logprob
+            and result.output_token_logprobs is None
+            and not result.images
+        )
     ):
         raise HTTPException(
             status_code=501,
@@ -1099,6 +1131,18 @@ def _build_generate_response(
     audio: GenerateAudio | None = None
     if result.audio is not None:
         audio = GenerateAudio(data=result.audio.data, format=audio_format)
+    images: list[GenerateImage] | None = None
+    if result.images:
+        images = [
+            GenerateImage(
+                data=image.data,
+                format=image.format,
+                width=image.width,
+                height=image.height,
+                mime_type=image.mime_type,
+            )
+            for image in result.images
+        ]
 
     meta_info = GenerateMetaInfo(
         finish_reason=finish_reason,
@@ -1111,7 +1155,12 @@ def _build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text,
+        audio=audio,
+        images=images,
+        meta_info=meta_info,
+    )
 
 
 def _register_realtime(app: FastAPI) -> None:

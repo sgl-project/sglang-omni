@@ -35,6 +35,16 @@ class ChatCompletionAudio(BaseModel):
     transcript: str | None = None
 
 
+class ChatCompletionImage(BaseModel):
+    """Image data returned in a chat completion response."""
+
+    data: str
+    format: str
+    width: int | None = None
+    height: int | None = None
+    mime_type: str | None = None
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -62,6 +72,10 @@ class ChatCompletionRequest(BaseModel):
 
     # Audio output configuration
     audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+
+    # Image output configuration (sglang-omni extension)
+    # e.g. {"width": 1024, "height": 1024, "steps": 16}
+    image: dict[str, Any] | None = None
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
@@ -125,6 +139,7 @@ class ChatCompletionStreamDelta(BaseModel):
     role: str | None = None
     content: str | None = None
     audio: ChatCompletionAudio | None = None
+    images: list[ChatCompletionImage] | None = None
 
 
 class ChatCompletionStreamChoice(BaseModel):
@@ -214,6 +229,16 @@ class GenerateAudio(BaseModel):
     sample_rate: int | None = None
 
 
+class GenerateImage(BaseModel):
+    """Image payload for a rollout generation."""
+
+    data: str
+    format: str
+    width: int | None = None
+    height: int | None = None
+    mime_type: str | None = None
+
+
 class GenerateMetaInfo(BaseModel):
     """Rollout meta_info block."""
 
@@ -232,6 +257,7 @@ class GenerateResponse(BaseModel):
 
     text: str = ""
     audio: GenerateAudio | None = None
+    images: list[GenerateImage] | None = None
     meta_info: GenerateMetaInfo
 
 

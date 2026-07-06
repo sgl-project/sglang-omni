@@ -24,6 +24,7 @@ class LLaDA2UniPipelineState:
     encoder_outs: dict[str, Any] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, Any] = field(default_factory=dict)
+    generation: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> "LLaDA2UniPipelineState":
@@ -33,12 +34,14 @@ class LLaDA2UniPipelineState:
         encoder_outs = data.get("encoder_outs")
         engine_outputs = data.get("engine_outputs")
         thinker_out = data.get("thinker_out")
+        generation = data.get("generation")
         return cls(
             prompt=data.get("prompt"),
             encoder_inputs=encoder_inputs if isinstance(encoder_inputs, dict) else {},
             encoder_outs=encoder_outs if isinstance(encoder_outs, dict) else {},
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=engine_outputs if isinstance(engine_outputs, dict) else {},
+            generation=generation if isinstance(generation, dict) else {},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +56,8 @@ class LLaDA2UniPipelineState:
             data["thinker_out"] = self.thinker_out
         if self.engine_outputs:
             data["engine_outputs"] = self.engine_outputs
+        if self.generation:
+            data["generation"] = self.generation
         return data
 
 

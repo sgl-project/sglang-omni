@@ -22,6 +22,7 @@ from sglang_omni.client.types import (
     AbortResult,
     ClientError,
     CompletionAudio,
+    CompletionImage,
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
@@ -89,6 +90,7 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        images: list[CompletionImage] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
@@ -103,6 +105,8 @@ class Client:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.images:
+                images.extend(_completion_images_from_payload(chunk.images))
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
             if chunk.finish_reason is not None:
@@ -143,6 +147,7 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            images=images,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -182,6 +187,7 @@ class Client:
                 text=chunk.text,
                 modality=chunk.modality,
                 audio_b64=audio_b64,
+                images=list(chunk.images),
                 finish_reason=chunk.finish_reason,
                 usage=chunk.usage,
                 stage_name=chunk.stage_name,
@@ -420,6 +426,17 @@ class Client:
             chunk.sample_rate = sample_rate
 
     @staticmethod
+    def _set_image_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        images = data.get("images")
+        if images is None and data.get("image") is not None:
+            images = [data["image"]]
+        if not images:
+            return
+        chunk.images = [dict(image) for image in images if isinstance(image, dict)]
+        if chunk.images:
+            chunk.modality = "image"
+
+    @staticmethod
     def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
@@ -482,6 +499,7 @@ class Client:
                 if weight_version is not None:
                     chunk.weight_version = weight_version
                 Client._set_audio_data(chunk, audio_result)
+                Client._set_image_data(chunk, decode_result)
                 chunk.usage = Client._build_usage_info(
                     decode_result
                 ) or Client._build_usage_info(audio_result)
@@ -515,6 +533,7 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
+            Client._set_image_data(chunk, result)
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
@@ -576,6 +595,7 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, data)
+            Client._set_image_data(chunk, data)
             return chunk
         if isinstance(data, str):
             chunk.text = data
@@ -633,6 +653,27 @@ def _extract_inputs(request: GenerateRequest) -> Any:
                 result[key] = value
         return result
     return messages
+
+
+def _completion_images_from_payload(
+    images: list[dict[str, Any]],
+) -> list[CompletionImage]:
+    result: list[CompletionImage] = []
+    for image in images:
+        data = image.get("data")
+        image_format = image.get("format")
+        if not isinstance(data, str) or not isinstance(image_format, str):
+            continue
+        result.append(
+            CompletionImage(
+                data=data,
+                format=image_format,
+                width=image.get("width"),
+                height=image.get("height"),
+                mime_type=image.get("mime_type"),
+            )
+        )
+    return result
 
 
 def _build_params(request: GenerateRequest) -> dict[str, Any]:

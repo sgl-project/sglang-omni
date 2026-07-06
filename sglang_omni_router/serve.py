@@ -172,7 +172,7 @@ def resolve_managed_worker_capabilities(
 
     extra_args = shlex.split(launcher_config.worker_extra_args)
     if "--text-only" in extra_args:
-        return set(DEFAULT_CAPABILITIES) - {"speech", "audio_output"}
+        return set(DEFAULT_CAPABILITIES) - {"speech", "audio_output", "image_output"}
 
     return set(DEFAULT_CAPABILITIES)
 

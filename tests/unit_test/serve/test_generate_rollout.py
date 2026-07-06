@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client.types import (
     CompletionAudio,
+    CompletionImage,
     CompletionResult,
     GenerateRequest,
     UsageInfo,
@@ -214,6 +215,47 @@ def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
 
     assert resp.status_code == 501
     assert "return_omni_rollout=true" in resp.text
+
+
+def test_generate_image_response_includes_images_without_logprobs() -> None:
+    result = CompletionResult(
+        request_id="r-img",
+        text="",
+        images=[
+            CompletionImage(
+                data="iVBORw0KGgo=",
+                format="png",
+                width=4,
+                height=2,
+                mime_type="image/png",
+            )
+        ],
+        usage=UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+    )
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="llada2-uni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "draw",
+            "sampling_params": {},
+            "output_modalities": ["image"],
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["images"] == [
+        {
+            "data": "iVBORw0KGgo=",
+            "format": "png",
+            "width": 4,
+            "height": 2,
+            "mime_type": "image/png",
+        }
+    ]
+    assert body["meta_info"]["completion_tokens"] == 2
 
 
 def test_generate_rejects_logprob_length_mismatch() -> None:
