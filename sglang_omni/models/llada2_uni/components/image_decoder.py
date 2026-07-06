@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import logging
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -217,6 +218,15 @@ class LLaDA2ImageDecoder:
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
 
+    def _seed_decode(self, seed: int | None) -> None:
+        if seed is None:
+            return
+        seed = int(seed)
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     def _load_sigvq(self) -> SigVQ:
         if self._sigvq is not None:
             return self._sigvq
@@ -337,6 +347,7 @@ class LLaDA2ImageDecoder:
             create_transport,
         )
 
+        self._seed_decode(seed)
         cap_pos, cap_neg = self._semantic_features(
             token_ids,
             token_grid_h=token_grid_h,
@@ -346,13 +357,9 @@ class LLaDA2ImageDecoder:
 
         th = token_grid_h * 16 * resolution_multiplier
         tw = token_grid_w * 16 * resolution_multiplier
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(seed)
         z = torch.randn(
             [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)],
             device=self.device,
-            generator=generator,
         )
 
         model_fn = _create_decoder_model_fn(

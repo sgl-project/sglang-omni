@@ -32,7 +32,13 @@ try:
 except ImportError:
     _HAS_DISPATCH_ATTENTION = False
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
-from flash_attn import flash_attn_func
+try:
+    from flash_attn import flash_attn_func
+
+    _HAS_FLASH_ATTN = True
+except ImportError:
+    flash_attn_func = None
+    _HAS_FLASH_ATTN = False
 
 ADALN_EMBED_DIM = 256
 SEQ_MULTI_OF = 32
@@ -154,12 +160,20 @@ class ZSingleStreamAttnProcessor:
                 backend=self._attention_backend,
                 parallel_config=self._parallel_config,
             )
-        else:
+        elif _HAS_FLASH_ATTN:
             hidden_states = flash_attn_func(
                 query, key, value,
                 dropout_p=0.0,
                 causal=False,
             )
+        else:
+            hidden_states = F.scaled_dot_product_attention(
+                query.transpose(1, 2),
+                key.transpose(1, 2),
+                value.transpose(1, 2),
+                dropout_p=0.0,
+                is_causal=False,
+            ).transpose(1, 2)
 
         # Reshape back
         hidden_states = hidden_states.flatten(2, 3)

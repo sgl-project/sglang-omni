@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
 import queue as queue_mod
+import sys
 import threading
 from io import BytesIO
+from pathlib import Path
 
 import torch
 from PIL import Image
 
 from sglang_omni.models.llada2_uni.components.image_decoder import (
     DecodedImage,
+    LLaDA2ImageDecoder,
     pil_image_to_bytes,
 )
 from sglang_omni.models.llada2_uni.components.image_token_generator import (
@@ -378,6 +382,39 @@ def test_image_decoder_encodes_png_and_jpeg_bytes() -> None:
     assert jpeg_format == "jpeg"
     assert jpeg_mime == "image/jpeg"
     assert base64.b64encode(png_bytes).decode("ascii")
+
+
+def test_decoder_model_imports_without_flash_attn(monkeypatch) -> None:
+    decoder_model_path = (
+        Path(__file__).parents[3]
+        / "sglang_omni/models/llada2_uni/components/decoder_model.py"
+    )
+    monkeypatch.setitem(sys.modules, "flash_attn", None)
+
+    spec = importlib.util.spec_from_file_location(
+        "llada2_decoder_model_no_flash_attn_test",
+        decoder_model_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._HAS_FLASH_ATTN is False
+    assert module.flash_attn_func is None
+
+
+def test_image_decoder_seed_uses_global_torch_rng() -> None:
+    decoder = object.__new__(LLaDA2ImageDecoder)
+    torch.manual_seed(999)
+
+    decoder._seed_decode(123)
+    seeded_sample = torch.randn(4)
+
+    torch.manual_seed(123)
+    expected_sample = torch.randn(4)
+
+    assert torch.equal(seeded_sample, expected_sample)
 
 
 def test_image_decode_stage_is_lazy_for_text_requests(monkeypatch) -> None:
