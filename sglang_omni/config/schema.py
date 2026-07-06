@@ -199,11 +199,17 @@ class StageConfig(BaseModel):
 
 
 class PipelineConfig(BaseModel):
-    """Top-level pipeline configuration."""
+    """Top-level pipeline configuration.
+
+    Subclasses set ``requires_model_capabilities`` when their model package
+    must export static architecture-level capability metadata.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
+    requires_model_capabilities: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
 
     model_path: str

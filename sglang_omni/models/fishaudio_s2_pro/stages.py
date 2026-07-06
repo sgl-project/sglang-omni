@@ -13,14 +13,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
-from sglang_omni.models.fishaudio_s2_pro.request_builders import (
-    make_tts_scheduler_adapters,
-)
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
-)
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -223,113 +216,19 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
-    from sglang_omni.models.fishaudio_s2_pro.bootstrap import (
-        bootstrap_text_model_for_decode,
-        load_audio_decoder,
-        patch_fish_config_for_sglang,
-        truncate_rope_to_bf16,
-    )
-    from sglang_omni.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
-    from sglang_omni.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
-    from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
-    from sglang_omni.scheduling.bootstrap import (
-        create_sglang_infrastructure_defer_cuda_graph,
-    )
-    from sglang_omni.scheduling.sglang_backend import (
-        SGLangOutputProcessor,
-        build_sglang_server_args,
+    del top_k
+    from sglang_omni.models.fishaudio_s2_pro.engine_builder import (
+        FishS2ProEngineBuilder,
     )
 
-    checkpoint_dir = _resolve_checkpoint(model_path)
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-
-    patch_fish_config_for_sglang()
-
-    overrides = build_generation_batch_overrides(
-        max_running_requests=64,
-        server_args_overrides=server_args_overrides,
-        disable_cuda_graph=False,
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        dtype="bfloat16",
-        enable_torch_compile=True,
-        random_seed=int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
-    )
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=4096,
-        **overrides,
-    )
-    server_args.disable_overlap_schedule = True
-    if server_args.attention_backend is None:
-        server_args.attention_backend = "fa3"
-
-    want_cuda_graph, (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure_defer_cuda_graph(server_args, gpu_id)
-
-    truncate_rope_to_bf16(model_worker.model_runner.model)
-
-    audio_decoder, num_codebooks, codebook_size, tokenizer = load_audio_decoder(
-        checkpoint_dir,
-        device=device,
-    )
-    adapter = S2ProTokenizerAdapter(tokenizer)
-    bootstrap_text_model_for_decode(
-        text_model=model_worker.model_runner.model,
-        audio_decoder=audio_decoder,
-        semantic_begin_id=adapter.semantic_begin_id,
-        semantic_end_id=adapter.semantic_end_id,
-        im_end_token_id=adapter.eos_token_ids[0],
-        max_batch_size=server_args.max_running_requests,
-        num_codebooks=num_codebooks,
-        codebook_size=codebook_size,
-        ras_window=ras_window,
-    )
-    validate_generation_batch_policy(
-        model_name="FishAudio S2-Pro",
-        server_args=server_args,
-        model_buffer_bs=_resolve_s2pro_model_buffer_bs(model_worker.model_runner.model),
-    )
-
-    if bool(server_args.enable_torch_compile):
-        _compile_s2pro_codebook_decoder(
-            model_worker.model_runner.model,
-            max_batch_size=server_args.torch_compile_max_bs,
-        )
-        server_args.enable_torch_compile = False
-
-    if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
-    )
-    request_builder, result_adapter = make_tts_scheduler_adapters(tokenizer=tokenizer)
-
-    scheduler = FishScheduler(
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        server_args=server_args,
-        model_runner=FishS2ProModelRunner(model_worker, output_proc),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        im_end_token_id=adapter.eos_token_ids[0],
+    return FishS2ProEngineBuilder(
         max_new_tokens=max_new_tokens,
+        ras_window=ras_window,
+    ).build(
+        model_path,
+        device=device,
+        server_args_overrides=server_args_overrides,
     )
-    return scheduler
 
 
 # ---------------------------------------------------------------------------

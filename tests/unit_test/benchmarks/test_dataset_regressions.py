@@ -9,6 +9,10 @@ import yaml
 
 from benchmarks.dataset import prepare, seedtts
 
+_MODELS_DIR = (
+    Path(__file__).resolve().parents[3] / ".claude/skills/tune-ci-thresholds/models"
+)
+
 
 class _FakeDataset:
     def __init__(self, rows: list[dict]) -> None:
@@ -189,11 +193,7 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
 
 
 def test_tune_ci_threshold_configs_use_arrow_seedtts_datasets() -> None:
-    models_dir = (
-        Path(__file__).resolve().parents[3] / ".claude/skills/tune-ci-thresholds/models"
-    )
-
-    for config_path in sorted(models_dir.glob("*/config.yaml")):
+    for config_path in sorted(_MODELS_DIR.glob("*/config.yaml")):
         config = yaml.safe_load(config_path.read_text())
         for repo_id in config.get("hf_datasets", []):
             if "seed-tts" not in repo_id:
@@ -201,3 +201,73 @@ def test_tune_ci_threshold_configs_use_arrow_seedtts_datasets() -> None:
             assert repo_id.endswith(
                 "-arrow"
             ), f"{config_path} still points to a non-arrow SeedTTS dataset: {repo_id}"
+
+
+def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
+    config = yaml.safe_load((_MODELS_DIR / "asr/config.yaml").read_text())
+    stages = yaml.safe_load((_MODELS_DIR / "asr/stages.yaml").read_text())
+
+    assert config["test_globs"] == [
+        "tests/test_model/test_asr_ci_multi_speaker.py",
+        "tests/test_model/test_asr_ci_seedtts.py",
+    ]
+    assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
+    assert config["gpus_per_test"] == {
+        "test_asr_ci_multi_speaker.py": 2,
+        "test_asr_ci_seedtts.py": 2,
+    }
+    assert config["hf_model_ids_by_test"] == {
+        "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
+        "test_asr_ci_seedtts.py": ["Qwen/Qwen3-ASR-1.7B"],
+    }
+    assert {
+        "zhaochenyang20/movies800",
+        "zhaochenyang20/seed-tts-eval-arrow",
+    }.issubset(config["hf_datasets"])
+
+    assert set(config["metric_sources"]) == {
+        "test_asr_ci_multi_speaker.py",
+        "test_asr_ci_seedtts.py",
+    }
+    assert (
+        config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
+        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
+    )
+    assert (
+        config["metric_sources"]["test_asr_ci_multi_speaker.py"]["paths"]["cer_percent"]
+        == "diarization_metrics_percent.cer"
+    )
+    assert (
+        config["metric_sources"]["test_asr_ci_seedtts.py"]["paths"]["corpus_wer"]
+        == "summary.corpus_wer"
+    )
+
+    assert set(stages) == {
+        "multi_speaker_diarization",
+        "multi_speaker_speed",
+        "seedtts_wer",
+        "seedtts_speed",
+    }
+    assert stages["multi_speaker_diarization"]["test"] == (
+        "tests/test_model/test_asr_ci_multi_speaker.py"
+    )
+    assert stages["multi_speaker_diarization"]["expected_samples"] == 800
+    assert "cer_percent" in stages["multi_speaker_diarization"]["metrics"]
+    assert "throughput_qps" in stages["multi_speaker_speed"]["metrics"]
+    assert stages["seedtts_wer"]["test"] == "tests/test_model/test_asr_ci_seedtts.py"
+    assert stages["seedtts_wer"]["expected_samples"] == 1088
+
+
+def test_tune_ci_threshold_tts_config_no_longer_owns_asr_ci_stages() -> None:
+    config = yaml.safe_load((_MODELS_DIR / "tts/config.yaml").read_text())
+    stages = yaml.safe_load((_MODELS_DIR / "tts/stages.yaml").read_text())
+
+    assert config["test_globs"] == ["tests/test_model/test_tts_ci.py"]
+    assert "test_asr_ci.py" not in config.get("gpus_per_test", {})
+    assert "test_asr_ci.py" not in config.get("hf_model_ids_by_test", {})
+    assert "test_asr_ci.py" not in config.get("metric_sources", {})
+    assert len(stages) == 12
+    assert all(
+        stage["test"] == "tests/test_model/test_tts_ci.py" for stage in stages.values()
+    )
+    assert not any(stage_key.startswith("qwen3_asr") for stage_key in stages)

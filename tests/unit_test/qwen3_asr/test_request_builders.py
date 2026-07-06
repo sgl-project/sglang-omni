@@ -92,7 +92,7 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     )
     monkeypatch.setattr(
         request_builders,
-        "load_audio",
+        "_load_audio",
         lambda source: np.zeros(1600, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(

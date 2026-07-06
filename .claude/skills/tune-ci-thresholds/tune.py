@@ -16,7 +16,7 @@ __version__ = "0.6.0"
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
 HOSTS_DIR = SKILL_DIR / "hosts"
-DEFAULT_MODEL = "qwen3-omni-v1"
+DEFAULT_MODEL = "omni"
 _SPEAKER_SIM_MIN_BYTES = 100 * 1024 * 1024
 REPO_ROOT = Path("/sgl-workspace/sglang-omni")
 if not REPO_ROOT.exists():
@@ -90,6 +90,13 @@ METRIC_SPECS = {
     "per_sample_wer_max":   dict(worst="max", label="Max per-sample WER (%)", digits=2, scale=100, group="wer"),
     "wer_below_50_corpus":  dict(worst="max", label="Corpus WER ≤50% (%)", digits=2, scale=100, group="wer"),
     "n_above_50":           dict(worst="max", label="Samples >50% WER",      digits=0, scale=1,   group="wer"),
+    "cer_percent":          dict(worst="max", label="CER (%)",               digits=2, scale=1,   group="diarization"),
+    "cer_no_spk_percent":   dict(worst="max", label="CER no-spk (%)",        digits=2, scale=1,   group="diarization"),
+    "cp_cer_percent":       dict(worst="max", label="cpCER (%)",             digits=2, scale=1,   group="diarization"),
+    "cer_no_spk_cp_valid_percent": dict(worst="max", label="CER no-spk cp-valid (%)", digits=2, scale=1, group="diarization"),
+    "delta_cer_percent":    dict(worst="max", label="Delta CER (%)",         digits=2, scale=1,   group="diarization"),
+    "cer_valid_samples":    dict(worst="min", label="CER valid samples",     digits=0, scale=1,   group="diarization"),
+    "cp_cer_valid_samples": dict(worst="min", label="cpCER valid samples",   digits=0, scale=1,   group="diarization"),
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
     "output_tok_per_req_s": dict(
         worst="min", label="Output tok/req-s", digits=1, scale=1, group="speed"
@@ -162,6 +169,20 @@ def match_metric(name, nested):
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if name == "TTS_MAX_FAILED_REQUESTS" or "MAX_FAILED_REQUESTS" in name:
         return "failed_requests"
+    if "CER_NO_SPK_CP_VALID_PERCENT_MAX" in name:
+        return "cer_no_spk_cp_valid_percent"
+    if "CER_NO_SPK_PERCENT_MAX" in name:
+        return "cer_no_spk_percent"
+    if "CP_CER_PERCENT_MAX" in name:
+        return "cp_cer_percent"
+    if "DELTA_CER_PERCENT_MAX" in name:
+        return "delta_cer_percent"
+    if "CP_CER_VALID_SAMPLES_MIN" in name:
+        return "cp_cer_valid_samples"
+    if "CER_VALID_SAMPLES_MIN" in name:
+        return "cer_valid_samples"
+    if "CER_PERCENT_MAX" in name:
+        return "cer_percent"
     if "SIMILARITY" in name and name.endswith("_MIN"):
         return "similarity_mean"
     if "UTMOS" in name and name.endswith("_REFERENCE"):
@@ -170,9 +191,12 @@ def match_metric(name, nested):
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
     if "CORPUS_WER_MAX" in name: return "corpus_wer"
     if "SAMPLE_WER_MAX" in name: return "per_sample_wer_max"
-    if "THROUGHPUT_MIN" in name: return "throughput_qps"
-    if "LATENCY_MEAN_MAX" in name: return "latency_mean_s"
-    if "LATENCY_P95_MAX" in name: return "latency_p95_s"
+    if "THROUGHPUT_QPS_MIN" in name or "THROUGHPUT_MIN" in name:
+        return "throughput_qps"
+    if "LATENCY_MEAN_S_MAX" in name or "LATENCY_MEAN_MAX" in name:
+        return "latency_mean_s"
+    if "LATENCY_P95_S_MAX" in name or "LATENCY_P95_MAX" in name:
+        return "latency_p95_s"
     if "RTF_MEAN_MAX" in name: return "rtf_mean"
     if "RTF_P95_MAX" in name: return "rtf_p95"
     return None
@@ -994,17 +1018,18 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             print(f"    {mark} dataset: {ds}")
     if missing:
         lines = [f"{len(missing)} asset(s) not cached locally. "
-                 "Run these to download via the HF mirror:"]
+                 "Run these to download from Hugging Face:"]
         for repo_id, kind in missing:
             flag = " --repo-type dataset" if kind == "dataset" else ""
             lines.append(
-                "  HF_ENDPOINT=https://hf-mirror.com "
+                "  HF_ENDPOINT=https://huggingface.co "
                 f"huggingface-cli download {repo_id}{flag}"
             )
         errs.append("\n".join(lines))
     sim_dir = cfg["auto_env"].get("SEEDTTS_SIM_CACHE_DIR")
-    needs_speaker_sim = bool(cfg.get("_host")) or cfg["name"] in (
-        "tts", "qwen3-omni-v1")
+    needs_speaker_sim = bool(
+        cfg.get("requires_speaker_sim", cfg["name"] in ("tts", "omni"))
+    )
     if sim_dir and needs_speaker_sim:
         sim_ok, sim_detail = _speaker_sim_assets_ok(Path(sim_dir))
         mark = "✓" if sim_ok else "✗"
@@ -1062,14 +1087,19 @@ def _summary(errs, warns):
 
 def _constants(tree):
     for n in tree.body:
-        if not isinstance(n, ast.Assign): continue
-        for t in n.targets:
+        if isinstance(n, ast.Assign):
+            targets, value = n.targets, n.value
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            targets, value = [n.target], n.value
+        else:
+            continue
+        for t in targets:
             if not (isinstance(t, ast.Name)
                     and re.fullmatch(r"_?[A-Z][A-Z0-9_]*", t.id)):
                 continue
             yield (t.id, None)
-            if isinstance(n.value, ast.Dict):
-                for vv in n.value.values:
+            if isinstance(value, ast.Dict):
+                for vv in value.values:
                     if isinstance(vv, ast.Dict):
                         for kk in vv.keys:
                             if isinstance(kk, ast.Constant) and isinstance(kk.value, str):
@@ -1092,13 +1122,17 @@ def _ctx_vars(tree):
 def _int_constant(tree, name: str) -> int | None:
     """Return int literal for ``NAME = <int>``; None if missing, non-int, or ``None``."""
     for n in tree.body:
-        if not isinstance(n, ast.Assign):
+        if isinstance(n, ast.Assign):
+            targets, value = n.targets, n.value
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            targets, value = [n.target], n.value
+        else:
             continue
-        for t in n.targets:
+        for t in targets:
             if isinstance(t, ast.Name) and t.id == name:
-                if isinstance(n.value, ast.Constant):
-                    if isinstance(n.value.value, int):
-                        return n.value.value
+                if isinstance(value, ast.Constant):
+                    if isinstance(value.value, int):
+                        return value.value
                     return None
     return None
 
@@ -2692,9 +2726,15 @@ def _read_concurrency(text):
 
 
 def _read_bare_value(text, symbol):
-    m = re.search(rf"^{re.escape(symbol)}\s*=\s*([+-]?\d+(?:\.\d+)?)\s*$",
-                  text, re.M)
-    return float(m.group(1)) if m else None
+    m = re.search(
+        rf"^{re.escape(symbol)}(?:\s*:\s*[^=]+)?\s*=\s*"
+        r"(None|[+-]?\d+(?:\.\d+)?)\s*$",
+        text,
+        re.M,
+    )
+    if not m or m.group(1) == "None":
+        return None
+    return float(m.group(1))
 
 
 def _read_nested_value(text, symbol, conc, subkey):

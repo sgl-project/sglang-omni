@@ -61,6 +61,14 @@ WORKER_REQUEST_FAILURE_STATUS_CODES = {
     HTTPStatus.GATEWAY_TIMEOUT.value,
 }
 
+# Note (Jiaxin Deng): terminal SSE event injected when an event-stream relay
+# fails mid-body, so the client gets a valid error frame (fields mirror the
+# worker's OpenAI error envelope) instead of a silently truncated stream.
+_SSE_UPSTREAM_ERROR_EVENT = (
+    b'data: {"error": {"message": "upstream stream failed before completion", '
+    b'"type": "upstream_error", "param": null, "code": 502}}\n\n'
+)
+
 
 class PayloadTooLargeError(ValueError):
     pass
@@ -188,11 +196,9 @@ class ProxyHandler:
                 content={"error": {"message": "no eligible upstream"}},
             )
 
-        if metadata.stream:
-            return await self._forward_streaming(request, path, body, metadata, worker)
-        return await self._forward_non_streaming(request, path, body, metadata, worker)
+        return await self._forward_relay(request, path, body, metadata, worker)
 
-    async def _forward_non_streaming(
+    async def _forward_relay(
         self,
         request: Request,
         path: str,
@@ -200,70 +206,10 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> Response:
-        with worker.request_guard():
-            start_time = time.perf_counter()
-            upstream_url = build_upstream_url(worker, path, request)
-            request_headers = filter_request_headers(request)
-            try:
-                response = await self._client.request(
-                    request.method,
-                    upstream_url,
-                    content=body,
-                    headers=request_headers,
-                )
-            except httpx.HTTPError as exc:
-                worker.record_routed_request()
-                self._record_worker_request_failure(
-                    worker,
-                    error=type(exc).__name__,
-                )
-                self._log_route_completion(
-                    worker=worker,
-                    path=path,
-                    metadata=metadata,
-                    status_code=502,
-                    outcome="upstream_error",
-                    start_time=start_time,
-                )
-                return JSONResponse(
-                    status_code=502,
-                    content={"error": {"message": "upstream request failed"}},
-                    headers=self._diagnostic_headers(worker, metadata),
-                )
-
-            if response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
-                self._record_worker_request_failure(
-                    worker,
-                    status_code=response.status_code,
-                    error=_response_error(response),
-                )
-            worker.record_routed_request(status_code=response.status_code)
-            outcome = _response_outcome(response.status_code)
-            self._log_route_completion(
-                worker=worker,
-                path=path,
-                metadata=metadata,
-                status_code=response.status_code,
-                outcome=outcome,
-                start_time=start_time,
-            )
-            headers = filter_response_headers(response.headers, buffered=True)
-            headers.update(self._diagnostic_headers(worker, metadata))
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=headers,
-                media_type=response.headers.get("content-type"),
-            )
-
-    async def _forward_streaming(
-        self,
-        request: Request,
-        path: str,
-        body: bytes,
-        metadata: RouteMetadata,
-        worker: Worker,
-    ) -> StreamingResponse | JSONResponse:
+        # Note (Jiaxin Deng): stream through instead of buffering. A mid-stream
+        # failure after a 2xx cannot become a 502; SSE (text/event-stream) bodies
+        # get a terminal error event, other bodies (audio, JSON) truncate.
+        stream = metadata.stream
         start_time = time.perf_counter()
         upstream_request = self._client.build_request(
             request.method,
@@ -318,6 +264,10 @@ class ProxyHandler:
                 error=f"status={upstream.status_code}",
             )
 
+        is_event_stream = (upstream.headers.get("content-type") or "").startswith(
+            "text/event-stream"
+        )
+
         async def iter_bytes():
             outcome = _response_outcome(upstream.status_code)
             try:
@@ -329,6 +279,9 @@ class ProxyHandler:
             except httpx.HTTPError as exc:
                 outcome = "stream_error"
                 record_worker_failure_once(error=type(exc).__name__)
+                if is_event_stream:
+                    yield _SSE_UPSTREAM_ERROR_EVENT
+                    return
                 raise
             finally:
                 await upstream.aclose()
@@ -345,17 +298,22 @@ class ProxyHandler:
                 )
 
         try:
-            headers = filter_response_headers(upstream.headers)
+            headers = filter_response_headers(upstream.headers, buffered=not stream)
             headers.update(self._diagnostic_headers(worker, metadata))
         except Exception:
             await upstream.aclose()
             worker.decrement_active()
             raise
+        media_type = (
+            upstream.headers.get("content-type", "text/event-stream")
+            if stream
+            else upstream.headers.get("content-type")
+        )
         return StreamingResponse(
             iter_bytes(),
             status_code=upstream.status_code,
             headers=headers,
-            media_type=upstream.headers.get("content-type", "text/event-stream"),
+            media_type=media_type,
         )
 
     def _diagnostic_headers(
@@ -445,11 +403,6 @@ async def _read_body_with_limit(request: Request, max_size: int) -> bytes:
             raise PayloadTooLargeError
         chunks.append(chunk)
     return b"".join(chunks)
-
-
-def _response_error(response: httpx.Response) -> str:
-    content = response.content[:512].decode("utf-8", errors="replace")
-    return content or f"status={response.status_code}"
 
 
 def _response_outcome(status_code: int) -> str:

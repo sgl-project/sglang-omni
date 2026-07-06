@@ -831,10 +831,32 @@ def test_transcription_request_builds_asr_generate_request() -> None:
         "filename": "sample.wav",
         "content_type": "audio/wav",
     }
-    assert gen_req.extra_params == {"task": "transcribe", "language": "en"}
+    assert gen_req.extra_params == {
+        "task": "transcribe",
+        "language": "en",
+        "temperature": 0.0,
+    }
+    omni_req = Client._build_omni_request(gen_req)
+    assert omni_req.params["temperature"] == 0.0
     assert gen_req.metadata == {"task": "asr"}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
+
+
+def test_transcription_request_passes_explicit_temperature() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=0.7,
+    )
+
+    assert gen_req.extra_params["temperature"] == 0.7
+    omni_req = Client._build_omni_request(gen_req)
+    assert omni_req.params["temperature"] == 0.7
 
 
 def test_transcription_endpoint_returns_text_json() -> None:
@@ -856,6 +878,96 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
+
+
+class DiarizationTranscriptionClient:
+    """Stub returning MOSS-style diarized markup for verbose_json tests."""
+
+    async def completion(self, request, *, request_id, audio_format="wav"):
+        from sglang_omni.client.types import CompletionResult
+
+        del request, request_id, audio_format
+        return CompletionResult(
+            request_id="transcription-1",
+            text="[0.00][S01] hello there.[1.20][1.30][S02] bye.[3.00]",
+        )
+
+
+def test_transcription_verbose_json_returns_diarized_segments() -> None:
+    client = TestClient(
+        create_app(
+            DiarizationTranscriptionClient(),
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "moss-transcribe-diarize", "response_format": "verbose_json"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task"] == "transcribe"
+    assert [(s["id"], s["start"], s["end"], s["text"]) for s in body["segments"]] == [
+        (0, 0.0, 1.2, "[S01]hello there."),
+        (1, 1.3, 3.0, "[S02]bye."),
+    ]
+
+
+def test_transcription_verbose_json_falls_back_for_plain_text() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulTranscriptionClient(),
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "moss-transcribe-diarize", "response_format": "verbose_json"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["segments"]) == 1
+    assert body["segments"][0]["text"] == "[S01]hello world"
+
+
+def _wav_bytes(duration_s: float, sample_rate: int = 16000) -> bytes:
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
+    samples = np.zeros(int(duration_s * sample_rate), dtype=np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, samples, sample_rate, format="WAV")
+    return buf.getvalue()
+
+
+def test_transcription_probes_duration_from_real_wav() -> None:
+    client = TestClient(
+        create_app(
+            DiarizationTranscriptionClient(),
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "moss-transcribe-diarize", "response_format": "verbose_json"},
+        files={"file": ("sample.wav", _wav_bytes(3.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["usage"] == {"type": "duration", "seconds": 4}
 
 
 def test_speech_request_passes_moss_token_count() -> None:

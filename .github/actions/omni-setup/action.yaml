@@ -29,7 +29,12 @@ runs:
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
-        echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
+        # uv cache and the uv-managed CPython interpreter must live on the
+        # persistent /data/omni-ci mount: the venv's bin/python is a symlink into
+        # UV_PYTHON_INSTALL_DIR, so if that dir sat under /github/home (wiped every
+        # job by the runner) the reused venv would break with "python not found".
+        echo "UV_CACHE_DIR=/data/omni-ci/uv-cache" >> "${GITHUB_ENV}"
+        echo "UV_PYTHON_INSTALL_DIR=/data/omni-ci/uv-python" >> "${GITHUB_ENV}"
 
     - name: Restore cache
       shell: bash

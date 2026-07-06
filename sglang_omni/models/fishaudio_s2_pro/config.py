@@ -14,6 +14,7 @@ class S2ProPipelineConfig(PipelineConfig):
     """3-stage TTS pipeline: preprocessing → tts_engine → vocoder."""
 
     architecture: ClassVar[str] = "FishQwen3OmniForCausalLM"
+    requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
     def talker_sglang_role_to_stage(cls) -> dict[str, str]:

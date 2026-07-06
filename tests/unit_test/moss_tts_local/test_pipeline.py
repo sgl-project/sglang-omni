@@ -440,7 +440,7 @@ def _install_fake_moss_ar_factory(
 ):
     pytest.importorskip("PIL")
 
-    from sglang_omni.models.moss_tts_local import stages
+    from sglang_omni.models.moss_tts_local import request_builders, stages
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
     from sglang_omni.utils import gpu_memory as gpu_memory_utils
@@ -515,7 +515,7 @@ def _install_fake_moss_ar_factory(
         lambda **kwargs: object(),
     )
     monkeypatch.setattr(
-        stages,
+        request_builders,
         "make_moss_tts_local_scheduler_adapters",
         lambda **kwargs: (object(), object()),
     )
@@ -587,6 +587,39 @@ def test_colocated_moss_ar_factory_uses_upstream_profile_without_process_account
         }
     ]
     assert process_memory_queries == [0]
+
+
+def test_colocated_moss_ar_abort_callback_requires_model(monkeypatch):
+    from sglang_omni.models.moss_tts_local import request_builders
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.05,
+    )
+
+    with pytest.raises(AssertionError):
+        builder.make_abort_callback()
+
+    cleanup_calls: list[str] = []
+    reset_calls: list[str] = []
+    builder.model = types.SimpleNamespace(reset_request=reset_calls.append)
+    monkeypatch.setattr(
+        request_builders,
+        "cleanup_prepared_moss_tts_local_request",
+        cleanup_calls.append,
+    )
+
+    abort_callback = builder.make_abort_callback()
+    builder.model = None
+    abort_callback("req-1")
+
+    assert cleanup_calls == ["req-1"]
+    assert reset_calls == ["req-1"]
 
 
 def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():

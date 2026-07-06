@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -22,6 +20,7 @@ from transformers import GenerationConfig
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 
 _WHISPER_SAMPLE_RATE = 16000
 _LANGUAGE_ALIASES = {
@@ -54,29 +53,12 @@ def _audio_source_from_payload(payload: StagePayload) -> Any:
     return inputs
 
 
-def load_audio(source: Any) -> np.ndarray:
-    import torchaudio
-
-    if isinstance(source, memoryview):
-        source = source.tobytes()
-    if isinstance(source, bytearray):
-        source = bytes(source)
-
-    if isinstance(source, bytes):
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
-    elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
-    else:
-        raise ValueError(
-            f"Unsupported Whisper ASR audio input: {type(source).__name__}"
-        )
-
-    if audio.ndim == 2 and audio.shape[0] > 1:
-        audio = audio.mean(dim=0, keepdim=True)
-    audio = audio.squeeze(0).to(torch.float32)
-    if sample_rate != _WHISPER_SAMPLE_RATE:
-        audio = torchaudio.functional.resample(audio, sample_rate, _WHISPER_SAMPLE_RATE)
-    return audio.cpu().numpy()
+def _load_audio(source: Any) -> np.ndarray:
+    return load_audio(
+        source,
+        source_name="Whisper ASR",
+        target_sample_rate=_WHISPER_SAMPLE_RATE,
+    )
 
 
 def _resolve_language(value: Any) -> str:
@@ -86,15 +68,6 @@ def _resolve_language(value: Any) -> str:
     if not language:
         return "english"
     return _LANGUAGE_ALIASES.get(language, language)
-
-
-def _audio_fingerprint(audio: np.ndarray) -> str:
-    contiguous = np.ascontiguousarray(audio, dtype=np.float32)
-    return hashlib.blake2b(contiguous.tobytes(), digest_size=16).hexdigest()
-
-
-def _audio_fingerprint_int(fingerprint: str) -> int:
-    return int(fingerprint[:16], 16)
 
 
 def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
@@ -130,9 +103,9 @@ def make_whisper_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
-        audio = load_audio(_audio_source_from_payload(payload))
+        audio = _load_audio(_audio_source_from_payload(payload))
         audio_duration_s = float(len(audio) / _WHISPER_SAMPLE_RATE)
-        fingerprint = _audio_fingerprint(audio)
+        fingerprint = audio_fingerprint(audio)
 
         language = _resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
@@ -152,7 +125,7 @@ def make_whisper_scheduler_adapters(
             mm_items=[
                 MultimodalDataItem(
                     modality=Modality.AUDIO,
-                    hash=_audio_fingerprint_int(fingerprint),
+                    hash=audio_fingerprint_int(fingerprint),
                     feature=features,
                 )
             ],

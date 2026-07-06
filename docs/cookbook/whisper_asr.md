@@ -55,7 +55,7 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Optional language hint |
 | `response_format` | string | `json` | Use `json` for the current Whisper path |
-| `temperature` | float | unset | Optional sampling temperature |
+| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
 The request builder also supports `task` (`transcribe` by default) and
 `max_new_tokens`, but the public transcription endpoint currently exposes only

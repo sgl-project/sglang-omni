@@ -14,6 +14,7 @@ class MossTTSPipelineConfig(PipelineConfig):
     """MOSS-TTS Delay pipeline: preprocessing -> AR engine -> vocoder."""
 
     architecture: ClassVar[str] = "MossTTSDelayModel"
+    requires_model_capabilities: ClassVar[bool] = True
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSDelay",
         "MossTTSDelayForConditionalGeneration",

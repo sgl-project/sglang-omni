@@ -2,8 +2,8 @@
 """Shared ASR task layer: transcription, WER scoring, and ASR speed assembly.
 
 Owns the ASR/WER primitives shared by the standalone ASR benchmark
-(benchmarks/eval/benchmark_qwen3_asr_concurrency.py), the Qwen3-ASR CI gate
-(tests/test_model/test_qwen3_asr_ci.py), the TTS WER stage
+(benchmarks/eval/benchmark_asr_seedtts.py), the ASR CI gate
+(tests/test_model/test_asr_ci.py), the TTS WER stage
 (benchmarks.tasks.tts.run_seedtts_transcribe), and the talker WER paths.
 """
 

@@ -1,0 +1,81 @@
+# ASR CI threshold calibration (shared omni venv).
+#
+# CI DAG:
+#   stage-1-multi-speaker (MOSS-Transcribe-Diarize on movies800)
+#   -> stage-2-seedtts (Qwen3-ASR on SeedTTS EN)
+#
+# Both stages use the managed router with 2 single-GPU workers (DP=2).
+# Qwen3-ASR SeedTTS uses the ASR transcribe fan-out from tests.utils
+# (QWEN3_ASR_WER_CONCURRENCY = 32).
+name: asr
+description: "ASR CI (MOSS-TD multi-speaker + Qwen3-ASR SeedTTS)"
+hf_model_id: "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+hf_model_ids_by_test:
+  test_asr_ci_multi_speaker.py:
+    - "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+  test_asr_ci_seedtts.py:
+    - "Qwen/Qwen3-ASR-1.7B"
+hf_datasets:
+  - "zhaochenyang20/movies800"
+  - "zhaochenyang20/seed-tts-eval-arrow"
+omni_ci_home: "/github/home/calibration"
+default_venv_python:
+  # H100 CI calibration venv (first match wins).
+  - "/github/home/calibration/omni/bin/python"
+  - "/sgl-workspace/sglang-omni/omni/bin/python"
+  - "/github/home/omni/bin/python"
+auto_env:
+  HOME: "/github/home"
+  OMNI_CI_HOME: "/github/home/calibration"
+  HF_HOME: "/github/home/.cache/huggingface"
+  MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
+  XDG_CACHE_HOME: "/github/home/calibration/.cache"
+  HF_ENDPOINT: "https://huggingface.co"
+  HF_HUB_DISABLE_XET: "1"
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
+  UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"
+  UV_CACHE_DIR: "/github/home/.cache/uv"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
+  SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
+gpus_per_test:
+  test_asr_ci_multi_speaker.py: 2
+  test_asr_ci_seedtts.py: 2
+test_globs:
+  - "tests/test_model/test_asr_ci_multi_speaker.py"
+  - "tests/test_model/test_asr_ci_seedtts.py"
+extra_env: {}
+pytest_extra_args: {}
+stage_base_strip_prefix: "test_asr_ci_"
+metric_sources:
+  test_asr_ci_multi_speaker.py:
+    json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "summary.evaluated"
+    paths:
+      cer_percent: "diarization_metrics_percent.cer"
+      cer_no_spk_percent: "diarization_metrics_percent.cer_no_spk"
+      cp_cer_percent: "diarization_metrics_percent.cp_cer"
+      cer_no_spk_cp_valid_percent: "diarization_metrics_percent.cer_no_spk_cp_valid"
+      delta_cer_percent: "diarization_metrics_percent.delta_cer"
+      cer_valid_samples: "diarization_metrics_percent.cer_valid_samples"
+      cp_cer_valid_samples: "diarization_metrics_percent.cp_cer_valid_samples"
+      throughput_qps: "speed.throughput_qps"
+      latency_mean_s: "speed.latency_mean_s"
+      latency_p95_s: "speed.latency_p95_s"
+      rtf_mean: "speed.rtf_mean"
+      rtf_p95: "speed.rtf_p95"
+  test_asr_ci_seedtts.py:
+    json_file: "qwen3_asr_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "summary.evaluated"
+    paths:
+      corpus_wer: "summary.corpus_wer"
+      per_sample_wer_max: "summary.wer_per_sample_max"
+      throughput_qps: "speed.throughput_samples_per_s"
+      latency_mean_s: "speed.latency_mean_s"
+      latency_p95_s: "speed.latency_p95_s"
+      rtf_mean: "speed.rtf_mean"
+      rtf_p95: "speed.rtf_p95"

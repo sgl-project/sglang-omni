@@ -289,6 +289,10 @@ def _run_s2pro_engine_with_fake_buffers(
     audio_buffer_bs: int = 64,
 ) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+    from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
+    from sglang_omni.scheduling import bootstrap as scheduler_bootstrap
+    from sglang_omni.scheduling import sglang_backend
+
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
 
     build_kwargs: dict[str, object] = {}
@@ -310,14 +314,17 @@ def _run_s2pro_engine_with_fake_buffers(
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = _FakeSGLangRunner(server_args)
 
-    fake_bootstrap = ModuleType("sglang_omni.models.fishaudio_s2_pro.bootstrap")
-    fake_bootstrap.patch_fish_config_for_sglang = lambda: None
-    fake_bootstrap.truncate_rope_to_bf16 = lambda model: None
-    fake_bootstrap.load_audio_decoder = lambda checkpoint_dir, device: (
-        SimpleNamespace(kv_cache_max_batch_size=-1),
-        10,
-        4096,
-        FakeFishTokenizer(),
+    monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
+    monkeypatch.setattr(fish_bootstrap, "truncate_rope_to_bf16", lambda model: None)
+    monkeypatch.setattr(
+        fish_bootstrap,
+        "load_audio_decoder",
+        lambda checkpoint_dir, device: (
+            SimpleNamespace(kv_cache_max_batch_size=-1),
+            10,
+            4096,
+            FakeFishTokenizer(),
+        ),
     )
 
     def fake_bootstrap_text_model_for_decode(**kwargs: object) -> None:
@@ -327,8 +334,10 @@ def _run_s2pro_engine_with_fake_buffers(
         text_model._audio_decoder = audio_decoder
         audio_decoder.kv_cache_max_batch_size = audio_buffer_bs
 
-    fake_bootstrap.bootstrap_text_model_for_decode = (
-        fake_bootstrap_text_model_for_decode
+    monkeypatch.setattr(
+        fish_bootstrap,
+        "bootstrap_text_model_for_decode",
+        fake_bootstrap_text_model_for_decode,
     )
 
     def fake_build_sglang_server_args(
@@ -367,9 +376,10 @@ def _run_s2pro_engine_with_fake_buffers(
             SimpleNamespace(),
         )
 
-    fake_scheduler_bootstrap = ModuleType("sglang_omni.scheduling.bootstrap")
-    fake_scheduler_bootstrap.create_sglang_infrastructure = (
-        fake_create_sglang_infrastructure
+    monkeypatch.setattr(
+        scheduler_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_sglang_infrastructure,
     )
 
     def fake_create_sglang_infrastructure_defer_cuda_graph(
@@ -384,14 +394,21 @@ def _run_s2pro_engine_with_fake_buffers(
             server_args.disable_cuda_graph = False
         return want_cuda_graph, infrastructure
 
-    fake_scheduler_bootstrap.create_sglang_infrastructure_defer_cuda_graph = (
-        fake_create_sglang_infrastructure_defer_cuda_graph
+    monkeypatch.setattr(
+        scheduler_bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        fake_create_sglang_infrastructure_defer_cuda_graph,
     )
 
-    fake_sglang_backend = ModuleType("sglang_omni.scheduling.sglang_backend")
-    fake_sglang_backend.build_sglang_server_args = fake_build_sglang_server_args
-    fake_sglang_backend.SGLangOutputProcessor = lambda **kwargs: SimpleNamespace(
-        **kwargs
+    monkeypatch.setattr(
+        sglang_backend,
+        "build_sglang_server_args",
+        fake_build_sglang_server_args,
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
     fake_fish_scheduler = ModuleType(
@@ -409,21 +426,6 @@ def _run_s2pro_engine_with_fake_buffers(
         args=args, kwargs=kwargs
     )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.fishaudio_s2_pro.bootstrap",
-        fake_bootstrap,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.scheduling.bootstrap",
-        fake_scheduler_bootstrap,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.scheduling.sglang_backend",
-        fake_sglang_backend,
-    )
     monkeypatch.setitem(
         sys.modules,
         "sglang_omni.models.fishaudio_s2_pro.fish_scheduler",
