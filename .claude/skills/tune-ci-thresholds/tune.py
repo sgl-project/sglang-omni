@@ -95,6 +95,9 @@ METRIC_SPECS = {
     "cp_cer_percent":       dict(worst="max", label="cpCER (%)",             digits=2, scale=1,   group="diarization"),
     "cer_no_spk_cp_valid_percent": dict(worst="max", label="CER no-spk cp-valid (%)", digits=2, scale=1, group="diarization"),
     "delta_cer_percent":    dict(worst="max", label="Delta CER (%)",         digits=2, scale=1,   group="diarization"),
+    "cer_no_spk_below_50_corpus": dict(worst="max", label="CER no-spk ≤50% corpus (%)", digits=2, scale=1, group="diarization"),
+    "n_above_50_pct_cer":   dict(worst="max", label="Samples >50% CER",      digits=0, scale=1,   group="diarization"),
+    "speaker_timestamp_der_percent": dict(worst="max", label="Speaker-timestamp DER (%)", digits=2, scale=1, group="diarization"),
     "cer_valid_samples":    dict(worst="min", label="CER valid samples",     digits=0, scale=1,   group="diarization"),
     "cp_cer_valid_samples": dict(worst="min", label="cpCER valid samples",   digits=0, scale=1,   group="diarization"),
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
@@ -169,19 +172,25 @@ def match_metric(name, nested):
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if name == "TTS_MAX_FAILED_REQUESTS" or "MAX_FAILED_REQUESTS" in name:
         return "failed_requests"
-    if "CER_NO_SPK_CP_VALID_PERCENT_MAX" in name:
+    if "CER_NO_SPK_CP_VALID_PERCENT" in name:
         return "cer_no_spk_cp_valid_percent"
-    if "CER_NO_SPK_PERCENT_MAX" in name:
+    if "CER_NO_SPK_BELOW_50_PERCENT" in name:
+        return "cer_no_spk_below_50_corpus"
+    if "CER_NO_SPK_PERCENT" in name:
         return "cer_no_spk_percent"
-    if "CP_CER_PERCENT_MAX" in name:
+    if "CP_CER_PERCENT" in name:
         return "cp_cer_percent"
-    if "DELTA_CER_PERCENT_MAX" in name:
+    if "DELTA_CER_PERCENT" in name:
         return "delta_cer_percent"
+    if "N_ABOVE_50_CER_MAX" in name:
+        return "n_above_50_pct_cer"
+    if "SPEAKER_TIMESTAMP_DER_PERCENT" in name:
+        return "speaker_timestamp_der_percent"
     if "CP_CER_VALID_SAMPLES_MIN" in name:
         return "cp_cer_valid_samples"
     if "CER_VALID_SAMPLES_MIN" in name:
         return "cer_valid_samples"
-    if "CER_PERCENT_MAX" in name:
+    if "CER_PERCENT" in name:
         return "cer_percent"
     if "SIMILARITY" in name and name.endswith("_MIN"):
         return "similarity_mean"
@@ -191,14 +200,16 @@ def match_metric(name, nested):
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
     if "CORPUS_WER_MAX" in name: return "corpus_wer"
     if "SAMPLE_WER_MAX" in name: return "per_sample_wer_max"
-    if "THROUGHPUT_QPS_MIN" in name or "THROUGHPUT_MIN" in name:
+    if "THROUGHPUT_QPS" in name or "THROUGHPUT_MIN" in name:
         return "throughput_qps"
-    if "LATENCY_MEAN_S_MAX" in name or "LATENCY_MEAN_MAX" in name:
+    if "LATENCY_MEAN" in name:
         return "latency_mean_s"
-    if "LATENCY_P95_S_MAX" in name or "LATENCY_P95_MAX" in name:
+    if "LATENCY_P95" in name:
         return "latency_p95_s"
-    if "RTF_MEAN_MAX" in name: return "rtf_mean"
-    if "RTF_P95_MAX" in name: return "rtf_p95"
+    if "RTF_MEAN" in name:
+        return "rtf_mean"
+    if "RTF_P95" in name:
+        return "rtf_p95"
     return None
 
 
@@ -504,11 +515,22 @@ def _gpu_memory_used_mib():
     return list(_gpu_memory_by_index().values())
 
 
-def _kill_calibration_gpu_processes():
-    """Match CI omni-post-stage cleanup between calibration runs."""
+def _kill_calibration_gpu_processes(host: dict | None = None):
+    """Match CI omni-post-stage cleanup between calibration runs.
+
+    When ``TUNE_GPU_EXCLUDE`` / host ``gpu_exclude`` is set (shared 8× H100 hosts),
+    cleanup is scoped to the calibration GPU pool only — never kill CI on excluded GPUs.
+    """
+    pool = calibration_gpu_pool(host)
+    if not pool:
+        return
     script = REPO_ROOT / ".github/scripts/delete_gpu_process.sh"
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, pool))
     if script.exists():
-        subprocess.run(["bash", str(script)], capture_output=True, check=False)
+        subprocess.run(["bash", str(script)], capture_output=True, check=False, env=env)
+    if excluded_gpu_indices(host):
+        return
     for pattern in (
         "sgl-omni serve",
         "sglang_omni_router.serve",
@@ -535,42 +557,51 @@ def _picked_gpus_under_limit(picked: list[int]) -> bool:
     )
 
 
-def _ready_gpu_indices(gpus_needed: int):
+def _ready_gpu_indices(gpus_needed: int, host: dict | None = None):
     """GPU indices with no compute app and memory <= _GPU_RETRY_MEM_MIB."""
     mem = _gpu_memory_by_index()
     busy = busy_gpu_indices()
+    excluded = excluded_gpu_indices(host)
+    pool = set(calibration_gpu_pool(host))
     ready = [
         idx for idx in sorted(mem)
-        if idx not in busy and mem[idx] <= _GPU_RETRY_MEM_MIB
+        if idx in pool
+        and idx not in excluded
+        and idx not in busy
+        and mem[idx] <= _GPU_RETRY_MEM_MIB
     ]
     return ready, mem, busy
 
 
-def _ensure_gpus_free(gpus_needed: int, timeout: int = _GPU_WAIT_TIMEOUT_S) -> bool:
+def _ensure_gpus_free(gpus_needed: int, timeout: int = _GPU_WAIT_TIMEOUT_S,
+                      host: dict | None = None) -> bool:
     """Kill stale processes and wait until >= gpus_needed GPUs are each < 2 GiB."""
-    _kill_calibration_gpu_processes()
+    _kill_calibration_gpu_processes(host)
     time.sleep(3)
     waited = 0
     last_log = -30
     while waited < timeout:
-        ready, mem, busy = _ready_gpu_indices(gpus_needed)
+        ready, mem, busy = _ready_gpu_indices(gpus_needed, host)
         if len(ready) >= gpus_needed:
             picked_mem = {i: mem[i] for i in ready[:gpus_needed]}
             print(f"  GPU ready for launch {picked_mem} MiB (each <= "
                   f"{_GPU_RETRY_MEM_MIB}) after {waited}s")
             return True
         if waited - last_log >= 30:
+            excluded = sorted(excluded_gpu_indices(host))
             print(f"  waiting: need {gpus_needed} GPU(s) each <= "
                   f"{_GPU_RETRY_MEM_MIB} MiB ({waited}s/{timeout}s): "
-                  f"mem={mem} busy={sorted(busy)} ready={len(ready)}")
+                  f"mem={mem} busy={sorted(busy)} ready={len(ready)} "
+                  f"pool={calibration_gpu_pool(host)} excluded={excluded}")
             last_log = waited
         time.sleep(_GPU_WAIT_POLL_S)
         waited += _GPU_WAIT_POLL_S
         if waited % 60 == 0:
-            _kill_calibration_gpu_processes()
-    subprocess.run(["pkill", "-9", "-f", "sgl-omni"], check=False)
+            _kill_calibration_gpu_processes(host)
+    if not excluded_gpu_indices(host):
+        subprocess.run(["pkill", "-9", "-f", "sgl-omni"], check=False)
     time.sleep(5)
-    ready, mem, busy = _ready_gpu_indices(gpus_needed)
+    ready, mem, busy = _ready_gpu_indices(gpus_needed, host)
     if len(ready) >= gpus_needed:
         print(f"  GPU ready after forced pkill: "
               f"{ {i: mem[i] for i in ready[:gpus_needed]} } MiB")
@@ -581,15 +612,16 @@ def _ensure_gpus_free(gpus_needed: int, timeout: int = _GPU_WAIT_TIMEOUT_S) -> b
     return False
 
 
-def _pick_gpus_for_launch(gpus_needed: int, label: str) -> tuple[list[int] | None, str]:
+def _pick_gpus_for_launch(gpus_needed: int, label: str,
+                          host: dict | None = None) -> tuple[list[int] | None, str]:
     """Select GPUs only after _ensure_gpus_free; abort if any picked GPU >= 2 GiB."""
-    if not _ensure_gpus_free(gpus_needed):
+    if not _ensure_gpus_free(gpus_needed, host=host):
         return None, "GPU memory not released after cleanup"
-    picked, err = pick_free_gpus(gpus_needed)
+    picked, err = pick_free_gpus(gpus_needed, host)
     if picked is None:
-        if not _ensure_gpus_free(gpus_needed):
+        if not _ensure_gpus_free(gpus_needed, host=host):
             return None, err or "GPU memory not released after cleanup"
-        picked, err = pick_free_gpus(gpus_needed)
+        picked, err = pick_free_gpus(gpus_needed, host)
     if picked is None:
         return None, err or "no GPU under 2 GiB memory limit"
     if not _picked_gpus_under_limit(picked):
@@ -598,7 +630,8 @@ def _pick_gpus_for_launch(gpus_needed: int, label: str) -> tuple[list[int] | Non
     return picked, ""
 
 
-def _launch_gpu_gate(picked: list[int], gpus_needed: int, label: str) -> tuple[list[int] | None, str]:
+def _launch_gpu_gate(picked: list[int], gpus_needed: int, label: str,
+                     host: dict | None = None) -> tuple[list[int] | None, str]:
     """Hard gate immediately before pytest Popen — recheck memory after brief pause."""
     time.sleep(_GPU_LAUNCH_RECHECK_S)
     if _picked_gpus_under_limit(picked):
@@ -609,7 +642,7 @@ def _launch_gpu_gate(picked: list[int], gpus_needed: int, label: str) -> tuple[l
     snap = _picked_gpus_mem_snapshot(picked)
     print(f"{label} launch gate BLOCKED: GPU mem={snap} MiB — "
           f"releasing before restart")
-    return _pick_gpus_for_launch(gpus_needed, label)
+    return _pick_gpus_for_launch(gpus_needed, label, host)
 
 
 def _stage_metrics_complete(stage, metrics):
@@ -885,10 +918,38 @@ def all_gpu_indices():
     return out
 
 
-def pick_free_gpus(n):
+def _parse_gpu_index_list(raw: str | list | tuple | None) -> set[int]:
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple)):
+        return {int(x) for x in raw}
+    out: set[int] = set()
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+
+def excluded_gpu_indices(host: dict | None = None) -> set[int]:
+    """GPUs calibration must never pick or kill (e.g. CI-reserved 6,7 on 8× hosts)."""
+    raw = os.environ.get("TUNE_GPU_EXCLUDE")
+    if raw:
+        return _parse_gpu_index_list(raw)
+    if host:
+        return _parse_gpu_index_list(host.get("gpu_exclude"))
+    return set()
+
+
+def calibration_gpu_pool(host: dict | None = None) -> list[int]:
+    excluded = excluded_gpu_indices(host)
+    return [i for i in all_gpu_indices() if i not in excluded]
+
+
+def pick_free_gpus(n, host: dict | None = None):
     """Pick n GPUs with no compute app and memory <= _GPU_RETRY_MEM_MIB (2 GiB)."""
-    ready, mem, busy = _ready_gpu_indices(n)
-    all_idx = all_gpu_indices()
+    ready, mem, busy = _ready_gpu_indices(n, host)
+    all_idx = calibration_gpu_pool(host)
     if len(ready) >= n:
         picked = ready[:n]
         if not _picked_gpus_under_limit(picked):
@@ -1050,15 +1111,19 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     if not smi:
         errs.append("nvidia-smi -L returned no GPUs")
     else:
-        all_idx = all_gpu_indices()
+        pool = calibration_gpu_pool(cfg.get("_host"))
+        excluded = sorted(excluded_gpu_indices(cfg.get("_host")))
         busy = busy_gpu_indices()
-        free_count = len(all_idx) - len(busy)
+        ready, _, _ = _ready_gpu_indices(1, cfg.get("_host"))
+        free_count = len(ready)
         summary = gpu_summary(smi)
-        if busy:
-            print(f"  GPUs: {summary} — {free_count}/{len(all_idx)} free "
-                  f"(busy: {sorted(busy)})")
+        pool_note = f" pool={pool}" if excluded else ""
+        if busy or excluded:
+            print(f"  GPUs: {summary} — {free_count}/{len(pool)} calibration-ready"
+                  f"{pool_note} (busy: {sorted(busy)}"
+                  f"{f', excluded: {excluded}' if excluded else ''})")
         else:
-            print(f"  GPUs: {summary} — {free_count}/{len(all_idx)} free")
+            print(f"  GPUs: {summary} — {free_count}/{len(pool)} calibration-ready")
         gpu_required = gpu_required_override
         if gpu_required is None:
             gpu_required = max((cfg.get("gpus_per_test") or {}).values(), default=1)
@@ -1104,6 +1169,51 @@ def _constants(tree):
                         for kk in vv.keys:
                             if isinstance(kk, ast.Constant) and isinstance(kk.value, str):
                                 yield (t.id, kk.value)
+
+
+_SLACK_HELPER_CALLS = frozenset({"apply_wer_slack", "apply_mos_slack"})
+_SLACK_ENV_NAMES = frozenset({"THRESHOLD_SLACK_LOWER", "THRESHOLD_SLACK_HIGHER"})
+
+
+def _expr_uses_slack(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in _SLACK_ENV_NAMES:
+            return True
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            if child.func.id in _SLACK_HELPER_CALLS:
+                return True
+    return False
+
+
+def _slack_derived_threshold_names(tree: ast.AST) -> set[str]:
+    """Names assigned from a reference via THRESHOLD_SLACK_* or apply_*_slack().
+
+    Calibration must write the reference literal only; CI derives assertion
+    thresholds (MAX/MIN/THRESHOLD) from slack — never apply worst-of-N to these.
+    """
+    derived: set[str] = set()
+    for n in tree.body:
+        if isinstance(n, ast.Assign):
+            targets, value = n.targets, n.value
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            targets, value = [n.target], n.value
+        else:
+            continue
+        if not _expr_uses_slack(value):
+            continue
+        for t in targets:
+            if isinstance(t, ast.Name):
+                derived.add(t.id)
+    return derived
+
+
+def _pick_calibration_constant(candidates: list[tuple[str, str | None]]) -> tuple[str, str | None]:
+    """Prefer *_REF / *_REFERENCE over bare *_MAX / *_MIN calibration targets."""
+    for suffix in ("_REF", "_REFERENCE"):
+        for name, nested in candidates:
+            if name.endswith(suffix):
+                return name, nested
+    return candidates[0]
 
 
 def _ctx_vars(tree):
@@ -1286,23 +1396,41 @@ def _stage_entry(
     return entry
 
 
-def _emit_groups(constants, cfg_paths, default_file, counters):
+def _emit_groups(constants, cfg_paths, default_file, counters,
+                 slack_derived: set[str] | None = None):
     """Build {group: {metric_kind: metric_dict}} from a constant list."""
-    groups = {}
+    slack_derived = slack_derived or set()
+    by_metric: dict[str, list[tuple[str, str | None]]] = {}
     for name, nested in constants:
+        if name in slack_derived or name.endswith("_THRESHOLD"):
+            continue
         mk = match_metric(name, nested)
         if mk is None:
             continue
+        by_metric.setdefault(mk, []).append((name, nested))
+    groups: dict[str, dict] = {}
+    for mk, candidates in by_metric.items():
+        name, nested = _pick_calibration_constant(candidates)
         spec = METRIC_SPECS[mk]
         jf, jp = _split_source(cfg_paths.get(mk), default_file)
         status = "OK" if (jf and jp) else "NEEDS_CONFIG"
-        if status == "OK": counters[0] += 1
-        else: counters[1] += 1
+        if status == "OK":
+            counters[0] += 1
+        else:
+            counters[1] += 1
         src = f"{name}[{nested!r}]" if nested else name
-        groups.setdefault(spec["group"], {})[mk] = dict(source=src,
-            json_file=jf, json_path=jp, worst=spec["worst"],
-            display=dict(label=spec["label"], scale=spec["scale"],
-                         digits=spec["digits"]), status=status)
+        groups.setdefault(spec["group"], {})[mk] = dict(
+            source=src,
+            json_file=jf,
+            json_path=jp,
+            worst=spec["worst"],
+            display=dict(
+                label=spec["label"],
+                scale=spec["scale"],
+                digits=spec["digits"],
+            ),
+            status=status,
+        )
     return groups
 
 
@@ -1442,6 +1570,7 @@ def discover(out, only, cfg):
         threshold_sha = sha256(threshold_tp)
         threshold_file_sha = threshold_sha if threshold_rel else None
         ignored_constants = set(ms.get("ignored_constants") or [])
+        slack_derived = _slack_derived_threshold_names(threshold_tree)
         all_constants = [
             (n, k) for (n, k) in _constants(threshold_tree)
             if n not in ignored_constants
@@ -1480,7 +1609,8 @@ def discover(out, only, cfg):
                     else:
                         preset_claimed = claimed
                     v_groups = _emit_groups(
-                        preset_claimed, v_paths, v_default, counters
+                        preset_claimed, v_paths, v_default, counters,
+                        slack_derived=slack_derived,
                     )
                     for g, metrics in v_groups.items():
                         if g in sc_by_group:
@@ -1525,7 +1655,10 @@ def discover(out, only, cfg):
             default_sample_counts = _build_sample_counts(
                 ms.get("sample_counts") or {}, default_file)
             sc_by_group = ms.get("sample_counts_by_group") or {}
-            groups = _emit_groups(all_constants, cfg_paths, default_file, counters)
+            groups = _emit_groups(
+                all_constants, cfg_paths, default_file, counters,
+                slack_derived=slack_derived,
+            )
             for g, metrics in groups.items():
                 if g in sc_by_group:
                     sample_counts = _build_sample_counts(sc_by_group[g], default_file)
@@ -1987,6 +2120,7 @@ def _run_cmd_inner(args, cfg, py, src, out):
         (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
         default=2,
     )
+    host = cfg.get("_host")
     for pass_num in range(1, max_passes + 1):
         ran_any = False
         for k in range(1, args.repeats + 1):
@@ -2008,7 +2142,7 @@ def _run_cmd_inner(args, cfg, py, src, out):
                     print(f"=== calibration pass {pass_num}/{max_passes}: "
                           f"retry {Path(test_path).stem} run {k} ===")
                 if _run_shared(test_path, stage_keys, all_stages, out, k, py,
-                               args.repeats, needed, extra_args):
+                               args.repeats, needed, extra_args, host=host):
                     audit = audit_completeness(out, all_stages)
                     print(f"completeness at HALT: "
                           f"{audit['ok']}/{audit['total']} stage-runs complete")
@@ -2023,7 +2157,7 @@ def _run_cmd_inner(args, cfg, py, src, out):
             break
         if pass_num < max_passes:
             print(f"{audit['missing_count']} incomplete — GPU cleanup before next pass")
-            if not _ensure_gpus_free(max_gpus):
+            if not _ensure_gpus_free(max_gpus, host=host):
                 print("error: GPU memory not cleared; stopping calibration passes")
                 break
     audit = audit_completeness(out, all_stages)
@@ -2157,7 +2291,8 @@ def _print_run_banner(label, test_path, stage_keys, all_stages):
         print("  (docs smoke — no benchmark params, pass/fail only)")
 
 
-def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_needed, extra_args=None):
+def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_needed,
+                extra_args=None, host=None):
     """Run pytest once on test_path; write per-stage run{k}.json from
     the result JSONs written under the fresh pytest basetemp.
     """
@@ -2219,7 +2354,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     attempts, status, reason, dur, text, pytest_rc = 0, "ok", "", 0.0, "", 0
     while attempts < _MAX_RUN_ATTEMPTS:
         attempts += 1
-        picked, pick_err = _pick_gpus_for_launch(gpus_needed, label)
+        picked, pick_err = _pick_gpus_for_launch(gpus_needed, label, host)
         if picked is None:
             status, reason, dur = "failed", pick_err, 0.0
             print(f"{label} {pick_err}")
@@ -2227,7 +2362,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
-        picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label)
+        picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label, host)
         if picked is None:
             status, reason, dur = "failed", gate_err or "launch GPU gate failed", 0.0
             print(f"{label} {reason}")
@@ -2254,7 +2389,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             )
             pytest_rc = _wait_pytest_with_watchdog(pytest_proc, log, label)
         _cleanup_after_pytest(test_path, pytest_proc.pid, basetemp)
-        if not _ensure_gpus_free(gpus_needed):
+        if not _ensure_gpus_free(gpus_needed, host=host):
             status, reason, dur = "failed", "GPU memory not released after run", 0.0
             break
         dur = time.monotonic() - t0
@@ -2272,7 +2407,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if attempts < _MAX_RUN_ATTEMPTS and retryable:
             print(f"{label} {reason} — must clear GPU to <2 GiB before retry "
                   f"({attempts}/{_MAX_RUN_ATTEMPTS})")
-            if not _ensure_gpus_free(gpus_needed):
+            if not _ensure_gpus_free(gpus_needed, host=host):
                 status, reason = "failed", "GPU memory not released before retry"
                 break
             continue
@@ -2799,7 +2934,7 @@ def _apply_write_value(worst_op: str, worst_raw: float | None,
         return _ceil_wer_reference(worst_raw)
     if stage_group == "reliability":
         return math.ceil(worst_raw)
-    if stage_group in ("accuracy", "similarity", "utmos"):
+    if stage_group in ("accuracy", "diarization", "similarity", "utmos"):
         return worst_raw
     if worst_rounded is None:
         return worst_raw
@@ -2908,6 +3043,11 @@ def _bootstrap_from_host(host: dict | None) -> None:
     venv = host.get("venv_python")
     if venv and not os.environ.get("TUNE_VENV_PYTHON"):
         os.environ.setdefault("TUNE_VENV_PYTHON", str(venv))
+    if host.get("gpu_exclude") and not os.environ.get("TUNE_GPU_EXCLUDE"):
+        os.environ.setdefault(
+            "TUNE_GPU_EXCLUDE",
+            ",".join(str(i) for i in host["gpu_exclude"]),
+        )
 
 
 def main(argv=None):

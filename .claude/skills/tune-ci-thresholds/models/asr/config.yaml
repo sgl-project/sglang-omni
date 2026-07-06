@@ -1,7 +1,7 @@
 # ASR CI threshold calibration (shared omni venv).
 #
 # CI DAG:
-#   stage-1-multi-speaker (MOSS-Transcribe-Diarize on movies800)
+#   stage-1-multi-speaker (MOSS-Transcribe-Diarize on movies800time)
 #   -> stage-2-seedtts (Qwen3-ASR on SeedTTS EN)
 #
 # Both stages use the managed router with 2 single-GPU workers (DP=2).
@@ -16,7 +16,7 @@ hf_model_ids_by_test:
   test_asr_ci_seedtts.py:
     - "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
-  - "zhaochenyang20/movies800"
+  - "zhaochenyang20/movies800time"
   - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
@@ -59,6 +59,9 @@ metric_sources:
       cp_cer_percent: "diarization_metrics_percent.cp_cer"
       cer_no_spk_cp_valid_percent: "diarization_metrics_percent.cer_no_spk_cp_valid"
       delta_cer_percent: "diarization_metrics_percent.delta_cer"
+      speaker_timestamp_der_percent: "diarization_metrics_percent.speaker_timestamp_der"
+      cer_no_spk_below_50_corpus: "diarization_metrics_percent.cer_no_spk_below_50_corpus"
+      n_above_50_pct_cer: "diarization_metrics_percent.n_above_50_pct_cer"
       cer_valid_samples: "diarization_metrics_percent.cer_valid_samples"
       cp_cer_valid_samples: "diarization_metrics_percent.cp_cer_valid_samples"
       throughput_qps: "speed.throughput_qps"

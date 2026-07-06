@@ -221,7 +221,7 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "test_asr_ci_seedtts.py": ["Qwen/Qwen3-ASR-1.7B"],
     }
     assert {
-        "zhaochenyang20/movies800",
+        "zhaochenyang20/movies800time",
         "zhaochenyang20/seed-tts-eval-arrow",
     }.issubset(config["hf_datasets"])
 

@@ -1,23 +1,29 @@
-# In-container calibration layout — sglang-h100-ci
+# H100 CI calibration layout — sglang-h100-ci profile
 #
-# Used by tune.py inside an already-running repro container (hostname match
-# or --host sglang-h100-ci). User starts the container; this file only records
-# paths and env overrides for calibration — not how to launch Docker.
+# Used by tune.py on the shared H100 host. Calibration may run in **any**
+# container on the machine that sees the full GPU set — it does **not** have
+# to be the dedicated 2-GPU CI repro container (`--gpus device=6,7`).
+#
+# Override at runtime (no repo edits required):
+#   export TUNE_HOST=sglang-h100-ci
+#   export TUNE_REPO_ROOT=/path/to/worktree   # git worktree or checkout
+#   export TUNE_VENV_PYTHON=/path/to/omni/bin/python
+#   export TUNE_GPU_EXCLUDE=6,7               # CI-reserved GPUs on 8× hosts
 
 name: sglang-h100-ci
 hostname: sglang-h100-ci
 
+# Default checkout; override with $TUNE_REPO_ROOT for worktrees.
 repo_root: /data/sglang-omni
 venv_python: /github/home/calibration/omni/bin/python
+
+# On 8× H100 shared hosts, GPU 6–7 run CI continuously — never pick or kill them.
+gpu_exclude: [6, 7]
 
 physical:
   hf_hub: /root/.cache/huggingface
   speaker_sim: /root/.cache/huggingface/speaker_sim
   omni_ci_home: /github/home/calibration
-
-# tune.py maps physical.* → auto_env (HF_HOME, SEEDTTS_SIM_CACHE_DIR, …).
-# No symlinks. precheck reads these paths directly.
-# Full agent checklist: ../AGENT-PRECHECK.md
 
 precheck_checklist:
   repo_root_exists: /data/sglang-omni/pyproject.toml
@@ -41,8 +47,8 @@ speaker_similarity_bootstrap:
       SEEDTTS_SIM_CACHE_DIR: /root/.cache/huggingface/speaker_sim
     hf_token: "source ~/.zshrc"
     command: |
-      cd /data/sglang-omni
-      /github/home/calibration/omni/bin/python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+      cd "${TUNE_REPO_ROOT:-/data/sglang-omni}"
+      "${TUNE_VENV_PYTHON:-/github/home/calibration/omni/bin/python}" -m benchmarks.metrics.speaker_similarity_assets --warm-cache
 
 agent_policy:
   env_check: report_missing_first

@@ -4,8 +4,14 @@
 session (including after a fresh container). **Do not** run `tune.py run` until
 every mandatory item passes.
 
-**Assumption:** repro container is already running. Do not document or execute
+**Assumption:** the user is already in a suitable environment on the H100 host
+(any container or shell with GPU access, omni venv, and HF cache — **not**
+necessarily the dedicated CI repro container). Do not document or execute
 `docker run`, volume maps, or host-side setup here.
+
+**Shared 8× H100 hosts:** CI occupies GPU **6,7**. Before any `tune.py run`,
+export `TUNE_GPU_EXCLUDE=6,7` (or rely on host profile `gpu_exclude`). Calibration
+must never kill or schedule work on those GPUs.
 
 **Policy** (`hosts/*/yaml` → `agent_policy`):
 
@@ -37,6 +43,10 @@ For `--model tts`, the `tts` alias expands to every TTS model preset declared
 in `models/tts/config.yaml` (currently Higgs and MOSS). Calibration must produce
 worst-of-5 for each preset independently even though CI samples one preset per
 commit.
+
+**Shared 8× H100 / NVLink hosts:** CI repro is 2× H100. On larger shared boxes,
+also read `SKILL.md` **Shared multi-GPU / NVLink host safety** — run **Gate 4b**
+before calibration and after each repeat; use **one `--resume` per process**.
 
 **Threshold symbols (do not cross-apply):**
 
@@ -92,8 +102,10 @@ See SKILL.md **Fresh calibration session**.
 ```bash
 python .claude/skills/tune-ci-thresholds/tune.py hosts-list
 hostname
-# then cd to repo_root from host profile (sglang-h100-ci: /data/sglang-omni)
-cd /data/sglang-omni
+# cd to repo_root — use $TUNE_REPO_ROOT for git worktrees
+cd "${TUNE_REPO_ROOT:-/data/sglang-omni}"
+export TUNE_HOST=sglang-h100-ci
+export TUNE_GPU_EXCLUDE=6,7   # mandatory on shared 8× hosts
 ```
 
 **Pass:**
@@ -119,7 +131,8 @@ Reference profile `sglang-h100-ci` (`hosts/sglang-h100-ci.yaml`, current/active)
 | `physical.speaker_sim` | `/root/.cache/huggingface/speaker_sim` |
 | `physical.omni_ci_home` | `/github/home/calibration` |
 
-If the user gave different paths in chat, use those and report that host YAML
+If the user gave different paths in chat (worktree, external venv), set
+`TUNE_REPO_ROOT` / `TUNE_VENV_PYTHON` and use those — report that host YAML
 may be stale.
 
 ---
@@ -184,17 +197,56 @@ for calibration.
 
 ---
 
-## Gate 4 — GPUs idle
+## Gate 4 — GPUs idle (calibration pool)
 
 ```bash
+export TUNE_GPU_EXCLUDE=6,7   # if not already set from host profile
 nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv
 ```
 
-**Pass:** 2× H100 (or profile-equivalent), each **≤ 2048 MiB** used before
-calibration runs (`tune.py` re-checks at run time).
+**Pass:** at least **2** GPUs in the calibration pool (all indices minus
+`TUNE_GPU_EXCLUDE`) each **≤ 2048 MiB** before calibration runs. CI GPUs 6,7
+may be fully busy — that is expected and must **not** block ASR/TTS/Omni
+calibration on GPUs 0–5.
 
-**Fail → report** GPU busy; do not start `tune.py run`. Precheck does not kill
-processes.
+**Fail → report** if fewer than 2 calibration-pool GPUs are idle. Precheck does
+not kill processes on excluded GPUs.
+
+---
+
+## Gate 4b — CUDA runtime smoke (mandatory before and after each repeat)
+
+`nvidia-smi` alone is **not** sufficient. PyTorch must initialize CUDA.
+
+Set `VENV` from host profile (`TUNE_VENV_PYTHON` or `venv_python` in YAML).
+When using a **cu130** omni venv on a host whose driver reports CUDA **12.9**,
+also set `LD_LIBRARY_PATH` (see `SKILL.md` **Shared multi-GPU / NVLink host
+safety**):
+
+```bash
+VENV=/path/to/omni/bin/python
+export LD_LIBRARY_PATH="$(dirname "$VENV")/../lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+"$VENV" -c "import torch; assert torch.cuda.is_available(), 'CUDA unavailable'; print('PASS cuda', torch.cuda.device_count())"
+```
+
+**Pass:** prints `PASS cuda` with count ≥ 2 (or ≥ GPUs needed for scope).
+
+**Fail → STOP calibration immediately:**
+
+- Do **not** start `tune.py run` or `--resume`.
+- Do **not** blind-retry with `pkill -9` / repeated `--resume` loops.
+- Report to the user: container CUDA runtime is broken (common after aggressive
+  inter-repeat GPU cleanup on NVLink systems). Recovery is **host-side**:
+
+```bash
+# host
+sudo systemctl restart nvidia-fabricmanager
+docker stop <container> && docker start <container>
+# re-test Gate 4b inside container; if still fail → recreate container or reboot host
+```
+
+Re-run Gate 4b after **every** completed pytest repeat on shared multi-GPU
+hosts before the next `--resume`.
 
 ---
 
@@ -210,7 +262,7 @@ ls "$HF/hub" 2>/dev/null | rg -i 'qwen3|higgs|moss|movies800|seed-tts|video|mmmu
 Expected repos by model (precheck validates each):
 
 **`asr`:** models `OpenMOSS-Team/MOSS-Transcribe-Diarize`,
-`Qwen/Qwen3-ASR-1.7B`; datasets `zhaochenyang20/movies800`,
+`Qwen/Qwen3-ASR-1.7B`; datasets `zhaochenyang20/movies800time`,
 `zhaochenyang20/seed-tts-eval-arrow`.
 
 **`tts`:** models `bosonai/higgs-tts-3-4b`,
@@ -295,11 +347,13 @@ stages only if user accepts partial scope.
 Run for **each** model in Gate 0 scope:
 
 ```bash
-cd /data/sglang-omni
-export TUNE_HOST=sglang-h100-ci   # if Gate 1 autodetect failed
+cd "${TUNE_REPO_ROOT:-/data/sglang-omni}"
+export TUNE_HOST=sglang-h100-ci
+export TUNE_GPU_EXCLUDE=6,7
 
 python .claude/skills/tune-ci-thresholds/tune.py --model asr precheck \
   --output-dir /tmp/precheck_asr
+```
 
 python .claude/skills/tune-ci-thresholds/tune.py --model tts precheck \
   --output-dir /tmp/precheck_tts
@@ -368,6 +422,10 @@ report env issue (`XDG_CACHE_HOME`, `HOME`, HF path split) before calibration.
 **All mandatory gates (0–8 for your scope) pass** → follow `SKILL.md` for
 `tune.py run` (dual-terminal tail, poll ≤120s, strict audit).
 
+On **shared multi-GPU hosts**, Gate **4b** is mandatory before the first `run`
+and after **each** repeat (see `SKILL.md` **Shared multi-GPU / NVLink host
+safety**).
+
 ### Agent poll interval (P0 — every ≤120s while `tune.py run` is active)
 
 Never blind-wait more than **2 minutes**. Each cycle:
@@ -394,3 +452,10 @@ Before `run`:
 - Proceed while strict audit has △/✗ repeats
 - Blind-wait **>120s** without `status` + `strict-audit` during active calibration
 - Fix env without reporting first (unless user explicitly asked)
+- **Single unattended `tune.py run --repeats N` through all N repeats** on shared
+  **8× NVLink** hosts (use one `--resume` per process; see `SKILL.md`)
+- **Continuing `--resume` when Gate 4b fails** (`torch.cuda.is_available()` False)
+- **Agent-initiated host reboot / fabric restart** without user request — report
+  recovery steps instead
+- **Omitting `LD_LIBRARY_PATH`** for cu130 venv when `libnvrtc` / `deep_gemm`
+  errors appear in pytest logs

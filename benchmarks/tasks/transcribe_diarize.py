@@ -19,7 +19,7 @@ from benchmarks.metrics.transcribe_diarize_metrics import (
     compute_diarization_metrics,
 )
 
-MOVIES800_REPO_ID: Final[str] = "zhaochenyang20/movies800"
+MOVIES800_REPO_ID: Final[str] = "zhaochenyang20/movies800time"
 EXPECTED_SAMPLE_COUNT: Final[int] = 800
 TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(r"\[\d+(?:\.\d+)?\]")
 SPEAKER_RE: Final[re.Pattern[str]] = re.compile(r"\[\s*s0*(\d+)\s*\]", re.IGNORECASE)
@@ -56,6 +56,15 @@ class PerSampleRecord(TypedDict):
     cer_valid: bool | None
     cp_cer_valid: bool | None
     cp_invalid_reason: str | None
+    speaker_timestamp_der_valid: bool | None
+    speaker_timestamp_der_invalid_reason: str | None
+    speaker_timestamp_ref_segments: int | None
+    speaker_timestamp_pred_segments: int | None
+    speaker_timestamp_der: float | None
+    speaker_timestamp_der_total_seconds: float | None
+    speaker_timestamp_der_false_alarm: float | None
+    speaker_timestamp_der_missed_detection: float | None
+    speaker_timestamp_der_confusion: float | None
 
 
 class EvaluationConfig(TypedDict):
@@ -130,6 +139,9 @@ def load_movies800_samples(
 
 
 def extract_prediction_text(payload: Mapping[str, JSONValue]) -> str:
+    text = payload.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
     segments = payload.get("segments")
     if isinstance(segments, list):
         texts = [
@@ -139,7 +151,6 @@ def extract_prediction_text(payload: Mapping[str, JSONValue]) -> str:
         ]
         if texts:
             return " ".join(texts)
-    text = payload.get("text")
     if not isinstance(text, str):
         raise ValueError("Transcription response is missing a string 'text' field")
     return text.strip()
@@ -227,6 +238,51 @@ def build_evaluation_payload(
                 ),
                 "cp_invalid_reason": (
                     diarization_sample.cp_invalid_reason if diarization_sample else None
+                ),
+                "speaker_timestamp_der_valid": (
+                    diarization_sample.speaker_timestamp_der_valid
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der_invalid_reason": (
+                    diarization_sample.speaker_timestamp_der_invalid_reason
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_ref_segments": (
+                    diarization_sample.speaker_timestamp_ref_segments
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_pred_segments": (
+                    diarization_sample.speaker_timestamp_pred_segments
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der": (
+                    diarization_sample.speaker_timestamp_der
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der_total_seconds": (
+                    diarization_sample.speaker_timestamp_der_total_seconds
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der_false_alarm": (
+                    diarization_sample.speaker_timestamp_der_false_alarm
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der_missed_detection": (
+                    diarization_sample.speaker_timestamp_der_missed_detection
+                    if diarization_sample
+                    else None
+                ),
+                "speaker_timestamp_der_confusion": (
+                    diarization_sample.speaker_timestamp_der_confusion
+                    if diarization_sample
+                    else None
                 ),
             }
         )

@@ -1,20 +1,23 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H100 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Each new user calibration request MUST use a fresh UTC-timestamp --output-dir on current HEAD; --resume only when explicitly continuing the same interrupted session on the same commit. Reports must include the full calibration commit SHA. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports omni, asr, and tts; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H100 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Each new user calibration request MUST use a fresh UTC-timestamp --output-dir on current HEAD; --resume only when explicitly continuing the same interrupted session on the same commit. On shared 8× NVLink hosts use one tune.py --resume per repeat, Gate 4b CUDA smoke, and LD_LIBRARY_PATH for cu130 venvs (see Shared multi-GPU / NVLink host safety). Reports must include the full calibration commit SHA. Host-specific repo/venv/cache paths live in hosts/*.yaml (CI doc paths are reference only). Currently supports omni, asr, and tts; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
 
 ## Scope
-This skill is for the H100 CI-reproduction host (the same image
-CI uses,
+This skill is for the **H100 CI host** (image
 `crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
-a CUDA-13 image; the container name varies). The host is 2× H100.
-Numbers from environments that differ meaningfully from CI (different
-GPU model, different image, different pinned sglang/torch) are not
-comparable and must not drive threshold changes. If you just want to
-run the tests locally, use pytest directly — this skill is not for
-that.
+CUDA 13; container name varies). CI itself runs on **2× H100** (often GPU 6,7 on
+8-GPU shared boxes). Threshold calibration must use the **same pinned sglang/torch
+and cached assets** as CI, but it **does not** require the dedicated CI repro
+container — any container on the same H100 host with access to the omni venv,
+HF cache, and **non-CI GPUs** is valid.
+
+Numbers from environments that differ meaningfully from CI (different GPU model,
+different image, different pinned sglang/torch) are not comparable and must not
+drive threshold changes. If you just want to run the tests locally, use pytest
+directly — this skill is not for that.
 
 **Host layouts are not fixed to the CI doc paths.** Paths in
 `models/*/config.yaml` describe the **GitHub Actions reference**. Inside a
@@ -93,6 +96,107 @@ Every `report.md` must show the **full** calibration commit at the top:
 The user must be able to verify which commit was calibrated without guessing
 from the run-dir date. `strict-audit` prints `calibration_git_sha` and
 `GIT PROVENANCE: ok|FAIL`; both gates must pass before report or apply.
+
+## Shared multi-GPU / NVLink host safety (P0 — non-negotiable)
+
+The CI repro image targets **2× H100**. Many calibration hosts expose **more
+GPUs** (e.g. 8× H100 with NVLink). On those hosts, `tune.py` **must not** be
+treated like a fire-and-forget batch job: inter-repeat GPU cleanup can corrupt
+the **container CUDA runtime** (not the Docker image or mounted data).
+
+### What breaks (observed 2026-07)
+
+Between pytest repeats, `tune.py` runs aggressive cleanup:
+
+- `pkill -9 -f` on `sgl-omni serve`, `stage_process`, `pytest tests/test_model`, …
+- `.github/scripts/delete_gpu_process.sh` (and `--kill-orphans` when needed)
+
+On **8× H100 NVLink** systems this can trigger kernel errors such as
+`NV_ERR_FABRIC_STATE_OUT_OF_SYNC`. Symptom chain:
+
+1. Repeat **k=1** succeeds (metrics written).
+2. Repeat **k≥2** fails at server startup (`torch.cuda.set_device`, `libnvrtc.so.13`,
+   or `driver … too old for cu130`).
+3. **`torch.cuda.is_available()` becomes `False` for all venvs** inside the
+   container — `nvidia-smi` may still list GPUs.
+
+This is **recoverable** (container/host driver state), not permanent data loss.
+Recovery is **host-side** — see **CUDA runtime recovery** below.
+
+### Agent rules on shared / multi-GPU hosts
+
+| Rule | Action |
+|------|--------|
+| **CUDA smoke before first `run`** | Must pass **Gate 4b** in `AGENT-PRECHECK.md` |
+| **One repeat per `tune.py` process** | On hosts with **>2 GPUs visible**, do **not** leave a single `tune.py run --repeats N` unattended through all N repeats. Run `--resume`, let it fill **one** missing repeat, **exit**, re-check CUDA, then start the next `--resume`. |
+| **CUDA smoke after every repeat** | Re-run Gate 4b; if `False`, **STOP** — no blind `--resume` loops |
+| **`LD_LIBRARY_PATH` for cu130 venv** | Export before every precheck / run / status (see below) |
+| **Pin visible GPUs** | Use `$TUNE_GPU_EXCLUDE` / host `gpu_exclude` so CI GPUs (typically **6,7**) are never picked or killed. Pick 2 idle GPUs from the calibration pool only. |
+| **No agent-initiated recovery kills** | If CUDA breaks, **report** recovery steps to the user; do not spam `pkill -9` or repeated `--resume` |
+
+### Required env (cu130 omni venv on non–CI-repro hosts)
+
+When `precheck` shows `torch: …+cu130` but `nvidia-smi` reports CUDA **12.9**
+(not CI's CUDA 13 driver), calibration may still run briefly — but it is
+**fragile**. Always export `LD_LIBRARY_PATH` so `deep_gemm` / `libnvrtc.so.13`
+resolve from the venv (not system CUDA 12.9):
+
+```bash
+VENV="${TUNE_VENV_PYTHON:-/path/to/omni/bin/python}"
+export LD_LIBRARY_PATH="$(
+  dirname "$VENV")/../lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+```
+
+Re-export before **every** `precheck`, `run`, `status`, and `strict-audit`.
+
+**Prefer** the official **CI repro container** (CUDA 13 driver + 2× H100) when
+calibrating thresholds in isolation. On **shared 8× H100 hosts**, calibrate from
+**any** container that sees all GPUs, set `TUNE_GPU_EXCLUDE=6,7`, and never run
+global `pkill` cleanup that would disturb CI. Numbers from a mismatched driver
+stack are not comparable to CI.
+
+### Safe repeat loop (shared host — mandatory pattern)
+
+Use the **same** `--output-dir` and `--resume`; start a **new** `tune.py`
+process for each missing repeat:
+
+```bash
+export TUNE_HOST=sglang-h100-ci TUNE_REPO_ROOT=… TUNE_VENV_PYTHON=…
+export LD_LIBRARY_PATH="$(dirname "$TUNE_VENV_PYTHON")/../lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+
+cd "$TUNE_REPO_ROOT"
+"$TUNE_VENV_PYTHON" -c "import torch; assert torch.cuda.is_available(), 'CUDA broken — stop'"
+
+while true; do
+  python .claude/skills/tune-ci-thresholds/tune.py strict-audit --run-dir "$RUN"
+  # stop when STRICT READY shows N/N for all stages
+  python .claude/skills/tune-ci-thresholds/tune.py --model <M> run \
+    --stages <S> --repeats <N> --output-dir "$RUN" --resume
+  "$TUNE_VENV_PYTHON" -c "import torch; assert torch.cuda.is_available(), 'CUDA broken after repeat — stop'"
+  sleep 30   # let GPUs settle before next process
+done
+```
+
+Agent: run **one** `--resume` per agent turn (or per user confirmation), verify
+strict-audit progress and CUDA, then continue — do not chain all N repeats in
+one long background job on 8× GPU hosts.
+
+### CUDA runtime recovery (user / host — agent reports, does not reboot)
+
+If `torch.cuda.is_available()` is `False` but `nvidia-smi` works, **stop
+calibration** and give the user:
+
+```bash
+# On the **host** (not inside the broken container):
+nvidia-smi
+sudo systemctl restart nvidia-fabricmanager   # required on H100 NVLink systems
+docker stop <container>
+docker start <container>
+# If still False: docker stop; re-run original docker run (volumes unchanged)
+# Last resort: host reboot, then start container
+```
+
+Inside the recovered container, Gate 4b must pass before any `--resume`.
 
 ## Zero-tolerance completeness contract (P0 — non-negotiable)
 
@@ -239,14 +343,14 @@ ignore HALT and start a fresh run directory without user approval.
 
 ## Calibration host profiles (mandatory — before precheck)
 
-**Assumes the repro container is already running.** The user starts Docker;
-this skill only describes **in-container paths** for `tune.py` / precheck /
-calibration. Do not document `docker run`, volume maps, or host-side layout
-in host profiles.
+**Does not require the CI repro container.** Calibration runs in whatever
+container/shell the user already has on the H100 host, as long as paths resolve
+and CI-reserved GPUs are excluded. The user may use a **git worktree** — set
+`$TUNE_REPO_ROOT` to that checkout; do not assume `/data/sglang-omni`.
 
 **Agent runbook:** `.claude/skills/tune-ci-thresholds/AGENT-PRECHECK.md` —
 mandatory environment gate (Gates 0–8) before any `tune.py run`. Agent-facing
-only; no Docker or user setup instructions.
+only; no Docker launch instructions in the skill.
 
 Calibration does **not** require CI doc paths (`/sgl-workspace/...`). On a
 repro machine, **`tune.py` loads `hosts/<name>.yaml`** and applies
@@ -254,6 +358,16 @@ repro machine, **`tune.py` loads `hosts/<name>.yaml`** and applies
 
 **Selection order:** `--host <name>` → `$TUNE_HOST` → autodetect by
 `hostname`. List profiles: `tune.py hosts-list`.
+
+**Runtime overrides (mandatory on shared hosts — do not edit repo files unless
+user asks to commit):**
+
+```bash
+export TUNE_HOST=sglang-h100-ci
+export TUNE_REPO_ROOT=/path/to/checkout-or-worktree
+export TUNE_VENV_PYTHON=/path/to/omni/bin/python
+export TUNE_GPU_EXCLUDE=6,7    # CI-reserved; tune.py never picks or kills these
+```
 
 When a host profile is active, `tune.py` automatically:
 
@@ -264,9 +378,10 @@ When a host profile is active, `tune.py` automatically:
 | `HF_HOME` | `physical.hf_hub` |
 | `SEEDTTS_SIM_CACHE_DIR` | `physical.speaker_sim` |
 | `OMNI_CI_HOME` (optional) | `physical.omni_ci_home` |
+| GPU pool | `gpu_exclude` → `$TUNE_GPU_EXCLUDE` (never pick/kill these indices) |
 
 User-provided paths in chat override the YAML; update the host file when
-the layout stabilizes.
+the layout stabilizes and the user asks to commit.
 
 ### What a host profile defines
 
@@ -306,14 +421,15 @@ HF_ENDPOINT=https://huggingface.co <venv>/bin/python -c \
 
 ### Shipped profile: `sglang-h100-ci` (current / active)
 
-`repo_root` `/data/sglang-omni`, `venv_python`
-`/github/home/calibration/omni/bin/python`, `physical.hf_hub`
-`/root/.cache/huggingface`, `physical.speaker_sim`
-`/root/.cache/huggingface/speaker_sim`, `physical.omni_ci_home`
-`/github/home/calibration`. Container image
-`crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev`,
-GPUs `NVIDIA_VISIBLE_DEVICES=6,7` (2× NVIDIA H100 80GB HBM3). Pins:
-**sglang 0.5.12.post1**, **torch 2.11.0** (cu130).
+Defaults: `repo_root` `/data/sglang-omni` (override with `$TUNE_REPO_ROOT` for
+worktrees), `venv_python` `/github/home/calibration/omni/bin/python` (override
+with `$TUNE_VENV_PYTHON`), `physical.hf_hub` `/root/.cache/huggingface`,
+`physical.speaker_sim` `/root/.cache/huggingface/speaker_sim`,
+`physical.omni_ci_home` `/github/home/calibration`, `gpu_exclude: [6, 7]`.
+
+CI repro container uses `NVIDIA_VISIBLE_DEVICES=6,7` (2× H100). **Calibration
+on shared 8× hosts runs elsewhere** with `TUNE_GPU_EXCLUDE=6,7` so CI is
+untouched. Pins: **sglang 0.5.12.post1**, **torch 2.11.0** (cu130).
 
 ### Adding a new host profile
 
@@ -666,7 +782,7 @@ Common ASR preset:
 python .claude/skills/tune-ci-thresholds/tune.py --model asr run \
   --stages ALL --repeats 5 --output-dir .tune-runs/<timestamp>_asr_all_r5
 
-# ASR stage 1 only (MOSS-Transcribe-Diarize on movies800):
+# ASR stage 1 only (MOSS-Transcribe-Diarize on movies800time):
 python .claude/skills/tune-ci-thresholds/tune.py --model asr run \
   --stages multi_speaker --repeats 5 --output-dir .tune-runs/<timestamp>_asr_multi_speaker_r5
 
@@ -695,23 +811,37 @@ uses `--stages ALL`; targeted reruns use `multi_speaker` or `seedtts`.
 
 | Stage key | Group | What gets written | Test constant(s) |
 |-----------|-------|-------------------|------------------|
-| `multi_speaker_diarization` | diarization | CER / cpCER / valid sample refs | `MOSS_TD_CER_*`, `MOSS_TD_CP_CER_*`, `MOSS_TD_DELTA_CER_*` |
+| `multi_speaker_diarization` | diarization | CER / cpCER / DER / valid sample refs | `MOSS_TD_CER_*`, `MOSS_TD_CP_CER_*`, `MOSS_TD_DELTA_CER_*`, `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF`, `MOSS_TD_N_ABOVE_50_CER_MAX`, `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF` |
 | `multi_speaker_speed` | speed | throughput + latency + RTF P95 refs | `MOSS_TD_THROUGHPUT_QPS_MIN`, `MOSS_TD_LATENCY_*`, `MOSS_TD_RTF_*` |
 | `seedtts_wer` | wer | corpus + per-sample WER ref | `SEEDTTS_ASR_CORPUS_WER_MAX`, `SEEDTTS_ASR_SAMPLE_WER_MAX` |
 | `seedtts_speed` | speed | throughput + latency + RTF P95 refs | `QWEN3_ASR_THROUGHPUT_MIN`, `QWEN3_ASR_LATENCY_*`, `QWEN3_ASR_RTF_*` |
 
 Notes:
 - Stage 1 uses **`OpenMOSS-Team/MOSS-Transcribe-Diarize`** and dataset
-  **`zhaochenyang20/movies800`**. Strict audit expects
-  **`MOSS_TD_CI_SAMPLES`** samples; CER/cpCER metrics are already percentages
-  in the JSON, so display scale is **1**, not 100.
+  **`zhaochenyang20/movies800time`**. Strict audit expects
+  **`MOSS_TD_CI_SAMPLES`** samples; CER/cpCER/DER metrics are already percentages
+  in the JSON, so display scale is **1**, not 100. Calibration writes the
+  pre-slack reference constants (`*_REF`) and raw count caps only; never write
+  derived `*_MAX` literals whose RHS is `*_REF * THRESHOLD_SLACK_*`.
+- **DER (speaker-timestamp diarization error rate)** calibrates the reference
+  constant `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF` (worst-of-N `max`); the
+  test derives `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_MAX` via the slack helper.
+  Both start at `None`, so the DER gate is skipped (prints `[threshold pending]`)
+  until the first DER calibration fills in the reference.
+- **Partitioned CER (WER-style robustness)** reports global `cer_no_spk`, then
+  `cer_no_spk_below_50_corpus` (corpus CER over samples with per-sample CER
+  ≤ 50%) and `n_above_50_pct_cer` (count of catastrophic >50% CER samples).
+  Calibrate `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF` and cap
+  `MOSS_TD_N_ABOVE_50_CER_MAX`; the test derives the below-50 MAX via slack.
 - Stage 2 uses **`Qwen/Qwen3-ASR-1.7B`** and dataset
   **`zhaochenyang20/seed-tts-eval-arrow`**. Strict audit expects
   **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** samples.
 - Both stages use the **`omni`** venv and 2-GPU router DP=2.
-- **CI slack:** tune.py writes P95 reference constants only; assertions use
-  derived threshold values where the tests define slack helpers. Do **not**
-  bake slack into calibrated literals.
+- **CI slack:** tune.py writes P95/reference constants only; assertions use
+  derived threshold values where the tests define slack helpers. Slack is a
+  CI assertion margin, **not** part of threshold selection. Do **not** bake slack
+  into calibrated literals, and do not edit constants whose value is derived by
+  `THRESHOLD_SLACK_*` or `apply_*_slack()`.
 - Shortcuts: `multi_speaker`, `seedtts`, `@diarization`, `@wer`, `@speed`.
 
 ### TTS random-pick CI vs calibration coverage
@@ -1014,6 +1144,9 @@ gate) blocks the chain.
 | `TORCHINDUCTOR_CACHE_DIR=/.torchinductor` or unset (inherits garbage) | **Every** server start re-captures CUDA graphs (~minutes); log shows long `Capturing batches` | Set via `ci_env.sh` → `${OMNI_CI_HOME}/.torchinductor` |
 | `HOME=/root` or datasets under `/root/.cache/huggingface` | HF cache miss, re-download, wrong normalizer paths | `HOME=/github/home`, `HF_HOME=/github/home/.cache/huggingface` |
 | Killing calibration mid-run without cleaning orphans | `nvidia-smi` shows ~70–85 GiB used but “No running processes” | `pgrep -af multiprocessing.spawn` then `kill -9`; run `delete_gpu_process.sh` |
+| Single long `tune.py run --repeats 5` on **8× NVLink** host | Repeat 1 ✓, repeat 2+ server crash; then **`torch.cuda` False** for all venvs | **One repeat per `tune.py` process** + Gate 4b after each; see **Shared multi-GPU / NVLink host safety** |
+| Missing `LD_LIBRARY_PATH` (cu130 venv) | `libnvrtc.so.13` / `deep_gemm` load failure on repeat 1 | Export venv `nvidia/cu13/lib` before every precheck/run |
+| Blind `--resume` loop after CUDA break | Fabric desync worsens; user must restart container on host | **STOP** when Gate 4b fails; report recovery steps |
 
 **Before any pytest / calibration / WER sweep**, always:
 
@@ -1037,6 +1170,10 @@ Only the Qwen3-ASR router stage needs 2 free GPUs after `delete_gpu_process.sh`.
 
 ### Agent operational rules (mandatory)
 
+- **Shared multi-GPU hosts** — follow **Shared multi-GPU / NVLink host safety**
+  (one `--resume` per process, Gate 4b before/after each repeat, `LD_LIBRARY_PATH`
+  for cu130). Never chain all N repeats in one unattended `tune.py run` when
+  `nvidia-smi -L` shows more than 2 GPUs.
 - **Two-terminal supervision** — follow **Two-terminal supervision (mandatory —
   always)** at the top of this skill. Agent creates Tab A
   (`tail_calibration_pytest.sh <run-dir>`) then Tab B (job). Tab A = pytest log;
@@ -1339,7 +1476,22 @@ weights checklist for agents).
    (display-only), `write_value` (the literal to write), `current_raw`,
    and `direction` (`tightens` / `loosens` / `equal` / `unknown`).
 
-   **Which value to write:**
+  **Slack boundary (non-negotiable):**
+    - Calibration decides and writes **pre-slack** references only. Slack belongs
+      exclusively to CI assertions.
+    - Never write a literal whose RHS is derived from `THRESHOLD_SLACK_HIGHER`,
+      `THRESHOLD_SLACK_LOWER`, `apply_wer_slack()`, `apply_mos_slack()`, or any
+      other slack helper. Examples: MOSS-TD `*_PERCENT_MAX` / speed `*_MIN`
+      constants are derived from `*_REF`; write the `*_REF` constants instead.
+    - Naming exception: some reference constants are historically named
+      `*_MAX` / `*_MIN` (for example SeedTTS `*_WER_MAX`,
+      `QWEN3_ASR_THROUGHPUT_MIN`). These are valid apply targets **only when**
+      the CI assertion uses a separate derived `*_THRESHOLD` constant.
+    - `discover` / `stages.yaml` / `apply-plan` must identify the pre-slack
+      source symbol. If a metric source points at a slack-derived symbol, stop
+      and fix `discover` / `stages.yaml` before applying.
+
+  **Which value to write:**
      - **`wer`:** `write_value` = `ceil(worst_raw, 4 dp)` — never round
        down or to `display.digits` (e.g. 0.02387640 → 0.0239, not
        0.023876404494382022 or 0.0238). Write into `*_MAX` /
@@ -1349,12 +1501,14 @@ weights checklist for agents).
        exactly into `*_MIN_ACCURACY`, `*_SIMILARITY_*_MIN`, or
        `*_UTMOS_*_REFERENCE`. Report percentages use 2 decimal places for
        readability only; similarity and UTMOS use raw scores (not %).
-     - **`diarization`:** use `write_value` from apply-plan. MOSS-TD CER/cpCER
-       values are already JSON percentages, so never multiply by `scale`; valid
-       sample metrics are raw counts.
-     - **`speed`:** use `write_value` from apply-plan (rounded unless that
-       would tighten beyond `worst_raw`). Never re-round or multiply by
-       `scale`.
+    - **`diarization`:** `write_value` = `worst_raw` from apply-plan, but only
+      when the source is a pre-slack reference (`*_REF`) or a raw count cap (for
+      example `MOSS_TD_N_ABOVE_50_CER_MAX`, `*_VALID_SAMPLES_MIN`). MOSS-TD
+      CER/cpCER values are already JSON percentages, so never round to display
+      digits and never multiply by `scale`.
+    - **`speed`:** use `write_value` from apply-plan (rounded unless that
+      would tighten beyond `worst_raw`). Never re-round or multiply by
+      `scale`; for MOSS-TD speed, write `*_REF`, not derived `*_MIN` / `*_MAX`.
 
    Bounded write rules (enforced in `write_value`):
      - `worst_op == "min"`: written value must be `<= worst_raw`
@@ -1392,6 +1546,10 @@ weights checklist for agents).
    path, and after the user accepts in interactive prompts):
      - Write **`write_value`** from `apply-plan` — never `worst_rounded`
        directly, and never re-format with `display.digits`.
+     - Before editing, inspect the target assignment. If its RHS references
+       `THRESHOLD_SLACK_*` or calls `apply_*_slack()`, it is a CI assertion
+       threshold, not a calibration source; abort that metric and repair the
+       metric source to the underlying reference constant.
      - **TTS preset isolation:** each stage's `calibration_preset` and
        `metrics.*.source` / `symbol` from apply-plan identify the exact
        literal to edit (`HIGGS_VC_*` for higgs, `MOSS_VC_*` for moss). Never

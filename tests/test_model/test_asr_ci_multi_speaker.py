@@ -30,7 +30,7 @@ from tests.test_model.omni_router_utils import (
     launch_managed_router,
     router_worker_traffic_guard,
 )
-from tests.utils import MetricCheckCollector
+from tests.utils import MetricCheckCollector, assert_cer_partitioned
 
 MOSS_TD_CI_MODEL_PATH = os.environ.get(
     "MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH",
@@ -43,18 +43,23 @@ MOSS_TD_STARTUP_TIMEOUT = 600
 MOSS_TD_MEM_FRACTION_STATIC = 0.80
 
 # Worst-of-N reference values calibrated by tune.py.
-MOSS_TD_CER_PERCENT_REF = 6.612385102255017
-MOSS_TD_CER_NO_SPK_PERCENT_REF = 6.612385102255017
-MOSS_TD_CP_CER_PERCENT_REF = 13.0
-MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_REF = 6.51
-MOSS_TD_DELTA_CER_PERCENT_REF = 6.49
+MOSS_TD_CER_PERCENT_REF = 21.64738782254989
+MOSS_TD_CER_NO_SPK_PERCENT_REF = 21.64738782254989
+MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF: float | None = 4.684814904039188
+MOSS_TD_N_ABOVE_50_CER_MAX: int | None = 30
+MOSS_TD_CP_CER_PERCENT_REF = 29.1295919664421
+MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_REF = 21.64738782254989
+MOSS_TD_DELTA_CER_PERCENT_REF = 7.488559806787845
+# Speaker-timestamp DER (diarization error rate, already a percentage in the
+# result JSON). None until the first DER calibration fills in the reference.
+MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF: float | None = 21.61146575657369
 MOSS_TD_CER_VALID_SAMPLES_MIN: int | None = 784
-MOSS_TD_CP_CER_VALID_SAMPLES_MIN: int | None = 773
-MOSS_TD_THROUGHPUT_QPS_REF = 33.761
-MOSS_TD_LATENCY_MEAN_S_REF = 0.467
-MOSS_TD_LATENCY_P95_S_REF = 1.083
-MOSS_TD_RTF_MEAN_REF = 0.0456
-MOSS_TD_RTF_P95_REF = 0.0782
+MOSS_TD_CP_CER_VALID_SAMPLES_MIN: int | None = 784
+MOSS_TD_THROUGHPUT_QPS_REF = 29.991
+MOSS_TD_LATENCY_MEAN_S_REF = 0.465
+MOSS_TD_LATENCY_P95_S_REF = 0.857
+MOSS_TD_RTF_MEAN_REF = 0.0465
+MOSS_TD_RTF_P95_REF = 0.0612
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1
@@ -65,6 +70,11 @@ MOSS_TD_CER_PERCENT_MAX: float | None = round(
 MOSS_TD_CER_NO_SPK_PERCENT_MAX: float | None = round(
     MOSS_TD_CER_NO_SPK_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4
 )
+MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_MAX: float | None = (
+    round(MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF is not None
+    else None
+)
 MOSS_TD_CP_CER_PERCENT_MAX: float | None = round(
     MOSS_TD_CP_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4
 )
@@ -73,6 +83,11 @@ MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_MAX: float | None = round(
 )
 MOSS_TD_DELTA_CER_PERCENT_MAX: float | None = round(
     MOSS_TD_DELTA_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4
+)
+MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_MAX: float | None = (
+    round(MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF is not None
+    else None
 )
 MOSS_TD_THROUGHPUT_QPS_MIN: float | None = round(
     MOSS_TD_THROUGHPUT_QPS_REF * THRESHOLD_SLACK_HIGHER, 3
@@ -232,6 +247,12 @@ def test_moss_transcribe_diarize_movies800_multi_speaker(
         MOSS_TD_CER_NO_SPK_PERCENT_MAX,
         unit="%",
     )
+    assert_cer_partitioned(
+        diarization_percent,
+        max_cer_no_spk_below_50_percent=MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_MAX,
+        max_n_above_50_cer=MOSS_TD_N_ABOVE_50_CER_MAX,
+        collector=checks,
+    )
     _check_optional_max(
         checks,
         "cp_cer",
@@ -251,6 +272,13 @@ def test_moss_transcribe_diarize_movies800_multi_speaker(
         "delta_cer",
         diarization_percent.get("delta_cer"),
         MOSS_TD_DELTA_CER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "speaker_timestamp_der",
+        diarization_percent.get("speaker_timestamp_der"),
+        MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
         unit="%",
     )
     _check_optional_min(
