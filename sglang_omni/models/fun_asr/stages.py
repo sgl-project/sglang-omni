@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
+
+import torch
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
@@ -26,6 +30,44 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+
+logger = logging.getLogger(__name__)
+
+
+def _compile_fun_asr_audio_backbone(model: Any) -> None:
+
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+    set_torch_compile_config()
+    compile_mode = os.environ.get(
+        "SGLANG_TORCH_COMPILE_MODE",
+        "max-autotune-no-cudagraphs",
+    )
+
+    compiled_count = 0
+    audio_encoder = getattr(model, "audio_encoder", None)
+    if audio_encoder is not None:
+        for module_list_name in ("encoders0", "encoders", "tp_encoders"):
+            module_list = getattr(audio_encoder, module_list_name, None)
+            if module_list is None:
+                continue
+            for i in range(len(module_list)):
+                module_list[i] = torch.compile(module_list[i], mode=compile_mode)
+                compiled_count += 1
+
+    audio_adaptor = getattr(model, "audio_adaptor", None)
+    if audio_adaptor is not None:
+        blocks = getattr(audio_adaptor, "blocks", None)
+        if blocks is not None:
+            for i in range(len(blocks)):
+                blocks[i] = torch.compile(blocks[i], mode=compile_mode)
+                compiled_count += 1
+
+    logger.info(
+        "Compiled %d Fun-ASR audio encoder/adaptor layers (mode=%s)",
+        compiled_count,
+        compile_mode,
+    )
 
 
 def create_sglang_fun_asr_executor(
@@ -102,6 +144,9 @@ def create_sglang_fun_asr_executor(
         gpu_id,
         model_arch_override="FunAsrNanoForConditionalGeneration",
     )
+
+    if bool(server_args.enable_torch_compile):
+        _compile_fun_asr_audio_backbone(model_worker.model_runner.model)
 
     if want_cuda_graph:
         server_args.disable_cuda_graph = False
