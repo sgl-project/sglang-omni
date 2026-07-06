@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Tuple
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -94,6 +94,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     mem_fraction_static: float | None = 0.80,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    encoder_torch_compile: bool = False,
+    encoder_compile_buckets: Tuple[int, ...] = (1, 2, 3, 4),
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -151,6 +153,9 @@ def create_sglang_moss_transcribe_diarize_executor(
         gpu_id,
         model_arch_override="MossTranscribeDiarizeForConditionalGeneration",
     )
+
+    if encoder_torch_compile:
+        model_worker.model_runner.model.compile_encoder(encoder_compile_buckets)
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()

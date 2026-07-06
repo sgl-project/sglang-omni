@@ -72,6 +72,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         super().__init__()
         self.config = config
         self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
+        self.encoder_runner = self.whisper_encoder
         self.vq_adaptor = VQAdaptor(
             input_dim=config.adaptor_input_dim,
             hidden_size=config.text_config.hidden_size,
@@ -97,6 +98,21 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         return features[:, :trimmed_len, :].reshape(
             batch_size, trimmed_len // merge_size, hidden_size * merge_size
         )
+
+    def compile_encoder(self, buckets: Tuple[int, ...] = (1, 2, 3, 4)) -> None:
+        from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+        set_torch_compile_config()
+        self.encoder_runner = torch.compile(self.whisper_encoder, dynamic=False)
+        cfg = self.config.audio_config
+        p = next(self.whisper_encoder.parameters())
+        frames = int(cfg.max_source_positions) * 2
+        pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
+        for n in buckets:
+            feats = torch.zeros(
+                n, int(cfg.num_mel_bins), frames, device=p.device, dtype=p.dtype
+            )
+            self.encoder_runner(feats, pos, None)
 
     def get_audio_feature(
         self,
@@ -164,7 +180,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         encoder_position_ids = torch.arange(
             encoder_len, device=device, dtype=torch.long
         )
-        features = self.whisper_encoder(
+        features = self.encoder_runner(
             batched_features, encoder_position_ids, forward_batch
         )
 
