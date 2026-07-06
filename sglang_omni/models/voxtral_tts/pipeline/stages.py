@@ -299,6 +299,8 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
 
 
 class _VoxtralTTSVocoder(BatchVocoderBase):
+    """Decode audio codes with repeated initial frames as warmup context."""
+
     _N_WARMUP = 2
     _FADE_IN_MS = 10
 
@@ -315,7 +317,12 @@ class _VoxtralTTSVocoder(BatchVocoderBase):
 
         if not isinstance(audio_codes, torch.Tensor):
             audio_codes = torch.tensor(audio_codes)
-
+        
+        # Note:(AkazaAkane) Keep the original note from #248 before refactoring.
+        # Prepend warmup context frames so the causal decoder has initial
+        # context (mitigates boundary artifacts / noise at the start of the
+        # waveform).  After decoding, the samples corresponding to the
+        # warmup frames are trimmed away.
         if audio_codes.shape[0] > 0:
             first_frame = audio_codes[0:1]
             warmup = first_frame.repeat(self._N_WARMUP, 1)
