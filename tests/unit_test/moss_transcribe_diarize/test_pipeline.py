@@ -6,6 +6,7 @@ import inspect
 
 import httpx
 import pytest
+import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
 from sglang_omni.models.moss_transcribe_diarize.config import (
@@ -56,6 +57,39 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["request_build_max_workers"].default == 2
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
+
+
+def test_compile_encoder_swaps_runner_and_warms_each_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize.sglang_model import (
+        MossTranscribeDiarizeForConditionalGeneration as Model,
+    )
+
+    monkeypatch.setattr(
+        "sglang.srt.model_executor.cuda_graph_runner.set_torch_compile_config",
+        lambda: None,
+        raising=False,
+    )
+    warmups: list[tuple[int, ...]] = []
+    runner = lambda feats, pos, forward_batch: warmups.append(tuple(feats.shape))
+    monkeypatch.setattr(torch, "compile", lambda module, dynamic: runner)
+
+    encoder = torch.nn.Linear(4, 4)
+    model = SimpleNamespace(
+        whisper_encoder=encoder,
+        encoder_runner=encoder,
+        config=SimpleNamespace(
+            audio_config=SimpleNamespace(max_source_positions=2, num_mel_bins=4)
+        ),
+    )
+
+    Model.compile_encoder(model, buckets=(1, 2))
+
+    assert model.encoder_runner is runner
+    assert len(warmups) == 2
 
 
 def _repo_not_found(url: str) -> RepositoryNotFoundError:
