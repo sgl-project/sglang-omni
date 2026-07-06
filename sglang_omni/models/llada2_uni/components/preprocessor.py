@@ -273,18 +273,29 @@ def build_image_generation_prompt(
         f"<|reserved_token_{token_grid_w}|>{BOI_TOKEN}"
     )
 
-    conditional_prompt = (
-        f"{ROLE_SYSTEM} {T2I_SYSTEM_PROMPT} {ROLE_HUMAN}"
-        f"{prompt}{ROLE_ASSISTANT}{image_header}"
+    prefix = f"{ROLE_SYSTEM} {T2I_SYSTEM_PROMPT} {ROLE_HUMAN}"
+    image_header_ids = (
+        _encode_text(tokenizer, SOI_TOKEN)
+        + _encode_text(tokenizer, f"<|reserved_token_{token_grid_h}|>")
+        + _encode_text(tokenizer, f"<|reserved_token_{token_grid_w}|>")
+        + _encode_text(tokenizer, BOI_TOKEN)
     )
-    unconditional_prompt = (
-        f"{ROLE_SYSTEM} {T2I_SYSTEM_PROMPT} {ROLE_HUMAN}"
-        f"{T2I_UNCONDITION_PROMPT}{ROLE_ASSISTANT}{image_header}"
+    conditional_ids = (
+        _encode_text(tokenizer, prefix)
+        + _encode_text(tokenizer, prompt)
+        + _encode_text(tokenizer, ROLE_ASSISTANT)
+        + image_header_ids
+    )
+    unconditional_ids = (
+        _encode_text(tokenizer, prefix)
+        + _encode_text(tokenizer, T2I_UNCONDITION_PROMPT)
+        + _encode_text(tokenizer, ROLE_ASSISTANT)
+        + image_header_ids
     )
 
     return {
-        "input_ids": _encode_text(tokenizer, conditional_prompt),
-        "uncond_ids": _encode_text(tokenizer, unconditional_prompt),
+        "input_ids": conditional_ids,
+        "uncond_ids": unconditional_ids,
         "prompt": prompt,
         "image_header": image_header,
     }

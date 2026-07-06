@@ -36,11 +36,14 @@ from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 class RecordingTokenizer:
     def __init__(self) -> None:
         self.encoded: list[str] = []
+        self.ids: dict[str, int] = {}
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
         assert add_special_tokens is False
         self.encoded.append(text)
-        return [len(self.encoded)]
+        if text not in self.ids:
+            self.ids[text] = len(self.ids) + 1
+        return [self.ids[text]]
 
 
 def test_image_generation_config_builds_semantic_grid() -> None:
@@ -109,16 +112,51 @@ def test_image_generation_preprocessor_builds_t2i_prompt_state() -> None:
     assert state.generation["token_grid_h"] == 16
     assert state.generation["token_grid_w"] == 16
     assert state.generation["num_image_tokens"] == 256
-    assert state.generation["uncond_ids"] == [2]
     assert "Draw a lighthouse at dusk." in state.generation["text_prompt"]
     assert "<|reserved_token_16|>" in state.generation["image_header"]
     assert state.prompt is not None
-    assert state.prompt["input_ids"].shape == (1, 1)
+    assert state.prompt["input_ids"].shape == (1, 7)
 
-    conditional_prompt, unconditional_prompt = tokenizer.encoded
-    assert "You are a text-to-image generation assistant." in conditional_prompt
+    (
+        header_soi,
+        header_height,
+        header_width,
+        header_boi,
+        conditional_prefix,
+        conditional_prompt,
+        conditional_assistant,
+        unconditional_prefix,
+        unconditional_prompt,
+        unconditional_assistant,
+    ) = tokenizer.encoded
+    assert state.prompt["input_ids"].tolist()[0] == [
+        tokenizer.ids[conditional_prefix],
+        tokenizer.ids[conditional_prompt],
+        tokenizer.ids[conditional_assistant],
+        tokenizer.ids[header_soi],
+        tokenizer.ids[header_height],
+        tokenizer.ids[header_width],
+        tokenizer.ids[header_boi],
+    ]
+    assert state.generation["uncond_ids"] == [
+        tokenizer.ids[unconditional_prefix],
+        tokenizer.ids[unconditional_prompt],
+        tokenizer.ids[unconditional_assistant],
+        tokenizer.ids[header_soi],
+        tokenizer.ids[header_height],
+        tokenizer.ids[header_width],
+        tokenizer.ids[header_boi],
+    ]
+    assert conditional_prefix == unconditional_prefix
+    assert "You are a text-to-image generation assistant." in conditional_prefix
     assert "Draw a lighthouse at dusk." in conditional_prompt
+    assert conditional_assistant == "<role>ASSISTANT</role>"
     assert "<uncondition>" in unconditional_prompt
+    assert unconditional_assistant == conditional_assistant
+    assert header_soi == "<|image|>"
+    assert header_height == "<|reserved_token_16|>"
+    assert header_width == "<|reserved_token_16|>"
+    assert header_boi == "<boi>"
 
 
 def test_image_generation_decode_returns_image_token_event() -> None:
