@@ -12,6 +12,7 @@ import torch
 import sglang_omni.models.moss_transcribe_diarize.request_builders as request_builders
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     DEFAULT_TRANSCRIBE_DIARIZE_PROMPT,
+    _resolve_request_max_new_tokens,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -106,6 +107,50 @@ def _request_builder(processor: FakeProcessor | None = None):
         max_new_tokens=32,
     )
     return request_builder
+
+
+def test_moss_td_duration_budget_caps_short_default_request() -> None:
+    assert (
+        _resolve_request_max_new_tokens(
+            {},
+            default_max_new_tokens=2048,
+            audio_duration_s=9.7,
+        )
+        == 258
+    )
+
+
+def test_moss_td_duration_budget_preserves_small_minimum() -> None:
+    assert (
+        _resolve_request_max_new_tokens(
+            {},
+            default_max_new_tokens=2048,
+            audio_duration_s=1.0,
+        )
+        == 128
+    )
+
+
+def test_moss_td_duration_budget_respects_explicit_max_new_tokens() -> None:
+    assert (
+        _resolve_request_max_new_tokens(
+            {"max_new_tokens": 2048},
+            default_max_new_tokens=512,
+            audio_duration_s=9.7,
+        )
+        == 2048
+    )
+
+
+def test_moss_td_duration_budget_does_not_raise_unknown_duration() -> None:
+    assert (
+        _resolve_request_max_new_tokens(
+            {},
+            default_max_new_tokens=2048,
+            audio_duration_s=0.0,
+        )
+        == 2048
+    )
 
 
 def test_request_builder_replaces_audio_tokens_with_item_pad_value() -> None:

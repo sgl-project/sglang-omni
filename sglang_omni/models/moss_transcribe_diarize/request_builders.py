@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -30,6 +31,9 @@ _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_START = "<|audio_start|>"
 _AUDIO_END = "<|audio_end|>"
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|endoftext)\|>")
+_MOSS_TD_MAX_NEW_TOKENS_PER_AUDIO_SECOND = 20
+_MOSS_TD_MAX_NEW_TOKENS_SLACK = 64
+_MOSS_TD_MIN_MAX_NEW_TOKENS = 128
 # Note (yichi): MOSS-Transcribe-Diarize is an audio LLM: a Qwen3 text decoder
 # over Whisper audio embeddings, trained on a fixed transcribe+diarize
 # instruction with the timestamped/speaker-labelled transcript as the target
@@ -124,6 +128,35 @@ def _decode_token_ids(
 
 def postprocess_moss_transcribe_diarize_text(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub("", text).strip()
+
+
+def _duration_scaled_max_new_tokens(audio_duration_s: float) -> int | None:
+    if audio_duration_s <= 0:
+        return None
+    return max(
+        _MOSS_TD_MIN_MAX_NEW_TOKENS,
+        math.ceil(audio_duration_s * _MOSS_TD_MAX_NEW_TOKENS_PER_AUDIO_SECOND)
+        + _MOSS_TD_MAX_NEW_TOKENS_SLACK,
+    )
+
+
+def _resolve_request_max_new_tokens(
+    params: dict[str, Any],
+    *,
+    default_max_new_tokens: int,
+    audio_duration_s: float,
+) -> int:
+    explicit = params.get("max_new_tokens")
+    requested = int(explicit if explicit is not None else default_max_new_tokens)
+
+    # Preserve explicit caller overrides; cap only the default ASR path.
+    if explicit is not None:
+        return requested
+
+    duration_budget = _duration_scaled_max_new_tokens(audio_duration_s)
+    if duration_budget is None:
+        return requested
+    return min(requested, duration_budget)
 
 
 def _prompt_from_payload(payload: StagePayload, processor: Any) -> str:
@@ -249,7 +282,11 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
 
         temperature = float(params.get("temperature") or 0.0)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        request_max_new_tokens = _resolve_request_max_new_tokens(
+            params,
+            default_max_new_tokens=max_new_tokens,
+            audio_duration_s=audio_duration_s,
+        )
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
