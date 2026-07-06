@@ -7,6 +7,7 @@ import sys
 import types
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -289,6 +290,80 @@ def test_moss_tts_state_round_trip_keeps_tensors_native() -> None:
     assert restored.token_count == 180
     assert torch.equal(restored.delayed_audio_codes, codes)
     assert restored.assistant_start_length == 2
+
+
+def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    decoded_segments: list[list[list[int]]] = []
+
+    class FakeProcessor:
+        model_config = SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
+
+        def decode_audio_codes(self, segments):
+            decoded_segments.extend(segment.tolist() for segment in segments)
+            offset = float(len(decoded_segments) * 10)
+            return [torch.tensor([offset, offset + 1], dtype=torch.float32)]
+
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_processor",
+        lambda *args, **kwargs: FakeProcessor(),
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        max_batch_size=2,
+        max_batch_wait_ms=4,
+    )
+    first = make_payload(inputs="first")
+    first.data = MossTTSState(
+        delayed_audio_codes=torch.tensor(
+            [
+                [1, 1024],
+                [2, 3],
+                [1024, 4],
+                [1024, 1024],
+            ],
+            dtype=torch.long,
+        ),
+        prompt_tokens=3,
+        completion_tokens=5,
+    ).to_dict()
+    second = make_payload(inputs="second")
+    second.data = MossTTSState(
+        delayed_audio_codes=torch.tensor(
+            [
+                [5, 1024],
+                [6, 7],
+                [1024, 8],
+                [1024, 1024],
+            ],
+            dtype=torch.long,
+        ),
+    ).to_dict()
+
+    results = asyncio.run(scheduler._batch_fn([first, second]))
+
+    assert scheduler._max_batch_size == 2
+    assert scheduler._max_batch_wait_s == pytest.approx(0.004)
+    assert decoded_segments == [
+        [[1, 3], [2, 4]],
+        [[5, 7], [6, 8]],
+    ]
+    first_audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
+    second_audio = np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32)
+    assert first_audio.tolist() == [10.0, 11.0]
+    assert second_audio.tolist() == [20.0, 21.0]
+    assert results[0].data["sample_rate"] == 16000
+    assert results[0].data["modality"] == "audio"
+    assert "delayed_audio_codes" not in results[0].data
+    assert results[0].data["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 5,
+        "total_tokens": 8,
+    }
 
 
 def test_moss_tts_maps_references_token_count_and_deterministic_defaults() -> None:
