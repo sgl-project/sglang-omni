@@ -7,7 +7,6 @@ import logging
 from typing import Any
 
 from sglang_omni.models.llada2_uni.config import (
-    IMAGE_DECODE_STAGE,
     IMAGE_STAGE,
     THINKER_STAGE,
 )
@@ -193,10 +192,11 @@ def create_image_decode_executor(
             )
         return decoder
 
-    def _image_decode(payload):
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
+    def _build_image_decode_request(
+        state: LLaDA2UniPipelineState,
+    ) -> dict[str, Any]:
         if state.generation.get("type") != "image":
-            return payload
+            return {"_skip": True, "_result": {}}
 
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict) or not thinker_out.get("output_ids"):
@@ -212,41 +212,58 @@ def create_image_decode_executor(
 
         image_token_event = events[0]
         token_payload = image_token_event.payload
-        image_token_ids = token_payload.get("image_token_ids") or []
-        token_grid_h = int(token_payload["token_grid_h"])
-        token_grid_w = int(token_payload["token_grid_w"])
-        decode_mode = str(token_payload.get("decode_mode") or "decoder-turbo")
-        decoded = _get_decoder().decode(
-            list(image_token_ids),
-            token_grid_h=token_grid_h,
-            token_grid_w=token_grid_w,
-            resolution_multiplier=int(token_payload.get("resolution_multiplier") or 2),
-            num_steps=int(token_payload.get("decoder_steps") or 8),
-            decode_mode=decode_mode,
-            image_format=str(state.generation.get("format") or "png"),
-            seed=state.generation.get("seed"),
-        )
-        image = decoded.to_payload()
-        image_final_event = LLaDA2UniEvent(
-            type="image_final",
-            modality="image",
-            payload={"images": [image]},
-            is_final=True,
-        )
-        result: dict[str, Any] = {
-            "events": [
-                _event_to_dict(image_token_event),
-                _event_to_dict(image_final_event),
-            ],
-            "images": [image],
-            "modality": "image",
-            "format": decoded.format,
-            "mime_type": decoded.mime_type,
-            "width": decoded.width,
-            "height": decoded.height,
-            "image_token_count": len(image_token_ids),
+        return {
+            "image_token_event": _event_to_dict(image_token_event),
+            "image_token_ids": list(token_payload.get("image_token_ids") or []),
+            "token_grid_h": int(token_payload["token_grid_h"]),
+            "token_grid_w": int(token_payload["token_grid_w"]),
+            "resolution_multiplier": int(
+                token_payload.get("resolution_multiplier") or 2
+            ),
+            "decoder_steps": int(token_payload.get("decoder_steps") or 8),
+            "decode_mode": str(token_payload.get("decode_mode") or "decoder-turbo"),
+            "format": str(state.generation.get("format") or "png"),
+            "seed": state.generation.get("seed"),
         }
-        state.engine_outputs[IMAGE_DECODE_STAGE] = result
+
+    def _image_decode(payload):
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
+        request = _build_image_decode_request(state)
+        if request.get("_skip"):
+            result = request.get("_result", {})
+        else:
+            image_token_ids = request["image_token_ids"]
+            decoded = _get_decoder().decode(
+                image_token_ids,
+                token_grid_h=request["token_grid_h"],
+                token_grid_w=request["token_grid_w"],
+                resolution_multiplier=request["resolution_multiplier"],
+                num_steps=request["decoder_steps"],
+                decode_mode=request["decode_mode"],
+                image_format=request["format"],
+                seed=request.get("seed"),
+            )
+            image = decoded.to_payload()
+            image_final_event = LLaDA2UniEvent(
+                type="image_final",
+                modality="image",
+                payload={"images": [image]},
+                is_final=True,
+            )
+            result = {
+                "events": [
+                    request["image_token_event"],
+                    _event_to_dict(image_final_event),
+                ],
+                "images": [image],
+                "modality": "image",
+                "format": decoded.format,
+                "mime_type": decoded.mime_type,
+                "width": decoded.width,
+                "height": decoded.height,
+                "image_token_count": len(image_token_ids),
+            }
+        state.image_decode_out = result
         payload.data = state.to_dict()
         return payload
 
@@ -275,11 +292,8 @@ def create_decode_executor(model_path: str):
                 "is_final": True,
             }
 
-        decoded_image_out = state.engine_outputs.get(IMAGE_DECODE_STAGE)
-        if state.generation.get("type") == "image" and isinstance(
-            decoded_image_out, dict
-        ):
-            result = dict(decoded_image_out)
+        if state.generation.get("type") == "image" and state.image_decode_out:
+            result = dict(state.image_decode_out)
             finish_reason = thinker_out.get("finish_reason")
             if finish_reason is not None:
                 result.setdefault("finish_reason", finish_reason)

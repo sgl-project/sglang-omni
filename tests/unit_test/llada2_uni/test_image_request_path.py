@@ -28,7 +28,6 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     LLaDA2Preprocessor,
     build_image_generation_config,
 )
-from sglang_omni.models.llada2_uni.config import IMAGE_DECODE_STAGE
 from sglang_omni.models.llada2_uni.hybrid_scheduler import LLaDA2HybridThinkerScheduler
 from sglang_omni.models.llada2_uni.merge import decode_events
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
@@ -501,7 +500,7 @@ def test_image_decode_stage_converts_vq_tokens_to_image_payload(monkeypatch) -> 
 
     out = executor._fn(payload)
     out_state = LLaDA2UniPipelineState.from_dict(out.data)
-    decoded = out_state.engine_outputs[IMAGE_DECODE_STAGE]
+    decoded = out_state.image_decode_out
 
     assert calls[0] == ("init", "/tmp/llada2", "cpu", torch.bfloat16)
     assert calls[1][0] == "decode"
