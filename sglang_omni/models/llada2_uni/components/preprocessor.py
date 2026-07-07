@@ -92,7 +92,9 @@ def _get_config_int(
             break
     value = int(value)
     if value < minimum:
-        raise ValueError(f"Image generation parameter {names[0]!r} must be >= {minimum}")
+        raise ValueError(
+            f"Image generation parameter {names[0]!r} must be >= {minimum}"
+        )
     return value
 
 

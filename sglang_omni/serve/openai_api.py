@@ -777,17 +777,21 @@ async def _chat_stream(
                     total_tokens=chunk.usage.total_tokens or 0,
                 )
             has_payload = (
-                chunk.modality == "text"
-                and bool(chunk.text)
-                and "text" in requested_modalities
-            ) or (
-                chunk.modality == "audio"
-                and chunk.audio_b64 is not None
-                and "audio" in requested_modalities
-            ) or (
-                chunk.modality == "image"
-                and bool(chunk.images)
-                and "image" in requested_modalities
+                (
+                    chunk.modality == "text"
+                    and bool(chunk.text)
+                    and "text" in requested_modalities
+                )
+                or (
+                    chunk.modality == "audio"
+                    and chunk.audio_b64 is not None
+                    and "audio" in requested_modalities
+                )
+                or (
+                    chunk.modality == "image"
+                    and bool(chunk.images)
+                    and "image" in requested_modalities
+                )
             )
             if not has_payload:
                 continue
@@ -818,7 +822,11 @@ async def _chat_stream(
             )
             emit = True
 
-        if chunk.modality == "image" and chunk.images and "image" in requested_modalities:
+        if (
+            chunk.modality == "image"
+            and chunk.images
+            and "image" in requested_modalities
+        ):
             delta.images = [
                 ChatCompletionImage(**image)
                 for image in chunk.images

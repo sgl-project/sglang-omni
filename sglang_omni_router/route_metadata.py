@@ -473,7 +473,9 @@ def _has_non_empty(value: Any) -> bool:
 def _modalities_include(payload: dict[str, Any], modality: str) -> bool:
     for field in OUTPUT_MODALITY_FIELDS:
         modalities = payload.get(field)
-        if isinstance(modalities, list) and any(item == modality for item in modalities):
+        if isinstance(modalities, list) and any(
+            item == modality for item in modalities
+        ):
             return True
     return False
 

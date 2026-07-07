@@ -94,9 +94,7 @@ def test_image_generation_preprocessor_builds_t2i_prompt_state() -> None:
                 {"role": "system", "content": "ignored"},
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Draw a lighthouse at dusk."}
-                    ],
+                    "content": [{"type": "text", "text": "Draw a lighthouse at dusk."}],
                 },
             ]
         },

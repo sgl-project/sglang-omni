@@ -28,7 +28,9 @@ def _usage_from_state(
     state,
     thinker_out: dict[str, Any],
 ) -> dict[str, int]:
-    input_ids = state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
+    input_ids = (
+        state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
+    )
     if input_ids is None:
         prompt_tokens = 0
     elif hasattr(input_ids, "numel"):
@@ -218,9 +220,7 @@ def create_image_decode_executor(
             list(image_token_ids),
             token_grid_h=token_grid_h,
             token_grid_w=token_grid_w,
-            resolution_multiplier=int(
-                token_payload.get("resolution_multiplier") or 2
-            ),
+            resolution_multiplier=int(token_payload.get("resolution_multiplier") or 2),
             num_steps=int(token_payload.get("decoder_steps") or 8),
             decode_mode=decode_mode,
             image_format=str(state.generation.get("format") or "png"),

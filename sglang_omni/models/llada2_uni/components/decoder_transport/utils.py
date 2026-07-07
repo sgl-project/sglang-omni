@@ -1,5 +1,7 @@
-import torch as th
 import math
+
+import torch as th
+
 
 class EasyDict:
     def __init__(self, sub_dict):
@@ -30,6 +32,7 @@ def log_state(state):
 
     return "\n".join(result)
 
+
 def time_shift(mu: float, sigma: float, t: th.Tensor):
     # the following implementation was original for t=0: clean / t=1: noise
     # Since we adopt the reverse, the 1-t operations are needed
@@ -38,10 +41,14 @@ def time_shift(mu: float, sigma: float, t: th.Tensor):
     t = 1 - t
     return t
 
-def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: float = 1.15):
+
+def get_lin_function(
+    x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: float = 1.15
+):
     m = (y2 - y1) / (x2 - x1)
     b = y1 - m * x1
     return lambda x: m * x + b
+
 
 def expand_dims(v, dims):
     """

@@ -1,6 +1,8 @@
 import torch as th
 from torchdiffeq import odeint
-from .utils import time_shift, get_lin_function
+
+from .utils import get_lin_function, time_shift
+
 
 class sde:
     """SDE solver class"""
@@ -98,7 +100,9 @@ class ode:
         self.do_shift = do_shift
         self.t = th.linspace(t0, t1, num_steps)
         if time_shifting_factor:
-            self.t = self.t / (self.t + time_shifting_factor - time_shifting_factor * self.t)
+            self.t = self.t / (
+                self.t + time_shifting_factor - time_shifting_factor * self.t
+            )
         self.atol = atol
         self.rtol = rtol
         self.sampler_type = sampler_type
@@ -108,7 +112,11 @@ class ode:
         device = x[0].device if isinstance(x, tuple) else x.device
 
         def _fn(t, x):
-            t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
+            t = (
+                th.ones(x[0].size(0)).to(device) * t
+                if isinstance(x, tuple)
+                else th.ones(x.size(0)).to(device) * t
+            )
             model_output = self.drift(x, t, model, **model_kwargs).float()
             return model_output
 

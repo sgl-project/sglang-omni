@@ -277,7 +277,9 @@ class LLaDA2ImageDecoder:
         with torch.device("meta"):
             diff_model = ZImageTransformer2DModel(**cfg)
         ckpt = decoder_dir / "model.safetensors"
-        diff_model.load_state_dict(load_file(ckpt, device=str(self.device)), assign=True)
+        diff_model.load_state_dict(
+            load_file(ckpt, device=str(self.device)), assign=True
+        )
         diff_model = diff_model.to(dtype=self.dtype).eval()
 
         self._diff_model = diff_model
