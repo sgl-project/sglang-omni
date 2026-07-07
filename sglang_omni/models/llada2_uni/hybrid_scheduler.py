@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def is_llada2_image_generation_payload(payload: Any) -> bool:
     state = LLaDA2UniPipelineState.from_dict(getattr(payload, "data", None))
-    return state.generation.get("type") == "image"
+    return state.image_generation.get("type") == "image"
 
 
 class LLaDA2HybridThinkerScheduler:

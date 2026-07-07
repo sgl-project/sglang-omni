@@ -121,39 +121,39 @@ class LLaDA2ImageTokenGenerator:
 
     def __call__(self, payload: StagePayload) -> StagePayload:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
-        generation = state.generation
-        if generation.get("type") != "image":
+        image_generation = state.image_generation
+        if image_generation.get("type") != "image":
             return payload
 
-        prompt = generation.get("text_prompt")
+        prompt = image_generation.get("text_prompt")
         if not isinstance(prompt, str) or not prompt:
             raise ValueError("LLaDA2-Uni image generation requires text_prompt.")
 
-        seed_image_generation(generation.get("seed"))
+        seed_image_generation(image_generation.get("seed"))
         model, tokenizer = self._load()
 
         result = model.generate_image(
             prompt,
             tokenizer=tokenizer,
-            image_h=int(generation["height"]),
-            image_w=int(generation["width"]),
-            steps=int(generation.get("steps") or 16),
-            block_length=int(generation.get("block_length") or 32),
-            cfg_scale=float(generation.get("cfg_scale", 4.0)),
-            gen_length=int(generation.get("gen_length") or 1088),
-            use_sprint=bool(generation.get("use_sprint", False)),
-            remasking=str(generation.get("remasking", "low_confidence")),
-            keep_ratio=float(generation.get("keep_ratio", 0.7)),
-            cache_warmup_steps=int(generation.get("cache_warmup_steps", 2)),
-            confidence_alpha=float(generation.get("confidence_alpha", 0.5)),
-            image_keep_ratio=generation.get("image_keep_ratio"),
-            text_keep_ratio=generation.get("text_keep_ratio"),
-            mode=str(generation.get("mode", "normal")),
+            image_h=int(image_generation["height"]),
+            image_w=int(image_generation["width"]),
+            steps=int(image_generation.get("steps") or 16),
+            block_length=int(image_generation.get("block_length") or 32),
+            cfg_scale=float(image_generation.get("cfg_scale", 4.0)),
+            gen_length=int(image_generation.get("gen_length") or 1088),
+            use_sprint=bool(image_generation.get("use_sprint", False)),
+            remasking=str(image_generation.get("remasking", "low_confidence")),
+            keep_ratio=float(image_generation.get("keep_ratio", 0.7)),
+            cache_warmup_steps=int(image_generation.get("cache_warmup_steps", 2)),
+            confidence_alpha=float(image_generation.get("confidence_alpha", 0.5)),
+            image_keep_ratio=image_generation.get("image_keep_ratio"),
+            text_keep_ratio=image_generation.get("text_keep_ratio"),
+            mode=str(image_generation.get("mode", "normal")),
         )
 
         token_ids = [int(t) for t in result["token_ids"]]
-        token_grid_h = int(result.get("h", generation["token_grid_h"]))
-        token_grid_w = int(result.get("w", generation["token_grid_w"]))
+        token_grid_h = int(result.get("h", image_generation["token_grid_h"]))
+        token_grid_w = int(result.get("w", image_generation["token_grid_w"]))
         expected = token_grid_h * token_grid_w
         if len(token_ids) != expected:
             raise ValueError(
@@ -161,13 +161,13 @@ class LLaDA2ImageTokenGenerator:
                 f"{len(token_ids)} tokens for grid {token_grid_h}x{token_grid_w}."
             )
 
-        generation["token_grid_h"] = token_grid_h
-        generation["token_grid_w"] = token_grid_w
-        generation["num_image_tokens"] = expected
+        image_generation["token_grid_h"] = token_grid_h
+        image_generation["token_grid_w"] = token_grid_w
+        image_generation["num_image_tokens"] = expected
         if "thinking" in result:
-            generation["thinking"] = result["thinking"]
+            image_generation["thinking"] = result["thinking"]
 
-        offset = int(generation.get("image_token_offset", 157184))
+        offset = int(image_generation.get("image_token_offset", 157184))
         output_ids = [token_id + offset for token_id in token_ids]
         apply_dllm_thinker_result(
             state,

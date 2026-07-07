@@ -214,7 +214,7 @@ def build_image_generation_config(request: Any) -> dict[str, Any]:
         else NORMAL_IMAGE_DECODER_STEPS
     )
 
-    generation: dict[str, Any] = {
+    image_generation: dict[str, Any] = {
         "type": "image",
         "width": width,
         "height": height,
@@ -248,10 +248,10 @@ def build_image_generation_config(request: Any) -> dict[str, Any]:
         "image_token_offset": IMAGE_TOKEN_OFFSET,
     }
     if raw_config.get("seed") is not None:
-        generation["seed"] = int(raw_config["seed"])
+        image_generation["seed"] = int(raw_config["seed"])
     elif params.get("seed") is not None:
-        generation["seed"] = int(params["seed"])
-    return generation
+        image_generation["seed"] = int(params["seed"])
+    return image_generation
 
 
 def _encode_text(tokenizer: Any, text: str) -> list[int]:
@@ -264,12 +264,12 @@ def build_image_generation_prompt(
     *,
     tokenizer: Any,
     messages: list[dict[str, Any]],
-    generation: dict[str, Any],
+    image_generation: dict[str, Any],
 ) -> dict[str, Any]:
     """Build the LLaDA2 text-to-image prompt and unconditional CFG prompt."""
     prompt = _extract_last_user_text(messages)
-    token_grid_h = int(generation["token_grid_h"])
-    token_grid_w = int(generation["token_grid_w"])
+    token_grid_h = int(image_generation["token_grid_h"])
+    token_grid_w = int(image_generation["token_grid_w"])
     image_header = (
         f"{SOI_TOKEN}<|reserved_token_{token_grid_h}|>"
         f"<|reserved_token_{token_grid_w}|>{BOI_TOKEN}"
@@ -469,13 +469,13 @@ class LLaDA2Preprocessor:
                     "LLaDA2-Uni image output request path currently supports "
                     "text-to-image requests only; image editing is not wired yet."
                 )
-            generation = build_image_generation_config(request)
+            image_generation = build_image_generation_config(request)
             image_prompt = build_image_generation_prompt(
                 tokenizer=self._tokenizer,
                 messages=messages,
-                generation=generation,
+                image_generation=image_generation,
             )
-            generation.update(
+            image_generation.update(
                 {
                     "uncond_ids": image_prompt["uncond_ids"],
                     "text_prompt": image_prompt["prompt"],
@@ -489,13 +489,13 @@ class LLaDA2Preprocessor:
             validate_prompt_seq_len(
                 input_ids_tensor,
                 max_seq_len=self._max_seq_len,
-                max_new_tokens=int(generation["gen_length"]),
+                max_new_tokens=int(image_generation["gen_length"]),
                 request_id=payload.request_id,
             )
             state = LLaDA2UniPipelineState(
                 prompt={"input_ids": input_ids_tensor},
                 encoder_inputs={IMAGE_STAGE: {"_skip": True, "_result": {}}},
-                generation=generation,
+                image_generation=image_generation,
             )
             return StagePayload(
                 request_id=payload.request_id,

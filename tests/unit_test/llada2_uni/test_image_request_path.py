@@ -65,20 +65,20 @@ def test_image_generation_config_builds_semantic_grid() -> None:
         },
     )
 
-    generation = build_image_generation_config(request)
+    image_generation = build_image_generation_config(request)
 
-    assert generation["type"] == "image"
-    assert generation["width"] == 512
-    assert generation["height"] == 768
-    assert generation["token_grid_h"] == 24
-    assert generation["token_grid_w"] == 16
-    assert generation["num_image_tokens"] == 384
-    assert generation["gen_length"] == DEFAULT_IMAGE_GEN_LENGTH
-    assert generation["steps"] == 8
-    assert generation["cfg_scale"] == 2.0
-    assert generation["decoder_steps"] == 8
-    assert generation["decode_mode"] == "decoder-turbo"
-    assert generation["format"] == "png"
+    assert image_generation["type"] == "image"
+    assert image_generation["width"] == 512
+    assert image_generation["height"] == 768
+    assert image_generation["token_grid_h"] == 24
+    assert image_generation["token_grid_w"] == 16
+    assert image_generation["num_image_tokens"] == 384
+    assert image_generation["gen_length"] == DEFAULT_IMAGE_GEN_LENGTH
+    assert image_generation["steps"] == 8
+    assert image_generation["cfg_scale"] == 2.0
+    assert image_generation["decoder_steps"] == 8
+    assert image_generation["decode_mode"] == "decoder-turbo"
+    assert image_generation["format"] == "png"
 
 
 def test_image_generation_preprocessor_builds_t2i_prompt_state() -> None:
@@ -109,12 +109,12 @@ def test_image_generation_preprocessor_builds_t2i_prompt_state() -> None:
     state = LLaDA2UniPipelineState.from_dict(output.data)
 
     assert state.encoder_inputs == {IMAGE_STAGE: {"_skip": True, "_result": {}}}
-    assert state.generation["type"] == "image"
-    assert state.generation["token_grid_h"] == 16
-    assert state.generation["token_grid_w"] == 16
-    assert state.generation["num_image_tokens"] == 256
-    assert "Draw a lighthouse at dusk." in state.generation["text_prompt"]
-    assert "<|reserved_token_16|>" in state.generation["image_header"]
+    assert state.image_generation["type"] == "image"
+    assert state.image_generation["token_grid_h"] == 16
+    assert state.image_generation["token_grid_w"] == 16
+    assert state.image_generation["num_image_tokens"] == 256
+    assert "Draw a lighthouse at dusk." in state.image_generation["text_prompt"]
+    assert "<|reserved_token_16|>" in state.image_generation["image_header"]
     assert state.prompt is not None
     assert state.prompt["input_ids"].shape == (1, 7)
 
@@ -139,7 +139,7 @@ def test_image_generation_preprocessor_builds_t2i_prompt_state() -> None:
         tokenizer.ids[header_width],
         tokenizer.ids[header_boi],
     ]
-    assert state.generation["uncond_ids"] == [
+    assert state.image_generation["uncond_ids"] == [
         tokenizer.ids[unconditional_prefix],
         tokenizer.ids[unconditional_prompt],
         tokenizer.ids[unconditional_assistant],
@@ -164,7 +164,7 @@ def test_image_generation_decode_returns_image_token_event() -> None:
     events = decode_events(
         thinker_out={"output_ids": [157184, 157185, 157186]},
         tokenizer=object(),
-        generation={
+        image_generation={
             "type": "image",
             "image_token_offset": 157184,
             "num_image_tokens": 2,
@@ -227,7 +227,7 @@ def test_image_token_generator_uses_upstream_generate_image(monkeypatch) -> None
     )
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[1, 2, 3]])},
-        generation={
+        image_generation={
             "type": "image",
             "text_prompt": "Draw a blue cube.",
             "width": 64,
@@ -317,7 +317,7 @@ def test_hybrid_thinker_routes_image_and_lazily_starts_text_scheduler() -> None:
     try:
         image_state = LLaDA2UniPipelineState(
             prompt={"input_ids": torch.tensor([[1]])},
-            generation={"type": "image"},
+            image_generation={"type": "image"},
         )
         image_payload = StagePayload(
             request_id="req-img",
@@ -341,7 +341,7 @@ def test_hybrid_thinker_routes_image_and_lazily_starts_text_scheduler() -> None:
 
         text_state = LLaDA2UniPipelineState(
             prompt={"input_ids": torch.tensor([[2]])},
-            generation={},
+            image_generation={},
         )
         text_payload = StagePayload(
             request_id="req-text",
@@ -432,7 +432,7 @@ def test_image_decode_stage_is_lazy_for_text_requests(monkeypatch) -> None:
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[1, 2, 3]])},
         thinker_out={"output_ids": [1, 2], "is_final": True},
-        generation={},
+        image_generation={},
     )
     payload = StagePayload(
         request_id="req-text",
@@ -477,7 +477,7 @@ def test_image_decode_stage_converts_vq_tokens_to_image_payload(monkeypatch) -> 
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[1, 2, 3]])},
         thinker_out={"output_ids": [157184, 157185], "is_final": True},
-        generation={
+        image_generation={
             "type": "image",
             "image_token_offset": 157184,
             "num_image_tokens": 2,

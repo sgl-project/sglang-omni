@@ -12,7 +12,7 @@ def decode_events(
     *,
     thinker_out: dict[str, Any],
     tokenizer: Any,
-    generation: dict[str, Any] | None = None,
+    image_generation: dict[str, Any] | None = None,
 ) -> list[LLaDA2UniEvent]:
     """Convert thinker output tokens to terminal modality events."""
     # TODO: add streaming support
@@ -20,10 +20,10 @@ def decode_events(
     if not output_ids:
         return []
 
-    generation = generation if isinstance(generation, dict) else {}
-    if generation.get("type") == "image":
-        offset = int(generation.get("image_token_offset", 0))
-        num_tokens = int(generation.get("num_image_tokens") or len(output_ids))
+    image_generation = image_generation if isinstance(image_generation, dict) else {}
+    if image_generation.get("type") == "image":
+        offset = int(image_generation.get("image_token_offset", 0))
+        num_tokens = int(image_generation.get("num_image_tokens") or len(output_ids))
         image_token_ids = [int(t) - offset for t in output_ids[:num_tokens]]
         return [
             LLaDA2UniEvent(
@@ -31,13 +31,15 @@ def decode_events(
                 modality="image",
                 payload={
                     "image_token_ids": image_token_ids,
-                    "token_grid_h": generation.get("token_grid_h"),
-                    "token_grid_w": generation.get("token_grid_w"),
-                    "width": generation.get("width"),
-                    "height": generation.get("height"),
-                    "decoder_steps": generation.get("decoder_steps"),
-                    "resolution_multiplier": generation.get("resolution_multiplier"),
-                    "decode_mode": generation.get("decode_mode"),
+                    "token_grid_h": image_generation.get("token_grid_h"),
+                    "token_grid_w": image_generation.get("token_grid_w"),
+                    "width": image_generation.get("width"),
+                    "height": image_generation.get("height"),
+                    "decoder_steps": image_generation.get("decoder_steps"),
+                    "resolution_multiplier": image_generation.get(
+                        "resolution_multiplier"
+                    ),
+                    "decode_mode": image_generation.get("decode_mode"),
                 },
                 is_final=True,
             )

@@ -195,7 +195,7 @@ def create_image_decode_executor(
     def _build_image_decode_request(
         state: LLaDA2UniPipelineState,
     ) -> dict[str, Any]:
-        if state.generation.get("type") != "image":
+        if state.image_generation.get("type") != "image":
             return {"_skip": True, "_result": {}}
 
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
@@ -205,7 +205,7 @@ def create_image_decode_executor(
         events = decode_events(
             thinker_out=thinker_out,
             tokenizer=object(),
-            generation=state.generation,
+            image_generation=state.image_generation,
         )
         if not events:
             raise ValueError("LLaDA2-Uni image decode produced no image token event.")
@@ -222,8 +222,8 @@ def create_image_decode_executor(
             ),
             "decoder_steps": int(token_payload.get("decoder_steps") or 8),
             "decode_mode": str(token_payload.get("decode_mode") or "decoder-turbo"),
-            "format": str(state.generation.get("format") or "png"),
-            "seed": state.generation.get("seed"),
+            "format": str(state.image_generation.get("format") or "png"),
+            "seed": state.image_generation.get("seed"),
         }
 
     def _image_decode(payload):
@@ -292,7 +292,7 @@ def create_decode_executor(model_path: str):
                 "is_final": True,
             }
 
-        if state.generation.get("type") == "image" and state.image_decode_out:
+        if state.image_generation.get("type") == "image" and state.image_decode_out:
             result = dict(state.image_decode_out)
             finish_reason = thinker_out.get("finish_reason")
             if finish_reason is not None:
@@ -304,7 +304,7 @@ def create_decode_executor(model_path: str):
         events = decode_events(
             thinker_out=thinker_out,
             tokenizer=tokenizer,
-            generation=state.generation,
+            image_generation=state.image_generation,
         )
         event_dicts = [_event_to_dict(event) for event in events]
 

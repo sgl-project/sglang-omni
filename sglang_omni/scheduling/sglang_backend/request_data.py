@@ -41,4 +41,3 @@ class SGLangDLLMRequestData:
     req: Any = None
     stage_payload: Any = None
     finish_reason: str | None = None
-    generation: dict[str, Any] = field(default_factory=dict)
