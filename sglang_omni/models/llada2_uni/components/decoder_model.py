@@ -84,12 +84,6 @@ class ZSingleStreamAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
-    def __init__(self):
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError(
-                "ZSingleStreamAttnProcessor requires PyTorch 2.0. To use it, please upgrade PyTorch to version 2.0 or higher."
-            )
-
     def __call__(
         self,
         attn: Attention,

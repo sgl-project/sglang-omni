@@ -95,11 +95,6 @@ class Attention(nn.Module):
     ):
         super().__init__()
 
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError(
-                "Attention equires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
-            )
-
         self.dim = dim
         self.heads = heads
         self.inner_dim = dim_head * heads
