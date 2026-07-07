@@ -28,10 +28,8 @@ from torch.nn.utils.rnn import pad_sequence
 
 try:
     from diffusers.models.attention_dispatch import dispatch_attention_fn
-
-    _HAS_DISPATCH_ATTENTION = True
 except ImportError:
-    _HAS_DISPATCH_ATTENTION = False
+    dispatch_attention_fn = None
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 try:
@@ -146,7 +144,7 @@ class ZSingleStreamAttnProcessor:
 
         # From [batch, seq_len] to appropriate mask format
         if attention_mask is not None and attention_mask.ndim == 2:
-            if _HAS_DISPATCH_ATTENTION:
+            if dispatch_attention_fn is not None:
                 # dispatch_attention_fn expects 4D mask: [batch, 1, 1, seq_len]
                 attention_mask = attention_mask[:, None, None, :]
             else:
@@ -159,7 +157,7 @@ class ZSingleStreamAttnProcessor:
                 value = value * mask_expanded
 
         # Compute joint attention
-        if _HAS_DISPATCH_ATTENTION:
+        if dispatch_attention_fn is not None:
             hidden_states = dispatch_attention_fn(
                 query,
                 key,
