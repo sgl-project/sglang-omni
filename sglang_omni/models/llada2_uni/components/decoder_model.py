@@ -448,7 +448,6 @@ class RopeEmbedder:
 class ZImageTransformer2DModel(
     ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin
 ):
-    _supports_gradient_checkpointing = True
     _no_split_modules = ["ZImageTransformerBlock"]
     _repeated_blocks = ["ZImageTransformerBlock"]
     _skip_layerwise_casting_patterns = [
@@ -486,7 +485,6 @@ class ZImageTransformer2DModel(
 
         self.rope_theta = rope_theta
         self.t_scale = t_scale
-        self.gradient_checkpointing = False
 
         assert len(all_patch_size) == len(all_f_patch_size)
 
@@ -1192,21 +1190,8 @@ class ZImageTransformer2DModel(
         )
 
         for layer in self.noise_refiner:
-            x = (
-                self._gradient_checkpointing_func(
-                    layer,
-                    x,
-                    x_mask,
-                    x_freqs,
-                    adaln_input,
-                    x_noise_tensor,
-                    t_noisy,
-                    t_clean,
-                )
-                if torch.is_grad_enabled() and self.gradient_checkpointing
-                else layer(
-                    x, x_mask, x_freqs, adaln_input, x_noise_tensor, t_noisy, t_clean
-                )
+            x = layer(
+                x, x_mask, x_freqs, adaln_input, x_noise_tensor, t_noisy, t_clean
             )
 
         # Cap embed & refine
@@ -1223,11 +1208,7 @@ class ZImageTransformer2DModel(
         )
 
         for layer in self.context_refiner:
-            cap_feats = (
-                self._gradient_checkpointing_func(layer, cap_feats, cap_mask, cap_freqs)
-                if torch.is_grad_enabled() and self.gradient_checkpointing
-                else layer(cap_feats, cap_mask, cap_freqs)
-            )
+            cap_feats = layer(cap_feats, cap_mask, cap_freqs)
 
         # Siglip embed & refine
         siglip_seqlens = siglip_freqs = None
@@ -1248,13 +1229,7 @@ class ZImageTransformer2DModel(
             )
 
             for layer in self.siglip_refiner:
-                siglip_feats = (
-                    self._gradient_checkpointing_func(
-                        layer, siglip_feats, siglip_mask, siglip_freqs
-                    )
-                    if torch.is_grad_enabled() and self.gradient_checkpointing
-                    else layer(siglip_feats, siglip_mask, siglip_freqs)
-                )
+                siglip_feats = layer(siglip_feats, siglip_mask, siglip_freqs)
 
         # Unified sequence
         unified, unified_freqs, unified_mask, unified_noise_tensor = (
@@ -1278,27 +1253,14 @@ class ZImageTransformer2DModel(
 
         # Main transformer layers
         for layer_idx, layer in enumerate(self.layers):
-            unified = (
-                self._gradient_checkpointing_func(
-                    layer,
-                    unified,
-                    unified_mask,
-                    unified_freqs,
-                    adaln_input,
-                    unified_noise_tensor,
-                    t_noisy,
-                    t_clean,
-                )
-                if torch.is_grad_enabled() and self.gradient_checkpointing
-                else layer(
-                    unified,
-                    unified_mask,
-                    unified_freqs,
-                    adaln_input,
-                    unified_noise_tensor,
-                    t_noisy,
-                    t_clean,
-                )
+            unified = layer(
+                unified,
+                unified_mask,
+                unified_freqs,
+                adaln_input,
+                unified_noise_tensor,
+                t_noisy,
+                t_clean,
             )
             if (
                 controlnet_block_samples is not None
