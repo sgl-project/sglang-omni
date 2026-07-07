@@ -242,6 +242,7 @@ class RecordingWebSocket:
         self.receive_after_bytes = receive_after_bytes
         self.application_state = WebSocketState.CONNECTED
         self.client_state = WebSocketState.CONNECTED
+        self.close_count = 0
         self.sent_text: list[dict[str, Any]] = []
         self.sent_bytes: list[bytes] = []
 
@@ -268,6 +269,7 @@ class RecordingWebSocket:
         raise AssertionError("unreachable")
 
     async def close(self) -> None:
+        self.close_count += 1
         self.application_state = WebSocketState.DISCONNECTED
         self.client_state = WebSocketState.DISCONNECTED
 
@@ -512,6 +514,25 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
         )
 
         assert "explicit_generation_params" not in gen_req.metadata["tts_params"]
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_teardown_skips_close_after_application_close() -> None:
+    async def run() -> None:
+        websocket = RecordingWebSocket()
+        websocket.application_state = WebSocketState.DISCONNECTED
+        websocket.client_state = WebSocketState.CONNECTED
+        session = SpeechWebSocketSession(
+            websocket,
+            client=CompletedSpeechClient(),
+            speech_service=SpeechRequestValidator(default_model="tts"),
+        )
+
+        await session.teardown()
+
+        assert session.closed is True
+        assert websocket.close_count == 0
 
     asyncio.run(run())
 
