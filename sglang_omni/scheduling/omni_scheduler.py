@@ -45,6 +45,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.utils.env import env_flag, env_float
 
 logger = logging.getLogger(__name__)
 
@@ -840,6 +841,163 @@ class OmniScheduler:
         # Fallback: call upstream's run_batch (uses tp_worker directly)
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
 
+    def _phase_profile_on(self) -> bool:
+        on = getattr(self, "_phase_prof_on", None)
+        if on is None:
+            on = self._phase_prof_on = env_flag("SGLANG_OMNI_PHASE_PROFILE")
+            if on:
+                self._phase_interval = env_float(
+                    "SGLANG_OMNI_PHASE_PROFILE_INTERVAL", default=5.0
+                )
+                self._phase_last_log = time.perf_counter()
+                self._phase_acc = {
+                    "decode": self._new_phase_bucket(),
+                    "prefill": self._new_phase_bucket(),
+                }
+        return on
+
+    @staticmethod
+    def _new_phase_bucket() -> dict[str, Any]:
+        return {
+            "steps": 0,
+            "recv": 0.0,
+            "sched": 0.0,
+            "build": 0.0,
+            "forward": 0.0,
+            "post": 0.0,
+            "finalize": 0.0,
+            "stream": 0.0,
+            "proc": 0.0,
+            "build_model_worker": 0.0,
+            "build_capture_hidden": 0.0,
+            "build_forward_batch": 0.0,
+            "build_mrope": 0.0,
+            "build_mrope_fast": 0.0,
+            "fwd_by_bs": {},
+        }
+
+    @staticmethod
+    def _phase_ms(bucket: dict[str, Any], key: str) -> float:
+        return 1000.0 * bucket[key] / bucket["steps"] if bucket["steps"] else 0.0
+
+    def _record_step_phase(
+        self,
+        batch,
+        t0: float,
+        t1: float,
+        t2: float,
+        t3: float,
+        t4: float,
+    ) -> None:
+        recv = t1 - t0
+        sched = t2 - t1
+        run = t3 - t2
+        proc = t4 - t3
+        last_phase = getattr(self._model_runner, "_last_phase", None)
+        if last_phase is not None:
+            is_prefill = bool(last_phase["is_prefill"])
+            build = float(last_phase["build"])
+            forward = float(last_phase["forward"])
+            post = float(last_phase["post"])
+            finalize = float(last_phase["finalize"])
+            build_detail = last_phase.get("build_detail") or {}
+            stream = max(0.0, run - (build + forward + post + finalize))
+        else:
+            is_prefill = not self._batch_is_decode(batch)
+            build = forward = post = finalize = 0.0
+            build_detail = {}
+            stream = run
+
+        bucket = self._phase_acc["prefill" if is_prefill else "decode"]
+        bucket["steps"] += 1
+        bucket["recv"] += recv
+        bucket["sched"] += sched
+        bucket["build"] += build
+        bucket["forward"] += forward
+        bucket["post"] += post
+        bucket["finalize"] += finalize
+        bucket["stream"] += stream
+        bucket["proc"] += proc
+        bucket["build_model_worker"] += float(build_detail.get("model_worker", 0.0))
+        bucket["build_capture_hidden"] += float(
+            build_detail.get("capture_hidden", 0.0)
+        )
+        bucket["build_forward_batch"] += float(build_detail.get("forward_batch", 0.0))
+        bucket["build_mrope"] += float(build_detail.get("mrope", 0.0))
+        bucket["build_mrope_fast"] += float(build_detail.get("mrope_fast", 0.0))
+
+        try:
+            bs = len(batch.reqs)
+        except Exception:
+            bs = 0
+        fwd_by_bs = bucket["fwd_by_bs"].setdefault(bs, [0.0, 0])
+        fwd_by_bs[0] += forward
+        fwd_by_bs[1] += 1
+        if t4 - self._phase_last_log >= self._phase_interval:
+            self._log_step_phases()
+            self._phase_last_log = t4
+
+    def _log_step_phases(self) -> None:
+        for name in ("decode", "prefill"):
+            bucket = self._phase_acc[name]
+            if not bucket["steps"]:
+                continue
+            recv = self._phase_ms(bucket, "recv")
+            sched = self._phase_ms(bucket, "sched")
+            build = self._phase_ms(bucket, "build")
+            forward = self._phase_ms(bucket, "forward")
+            post = self._phase_ms(bucket, "post")
+            finalize = self._phase_ms(bucket, "finalize")
+            stream = self._phase_ms(bucket, "stream")
+            proc = self._phase_ms(bucket, "proc")
+            step = recv + sched + build + forward + post + finalize + stream + proc
+            logger.info(
+                "[step phases] %s steps=%d mean_ms step=%.2f | recv=%.2f "
+                "sched=%.2f build=%.2f forward=%.2f post=%.2f finalize=%.2f "
+                "stream=%.2f proc=%.2f | gpu=%.2f host_pre=%.2f host_post=%.2f",
+                name,
+                bucket["steps"],
+                step,
+                recv,
+                sched,
+                build,
+                forward,
+                post,
+                finalize,
+                stream,
+                proc,
+                forward,
+                recv + sched + build,
+                post + finalize + stream + proc,
+            )
+            if bucket["fwd_by_bs"]:
+                parts = " ".join(
+                    "%d:%.1fms(n=%d)" % (bs, 1000.0 * total / count, count)
+                    for bs, (total, count) in sorted(bucket["fwd_by_bs"].items())
+                    if count
+                )
+                logger.info("[fwd-by-bs] %s %s", name, parts)
+            build_detail = (
+                self._phase_ms(bucket, "build_model_worker")
+                + self._phase_ms(bucket, "build_capture_hidden")
+                + self._phase_ms(bucket, "build_forward_batch")
+            )
+            if build_detail > 0.0:
+                logger.info(
+                    "[build phases] %s steps=%d mean_ms model_worker=%.2f "
+                    "capture_hidden=%.2f forward_batch=%.2f "
+                    "mrope=%.2f mrope_fast=%d/%d other=%.2f",
+                    name,
+                    bucket["steps"],
+                    self._phase_ms(bucket, "build_model_worker"),
+                    self._phase_ms(bucket, "build_capture_hidden"),
+                    self._phase_ms(bucket, "build_forward_batch"),
+                    self._phase_ms(bucket, "build_mrope"),
+                    int(bucket.get("build_mrope_fast", 0.0)),
+                    bucket["steps"],
+                    max(0.0, build - build_detail),
+                )
+
     def _build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner
         expects. Shared by the sync and async (launch) paths."""
@@ -1578,7 +1736,10 @@ class OmniScheduler:
         # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:
             self._process_admin_requests()
+            phase_prof = self._phase_profile_on()
+            t0 = time.perf_counter() if phase_prof else 0.0
             recv_reqs = self.recv_requests()
+            t1 = time.perf_counter() if phase_prof else 0.0
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
@@ -1588,14 +1749,22 @@ class OmniScheduler:
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
+            t2 = time.perf_counter() if phase_prof else 0.0
+            phase_record = False
 
             if batch:
                 result = self.run_batch(batch)
+                t3 = time.perf_counter() if phase_prof else 0.0
                 if result is not _FAILED_BATCH_RESULT:
                     self.process_batch_result(batch, result)
+                    phase_record = True
             else:
                 self.self_check_during_idle()
                 time.sleep(0.001)
+                t3 = time.perf_counter() if phase_prof else 0.0
+            t4 = time.perf_counter() if phase_prof else 0.0
+            if phase_prof and phase_record:
+                self._record_step_phase(batch, t0, t1, t2, t3, t4)
 
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
@@ -1610,7 +1779,10 @@ class OmniScheduler:
 
         while self._running:
             self._process_admin_requests()
+            phase_prof = self._phase_profile_on()
+            t0 = time.perf_counter() if phase_prof else 0.0
             recv_reqs = self.recv_requests()
+            t1 = time.perf_counter() if phase_prof else 0.0
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
@@ -1621,18 +1793,23 @@ class OmniScheduler:
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             disable_overlap_for_batch = self.is_disable_overlap_for_batch(batch)
+            t2 = time.perf_counter() if phase_prof else 0.0
+            phase_record = False
 
             if disable_overlap_for_batch and self.result_queue:
                 pop_and_process()
 
             if batch:
                 batch_result = self.run_batch(batch)
+                t3 = time.perf_counter() if phase_prof else 0.0
                 if batch_result is not _FAILED_BATCH_RESULT:
                     self.result_queue.append((batch.copy(), batch_result))
+                    phase_record = True
                 else:
                     batch_result = None
             else:
                 batch_result = None
+                t3 = time.perf_counter() if phase_prof else 0.0
 
             if self.last_batch:
                 if not disable_overlap_for_batch and self.result_queue:
@@ -1643,6 +1820,9 @@ class OmniScheduler:
 
             if self.is_generation:
                 self.launch_batch_sample_if_needed(batch_result)
+            t4 = time.perf_counter() if phase_prof else 0.0
+            if phase_prof and phase_record:
+                self._record_step_phase(batch, t0, t1, t2, t3, t4)
 
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():

@@ -7,6 +7,8 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,8 +25,10 @@ from sglang_omni.scheduling.types import (
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
+from sglang_omni.utils.env import env_flag
 
 logger = logging.getLogger(__name__)
+_FORWARD_BATCH_MROPE_PATCH_LOCK = threading.Lock()
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -68,6 +72,7 @@ class _PendingStep:
     model_worker_batch: Any  # for the prefill-only finalize branch (unused in decode)
     batch_result: Any  # carries logits_output (device of next_token_ids)
     n_real: int  # number of real (non-padding) rows this step
+    phase: dict[str, Any] | None = None
 
 
 class ModelRunner:
@@ -95,6 +100,16 @@ class ModelRunner:
         # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
+        self._phase_on: bool = env_flag("SGLANG_OMNI_PHASE_PROFILE")
+        self._phase_sync: bool = env_flag("SGLANG_OMNI_PHASE_SYNC")
+        self._last_phase: dict[str, Any] | None = None
+        self._build_profile_on: bool = env_flag("SGLANG_OMNI_BUILD_PROFILE")
+        self._last_build_phase: dict[str, float] | None = None
+        self._mrope_patch_enabled: bool = self._build_profile_on or env_flag(
+            "SGLANG_OMNI_FAST_MROPE_DECODE"
+        )
+        if self._mrope_patch_enabled:
+            self._install_forward_batch_mrope_patch()
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
         """Return a pinned host staging buffer mirroring ``device_staging``'s
@@ -132,13 +147,22 @@ class ModelRunner:
         ``_finalize``) that ``execute_launch`` + ``execute_resolve`` also use,
         in the same order. Async decode splits this at the post-decode boundary.
         """
+        prof = bool(getattr(self, "_phase_on", False))
+        if prof:
+            self._last_phase = None
+            self._last_build_phase = None
+        t0 = time.perf_counter() if prof else 0.0
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
         forward_batch, schedule_batch, model_worker_batch, is_prefill = built
+        t1 = time.perf_counter() if prof else 0.0
         batch_result = self._prepare_and_forward(
             forward_batch, schedule_batch, scheduler_output.requests, is_prefill
         )
+        if prof and bool(getattr(self, "_phase_sync", False)):
+            torch.cuda.synchronize(self.device)
+        t2 = time.perf_counter() if prof else 0.0
         if is_prefill:
             self.post_prefill(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
@@ -147,13 +171,24 @@ class ModelRunner:
             self.post_decode(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
             )
-        return self._finalize(
+        t3 = time.perf_counter() if prof else 0.0
+        out = self._finalize(
             batch_result,
             forward_batch,
             schedule_batch,
             model_worker_batch,
             scheduler_output,
         )
+        if prof:
+            self._last_phase = {
+                "build": t1 - t0,
+                "forward": t2 - t1,
+                "post": t3 - t2,
+                "finalize": time.perf_counter() - t3,
+                "is_prefill": is_prefill,
+                "build_detail": self._last_build_phase,
+            }
+        return out
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
@@ -171,11 +206,17 @@ class ModelRunner:
         scheduling has two steps momentarily in flight: the just-launched step
         N and the not-yet-resolved step N-1.
         """
+        prof = bool(getattr(self, "_phase_on", False))
+        if prof:
+            self._last_phase = None
+            self._last_build_phase = None
+        t0 = time.perf_counter() if prof else 0.0
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return None
         forward_batch, schedule_batch, model_worker_batch, is_prefill = built
         assert not is_prefill, "async lookahead launch is decode-only"
+        t1 = time.perf_counter() if prof else 0.0
         batch_result = self._prepare_and_forward(
             forward_batch,
             schedule_batch,
@@ -183,8 +224,23 @@ class ModelRunner:
             is_prefill,
             is_lookahead=True,
         )
+        if prof and bool(getattr(self, "_phase_sync", False)):
+            torch.cuda.synchronize(self.device)
+        t2 = time.perf_counter() if prof else 0.0
         launch_buf = self.post_decode_launch(
             batch_result, forward_batch, scheduler_output.requests
+        )
+        t3 = time.perf_counter() if prof else 0.0
+        phase = (
+            {
+                "build": t1 - t0,
+                "forward": t2 - t1,
+                "post": t3 - t2,
+                "is_prefill": False,
+                "build_detail": self._last_build_phase,
+            }
+            if prof
+            else None
         )
         # Publish this step's output token ids now (post_decode_launch set them
         # from GPU state without a host sync) so the NEXT decode step's
@@ -206,6 +262,7 @@ class ModelRunner:
             model_worker_batch=model_worker_batch,
             batch_result=batch_result,
             n_real=len(scheduler_output.requests),
+            phase=phase,
         )
 
     def execute_resolve(
@@ -232,6 +289,7 @@ class ModelRunner:
             for req in pending.scheduler_output.requests
             if req.data.req.finished() or self._req_is_retracted(req.data.req)
         }
+        t_post0 = time.perf_counter() if pending.phase is not None else 0.0
         self.post_decode_resolve(
             pending.launch_buf,
             pending.batch_result,
@@ -239,7 +297,8 @@ class ModelRunner:
             pending.schedule_batch,
             pending.scheduler_output.requests,
         )
-        return self._finalize(
+        t_finalize0 = time.perf_counter() if pending.phase is not None else 0.0
+        out = self._finalize(
             pending.batch_result,
             pending.forward_batch,
             pending.schedule_batch,
@@ -248,6 +307,12 @@ class ModelRunner:
             set_output_ids=False,
             skip_rids=skip_rids,
         )
+        if pending.phase is not None:
+            phase = dict(pending.phase)
+            phase["post"] = phase["post"] + (t_finalize0 - t_post0)
+            phase["finalize"] = time.perf_counter() - t_finalize0
+            self._last_phase = phase
+        return out
 
     def _build_forward_batch(self, scheduler_output: Any):
         """Build the ForwardBatch + capture-hidden mode. Returns
@@ -265,7 +330,10 @@ class ModelRunner:
         if schedule_batch is None:
             return None
 
+        prof = bool(getattr(self, "_build_profile_on", False))
+        t0 = time.perf_counter() if prof else 0.0
         model_worker_batch = schedule_batch.get_model_worker_batch()
+        t1 = time.perf_counter() if prof else 0.0
         is_prefill = bool(schedule_batch.forward_mode.is_extend())
 
         capture_hidden_mode = (
@@ -281,11 +349,126 @@ class ModelRunner:
             model_worker_batch.capture_hidden_mode = capture_hidden_mode
         elif self.output_processor._capture_hidden:
             model_worker_batch.capture_hidden_mode = CaptureHiddenMode.LAST
+        t2 = time.perf_counter() if prof else 0.0
 
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.tp_worker.model_runner
         )
+        if prof:
+            t3 = time.perf_counter()
+            self._last_build_phase = {
+                "model_worker": t1 - t0,
+                "capture_hidden": t2 - t1,
+                "forward_batch": t3 - t2,
+                "mrope": float(
+                    getattr(forward_batch, "_sglang_omni_mrope_seconds", 0.0)
+                ),
+                "mrope_fast": float(
+                    bool(getattr(forward_batch, "_sglang_omni_mrope_fast", False))
+                ),
+            }
         return forward_batch, schedule_batch, model_worker_batch, is_prefill
+
+    def _install_forward_batch_mrope_patch(self) -> None:
+        from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+        self._patch_forward_batch_mrope(ForwardBatch)
+
+    def _patch_forward_batch_mrope(self, forward_batch_cls: Any) -> None:
+        """Install an env-gated text-decode MRoPE fast path and profiler hook."""
+
+        with _FORWARD_BATCH_MROPE_PATCH_LOCK:
+            if getattr(forward_batch_cls, "_sglang_omni_mrope_patch", False):
+                if not getattr(
+                    forward_batch_cls,
+                    "_sglang_omni_mrope_patch_reuse_logged",
+                    False,
+                ):
+                    logger.debug(
+                        "SGLang Omni MRoPE patch already installed on %s",
+                        getattr(forward_batch_cls, "__name__", forward_batch_cls),
+                    )
+                    forward_batch_cls._sglang_omni_mrope_patch_reuse_logged = True
+                return
+            if not hasattr(forward_batch_cls, "_compute_mrope_positions"):
+                if not getattr(
+                    forward_batch_cls,
+                    "_sglang_omni_mrope_patch_missing_logged",
+                    False,
+                ):
+                    logger.warning(
+                        "SGLang Omni MRoPE patch requested but %s has no "
+                        "_compute_mrope_positions; skipping fast path/profile hook",
+                        getattr(forward_batch_cls, "__name__", forward_batch_cls),
+                    )
+                    forward_batch_cls._sglang_omni_mrope_patch_missing_logged = True
+                return
+
+            original = forward_batch_cls._compute_mrope_positions
+
+            def mrope_delta_is_zero(mm_input: Any) -> bool:
+                if mm_input is None:
+                    return True
+                contains_mm_input = getattr(mm_input, "contains_mm_input", None)
+                if callable(contains_mm_input) and contains_mm_input():
+                    return False
+                cached = getattr(mm_input, "_sglang_omni_zero_mrope_delta", None)
+                if cached is not None:
+                    return bool(cached)
+                delta = getattr(mm_input, "mrope_position_delta", None)
+                if delta is None:
+                    return False
+                if isinstance(delta, torch.Tensor):
+                    if delta.device.type != "cpu":
+                        return False
+                    is_zero = bool(delta.numel() > 0 and torch.all(delta == 0).item())
+                else:
+                    try:
+                        is_zero = all(int(value) == 0 for value in delta)
+                    except TypeError:
+                        is_zero = int(delta) == 0
+                try:
+                    setattr(mm_input, "_sglang_omni_zero_mrope_delta", is_zero)
+                except Exception:
+                    pass
+                return is_zero
+
+            def patched_mrope(forward_batch, model_runner, batch):
+                prof = env_flag("SGLANG_OMNI_BUILD_PROFILE")
+                fast = env_flag("SGLANG_OMNI_FAST_MROPE_DECODE")
+                t0 = time.perf_counter() if prof else 0.0
+                used_fast = False
+                try:
+                    mm_inputs = getattr(batch, "multimodal_inputs", None)
+                    text_only = mm_inputs is None or all(
+                        mrope_delta_is_zero(mm) for mm in mm_inputs
+                    )
+                    if (
+                        fast
+                        and text_only
+                        and forward_batch.forward_mode.is_decode()
+                        and forward_batch.positions is not None
+                        and getattr(forward_batch, "spec_info", None) is None
+                    ):
+                        positions = forward_batch.positions
+                        if positions.dtype != torch.int64:
+                            positions = positions.to(dtype=torch.int64)
+                        forward_batch.mrope_positions = (
+                            positions.reshape(1, -1).expand(3, -1).clone()
+                        )
+                        used_fast = True
+                        return None
+                    return original(forward_batch, model_runner, batch)
+                finally:
+                    if prof:
+                        forward_batch._sglang_omni_mrope_seconds = (
+                            time.perf_counter() - t0
+                        )
+                        forward_batch._sglang_omni_mrope_fast = used_fast
+
+            forward_batch_cls._sglang_omni_orig_compute_mrope_positions = original
+            forward_batch_cls._compute_mrope_positions = patched_mrope
+            forward_batch_cls._sglang_omni_mrope_patch = True
 
     def _prepare_and_forward(
         self,

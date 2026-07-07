@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.utils.env import env_flag
 
 
 def _install_fake_forward_batch_module(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,7 +63,12 @@ def _scheduler_output(*, is_prefill: bool):
         output_ids=None,
         get_model_worker_batch=lambda: model_worker_batch,
     )
-    request_data = SimpleNamespace(generation_steps=0, extra_model_outputs={})
+    req_state = SimpleNamespace(finished=lambda: False, is_retracted=False)
+    request_data = SimpleNamespace(
+        generation_steps=0,
+        extra_model_outputs={},
+        req=req_state,
+    )
     request = SimpleNamespace(request_id="req-1", data=request_data)
     return SimpleNamespace(batch_data=schedule_batch, requests=[request])
 
@@ -101,6 +108,22 @@ def _runner(calls: list[str], *, custom_result):
             del result, forward_batch, schedule_batch, requests
             calls.append("post_decode")
 
+        def post_decode_launch(self, result, forward_batch, requests):
+            del result, forward_batch, requests
+            calls.append("post_decode_launch")
+            return "launch-buf"
+
+        def post_decode_resolve(
+            self,
+            launch_buf,
+            result,
+            forward_batch,
+            schedule_batch,
+            requests,
+        ):
+            del launch_buf, result, forward_batch, schedule_batch, requests
+            calls.append("post_decode_resolve")
+
     runner = object.__new__(RecordingRunner)
     runner.device = torch.device("cpu")
     runner.output_processor = SimpleNamespace(
@@ -123,7 +146,32 @@ def _runner(calls: list[str], *, custom_result):
         model_runner=object(),
         forward_batch_generation=standard_forward,
     )
+    runner._async_query_hit = 0
+    runner._async_query_miss = 0
+    runner._phase_on = False
+    runner._phase_sync = False
+    runner._last_phase = None
+    runner._build_profile_on = False
+    runner._last_build_phase = None
+    runner._mrope_patch_enabled = False
     return runner
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "false", "False", "no", "off", ""],
+)
+def test_env_flag_false_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_PHASE_PROFILE", value)
+
+    assert env_flag("SGLANG_OMNI_PHASE_PROFILE") is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "True", "yes", "on"])
+def test_env_flag_true_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_PHASE_PROFILE", value)
+
+    assert env_flag("SGLANG_OMNI_PHASE_PROFILE") is True
 
 
 @pytest.mark.parametrize(
@@ -172,6 +220,228 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     ]
     assert output.can_run_cuda_graph is False
     assert not hasattr(ModelRunner, "prepare_prefill")
+
+
+def test_async_resolve_records_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_forward_batch_module(monkeypatch)
+
+    class FakeEvent:
+        def record(self) -> None:
+            return None
+
+        def query(self) -> bool:
+            return True
+
+        def synchronize(self) -> None:
+            raise AssertionError("query path should not synchronize")
+
+    monkeypatch.setattr(torch.cuda, "Event", FakeEvent)
+    calls: list[str] = []
+    custom_result = SimpleNamespace(
+        logits_output=None,
+        next_token_ids=torch.tensor([7]),
+        can_run_cuda_graph=True,
+    )
+    runner = _runner(calls, custom_result=custom_result)
+    runner._phase_on = True
+    runner._build_profile_on = True
+
+    pending = runner.execute_launch(_scheduler_output(is_prefill=False))
+
+    assert pending is not None
+    assert pending.phase is not None
+    assert runner._last_phase is None
+
+    output = runner.execute_resolve(pending)
+
+    assert output is not None
+    assert output.req_ids == ["req-1"]
+    assert runner._async_query_hit == 1
+    assert runner._last_phase is not None
+    assert runner._last_phase["is_prefill"] is False
+    assert {
+        "build",
+        "forward",
+        "post",
+        "finalize",
+        "build_detail",
+    } <= set(runner._last_phase)
+    assert calls == [
+        "before_decode",
+        "custom_decode",
+        "post_decode_launch",
+        "post_decode_resolve",
+    ]
+
+
+class _DecodeMode:
+    def is_decode(self) -> bool:
+        return True
+
+
+def test_mrope_text_decode_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([4, 7], dtype=torch.int32)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 2), -1, dtype=torch.int64)
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[None, None]),
+    )
+
+    expected = torch.tensor([[4, 7], [4, 7], [4, 7]], dtype=torch.int64)
+    assert torch.equal(forward_batch.mrope_positions, expected)
+    assert forward_batch._sglang_omni_mrope_fast is True
+    assert forward_batch._sglang_omni_mrope_seconds >= 0.0
+
+
+def test_mrope_text_decode_fast_path_accepts_zero_delta_mm_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([8], dtype=torch.int64)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    mm_input = SimpleNamespace(
+        mrope_position_delta=torch.zeros((1, 1), dtype=torch.int64),
+        contains_mm_input=lambda: False,
+    )
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[mm_input]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.tensor([[8], [8], [8]], dtype=torch.int64),
+    )
+    assert forward_batch._sglang_omni_mrope_fast is True
+
+
+def test_mrope_fast_path_skips_nonzero_delta_mm_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([8], dtype=torch.int64)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    mm_input = SimpleNamespace(
+        mrope_position_delta=torch.ones((1, 1), dtype=torch.int64),
+        contains_mm_input=lambda: False,
+    )
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[mm_input]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.full((3, 1), -1, dtype=torch.int64),
+    )
+    assert forward_batch._sglang_omni_mrope_fast is False
+
+
+def test_mrope_fast_path_skips_multimodal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([4], dtype=torch.int32)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[object()]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.full((3, 1), -1, dtype=torch.int64),
+    )
+
+
+def test_mrope_patch_warns_when_hook_missing(caplog: pytest.LogCaptureFixture) -> None:
+    class ForwardBatch:
+        pass
+
+    runner = object.__new__(ModelRunner)
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.model_runner.base"):
+        runner._patch_forward_batch_mrope(ForwardBatch)
+
+    assert "has no _compute_mrope_positions" in caplog.text
+    assert ForwardBatch._sglang_omni_mrope_patch_missing_logged is True
+
+
+def test_mrope_patch_keeps_original_method_on_reentry() -> None:
+    class ForwardBatch:
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            return "original"
+
+    original = ForwardBatch._compute_mrope_positions
+    runner = object.__new__(ModelRunner)
+
+    runner._patch_forward_batch_mrope(ForwardBatch)
+    patched = ForwardBatch._compute_mrope_positions
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    assert ForwardBatch._sglang_omni_orig_compute_mrope_positions is original
+    assert ForwardBatch._compute_mrope_positions is patched
 
 
 def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
