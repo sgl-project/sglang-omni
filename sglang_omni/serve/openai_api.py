@@ -918,9 +918,16 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.audios:
         audios = req.audios
 
-    images: list[str] | None = None
+    images: list[Any] | None = None
     if req.images:
-        images = req.images
+        images = list(req.images)
+    if req.image:
+        if images is None:
+            images = []
+        if isinstance(req.image, list):
+            images.extend(req.image)
+        else:
+            images.append(req.image)
 
     videos: list[str] | None = None
     if req.videos:
@@ -930,8 +937,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
-    if req.image:
-        metadata["image_config"] = req.image
+    if req.image_config:
+        metadata["image_config"] = req.image_config
     if audios:
         metadata["audios"] = audios
     if images:

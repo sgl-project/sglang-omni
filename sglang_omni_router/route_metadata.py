@@ -23,6 +23,7 @@ ROUTE_HEADER_NAMES = {
 }
 
 INPUT_FIELD_CAPABILITIES: dict[str, Capability] = {
+    "image": "image_input",
     "images": "image_input",
     "audio_inputs": "audio_input",
     "audios": "audio_input",
@@ -444,7 +445,9 @@ def _infer_payload_capabilities(
         capabilities.add("audio_input")
     if _modalities_include(payload, "audio") or _has_non_empty(payload.get("audio")):
         capabilities.add("audio_output")
-    if _modalities_include(payload, "image") or _has_non_empty(payload.get("image")):
+    if _modalities_include(payload, "image") or _has_non_empty(
+        payload.get("image_config")
+    ):
         capabilities.add("image_output")
     capabilities.update(_infer_message_part_capabilities(payload.get("messages")))
     return capabilities

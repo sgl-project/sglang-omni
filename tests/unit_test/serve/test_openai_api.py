@@ -831,7 +831,7 @@ def test_chat_image_output_config_is_forwarded_to_generate_request() -> None:
         model="inclusionAI/LLaDA2.0-Uni",
         messages=[{"role": "user", "content": "Draw a lighthouse at dusk."}],
         modalities=["image"],
-        image={
+        image_config={
             "width": 512,
             "height": 768,
             "steps": 8,
@@ -862,7 +862,7 @@ def test_chat_image_output_returns_images_array() -> None:
             "model": "llada2-uni",
             "messages": [{"role": "user", "content": "Draw a green square."}],
             "modalities": ["image"],
-            "image": {"width": 512, "height": 512, "format": "png"},
+            "image_config": {"width": 512, "height": 512, "format": "png"},
         },
     )
 
@@ -880,6 +880,20 @@ def test_chat_image_output_returns_images_array() -> None:
         }
     ]
     assert client.requests[0].output_modalities == ["image"]
+
+
+def test_chat_single_image_input_is_forwarded_as_images_metadata() -> None:
+    req = ChatCompletionRequest(
+        model="inclusionAI/LLaDA2.0-Uni",
+        messages=[{"role": "user", "content": "Describe this image."}],
+        modalities=["text"],
+        image="tests/data/cars.jpg",
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.output_modalities == ["text"]
+    assert gen_req.metadata["images"] == ["tests/data/cars.jpg"]
 
 
 def test_speech_request_passes_streaming_control_fields() -> None:

@@ -261,12 +261,43 @@ def test_chat_image_output_routes_to_image_output_worker() -> None:
             json={
                 "messages": [{"role": "user", "content": "draw"}],
                 "modalities": ["image"],
-                "image": {"width": 512, "height": 512},
+                "image_config": {"width": 512, "height": 512},
             },
         )
 
     assert response.status_code == 200
     assert seen_workers == ["worker-b:8102"]
+
+
+def test_chat_singular_image_input_routes_to_image_input_worker() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat", "image_input"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"chat", "image_output"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(worker_configs=worker_configs), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "describe"}],
+                "image": "tests/data/cars.jpg",
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-a:8101"]
 
 
 def test_router_liveness_does_not_wait_for_worker_health_probe() -> None:

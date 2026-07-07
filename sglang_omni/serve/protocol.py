@@ -75,11 +75,15 @@ class ChatCompletionRequest(BaseModel):
 
     # Image output configuration (sglang-omni extension)
     # e.g. {"width": 1024, "height": 1024, "steps": 16}
-    image: dict[str, Any] | None = None
+    image_config: dict[str, Any] | None = None
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
     audios: list[str] | None = None
+
+    # Image input (sglang-omni extension)
+    # Can be a single image file path, URL, or inline image payload
+    image: Any | None = None
 
     # Image input (sglang-omni extension)
     # Can be a list of image file paths (local paths or URLs)

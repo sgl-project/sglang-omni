@@ -141,7 +141,7 @@ resp = requests.post(
         "model": "inclusionAI/LLaDA2.0-Uni",
         "messages": [{"role": "user", "content": "Draw a lighthouse at dusk."}],
         "modalities": ["image"],
-        "image": {
+        "image_config": {
             "width": 512,
             "height": 512,
             "steps": 8,
@@ -166,7 +166,8 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
 | `modalities` | list | `["text"]` | Output modalities; use `["image"]` for text-to-image responses |
-| `image` | object | `null` | Image-output generation settings such as `width`, `height`, `steps`, `cfg_scale`, `decoder_steps`, `decode_mode`, and `format` |
+| `image_config` | object | `null` | Image-output generation settings such as `width`, `height`, `steps`, `cfg_scale`, `decoder_steps`, `decode_mode`, and `format` |
+| `image` | string/object | `null` | Single image input path, URL, or inline image payload |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 

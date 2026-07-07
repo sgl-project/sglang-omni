@@ -361,11 +361,11 @@ The router infers required capabilities from each request:
 
 - `/v1/chat/completions` requires `chat`
 - `stream: true` requires `streaming`
-- `images` or image message parts require `image_input`
+- `image`, `images`, or image message parts require `image_input`
 - `audios`, `audio_inputs`, or audio message parts require `audio_input`
 - `videos`, `video`, or video message parts require `video_input`
 - `modalities: ["audio"]` or `audio` output fields require `audio_output`
-- `modalities: ["image"]`, `output_modalities: ["image"]`, or `image`
+- `modalities: ["image"]`, `output_modalities: ["image"]`, or `image_config`
   output config fields require `image_output`
 - `/v1/audio/speech` requires `speech`, plus `streaming` for streamed speech
 
