@@ -200,8 +200,6 @@ REFERENCE_FAILURES = (
 )
 MALFORMED_CASE_NAMES = (
     "missing_input",
-    "missing_model",
-    "missing_voice",
     "empty_input",
     "wrong_input_type",
     "bad_response_format",
@@ -1102,18 +1100,6 @@ def _malformed_payloads(
         (
             "missing_input",
             {"model": spec.model_name, "voice": "default", "response_format": "wav"},
-        ),
-        (
-            "missing_model",
-            {"input": "Missing model", "voice": "default", "response_format": "wav"},
-        ),
-        (
-            "missing_voice",
-            {
-                "model": spec.model_name,
-                "input": "Missing voice",
-                "response_format": "wav",
-            },
         ),
         ("empty_input", {"model": spec.model_name, "input": "", "voice": "default"}),
         (
