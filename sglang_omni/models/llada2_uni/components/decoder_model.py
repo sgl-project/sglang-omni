@@ -20,25 +20,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
+from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import Attention
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.normalization import RMSNorm
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from torch.nn.utils.rnn import pad_sequence
-
-try:
-    from diffusers.models.attention_dispatch import dispatch_attention_fn
-except ImportError:
-    dispatch_attention_fn = None
-from diffusers.models.modeling_outputs import Transformer2DModelOutput
-
-try:
-    from flash_attn import flash_attn_func
-
-    _HAS_FLASH_ATTN = True
-except ImportError:
-    flash_attn_func = None
-    _HAS_FLASH_ATTN = False
 
 ADALN_EMBED_DIM = 256
 SEQ_MULTI_OF = 32
@@ -144,46 +132,20 @@ class ZSingleStreamAttnProcessor:
 
         # From [batch, seq_len] to appropriate mask format
         if attention_mask is not None and attention_mask.ndim == 2:
-            if dispatch_attention_fn is not None:
-                # dispatch_attention_fn expects 4D mask: [batch, 1, 1, seq_len]
-                attention_mask = attention_mask[:, None, None, :]
-            else:
-                # flash_attn: mask out inputs directly
-                mask_expanded = attention_mask.unsqueeze(-1).unsqueeze(
-                    -1
-                )  # (B, S, 1, 1)
-                query = query * mask_expanded
-                key = key * mask_expanded
-                value = value * mask_expanded
+            # dispatch_attention_fn expects 4D mask: [batch, 1, 1, seq_len]
+            attention_mask = attention_mask[:, None, None, :]
 
         # Compute joint attention
-        if dispatch_attention_fn is not None:
-            hidden_states = dispatch_attention_fn(
-                query,
-                key,
-                value,
-                attn_mask=attention_mask,
-                dropout_p=0.0,
-                is_causal=False,
-                backend=self._attention_backend,
-                parallel_config=self._parallel_config,
-            )
-        elif _HAS_FLASH_ATTN:
-            hidden_states = flash_attn_func(
-                query,
-                key,
-                value,
-                dropout_p=0.0,
-                causal=False,
-            )
-        else:
-            hidden_states = F.scaled_dot_product_attention(
-                query.transpose(1, 2),
-                key.transpose(1, 2),
-                value.transpose(1, 2),
-                dropout_p=0.0,
-                is_causal=False,
-            ).transpose(1, 2)
+        hidden_states = dispatch_attention_fn(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            backend=self._attention_backend,
+            parallel_config=self._parallel_config,
+        )
 
         # Reshape back
         hidden_states = hidden_states.flatten(2, 3)

@@ -398,8 +398,8 @@ def test_decoder_model_imports_without_flash_attn(monkeypatch) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module._HAS_FLASH_ATTN is False
-    assert module.flash_attn_func is None
+    assert not hasattr(module, "_HAS_FLASH_ATTN")
+    assert not hasattr(module, "flash_attn_func")
 
 
 def test_image_decoder_seed_uses_global_torch_rng() -> None:
