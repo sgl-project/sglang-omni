@@ -1019,9 +1019,9 @@ def test_moss_preprocess_discards_handoff_after_abort(
     try:
         rb.set_moss_tts_preprocessing_context(processor=object())
         rb.preprocess_moss_tts_payload(payload)
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "abort-me" not in rb._PREPARED_REQUESTS
-            assert not rb._PREPARED_REQUESTS
+        with rb._QUEUE.lock:
+            assert "abort-me" not in rb._QUEUE.prepared
+            assert not rb._QUEUE.prepared
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -1091,13 +1091,13 @@ def test_moss_preprocess_pre_start_abort_does_not_block(
         rb.set_moss_tts_preprocessing_context(processor=object())
         # Abort for a request that never started preprocessing: no tombstone.
         rb.cleanup_prepared_moss_tts_request("ghost")
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert not rb._ABORTED_REQUESTS
+        with rb._QUEUE.lock:
+            assert not rb._QUEUE.aborted
         # The same id can still run a normal preprocess and publish its handoff.
         rb.preprocess_moss_tts_payload(make_payload(inputs="hello", request_id="ghost"))
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "ghost" in rb._PREPARED_REQUESTS
-            assert not rb._ABORTED_REQUESTS
-            assert not rb._INFLIGHT_REQUESTS
+        with rb._QUEUE.lock:
+            assert "ghost" in rb._QUEUE.prepared
+            assert not rb._QUEUE.aborted
+            assert not rb._QUEUE.inflight
     finally:
         rb.clear_moss_tts_preprocessing_context()

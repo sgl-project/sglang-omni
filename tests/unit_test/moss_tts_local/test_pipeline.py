@@ -768,16 +768,16 @@ def test_create_preprocessing_executor_env_toggle(monkeypatch):
     monkeypatch.setenv("MOSS_REF_AUDIO_CACHE", "0")
     stages.create_preprocessing_executor("model", device="cpu")
     assert not isinstance(
-        rb._PREPROCESSING_CONTEXT.reference_encoder, stages.CachedReferenceEncoder
+        rb._QUEUE.context.reference_encoder, stages.CachedReferenceEncoder
     )
 
     # Unset -> kwarg default (True) -> wrapped.
     monkeypatch.delenv("MOSS_REF_AUDIO_CACHE")
     stages.create_preprocessing_executor("model", device="cpu")
     assert isinstance(
-        rb._PREPROCESSING_CONTEXT.reference_encoder, stages.CachedReferenceEncoder
+        rb._QUEUE.context.reference_encoder, stages.CachedReferenceEncoder
     )
-    assert rb._PREPROCESSING_CONTEXT.reference_encoder._cache.max_size == 8192
+    assert rb._QUEUE.context.reference_encoder._cache.max_size == 8192
 
 
 def test_create_preprocessing_executor_uses_model_config_codec_path(monkeypatch):
