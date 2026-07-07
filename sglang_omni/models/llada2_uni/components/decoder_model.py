@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
-from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import Attention
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
@@ -81,9 +80,6 @@ class ZSingleStreamAttnProcessor:
     original Z-ImageAttention module.
     """
 
-    _attention_backend = None
-    _parallel_config = None
-
     def __call__(
         self,
         attn: Attention,
@@ -126,20 +122,17 @@ class ZSingleStreamAttnProcessor:
 
         # From [batch, seq_len] to appropriate mask format
         if attention_mask is not None and attention_mask.ndim == 2:
-            # dispatch_attention_fn expects 4D mask: [batch, 1, 1, seq_len]
             attention_mask = attention_mask[:, None, None, :]
 
         # Compute joint attention
-        hidden_states = dispatch_attention_fn(
-            query,
-            key,
-            value,
+        hidden_states = F.scaled_dot_product_attention(
+            query.transpose(1, 2),
+            key.transpose(1, 2),
+            value.transpose(1, 2),
             attn_mask=attention_mask,
             dropout_p=0.0,
             is_causal=False,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
-        )
+        ).transpose(1, 2)
 
         # Reshape back
         hidden_states = hidden_states.flatten(2, 3)

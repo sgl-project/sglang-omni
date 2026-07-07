@@ -398,8 +398,10 @@ def test_decoder_model_imports_without_flash_attn(monkeypatch) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    assert not hasattr(module, "dispatch_attention_fn")
     assert not hasattr(module, "_HAS_FLASH_ATTN")
     assert not hasattr(module, "flash_attn_func")
+    assert not hasattr(module.ZSingleStreamAttnProcessor, "_attention_backend")
 
 
 def test_image_decoder_seed_uses_global_torch_rng() -> None:
