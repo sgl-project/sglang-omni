@@ -116,6 +116,7 @@ def make_video_send_fn(
     enable_audio_input: bool = False,
     audio_output_dir: str | None = None,
     fixed_prompt: str | None = None,
+    extra_request_params: dict[str, Any] | None = None,
 ) -> SendFn:
     modalities = ["text", "audio"] if audio_output_dir else ["text"]
 
@@ -153,6 +154,8 @@ def make_video_send_fn(
             payload["video_max_pixels"] = video_max_pixels
         if video_total_pixels is not None:
             payload["video_total_pixels"] = video_total_pixels
+        if extra_request_params:
+            payload.update(extra_request_params)
 
         start_time = time.perf_counter()
         try:

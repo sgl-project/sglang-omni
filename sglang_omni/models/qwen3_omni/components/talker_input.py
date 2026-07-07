@@ -176,6 +176,7 @@ def build_prefill_input(
     tts_pad_token_id: int,
     include_assistant_eos: bool = True,
     im_end_token_id: int | None = None,
+    include_user_context: bool = True,
 ) -> dict[str, torch.Tensor]:
     """Build full talker prefill input from thinker outputs.
 
@@ -214,6 +215,8 @@ def build_prefill_input(
         seg_mm_mask = multimodal_mask[start:end]
 
         if seg["role"] == "user":
+            if not include_user_context:
+                continue
             user_part = build_user_part(
                 thinker_embed=seg_embed,
                 thinker_hidden=seg_hidden,

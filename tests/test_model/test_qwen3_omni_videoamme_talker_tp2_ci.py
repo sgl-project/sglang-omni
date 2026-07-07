@@ -15,6 +15,7 @@ Author:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,28 +47,36 @@ CONCURRENCY = 16
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
+STAGE11_VIDEO_MIN_PIXELS = 6_272
+STAGE11_VIDEO_MAX_PIXELS = 6_272
+STAGE11_TALKER_PREFILL_USER_CONTEXT = False
+STAGE11_VIDEO_MIN_PIXELS_ENV = "STAGE11_SWEEP_VIDEO_MIN_PIXELS"
+STAGE11_VIDEO_MAX_PIXELS_ENV = "STAGE11_SWEEP_VIDEO_MAX_PIXELS"
+STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV = (
+    "STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT"
+)
+STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM = "talker_prefill_user_context"
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0548
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0175
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0.0
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.058,
+        "throughput_qps": 0.061,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 170.36,
-        "rtf_mean": 12.8415,
+        "latency_mean_s": 162.533,
+        "rtf_mean": 12.2402,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
-
-# note (Yue Yin, Chenyang): 0.55-calibrated latency baseline (146.7 gate) is
-# unreachable on the #765 0.40 OOM-fix config (~148s); pin the gate to 155
-
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 155
+# note (luojiaxuan): 0.55-calibrated latency baseline (146.7 gate) is unreachable on
+# the #765 0.40 OOM-fix config (~148s); pin the gate to 150 (manager-approved).
+VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 150.0
 
 
 @dataclass
@@ -79,14 +88,37 @@ class _TalkerEvalArtifacts:
     lang: str
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in _FALSE_ENV_VALUES
+
+
+def _stage11_video_request_options() -> tuple[int, int, dict[str, bool]]:
+    video_min_pixels = int(
+        os.getenv(STAGE11_VIDEO_MIN_PIXELS_ENV, str(STAGE11_VIDEO_MIN_PIXELS))
+    )
+    video_max_pixels = int(
+        os.getenv(STAGE11_VIDEO_MAX_PIXELS_ENV, str(STAGE11_VIDEO_MAX_PIXELS))
+    )
+    extra_request_params = {
+        STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM: _env_bool(
+            STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV,
+            STAGE11_TALKER_PREFILL_USER_CONTEXT,
+        )
+    }
+    return video_min_pixels, video_max_pixels, extra_request_params
+
+
 @pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
 ) -> None:
     """Confirm the thinker stage actually came up at tp_size=2.
     Prevents silent fallback to TP=1
     """
-    log_file = qwen3_omni_fp8_tp2_server.log_file
+    log_file = qwen3_omni_fp8_talker_server_tp2.log_file
     checks = MetricCheckCollector("Thinker TP=2 server log checks")
     checks.check(
         log_file is not None and log_file.exists(),
@@ -112,13 +144,22 @@ def test_thinker_tp2_actually_applied(
 
 @pytest.fixture(scope="module")
 def talker_eval_artifacts(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videoamme_audio"))
+    video_min_pixels, video_max_pixels, extra_request_params = (
+        _stage11_video_request_options()
+    )
+    print(
+        "stage11_sweep_config "
+        f"video_min_pixels={video_min_pixels} "
+        f"video_max_pixels={video_max_pixels} "
+        f"extra_request_params={extra_request_params}"
+    )
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_fp8_tp2_server.port,
+        port=qwen3_omni_fp8_talker_server_tp2.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
@@ -126,12 +167,14 @@ def talker_eval_artifacts(
         repo_id=DATASETS["videoamme-ci-50"],
         video_fps=2,
         video_max_frames=128,
-        video_max_pixels=401408,
+        video_min_pixels=video_min_pixels,
+        video_max_pixels=video_max_pixels,
         enable_audio=True,
         asr_device=ASR_DEVICE,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         disable_tqdm=False,
         timeout_s=500,
+        extra_request_params=extra_request_params,
     )
     results = asyncio.run(run_videoamme_eval(config, compute_wer=False))
     return _TalkerEvalArtifacts(
@@ -145,11 +188,11 @@ def talker_eval_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     talker_eval_artifacts: _TalkerEvalArtifacts,
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
-    stop_server(qwen3_omni_fp8_tp2_server.proc)
+    stop_server(qwen3_omni_fp8_talker_server_tp2.proc)
     wait_for_gpu_memory_release()
     return talker_eval_artifacts
 

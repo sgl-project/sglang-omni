@@ -69,6 +69,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
+        thinker_cuda_graph="default",
         enable_partial_start=None,
         partial_start_min_chunks=5,
         colocated=False,
@@ -170,6 +171,16 @@ def test_talker_max_seq_len_applied(mock_launch_server):
     talker = _stage(config, "talker_ar")
 
     assert talker.factory_args["talker_max_seq_len"] == 128
+
+
+def test_thinker_cuda_graph_override_applied(mock_launch_server):
+    args = _make_args(thinker_cuda_graph="off")
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    thinker = _stage(config, "thinker")
+
+    assert thinker.factory_args["server_args_overrides"]["disable_cuda_graph"] is True
 
 
 def test_partial_start_updates_talker_factory_args(mock_launch_server):

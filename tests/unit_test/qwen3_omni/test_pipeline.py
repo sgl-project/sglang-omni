@@ -35,8 +35,10 @@ from sglang_omni.models.qwen3_omni.config import (
 from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_PREFILL_USER_CONTEXT_PARAM,
     apply_thinker_result,
     build_sglang_thinker_request,
+    project_mm_aggregate_to_talker_ar,
     project_preprocessing_to_mm_aggregate,
     project_talker_to_code2wav,
     project_thinker_to_decode,
@@ -200,6 +202,55 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
     assert state.thinker_out["extra_model_outputs"] == {}
     assert state.engine_outputs["thinker"]["output_ids"] == [3]
     assert state.engine_outputs["thinker"]["extra_model_outputs"] == {}
+
+
+def test_qwen_mm_aggregate_to_talker_projection_keeps_context_by_default() -> None:
+    video_embeds = torch.ones(2, 3)
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs="hi"),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "thinker_inputs": {
+                "model_inputs": {
+                    "video_embeds": video_embeds,
+                    "video_grid_thw": torch.tensor([[1, 2, 3]]),
+                }
+            },
+        },
+    )
+
+    projected = project_mm_aggregate_to_talker_ar(payload)
+    state = Qwen3OmniPipelineState.from_dict(projected.data)
+
+    assert state.thinker_inputs["model_inputs"]["video_embeds"] is video_embeds
+
+
+def test_qwen_mm_aggregate_to_talker_projection_drops_context_when_disabled() -> None:
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(
+            inputs="hi",
+            params={TALKER_PREFILL_USER_CONTEXT_PARAM: False},
+        ),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "thinker_inputs": {
+                "model_inputs": {
+                    "audio_embeds": torch.ones(2, 3),
+                    "image_embeds": torch.ones(2, 3),
+                    "video_embeds": torch.ones(2, 3),
+                    "video_grid_thw": torch.tensor([[1, 2, 3]]),
+                }
+            },
+        },
+    )
+
+    projected = project_mm_aggregate_to_talker_ar(payload)
+    state = Qwen3OmniPipelineState.from_dict(projected.data)
+
+    assert state.prompt["prompt_text"] == "hi"
+    assert state.thinker_inputs == {}
 
 
 def test_qwen_thinker_to_decode_projection_isolates_stream_state() -> None:

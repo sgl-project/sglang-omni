@@ -70,8 +70,9 @@ import argparse
 import asyncio
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -127,6 +128,7 @@ class VideoEvalConfig:
     asr_device: str = "cuda:0"
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
+    extra_request_params: dict[str, Any] = field(default_factory=dict)
 
 
 def _build_base_url(config: VideoEvalConfig) -> str:
@@ -173,6 +175,7 @@ async def run_video_eval(
         enable_audio_input=enable_audio_input,
         audio_output_dir=audio_output_dir,
         fixed_prompt=fixed_prompt,
+        extra_request_params=config.extra_request_params,
     )
     runner = BenchmarkRunner(
         RunConfig(
@@ -210,6 +213,7 @@ async def run_video_eval(
             "asr_device": config.asr_device,
             "asr_concurrency": config.asr_concurrency,
             "lang": config.lang,
+            "extra_request_params": dict(config.extra_request_params),
         },
         "per_sample": per_sample,
     }

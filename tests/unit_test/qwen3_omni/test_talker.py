@@ -15,13 +15,21 @@ from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
 )
-from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
+from sglang_omni.models.qwen3_omni.components.talker_input import (
+    build_assistant_part,
+    build_prefill_input,
+)
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
-from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
+from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_PREFILL_USER_CONTEXT_PARAM,
+    _build_talker_request_data,
+    build_sglang_talker_request,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
     MIN_PARTIAL_START_CHUNKS,
@@ -228,6 +236,85 @@ def test_qwen_talker_assistant_part_handles_short_prefix() -> None:
     )
 
 
+def test_qwen_talker_prefill_can_skip_user_context() -> None:
+    """CI can avoid replaying long video/audio prompt rows through talker prefill."""
+    hidden_dim = 2
+    thinker_input_ids = torch.tensor([1, 2, 10, 11, 1, 3, 20, 21, 22], dtype=torch.long)
+    thinker_embed = torch.arange(
+        thinker_input_ids.numel() * hidden_dim,
+        dtype=torch.float32,
+    ).reshape(-1, hidden_dim)
+    thinker_hidden = thinker_embed + 100
+    multimodal_mask = torch.zeros(thinker_input_ids.numel(), dtype=torch.bool)
+    multimodal_mask[3] = True
+
+    def codec_embed_fn(token_ids: torch.Tensor) -> torch.Tensor:
+        return torch.zeros((token_ids.shape[0], hidden_dim), dtype=torch.float32)
+
+    common = dict(
+        thinker_embed=thinker_embed,
+        thinker_hidden=thinker_hidden,
+        thinker_input_ids=thinker_input_ids,
+        multimodal_mask=multimodal_mask,
+        text_projection=lambda tensor: tensor,
+        hidden_projection=lambda tensor: tensor + 1000,
+        codec_embed_fn=codec_embed_fn,
+        tts_bos_embed=torch.zeros((1, hidden_dim), dtype=torch.float32),
+        tts_eos_embed=torch.ones((1, hidden_dim), dtype=torch.float32),
+        tts_pad_embed=torch.full((1, hidden_dim), 7.0, dtype=torch.float32),
+        im_start_token_id=1,
+        system_token_id=0,
+        user_token_id=2,
+        assistant_token_id=3,
+        speaker_id=4,
+        codec_nothink_id=5,
+        codec_think_bos_id=6,
+        codec_think_eos_id=7,
+        codec_pad_id=8,
+        codec_bos_id=9,
+        tts_pad_token_id=99,
+        include_assistant_eos=True,
+        im_end_token_id=None,
+    )
+
+    with_user = build_prefill_input(**common)
+    without_user = build_prefill_input(**common, include_user_context=False)
+
+    assert with_user["input_embeds"].shape[0] == 13
+    assert without_user["input_embeds"].shape[0] == 9
+    assert without_user["input_ids"].tolist() == [99] * 9
+    assert torch.equal(
+        without_user["input_embeds"],
+        with_user["input_embeds"][-9:],
+    )
+
+
+def test_qwen_talker_prefill_skip_user_context_avoids_model_inputs() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._load_prompt_token_embeddings = lambda ids: torch.ones(
+        (ids.numel(), 2),
+        dtype=torch.float32,
+    )
+
+    def fail_prompt_model_inputs(state):
+        del state
+        raise AssertionError("_prompt_model_inputs should not be read")
+
+    builder._prompt_model_inputs = fail_prompt_model_inputs
+    state = Qwen3OmniPipelineState(
+        prompt={"input_ids": torch.tensor([1, 2, 3], dtype=torch.long)}
+    )
+
+    prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
+        builder._reconstruct_prompt_states(state, include_user_context=False)
+    )
+
+    assert prompt_ids.tolist() == [1, 2, 3]
+    assert torch.equal(prompt_embed, torch.ones((3, 2)))
+    assert torch.equal(prompt_hidden, torch.ones((3, 2)))
+    assert prompt_model_inputs == {}
+
+
 def test_qwen_talker_prefill_ignores_late_text_after_thinker_done() -> None:
     """Preserves completed thinker streams against late text chunk appends."""
     builder = object.__new__(TalkerPrefillBuilder)
@@ -273,7 +360,7 @@ def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
         ),
     ]
 
-    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
+    # note (luojiaxuan): .to() must happen per-chunk before torch.stack, not after
     result = torch.stack(
         [
             builder.chunk_layer_hidden_or_embed(c).to(
@@ -654,10 +741,6 @@ def _drive_real_builder(
     request_id: str = "r0",
     request_params: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    from sglang_omni.models.qwen3_omni.request_builders import (
-        _build_talker_request_data,
-    )
-
     captured: dict[str, Any] = {}
 
     class StubPrefillBuilder:
@@ -667,9 +750,13 @@ def _drive_real_builder(
             thinker_chunks: list[Any],
             *,
             thinker_done: bool,
+            include_user_context: bool = True,
         ) -> dict[str, Any]:
             captured["build_prompt_prefill_thinker_done"] = thinker_done
             captured["build_prompt_prefill_chunk_count"] = len(thinker_chunks)
+            captured["build_prompt_prefill_include_user_context"] = (
+                include_user_context
+            )
             return {
                 "input_embeds": torch.zeros((9, 2), dtype=torch.float32),
                 "input_ids": torch.zeros((9,), dtype=torch.long),
@@ -731,6 +818,17 @@ def test_real_builder_threads_thinker_done_false_on_partial_path() -> None:
     )
     assert captured["build_prompt_prefill_thinker_done"] is False
     assert captured["talker_request_kwargs"]["thinker_chunks_done"] is False
+
+
+def test_real_builder_threads_user_context_prefill_flag() -> None:
+    """Request param can turn off long user/multimodal talker prefill."""
+    _, captured = _drive_real_builder(
+        prefetched_chunks=[object()] * 5,
+        prefetched_stream_done=False,
+        request_params={TALKER_PREFILL_USER_CONTEXT_PARAM: False},
+    )
+
+    assert captured["build_prompt_prefill_include_user_context"] is False
 
 
 def test_real_builder_threads_thinker_done_true_on_completed_stream() -> None:

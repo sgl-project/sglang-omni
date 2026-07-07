@@ -138,6 +138,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--thinker-cuda-graph",
+        type=str,
+        default="default",
+        choices=["default", "on", "off"],
+        help=(
+            "Override thinker CUDA graph mode. Defaults to the model config; "
+            "'off' sets disable_cuda_graph=True for the thinker stage."
+        ),
+    )
+    parser.add_argument(
         "--enable-partial-start",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -390,6 +400,15 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             config,
             stage_name="talker_ar",
             server_arg_updates={"mem_fraction_static": talker_mem_fraction},
+        )
+
+    if args.thinker_cuda_graph != "default":
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            server_arg_updates={
+                "disable_cuda_graph": args.thinker_cuda_graph == "off"
+            },
         )
 
     if args.thinker_max_seq_len is not None:

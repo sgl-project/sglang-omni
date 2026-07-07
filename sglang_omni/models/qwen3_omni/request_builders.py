@@ -34,6 +34,7 @@ DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+TALKER_PREFILL_USER_CONTEXT_PARAM = "talker_prefill_user_context"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
@@ -263,10 +264,14 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
+    params = payload.request.params or {}
+    include_user_context = bool(params.get(TALKER_PREFILL_USER_CONTEXT_PARAM, True))
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_inputs=(
-            dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
+            dict(state.thinker_inputs)
+            if include_user_context and isinstance(state.thinker_inputs, dict)
+            else {}
         ),
     )
     return _payload_with_state(payload, projected)
@@ -1061,7 +1066,7 @@ def _build_talker_request_data(
     thinker_config: Any,
     resolve_sampling_config: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> SGLangARRequestData:
-    params = payload.request.params
+    params = payload.request.params or {}
     sampling_cfg = resolve_sampling_config(params)
     if sampling_cfg.get("seed") is None:
         sampling_cfg["seed"] = (
@@ -1070,6 +1075,7 @@ def _build_talker_request_data(
         )
     thinker_chunks = list(payload.prefetched_chunks)
     thinker_done = bool(payload.prefetched_stream_done)
+    include_user_context = bool(params.get(TALKER_PREFILL_USER_CONTEXT_PARAM, True))
 
     if not thinker_chunks:
         raise RuntimeError(
@@ -1081,6 +1087,7 @@ def _build_talker_request_data(
         payload,
         thinker_chunks,
         thinker_done=thinker_done,
+        include_user_context=include_user_context,
     )
     pending_text_queue = prompt_prefill["pending_text_queue"]
     pending_text_rows = len(pending_text_queue) if pending_text_queue is not None else 0

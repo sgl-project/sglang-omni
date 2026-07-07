@@ -184,13 +184,17 @@ class TalkerPrefillBuilder:
         thinker_chunks: list[Any],
         *,
         thinker_done: bool,
+        include_user_context: bool = True,
     ) -> dict[str, Any]:
         if not thinker_chunks:
             raise ValueError("prompt prefill requires thinker chunks")
 
         state = Qwen3OmniPipelineState.from_dict(payload.data)
         prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
-            self._reconstruct_prompt_states(state)
+            self._reconstruct_prompt_states(
+                state,
+                include_user_context=include_user_context,
+            )
         )
 
         assistant_token_ids = self.extract_chunk_token_ids(thinker_chunks)
@@ -237,6 +241,7 @@ class TalkerPrefillBuilder:
             tts_pad_token_id=self._tts_pad_token_id,
             include_assistant_eos=thinker_done,
             im_end_token_id=self._im_end_token_id,
+            include_user_context=include_user_context,
         )
 
         return {
@@ -247,7 +252,7 @@ class TalkerPrefillBuilder:
             ),
             "tts_pad_embed": tts_pad_embed[0].detach(),
             "tts_eos_embed": tts_eos_embed[0].detach(),
-            "prompt_model_inputs": prompt_model_inputs,
+            "prompt_model_inputs": prompt_model_inputs if include_user_context else {},
         }
 
     def append_text_chunk(self, req_data: Any, chunk: Any) -> None:
@@ -337,7 +342,10 @@ class TalkerPrefillBuilder:
         return PendingTextTensorQueue.from_tensor(tensor)
 
     def _reconstruct_prompt_states(
-        self, state: Qwen3OmniPipelineState
+        self,
+        state: Qwen3OmniPipelineState,
+        *,
+        include_user_context: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prompt = state.prompt or {}
         prompt_input_ids = prompt["input_ids"]
@@ -347,6 +355,9 @@ class TalkerPrefillBuilder:
 
         prompt_embed = self._load_prompt_token_embeddings(prompt_ids)
         prompt_hidden = prompt_embed.clone()
+        if not include_user_context:
+            return prompt_ids, prompt_embed, prompt_hidden, {}
+
         prompt_model_inputs = self._prompt_model_inputs(state)
 
         merge_prompt_modality(
