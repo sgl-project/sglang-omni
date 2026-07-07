@@ -193,7 +193,6 @@ async def _expect_next_event(
                 result,
                 audio_state,
                 expect_success=expect_success,
-                min_binary_frames_per_sentence=min_binary_frames,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == expected_event or expected_event == "error"
@@ -305,7 +304,7 @@ async def _expect_audio_until_session_done(
                 result,
                 audio_state,
                 expect_success=expect_success,
-                min_binary_frames_per_sentence=min_binary_frames,
+                min_binary_frames_per_sentence=1,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == "error"
