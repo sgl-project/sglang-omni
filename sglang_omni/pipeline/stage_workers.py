@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import multiprocessing
 import os
@@ -10,7 +11,7 @@ import queue
 import sys
 import time
 from collections.abc import Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 
@@ -371,12 +372,31 @@ def stage_process_main(
             _prepare_cuda_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         _run_process(spec, ready_event, log)
-    except Exception:
+    except (KeyboardInterrupt, SystemExit):
+        _destroy_torch_distributed_process_group(log)
+        _reclaim_process_cuda_memory(
+            _stage_gpu_ids(spec.stage_specs),
+            log,
+            reason=f"stage process {spec.process_name} terminated during startup",
+        )
+        raise
+    except Exception as exc:
         import traceback
 
-        log.exception("Stage process %s failed", spec.process_name)
+        traceback_text = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+        with suppress(Exception):
+            traceback.clear_frames(exc.__traceback__)
+        log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
+        _destroy_torch_distributed_process_group(log)
+        _reclaim_process_cuda_memory(
+            _stage_gpu_ids(spec.stage_specs),
+            log,
+            reason=f"stage process {spec.process_name} exit after failure",
+        )
         if startup_error_channel is not None:
-            startup_error_channel.put(traceback.format_exc())
+            startup_error_channel.put(traceback_text)
         sys.exit(1)
 
 
@@ -400,11 +420,7 @@ def _run_process(
       across them.
     """
     local_dispatcher = LocalStageDispatcher()
-    stages = [
-        _construct_stage(stage_spec, log, local_dispatcher=local_dispatcher)
-        for stage_spec in spec.stage_specs
-    ]
-    local_dispatcher.register_many(stages)
+    stages: list[Stage] = []
 
     async def _start_and_run():
         tasks: list[asyncio.Task] = []
@@ -428,7 +444,126 @@ def _run_process(
                 if stage._running:
                     await stage.stop()
 
-    asyncio.run(_start_and_run())
+    try:
+        for stage_spec in spec.stage_specs:
+            stages.append(
+                _construct_stage(
+                    stage_spec,
+                    log,
+                    local_dispatcher=local_dispatcher,
+                )
+            )
+        local_dispatcher.register_many(stages)
+        asyncio.run(_start_and_run())
+    except BaseException:
+        _cleanup_constructed_stages(
+            stages,
+            log,
+            reason=f"stage process {spec.process_name} failure",
+        )
+        raise
+
+
+def _cleanup_constructed_stages(
+    stages: list[Stage],
+    log: logging.Logger,
+    *,
+    reason: str,
+) -> None:
+    if stages:
+        log.warning(
+            "Cleaning up %d constructed stage(s) after %s",
+            len(stages),
+            reason,
+        )
+    for stage in reversed(stages):
+        try:
+            asyncio.run(stage.stop())
+        except Exception as exc:
+            log.warning(
+                "Stage %s cleanup failed after process failure: %s",
+                stage.name,
+                exc,
+                exc_info=True,
+            )
+        finally:
+            stage.scheduler = None
+
+
+def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
+    return sorted(
+        {
+            int(stage_spec.gpu_id)
+            for stage_spec in stage_specs
+            if stage_spec.gpu_id is not None
+        }
+    )
+
+
+def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            log.warning("Destroying torch.distributed process group after failure")
+            dist.destroy_process_group()
+    except Exception as exc:
+        log.warning(
+            "torch.distributed cleanup failed after stage process failure: %s",
+            exc,
+            exc_info=True,
+        )
+
+
+def _reclaim_process_cuda_memory(
+    gpu_ids: Iterable[int],
+    log: logging.Logger,
+    *,
+    reason: str,
+) -> None:
+    gpu_id_list = list(gpu_ids)
+    if not gpu_id_list:
+        return
+    gc.collect()
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        log.warning(
+            "Reclaiming CUDA memory after %s on gpu_ids=%s",
+            reason,
+            gpu_id_list,
+        )
+        for gpu_id in gpu_id_list:
+            try:
+                torch.cuda.set_device(int(gpu_id))
+                with suppress(Exception):
+                    torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                with suppress(Exception):
+                    torch.cuda.ipc_collect()
+            except Exception as exc:
+                log.warning(
+                    "CUDA memory reclaim failed for gpu_id=%s after %s: %s",
+                    gpu_id,
+                    reason,
+                    exc,
+                    exc_info=True,
+                )
+        gc.collect()
+        log.warning(
+            "CUDA memory reclaim complete after %s on gpu_ids=%s",
+            reason,
+            gpu_id_list,
+        )
+    except Exception as exc:
+        log.warning(
+            "CUDA memory reclaim skipped after %s: %s",
+            reason,
+            exc,
+            exc_info=True,
+        )
 
 
 def _construct_stage(

@@ -17,7 +17,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 BACKEND_PORT="${PORT:-8000}"
 PLAYGROUND_PORT="7860"
-MODEL_PATH="${HIGGS_CKPT:-${MODEL_PATH:-boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999}}"
+MODEL_PATH="${HIGGS_CKPT:-${MODEL_PATH:-bosonai/higgs-tts-3-4b}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

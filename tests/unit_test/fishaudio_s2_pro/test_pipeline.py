@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 import typer
@@ -23,6 +25,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -289,6 +292,10 @@ def _run_s2pro_engine_with_fake_buffers(
     audio_buffer_bs: int = 64,
 ) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+    from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
+    from sglang_omni.scheduling import bootstrap as scheduler_bootstrap
+    from sglang_omni.scheduling import sglang_backend
+
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
 
     build_kwargs: dict[str, object] = {}
@@ -310,14 +317,17 @@ def _run_s2pro_engine_with_fake_buffers(
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = _FakeSGLangRunner(server_args)
 
-    fake_bootstrap = ModuleType("sglang_omni.models.fishaudio_s2_pro.bootstrap")
-    fake_bootstrap.patch_fish_config_for_sglang = lambda: None
-    fake_bootstrap.truncate_rope_to_bf16 = lambda model: None
-    fake_bootstrap.load_audio_decoder = lambda checkpoint_dir, device: (
-        SimpleNamespace(kv_cache_max_batch_size=-1),
-        10,
-        4096,
-        FakeFishTokenizer(),
+    monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
+    monkeypatch.setattr(fish_bootstrap, "truncate_rope_to_bf16", lambda model: None)
+    monkeypatch.setattr(
+        fish_bootstrap,
+        "load_audio_decoder",
+        lambda checkpoint_dir, device: (
+            SimpleNamespace(kv_cache_max_batch_size=-1),
+            10,
+            4096,
+            FakeFishTokenizer(),
+        ),
     )
 
     def fake_bootstrap_text_model_for_decode(**kwargs: object) -> None:
@@ -327,8 +337,10 @@ def _run_s2pro_engine_with_fake_buffers(
         text_model._audio_decoder = audio_decoder
         audio_decoder.kv_cache_max_batch_size = audio_buffer_bs
 
-    fake_bootstrap.bootstrap_text_model_for_decode = (
-        fake_bootstrap_text_model_for_decode
+    monkeypatch.setattr(
+        fish_bootstrap,
+        "bootstrap_text_model_for_decode",
+        fake_bootstrap_text_model_for_decode,
     )
 
     def fake_build_sglang_server_args(
@@ -367,9 +379,10 @@ def _run_s2pro_engine_with_fake_buffers(
             SimpleNamespace(),
         )
 
-    fake_scheduler_bootstrap = ModuleType("sglang_omni.scheduling.bootstrap")
-    fake_scheduler_bootstrap.create_sglang_infrastructure = (
-        fake_create_sglang_infrastructure
+    monkeypatch.setattr(
+        scheduler_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_sglang_infrastructure,
     )
 
     def fake_create_sglang_infrastructure_defer_cuda_graph(
@@ -384,14 +397,21 @@ def _run_s2pro_engine_with_fake_buffers(
             server_args.disable_cuda_graph = False
         return want_cuda_graph, infrastructure
 
-    fake_scheduler_bootstrap.create_sglang_infrastructure_defer_cuda_graph = (
-        fake_create_sglang_infrastructure_defer_cuda_graph
+    monkeypatch.setattr(
+        scheduler_bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        fake_create_sglang_infrastructure_defer_cuda_graph,
     )
 
-    fake_sglang_backend = ModuleType("sglang_omni.scheduling.sglang_backend")
-    fake_sglang_backend.build_sglang_server_args = fake_build_sglang_server_args
-    fake_sglang_backend.SGLangOutputProcessor = lambda **kwargs: SimpleNamespace(
-        **kwargs
+    monkeypatch.setattr(
+        sglang_backend,
+        "build_sglang_server_args",
+        fake_build_sglang_server_args,
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
     fake_fish_scheduler = ModuleType(
@@ -409,21 +429,6 @@ def _run_s2pro_engine_with_fake_buffers(
         args=args, kwargs=kwargs
     )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.fishaudio_s2_pro.bootstrap",
-        fake_bootstrap,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.scheduling.bootstrap",
-        fake_scheduler_bootstrap,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.scheduling.sglang_backend",
-        fake_sglang_backend,
-    )
     monkeypatch.setitem(
         sys.modules,
         "sglang_omni.models.fishaudio_s2_pro.fish_scheduler",
@@ -521,6 +526,195 @@ def test_s2pro_engine_validates_allocated_decode_buffers(
             text_buffer_bs=text_buffer_bs,
             audio_buffer_bs=audio_buffer_bs,
         )
+
+
+def test_fish_reference_encode_service_same_key_concurrent_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+    from sglang_omni.preprocessing import audio as audio_module
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    class _AudioMediaIO:
+        def __init__(self, *, target_sr: int) -> None:
+            self.target_sr = target_sr
+
+        def load_bytes(self, payload: bytes):
+            assert payload == b"ref"
+            return np.zeros(12, dtype=np.float32), self.target_sr
+
+    class _Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode(self, audios: torch.Tensor, audio_lengths: torch.Tensor):
+            del audios, audio_lengths
+            entered.set()
+            assert release.wait(timeout=5)
+            self.calls += 1
+            return torch.tensor([[1, 2, 3]], dtype=torch.long), None
+
+    monkeypatch.setattr(audio_module, "AudioMediaIO", _AudioMediaIO)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchaudio",
+        SimpleNamespace(
+            functional=SimpleNamespace(
+                resample=lambda audio, sr, target_sr: audio,
+            )
+        ),
+    )
+
+    codec = _Codec()
+    worker_count = 4
+    gate = threading.Barrier(worker_count)
+
+    class _GatedFishReferenceEncodeHook(_FishReferenceEncodeHook):
+        def normalize_input(self, raw_input):
+            item = super().normalize_input(raw_input)
+            gate.wait(timeout=5)
+            return item
+
+    service = ReferenceEncodeService(
+        _GatedFishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        max_items=16,
+        max_bytes=1024,
+    )
+    results: list[torch.Tensor | None] = [None] * worker_count
+    errors: list[Exception] = []
+
+    def worker(index: int) -> None:
+        try:
+            results[index] = service.get_or_encode({"bytes": b"ref"})
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(results))]
+    for thread in threads:
+        thread.start()
+    assert entered.wait(timeout=5)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert codec.calls == 1
+    assert all(result is not None for result in results)
+    assert all(torch.equal(result, torch.tensor([[1, 2, 3]])) for result in results)
+    assert service.stats()["merged"] == 3
+
+
+def test_fish_reference_encode_service_failure_does_not_poison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+    from sglang_omni.preprocessing import audio as audio_module
+
+    class _AudioMediaIO:
+        def __init__(self, *, target_sr: int) -> None:
+            self.target_sr = target_sr
+
+        def load_bytes(self, payload: bytes):
+            return np.zeros(8, dtype=np.float32), self.target_sr
+
+    class _Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode(self, audios: torch.Tensor, audio_lengths: torch.Tensor):
+            del audios, audio_lengths
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient")
+            return torch.tensor([[5, 6]], dtype=torch.long), None
+
+    monkeypatch.setattr(audio_module, "AudioMediaIO", _AudioMediaIO)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchaudio",
+        SimpleNamespace(
+            functional=SimpleNamespace(
+                resample=lambda audio, sr, target_sr: audio,
+            )
+        ),
+    )
+
+    codec = _Codec()
+    service = ReferenceEncodeService(
+        _FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        max_items=16,
+        max_bytes=1024,
+    )
+
+    with pytest.raises(RuntimeError, match="transient"):
+        service.get_or_encode({"bytes": b"ref"})
+    assert service.stats()["entries"] == 0
+
+    result = service.get_or_encode({"bytes": b"ref"})
+    assert torch.equal(result, torch.tensor([[5, 6]], dtype=torch.long))
+    assert codec.calls == 2
+
+
+def test_fish_reference_path_mutation_returns_but_does_not_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+
+    ref_path = tmp_path / "ref.wav"
+    ref_path.write_bytes(b"version-a")
+
+    def load(path: str):
+        assert path == str(ref_path)
+        return torch.zeros((1, 8), dtype=torch.float32), 16000
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torchaudio",
+        SimpleNamespace(
+            load=load,
+            functional=SimpleNamespace(
+                resample=lambda audio, sr, target_sr: audio,
+            ),
+        ),
+    )
+
+    class _Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode(self, audios: torch.Tensor, audio_lengths: torch.Tensor):
+            del audios, audio_lengths
+            self.calls += 1
+            if self.calls == 1:
+                ref_path.write_bytes(b"version-b")
+            return torch.tensor([[self.calls, self.calls + 1]], dtype=torch.long), None
+
+    codec = _Codec()
+    service = ReferenceEncodeService(
+        _FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        max_items=16,
+        max_bytes=1024,
+    )
+
+    first = service.get_or_encode({"audio_path": str(ref_path)})
+    assert torch.equal(first, torch.tensor([[1, 2]], dtype=torch.long))
+    assert service.stats()["entries"] == 0
+
+    second = service.get_or_encode({"audio_path": str(ref_path)})
+    assert torch.equal(second, torch.tensor([[2, 3]], dtype=torch.long))
+    assert service.stats()["entries"] == 1
+
+    third = service.get_or_encode({"audio_path": str(ref_path)})
+    assert torch.equal(third, torch.tensor([[2, 3]], dtype=torch.long))
+    assert codec.calls == 2
 
 
 def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:

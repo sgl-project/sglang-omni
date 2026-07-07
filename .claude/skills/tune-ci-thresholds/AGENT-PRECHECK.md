@@ -4,8 +4,14 @@
 session (including after a fresh container). **Do not** run `tune.py run` until
 every mandatory item passes.
 
-**Assumption:** repro container is already running. Do not document or execute
+**Assumption:** the user is already in a suitable environment on the H100 host
+(any container or shell with GPU access, omni venv, and HF cache — **not**
+necessarily the dedicated CI repro container). Do not document or execute
 `docker run`, volume maps, or host-side setup here.
+
+**Shared 8× H100 hosts:** CI occupies GPU **6,7**. Before any `tune.py run`,
+export `TUNE_GPU_EXCLUDE=6,7` (or rely on host profile `gpu_exclude`). Calibration
+must never kill or schedule work on those GPUs.
 
 **Policy** (`hosts/*/yaml` → `agent_policy`):
 
@@ -27,15 +33,20 @@ Read `handoff:` in the active host profile and confirm with the user if unclear.
 
 | Scope | `--model` | Stages | Repeats | Order |
 |-------|-----------|--------|---------|-------|
-| TTS CI | `tts` | `ALL` | 5 | Runs Qwen3-ASR plus every configured TTS `calibration_preset`; do not use CI random pick |
-| Qwen3-Omni CI | `qwen3-omni-v1` | `ALL` | 5 | — |
-| Full CI | both | each `ALL` | 5 each | **TTS first**, then Qwen3-Omni |
+| ASR CI | `asr` | `ALL` | 5 | Stage 1 MOSS-TD multi-speaker, then stage 2 Qwen3-ASR SeedTTS |
+| TTS CI | `tts` | `ALL` | 5 | Runs every configured TTS `calibration_preset`; do not use CI random pick |
+| Qwen3-Omni CI | `omni` | `ALL` | 5 | — |
+| Full CI | `asr`, `tts`, `omni` | each `ALL` | 5 each | **ASR first**, then TTS, then Qwen3-Omni |
 
 Run precheck for **every** model you will calibrate before `tune.py run`.
 For `--model tts`, the `tts` alias expands to every TTS model preset declared
 in `models/tts/config.yaml` (currently Higgs and MOSS). Calibration must produce
 worst-of-5 for each preset independently even though CI samples one preset per
 commit.
+
+**Shared 8× H100 / NVLink hosts:** CI repro is 2× H100. On larger shared boxes,
+also read `SKILL.md` **Shared multi-GPU / NVLink host safety** — run **Gate 4b**
+before calibration and after each repeat; use **one `--resume` per process**.
 
 **Threshold symbols (do not cross-apply):**
 
@@ -91,8 +102,10 @@ See SKILL.md **Fresh calibration session**.
 ```bash
 python .claude/skills/tune-ci-thresholds/tune.py hosts-list
 hostname
-# then cd to repo_root from host profile (sglang-h100-ci: /data/sglang-omni)
-cd /data/sglang-omni
+# cd to repo_root — use $TUNE_REPO_ROOT for git worktrees
+cd "${TUNE_REPO_ROOT:-/data/sglang-omni}"
+export TUNE_HOST=sglang-h100-ci
+export TUNE_GPU_EXCLUDE=6,7   # mandatory on shared 8× hosts
 ```
 
 **Pass:**
@@ -118,7 +131,8 @@ Reference profile `sglang-h100-ci` (`hosts/sglang-h100-ci.yaml`, current/active)
 | `physical.speaker_sim` | `/root/.cache/huggingface/speaker_sim` |
 | `physical.omni_ci_home` | `/github/home/calibration` |
 
-If the user gave different paths in chat, use those and report that host YAML
+If the user gave different paths in chat (worktree, external venv), set
+`TUNE_REPO_ROOT` / `TUNE_VENV_PYTHON` and use those — report that host YAML
 may be stale.
 
 ---
@@ -183,17 +197,56 @@ for calibration.
 
 ---
 
-## Gate 4 — GPUs idle
+## Gate 4 — GPUs idle (calibration pool)
 
 ```bash
+export TUNE_GPU_EXCLUDE=6,7   # if not already set from host profile
 nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv
 ```
 
-**Pass:** 2× H100 (or profile-equivalent), each **≤ 2048 MiB** used before
-calibration runs (`tune.py` re-checks at run time).
+**Pass:** at least **2** GPUs in the calibration pool (all indices minus
+`TUNE_GPU_EXCLUDE`) each **≤ 2048 MiB** before calibration runs. CI GPUs 6,7
+may be fully busy — that is expected and must **not** block ASR/TTS/Omni
+calibration on GPUs 0–5.
 
-**Fail → report** GPU busy; do not start `tune.py run`. Precheck does not kill
-processes.
+**Fail → report** if fewer than 2 calibration-pool GPUs are idle. Precheck does
+not kill processes on excluded GPUs.
+
+---
+
+## Gate 4b — CUDA runtime smoke (mandatory before and after each repeat)
+
+`nvidia-smi` alone is **not** sufficient. PyTorch must initialize CUDA.
+
+Set `VENV` from host profile (`TUNE_VENV_PYTHON` or `venv_python` in YAML).
+When using a **cu130** omni venv on a host whose driver reports CUDA **12.9**,
+also set `LD_LIBRARY_PATH` (see `SKILL.md` **Shared multi-GPU / NVLink host
+safety**):
+
+```bash
+VENV=/path/to/omni/bin/python
+export LD_LIBRARY_PATH="$(dirname "$VENV")/../lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+"$VENV" -c "import torch; assert torch.cuda.is_available(), 'CUDA unavailable'; print('PASS cuda', torch.cuda.device_count())"
+```
+
+**Pass:** prints `PASS cuda` with count ≥ 2 (or ≥ GPUs needed for scope).
+
+**Fail → STOP calibration immediately:**
+
+- Do **not** start `tune.py run` or `--resume`.
+- Do **not** blind-retry with `pkill -9` / repeated `--resume` loops.
+- Report to the user: container CUDA runtime is broken (common after aggressive
+  inter-repeat GPU cleanup on NVLink systems). Recovery is **host-side**:
+
+```bash
+# host
+sudo systemctl restart nvidia-fabricmanager
+docker stop <container> && docker start <container>
+# re-test Gate 4b inside container; if still fail → recreate container or reboot host
+```
+
+Re-run Gate 4b after **every** completed pytest repeat on shared multi-GPU
+hosts before the next `--resume`.
 
 ---
 
@@ -203,27 +256,34 @@ Authoritative check: **`tune.py precheck`** (Gate 8). Quick sanity listing:
 
 ```bash
 HF=/root/.cache/huggingface   # or physical.hf_hub from host profile
-ls "$HF/hub" 2>/dev/null | rg -i 'qwen3|higgs|seed-tts|video|mmmu|mmsu|marksverdhei' | head -20
+ls "$HF/hub" 2>/dev/null | rg -i 'qwen3|higgs|moss|movies800|seed-tts|video|mmmu|mmsu|marksverdhei' | head -20
 ```
 
 Expected repos by model (precheck validates each):
 
-**`tts`:** models `boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999`,
-`Qwen/Qwen3-ASR-1.7B`; dataset `zhaochenyang20/seed-tts-eval-arrow`.
+**`asr`:** models `OpenMOSS-Team/MOSS-Transcribe-Diarize`,
+`Qwen/Qwen3-ASR-1.7B`; datasets `zhaochenyang20/movies800time`,
+`zhaochenyang20/seed-tts-eval-arrow`.
 
-**`qwen3-omni-v1` (adds):** models `Qwen/Qwen3-Omni-30B-A3B-Instruct`,
+**`tts`:** models `bosonai/higgs-tts-3-4b`,
+`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`, `Qwen/Qwen3-ASR-1.7B`;
+dataset `zhaochenyang20/seed-tts-eval-arrow`.
+
+**`omni` (adds):** models `Qwen/Qwen3-Omni-30B-A3B-Instruct`,
 `marksverdhei/Qwen3-Omni-30B-A3B-FP8`; datasets `zhaochenyang20/mmsu-ci-2000`,
 `zhaochenyang20/mmmu-ci-50`, `zhaochenyang20/seed-tts-eval-50-arrow`,
 `zhaochenyang20/Video_MME_ci`, `zhaochenyang20/Video_AMME_ci`.
 
 **Fail → report** missing repos. If precheck prints ✗ with
 `huggingface-cli download …`, run **only** those lines (one repo at a time,
-`HF_ENDPOINT=https://hf-mirror.com`). For private repos, verify `HF_TOKEN`
+`HF_ENDPOINT=https://huggingface.co`). For private repos, verify `HF_TOKEN`
 (`source ~/.zshrc` or env) before download; if token missing, report first.
 
 ---
 
 ## Gate 6 — Speaker similarity assets
+
+Required for TTS or Qwen3-Omni calibration. Skip for ASR-only calibration.
 
 Directory: `physical.speaker_sim` (default `/root/.cache/huggingface/speaker_sim`).
 
@@ -235,8 +295,8 @@ for f in wavlm_large.pt wavlm_large_finetune.pth .complete; do
   test -f "$SIM/$f" && echo PASS "$f" || echo FAIL "$f"
 done
 
-# hf-mirror.com is the China default, but the H100 host is overseas and fails it
-# with LocalEntryNotFoundError — use huggingface.co for the warm-cache download.
+# Use the same official endpoint as CI. Private/gated model repo probes require
+# a valid HF_TOKEN and may fail through mirrors.
 export HF_ENDPOINT=https://huggingface.co HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0
 export SEEDTTS_SIM_CACHE_DIR="$SIM"
 cd /data/sglang-omni
@@ -253,9 +313,9 @@ host profile. Do not re-download when `.complete` exists and warm-cache HITs.
 metric downloads `balacoon/utmos` → `utmos.jit` on demand via
 `benchmarks.metrics.utmos.ensure_utmos_assets`, into
 `/github/home/.cache/sglang-omni/utmos`. precheck does **not** verify it, so on an
-overseas host (e.g. H100) `tts_utmos` fails **mid-run** because `hf-mirror.com`
-can't serve the file. Warm it before TTS calibration with the same overseas
-endpoint (`ensure_utmos_assets()` — a raw `huggingface-cli download` won't satisfy
+host `tts_utmos` can fail **mid-run** if the endpoint cannot serve the asset.
+Warm it before TTS calibration with the CI endpoint (`ensure_utmos_assets()` —
+a raw `huggingface-cli download` won't satisfy
 its `.utmos_cache.json` marker):
 
 ```bash
@@ -267,7 +327,7 @@ HF_ENDPOINT=https://huggingface.co $VENV -c \
 
 ## Gate 7 — `CAP_SYS_PTRACE` (Full CI / Qwen3 stage 11 only)
 
-Skip for TTS-only calibration.
+Skip for ASR-only or TTS-only calibration.
 
 ```bash
 # /proc/self/status lists capabilities as hex bitmasks — never grep for
@@ -287,14 +347,19 @@ stages only if user accepts partial scope.
 Run for **each** model in Gate 0 scope:
 
 ```bash
-cd /data/sglang-omni
-export TUNE_HOST=sglang-h100-ci   # if Gate 1 autodetect failed
+cd "${TUNE_REPO_ROOT:-/data/sglang-omni}"
+export TUNE_HOST=sglang-h100-ci
+export TUNE_GPU_EXCLUDE=6,7
+
+python .claude/skills/tune-ci-thresholds/tune.py --model asr precheck \
+  --output-dir /tmp/precheck_asr
+```
 
 python .claude/skills/tune-ci-thresholds/tune.py --model tts precheck \
   --output-dir /tmp/precheck_tts
 
-python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck \
-  --output-dir /tmp/precheck_qwen3
+python .claude/skills/tune-ci-thresholds/tune.py --model omni precheck \
+  --output-dir /tmp/precheck_omni
 ```
 
 Add `--host sglang-h100-ci` if autodetect failed in Gate 1.
@@ -357,6 +422,10 @@ report env issue (`XDG_CACHE_HOME`, `HOME`, HF path split) before calibration.
 **All mandatory gates (0–8 for your scope) pass** → follow `SKILL.md` for
 `tune.py run` (dual-terminal tail, poll ≤120s, strict audit).
 
+On **shared multi-GPU hosts**, Gate **4b** is mandatory before the first `run`
+and after **each** repeat (see `SKILL.md` **Shared multi-GPU / NVLink host
+safety**).
+
 ### Agent poll interval (P0 — every ≤120s while `tune.py run` is active)
 
 Never blind-wait more than **2 minutes**. Each cycle:
@@ -383,3 +452,10 @@ Before `run`:
 - Proceed while strict audit has △/✗ repeats
 - Blind-wait **>120s** without `status` + `strict-audit` during active calibration
 - Fix env without reporting first (unless user explicitly asked)
+- **Single unattended `tune.py run --repeats N` through all N repeats** on shared
+  **8× NVLink** hosts (use one `--resume` per process; see `SKILL.md`)
+- **Continuing `--resume` when Gate 4b fails** (`torch.cuda.is_available()` False)
+- **Agent-initiated host reboot / fabric restart** without user request — report
+  recovery steps instead
+- **Omitting `LD_LIBRARY_PATH`** for cu130 venv when `libnvrtc` / `deep_gemm`
+  errors appear in pytest logs

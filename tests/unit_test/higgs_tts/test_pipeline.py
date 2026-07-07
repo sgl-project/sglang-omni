@@ -6,9 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 import torch
 
 from sglang_omni.models.higgs_tts import stages
+from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
@@ -33,7 +35,13 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
 
 def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
+    from sglang_omni.models.higgs_tts import model_runner as model_runner_mod
+    from sglang_omni.models.higgs_tts import request_builders
+    from sglang_omni.scheduling import bootstrap, omni_scheduler, sglang_backend
+
     captured: dict[str, object] = {}
+    infrastructure_saw_graph_disabled: list[bool] = []
+    init_graph_calls: list[bool] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, context_length, **overrides):
         server_args = SimpleNamespace(
@@ -51,14 +59,22 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
         captured["server_args"] = server_args
         return server_args
 
-    def fake_create_sglang_infrastructure(server_args, gpu_id):
+    def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
+        del kwargs
         captured["gpu_id"] = gpu_id
+        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         model = SimpleNamespace(
             sampler_pool_max_running_requests=64,
             reset_request=lambda _request_id: None,
         )
+        model_runner = SimpleNamespace(model=model)
+
+        def init_device_graphs() -> None:
+            init_graph_calls.append(True)
+
+        model_runner.init_device_graphs = init_device_graphs
         return (
-            SimpleNamespace(model_runner=SimpleNamespace(model=model)),
+            SimpleNamespace(model_runner=model_runner),
             object(),
             object(),
             object(),
@@ -86,30 +102,27 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
 
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
-        stages, "build_sglang_server_args", fake_build_sglang_server_args
+        sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
     )
     monkeypatch.setattr(
-        stages, "create_sglang_infrastructure", fake_create_sglang_infrastructure
+        bootstrap, "create_sglang_infrastructure", fake_create_sglang_infrastructure
     )
-    monkeypatch.setattr(stages, "truncate_rope_to_bf16", lambda model: None)
-    monkeypatch.setattr(stages, "SGLangOutputProcessor", FakeOutputProcessor)
-    monkeypatch.setattr(stages, "HiggsTTSModelRunner", FakeModelRunner)
+    monkeypatch.setattr(higgs_utils, "truncate_rope_to_bf16", lambda model: None)
+    monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", FakeOutputProcessor)
+    monkeypatch.setattr(model_runner_mod, "HiggsTTSModelRunner", FakeModelRunner)
 
     def fake_make_adapters(model, **kwargs):
         captured["adapter_kwargs"] = kwargs
         return None, None
 
-    monkeypatch.setattr(stages, "make_higgs_scheduler_adapters", fake_make_adapters)
-    monkeypatch.setattr(stages, "OmniScheduler", FakeScheduler)
-
-    stages.create_sglang_tts_engine_executor(
-        "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+    monkeypatch.setattr(
+        request_builders, "make_higgs_scheduler_adapters", fake_make_adapters
     )
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
 
-    assert (
-        captured["checkpoint_dir"]
-        == "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
-    )
+    stages.create_sglang_tts_engine_executor("bosonai/higgs-tts-3-4b")
+
+    assert captured["checkpoint_dir"] == "bosonai/higgs-tts-3-4b"
     assert captured["context_length"] == 4096
     assert captured["gpu_id"] == 0
     assert captured["overrides"]["disable_cuda_graph"] is False
@@ -132,11 +145,35 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
+    assert infrastructure_saw_graph_disabled == [True]
+    assert init_graph_calls == [True]
     assert captured["adapter_kwargs"] == {"max_new_tokens_cap": 2048}
     assert (
         captured["stream_outbox"]
         is captured["scheduler_kwargs"]["model_runner"]._outbox
     )
+
+
+def test_higgs_tts_engine_abort_callback_requires_model() -> None:
+    from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
+
+    builder = HiggsTtsEngineBuilder(
+        max_new_tokens=2048,
+        max_running_requests=64,
+        cuda_graph_max_bs=64,
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+    )
+
+    with pytest.raises(AssertionError):
+        builder.make_abort_callback()
+
+    reset_calls: list[str] = []
+    builder.model = SimpleNamespace(reset_request=reset_calls.append)
+    abort_callback = builder.make_abort_callback()
+    abort_callback("req-1")
+
+    assert reset_calls == ["req-1"]
 
 
 def test_higgs_reference_code_cache_key_round_trip() -> None:

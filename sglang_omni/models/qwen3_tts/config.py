@@ -21,6 +21,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     """3-stage Qwen3-TTS Base pipeline: preprocessing -> engine -> vocoder."""
 
     architecture: ClassVar[str] = "Qwen3TTSForConditionalGeneration"
+    requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:

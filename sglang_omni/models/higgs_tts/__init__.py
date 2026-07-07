@@ -12,9 +12,19 @@ from __future__ import annotations
 
 from transformers import AutoConfig
 
+from sglang_omni.models.model_capabilities import ModelCapabilities
+
 from . import config
 from .hf_config import HiggsMultimodalQwen3Config
 
 AutoConfig.register("higgs_multimodal_qwen3", HiggsMultimodalQwen3Config)
 
-__all__ = ["config", "HiggsMultimodalQwen3Config"]
+CAPABILITIES = ModelCapabilities(
+    supports_reference_audio=True,
+    supports_batch_vocoder=True,
+    supports_streaming_vocoder=True,
+    supports_cuda_graph=True,
+    supports_torch_compile=True,
+)
+
+__all__ = ["CAPABILITIES", "config", "HiggsMultimodalQwen3Config"]

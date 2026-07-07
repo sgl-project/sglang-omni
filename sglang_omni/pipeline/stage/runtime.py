@@ -195,13 +195,41 @@ class Stage:
 
     async def stop(self) -> None:
         self._running = False
+        cleanup_error: Exception | None = None
+
+        def _record_cleanup_error(component: str, exc: Exception) -> None:
+            nonlocal cleanup_error
+            logger.warning(
+                "Stage %s %s cleanup failed: %s",
+                self.name,
+                component,
+                exc,
+                exc_info=True,
+            )
+            if cleanup_error is None:
+                cleanup_error = exc
+
         if self.scheduler is not None:
-            self.scheduler.stop()
-        self.control_plane.close()
+            try:
+                self.scheduler.stop()
+            except Exception as exc:
+                _record_cleanup_error("scheduler", exc)
+        try:
+            self.control_plane.close()
+        except Exception as exc:
+            _record_cleanup_error("control plane", exc)
         if self._tp_fanout is not None:
-            self._tp_fanout.close()
-        self.relay.close()
+            try:
+                self._tp_fanout.close()
+            except Exception as exc:
+                _record_cleanup_error("TP fanout", exc)
+        try:
+            self.relay.close()
+        except Exception as exc:
+            _record_cleanup_error("relay", exc)
         logger.info("Stage %s stopped", self.name)
+        if cleanup_error is not None:
+            raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
 
     async def run(self) -> None:
         await self.start()

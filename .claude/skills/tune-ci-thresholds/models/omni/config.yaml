@@ -1,5 +1,5 @@
 # Model-specific config for the qwen3-omni CI threshold skill.
-name: qwen3-omni-v1
+name: omni
 description: "Qwen3-Omni 30B-A3B Instruct (Talker + Thinker)"
 hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Extra model checkpoints required by tests that do not use hf_model_id.
@@ -45,7 +45,7 @@ auto_env:
   HF_HOME: "/github/home/.cache/huggingface"
   MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
   XDG_CACHE_HOME: "/github/home/calibration/.cache"
-  HF_ENDPOINT: "https://hf-mirror.com"
+  HF_ENDPOINT: "https://huggingface.co"
   HF_HUB_DISABLE_XET: "1"
   HF_HUB_ENABLE_HF_TRANSFER: "0"
   UV_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple"

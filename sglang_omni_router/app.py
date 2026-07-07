@@ -21,7 +21,11 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
-from sglang_omni_router.config import RouterConfig, WorkerConfig
+from sglang_omni_router.config import (
+    MIN_CONNECTIONS_PER_WORKER,
+    RouterConfig,
+    WorkerConfig,
+)
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.proxy import ProxyHandler, filter_request_headers
 from sglang_omni_router.selector import WorkerSelector
@@ -196,6 +200,13 @@ def register_routes(
 
         worker = Worker(config=worker_config)
         workers.append(worker)
+        if config.max_connections < MIN_CONNECTIONS_PER_WORKER * len(workers):
+            logger.warning(
+                f"max_connections={config.max_connections} is below "
+                f"{MIN_CONNECTIONS_PER_WORKER} x {len(workers)} workers after "
+                "registration; the upstream client is sized at startup and can "
+                "under-feed the grown pool"
+            )
         await app.state.health_checker.check_worker_health(worker)
         logger.info(
             f"worker_registered worker={worker.display_id} url={worker.url} "

@@ -17,6 +17,7 @@ _PKG = "sglang_omni.models.voxtral_tts.pipeline"
 
 class VoxtralTTSPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "VoxtralTTSForConditionalGeneration"
+    requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:

@@ -66,10 +66,13 @@ print(resp.json()["text"])
 
 ## Benchmarking
 
-The current repository does not contain `benchmarks/eval/benchmark_qwen3_asr_concurrency.py`. Qwen3-ASR correctness and concurrency coverage is in `tests/test_model/test_qwen3_asr_ci.py`, which transcribes SeedTTS samples through `/v1/audio/transcriptions` and checks WER, throughput, latency, and RTF.
+Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
+SeedTTS reference audio through `/v1/audio/transcriptions`. ASR CI reuses
+the same single-pass benchmark entry point in `tests/test_model/test_asr_ci.py`
+and applies WER, throughput, latency, and RTF thresholds.
 
 ```bash
-QWEN3_ASR_CI_CONCURRENCY=32 pytest tests/test_model/test_qwen3_asr_ci.py -s
+QWEN3_ASR_CI_CONCURRENCY=32 pytest tests/test_model/test_asr_ci.py -s
 ```
 
 ## Known Limitations

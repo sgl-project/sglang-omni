@@ -24,6 +24,8 @@ _ASYNC_DECODE_FACTORIES = frozenset(
     {
         "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.qwen3_omni.stages."
+        "create_sglang_thinker_executor_from_config",
     }
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
@@ -842,14 +844,28 @@ def apply_decode_mode_cli_overrides(
         updates["async_decode_min_batch_size"] = int(async_lookahead_min_batch_size)
     if not updates:
         return pipeline_config
-    _apply_stage_factory_args_override(
-        pipeline_config,
-        stage_name="tts_engine",
-        updates=updates,
-        reason="decode mode override",
-        supported_factories=_ASYNC_DECODE_FACTORIES,
-        flag_name="--decode-mode/--async-lookahead-min-batch-size",
-    )
+    # note (jiaxin deng): resolve by factory so the override reaches whichever
+    # async-decode stage the pipeline has (tts_engine for Higgs/MOSS, thinker for
+    # Qwen3-Omni), instead of a single hardcoded stage name.
+    stage_names = [
+        stage.name
+        for stage in pipeline_config.stages
+        if stage.factory in _ASYNC_DECODE_FACTORIES
+    ]
+    if not stage_names:
+        raise typer.BadParameter(
+            "--decode-mode/--async-lookahead-min-batch-size is not supported by "
+            "this pipeline (no async-decode-capable stage)"
+        )
+    for stage_name in stage_names:
+        _apply_stage_factory_args_override(
+            pipeline_config,
+            stage_name=stage_name,
+            updates=updates,
+            reason="decode mode override",
+            supported_factories=_ASYNC_DECODE_FACTORIES,
+            flag_name="--decode-mode/--async-lookahead-min-batch-size",
+        )
     return pipeline_config
 
 

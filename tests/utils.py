@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -544,6 +544,55 @@ def assert_wer_partitioned(
             n_above_50 <= max_n_above_50,
             f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}",
         )
+    _assert_metric_collector_if_local(collector, checks)
+
+
+def assert_cer_partitioned(
+    diarization_metrics_percent: Mapping[str, object],
+    *,
+    max_cer_no_spk_below_50_percent: float | None = None,
+    max_n_above_50_cer: int | None = None,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    """Verify partitioned CER metrics from transcribe-diarize eval output.
+
+    max_cer_no_spk_below_50_percent bounds corpus-level CER computed only
+    over samples whose per-sample CER is at most 50% (percent units, e.g. 6.75).
+
+    max_n_above_50_cer bounds the count of samples with per-sample CER
+    above 50% (catastrophic outliers such as runaway decoding loops).
+    """
+    checks = _metric_collector(collector, "partitioned CER")
+    if max_cer_no_spk_below_50_percent is not None:
+        cer_below_50 = diarization_metrics_percent.get("cer_no_spk_below_50_corpus")
+        if cer_below_50 is None:
+            checks.fail("Missing cer_no_spk_below_50_corpus in diarization metrics")
+        else:
+            checks.check(
+                isinstance(cer_below_50, int | float)
+                and not isinstance(cer_below_50, bool),
+                f"cer_no_spk_below_50_corpus must be numeric, got {type(cer_below_50).__name__}",
+            )
+            checks.check(
+                float(cer_below_50) <= max_cer_no_spk_below_50_percent,
+                f"Corpus CER over samples with CER<=50% is "
+                f"{float(cer_below_50):.4f}% > threshold "
+                f"{max_cer_no_spk_below_50_percent:.4f}%",
+            )
+
+    if max_n_above_50_cer is not None:
+        n_above_50 = diarization_metrics_percent.get("n_above_50_pct_cer")
+        if n_above_50 is None:
+            checks.fail("Missing n_above_50_pct_cer in diarization metrics")
+        else:
+            checks.check(
+                isinstance(n_above_50, int) and not isinstance(n_above_50, bool),
+                f"n_above_50_pct_cer must be int, got {type(n_above_50).__name__}",
+            )
+            checks.check(
+                n_above_50 <= max_n_above_50_cer,
+                f"{n_above_50} samples have CER>50% > threshold {max_n_above_50_cer}",
+            )
     _assert_metric_collector_if_local(collector, checks)
 
 

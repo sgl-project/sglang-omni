@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -39,6 +40,14 @@ DEFAULT_CAPABILITIES: set[Capability] = {
     "audio_output",
 }
 CLOUD_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
+
+# Note: (Jiaxin Deng) the cap is pool-wide (one shared client): it must exceed the
+# pool's aggregate in-flight capacity or workers are silently under-fed.
+CONNECTIONS_PER_WORKER = 128
+MAX_AUTO_CONNECTIONS = 4096
+MIN_CONNECTIONS_PER_WORKER = 64
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_worker_url(url: str) -> str:
@@ -126,7 +135,7 @@ class RouterConfig(BaseModel):
     model: str | None = None
     request_timeout_secs: int = 1800
     max_payload_size: int = 512 * 1024 * 1024
-    max_connections: int = 100
+    max_connections: int | None = None
     health_failure_threshold: int = 3
     health_success_threshold: int = 2
     health_check_timeout_secs: int = 5
@@ -143,7 +152,6 @@ class RouterConfig(BaseModel):
     @field_validator(
         "request_timeout_secs",
         "max_payload_size",
-        "max_connections",
         "health_failure_threshold",
         "health_success_threshold",
         "health_check_timeout_secs",
@@ -152,6 +160,13 @@ class RouterConfig(BaseModel):
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:
         if value <= 0:
+            raise ValueError("value must be > 0")
+        return value
+
+    @field_validator("max_connections")
+    @classmethod
+    def _validate_max_connections(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
             raise ValueError("value must be > 0")
         return value
 
@@ -174,6 +189,21 @@ class RouterConfig(BaseModel):
             raise ValueError(f"duplicate worker URLs: {', '.join(duplicates)}")
         return self
 
+    @model_validator(mode="after")
+    def _resolve_max_connections(self) -> "RouterConfig":
+        if self.max_connections is None:
+            self.max_connections = min(
+                MAX_AUTO_CONNECTIONS, CONNECTIONS_PER_WORKER * len(self.workers)
+            )
+        if self.max_connections < MIN_CONNECTIONS_PER_WORKER * len(self.workers):
+            logger.warning(
+                f"max_connections={self.max_connections} is below "
+                f"{MIN_CONNECTIONS_PER_WORKER} x {len(self.workers)} workers; "
+                "the cap is pool-wide (one shared upstream client) and can "
+                "under-feed the pool at saturation"
+            )
+        return self
+
 
 def build_router_config(
     *,
@@ -185,7 +215,7 @@ def build_router_config(
     model: str | None = None,
     request_timeout_secs: int = 1800,
     max_payload_size: int = 512 * 1024 * 1024,
-    max_connections: int = 100,
+    max_connections: int | None = None,
     health_failure_threshold: int = 3,
     health_success_threshold: int = 2,
     health_check_timeout_secs: int = 5,

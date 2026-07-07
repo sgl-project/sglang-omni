@@ -579,6 +579,31 @@ def test_router_config_rejects_non_positive_integer_knobs(field: str) -> None:
         )
 
 
+def test_router_cli_max_connections_defaults_to_auto() -> None:
+    args = build_parser().parse_args(
+        [
+            "--worker-urls",
+            "http://127.0.0.1:8101",
+            "http://127.0.0.1:8102",
+            "http://127.0.0.1:8103",
+        ]
+    )
+
+    config = build_config_from_args(args)
+
+    assert config.max_connections == 384
+
+
+def test_router_cli_max_connections_explicit_passes_through() -> None:
+    args = build_parser().parse_args(
+        ["--worker-urls", "http://127.0.0.1:8101", "--max-connections", "512"]
+    )
+
+    config = build_config_from_args(args)
+
+    assert config.max_connections == 512
+
+
 def test_router_config_rejects_hyphenated_policy_aliases() -> None:
     with pytest.raises(ValidationError):
         RouterConfig(

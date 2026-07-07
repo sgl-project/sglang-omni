@@ -7,7 +7,7 @@ description: >
 inputs:
   ci-home:
     description: >
-      PR-scoped CI home directory (for example /github/home/pr-557).
+      PR-scoped CI home directory (for example /data/omni-ci/pr-557).
     required: true
 
 runs:

@@ -13,10 +13,10 @@ env:
   OMNI_CI_HOME: >-
     ${{ inputs.omni_ci_home != ''
         && inputs.omni_ci_home
-        || format('/github/home/run-{0}', github.run_id) }}
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
-# sequence: PR Test → TTS → Qwen3-Omni). Restores omni only.
+# sequence: PR Test -> ASR -> TTS -> Qwen3-Omni). Restores omni only.
 
 jobs:
   unit-test:
@@ -28,6 +28,7 @@ jobs:
         --rm
         -e NVIDIA_VISIBLE_DEVICES=6,7
         -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:

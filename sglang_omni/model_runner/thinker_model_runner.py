@@ -6,6 +6,7 @@ visual embeddings for Qwen3-Omni's thinker stage.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -35,24 +36,36 @@ class ThinkerModelRunner(ModelRunner):
         self._outer_model = model.thinker
         self._text_model = self._outer_model.model
         self._embed_tokens = self._text_model.embed_tokens
+        self._th_host_bufs = None
+        self._th_slot = 0
 
         thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
 
+    @contextlib.contextmanager
+    def _text_only_capture_guard(self, requests: list[Any]):
+        # note (jiaxin deng): drop hidden-capture for an all-text batch, shared by
+        # sync execute() and async execute_launch so both take the same path.
+        capture_layers = self._text_model.layers_to_capture
+        if not (capture_layers and not self._batch_should_capture_hidden(requests)):
+            yield
+            return
+        saved_capture_layers = list(capture_layers)
+        self._text_model.layers_to_capture = []
+        try:
+            yield
+        finally:
+            self._text_model.layers_to_capture = saved_capture_layers
+
     def execute(self, scheduler_output: Any):
-        capture_layers = getattr(self._text_model, "layers_to_capture", None)
-        if capture_layers and not self._batch_should_capture_hidden(
-            scheduler_output.requests
-        ):
-            saved_capture_layers = list(capture_layers)
-            self._text_model.layers_to_capture = []
-            try:
-                return super().execute(scheduler_output)
-            finally:
-                self._text_model.layers_to_capture = saved_capture_layers
-        return super().execute(scheduler_output)
+        with self._text_only_capture_guard(scheduler_output.requests):
+            return super().execute(scheduler_output)
+
+    def execute_launch(self, scheduler_output: Any):
+        with self._text_only_capture_guard(scheduler_output.requests):
+            return super().execute_launch(scheduler_output)
 
     def _batch_should_capture_hidden(self, requests: list[Any]) -> bool:
         if self._should_capture_hidden is None:
@@ -310,3 +323,88 @@ class ThinkerModelRunner(ModelRunner):
         return GenerationBatchResult(
             logits_output=logits_output, can_run_cuda_graph=False
         )
+
+    def lookahead_eligible(self, batch: Any) -> bool:
+        """Route to sync where the one-step lag would diverge from sync. A request
+        that emits audio captures hidden states for the talker; the per-forward
+        _captured_aux_hidden_states side channel would be overwritten by a lookahead
+        launch(N) before resolve(N-1) collects it, so those requests route to sync
+        per batch. Sampling that reads the lagged output history (repetition /
+        presence / frequency penalty, min_new_tokens), a fixed seed, or
+        return_logprob (the lookahead sampler skips the base logprob path) also
+        diverges; logit_bias / custom_params are routed conservatively.
+        """
+        from sglang_omni.models.qwen3_omni.request_builders import (
+            should_generate_audio_output,
+        )
+
+        for req in batch.reqs:
+            # note (jiaxin deng): fail closed if the request data is missing or None
+            # so a hidden-capture batch can never slip onto the async path.
+            try:
+                data = req._omni_data
+            except AttributeError:
+                data = None
+            if data is None or should_generate_audio_output(data.stage_payload):
+                return False
+            try:
+                needs_logprob = data.return_logprob
+            except AttributeError:
+                needs_logprob = False
+            if needs_logprob:
+                return False
+            sp = req.sampling_params
+            if (
+                sp.repetition_penalty != 1.0
+                or sp.presence_penalty != 0.0
+                or sp.frequency_penalty != 0.0
+                or sp.min_new_tokens > 0
+                or sp.sampling_seed is not None
+                or sp.logit_bias is not None
+                or sp.custom_params
+            ):
+                return False
+        return True
+
+    def _async_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+        # note (jiaxin deng): two pinned buffers ping-ponged so resolve(N) reads
+        # one while launch(N+1) writes the other.
+        if self._th_host_bufs is None or self._th_host_bufs[0].shape[0] < n:
+            self._th_host_bufs = [
+                torch.empty(n, dtype=like.dtype, device="cpu", pin_memory=True)
+                for _ in range(2)
+            ]
+            self._th_slot = 0
+        buf = self._th_host_bufs[self._th_slot]
+        self._th_slot ^= 1
+        return buf
+
+    def _sample_lookahead(self, logits_output, forward_batch, requests):
+        # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
+        # those batches to sync); only static suppress tokens are lag-safe.
+        self._apply_codec_suppress_tokens(logits_output, requests)
+        return self.tp_worker.model_runner.sample(logits_output, forward_batch)
+
+    def post_decode_launch(self, result, forward_batch, requests):
+        n = len(requests)
+        if n == 0:
+            return None
+        # note (jiaxin deng): the decode forward leaves next_token_ids None (sync
+        # samples in _finalize); set it here for the next-step input chain.
+        if result.next_token_ids is None:
+            result.next_token_ids = self._sample_lookahead(
+                result.logits_output, forward_batch, requests
+            )
+        nt = result.next_token_ids
+        host_buf = self._async_host_buf(nt, n)
+        host_buf[:n].copy_(nt[:n], non_blocking=True)
+        return host_buf
+
+    def post_decode_resolve(
+        self, launch_buf, result, forward_batch, schedule_batch, requests
+    ):
+        del forward_batch, schedule_batch
+        if len(requests) == 0 or launch_buf is None:
+            return
+        n = len(requests)
+        result.next_token_ids = launch_buf[:n].to(torch.long).clone()

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove a PR- or run-scoped CI home directory on the self-hosted runner.
 #
-# Omni CI preserves /github/home/pr-* across workflow runs so pushes within the
+# Omni CI preserves /data/omni-ci/pr-* across workflow runs so pushes within the
 # runner TTL (e.g. 3 days) can reuse venv/cache; this script is used on PR close
 # and for ephemeral workflow_dispatch run-* homes—not after every PR CI run.
 set -euo pipefail
@@ -18,8 +18,8 @@ if [[ "${CI_HOME}" == *".."* ]]; then
   exit 1
 fi
 
-if [[ "${CI_HOME}" != /github/home/pr-* ]] && [[ "${CI_HOME}" != /github/home/run-* ]]; then
-  echo "refusing to remove CI home outside /github/home/pr-* or /github/home/run-*: ${CI_HOME}" >&2
+if [[ "${CI_HOME}" != /data/omni-ci/pr-* ]] && [[ "${CI_HOME}" != /data/omni-ci/run-* ]]; then
+  echo "refusing to remove CI home outside /data/omni-ci/pr-* or /data/omni-ci/run-*: ${CI_HOME}" >&2
   exit 1
 fi
 

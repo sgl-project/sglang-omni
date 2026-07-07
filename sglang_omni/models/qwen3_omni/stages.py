@@ -944,6 +944,8 @@ def create_sglang_thinker_executor_from_config(
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
 ):
     """Returns OmniScheduler for thinker."""
     # note (luojiaxuan):
@@ -1026,6 +1028,8 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(

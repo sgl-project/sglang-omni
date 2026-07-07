@@ -66,13 +66,13 @@ Override ports with `--port` (backend) and `--gradio-port` (UI).
 ```bash
 # One command: backend + UI
 ./playground/higgs/start.sh \
-  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+  --model-path bosonai/higgs-tts-3-4b
 ```
 
 ```bash
 # Or run the backend yourself
 sgl-omni serve \
-  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --model-path bosonai/higgs-tts-3-4b \
   --port 8000
 
 # …then the UI separately

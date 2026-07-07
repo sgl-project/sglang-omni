@@ -1,41 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3-ASR concurrency-scaling benchmark on SeedTTS EN (issue #646).
+"""ASR benchmark on SeedTTS reference audio (issue #646).
 
-Sweeps ASR transcription fan-out (concurrency) against a *running* Qwen3-ASR
-SGLang Omni router and reports, for each concurrency level, the metrics tracked
-in issue #646: corpus/per-sample WER, wall-clock, throughput, latency
-percentiles, RTF, and per-worker routing balance. This produces the repeatable
-concurrency-scaling data the issue's acceptance criteria ask for, and lets us
-decide the right ASR fan-out for SeedTTS EN transcription / WER workloads.
+This script transcribes the SeedTTS reference audio clips directly
+and compare them with reference scripts.
 
-This script transcribes the SeedTTS *reference* clips directly (no TTS
-generation step), so it isolates ASR behavior from TTS.
-
-This file is the executable CLI wrapper: the shared transcription/scoring
-layer (run_asr_transcription and build_asr_eval_results) lives in
-benchmarks.tasks.asr and is imported here and by the Qwen3-ASR correctness
-gate (tests/test_model/test_qwen3_asr_ci.py), so the gate is just this
-benchmark run plus thresholds.
+Author:
+chenyang zhao: https://github.com/zhaochenyang20
 
 Usage:
 
     # Download the test set once:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Launch Qwen3-ASR (DP=2 to match TTS CI):
-    python -m sglang_omni.cli serve \
-        --model-path Qwen/Qwen3-ASR-1.7B \
-        --dp-size 2 \
-        --port 8000
+    # Launch Qwen3-ASR behind the router, matching ASR CI
+    python -m sglang_omni_router.serve \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --launcher-config examples/configs/qwen3_asr_router.yaml \
+        --policy least_request \
+        --health-success-threshold 1 \
+        --health-failure-threshold 2 \
+        --health-check-interval-secs 2 \
+        --log-level info
 
     # Sweep the issue's matrix (3 repeats each) over the full SeedTTS EN set:
-    python -m benchmarks.eval.benchmark_qwen3_asr_concurrency \
+    python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 \
         --concurrencies 1,2,4,8,16,32,64 \
         --repeats 3
 
     # Quick local smoke on a 20-sample subset:
-    python -m benchmarks.eval.benchmark_qwen3_asr_concurrency \
+    python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 3
 """
 
@@ -50,7 +45,7 @@ import statistics
 import requests
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
@@ -99,9 +94,45 @@ def _worker_delta(before: dict | None, after: dict | None) -> dict:
     return out
 
 
-async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
-    before = _fetch_worker_snapshot(args.host, args.port)
+async def run_asr_seedtts_once(
+    samples: list[SampleInput],
+    host: str,
+    port: int,
+    concurrency: int,
+    model_path: str = QWEN3_ASR_MODEL_PATH,
+    lang: str = "en",
+    warmup: int = 0,
+    disable_tqdm: bool = True,
+) -> dict:
+    """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
+    before = _fetch_worker_snapshot(host, port)
     outputs, wall_clock_s = await run_asr_transcription(
+        samples,
+        host=host,
+        port=port,
+        model_path=model_path,
+        lang=lang,
+        concurrency=concurrency,
+        warmup=warmup,
+        disable_tqdm=disable_tqdm,
+    )
+    after = _fetch_worker_snapshot(host, port)
+
+    benchmark_result = build_asr_eval_results(
+        samples,
+        outputs,
+        wall_clock_s,
+        lang,
+        model_path=model_path,
+        concurrency=concurrency,
+    )
+    benchmark_result["wall_clock_s"] = wall_clock_s
+    benchmark_result["worker"] = _worker_delta(before, after)
+    return benchmark_result
+
+
+async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
+    benchmark_result = await run_asr_seedtts_once(
         samples,
         host=args.host,
         port=args.port,
@@ -109,18 +140,8 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         lang=args.lang,
         concurrency=concurrency,
     )
-    after = _fetch_worker_snapshot(args.host, args.port)
-
-    results = build_asr_eval_results(
-        samples,
-        outputs,
-        wall_clock_s,
-        args.lang,
-        model_path=args.model_path,
-        concurrency=concurrency,
-    )
-    summary = results["summary"]
-    speed = results["speed"]
+    summary = benchmark_result["summary"]
+    speed = benchmark_result["speed"]
     return {
         "concurrency": concurrency,
         "repeat": repeat,
@@ -129,14 +150,14 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "skipped": summary["skipped"],
         "corpus_wer": summary["corpus_wer"],
         "per_sample_wer_max": summary["wer_per_sample_max"],
-        "wall_clock_s": wall_clock_s,
+        "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "latency_mean_s": speed["latency_mean_s"],
         "latency_p95_s": speed["latency_p95_s"],
         "latency_p99_s": speed["latency_p99_s"],
         "rtf_mean": speed["rtf_mean"],
         "rtf_p95": speed["rtf_p95"],
-        "worker": _worker_delta(before, after),
+        "worker": benchmark_result["worker"],
     }
 
 
@@ -232,7 +253,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="qwen3_asr_concurrency_results.json",
+        default="asr_seedtts_results.json",
         help="Where to write the full JSON results.",
     )
     return parser.parse_args()

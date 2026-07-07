@@ -21,7 +21,7 @@ DEPS_HASH_FILE="${OMNI_CI_HOME}/.deps-hash"
 source "${SCRIPT_DIR}/omni_ci_deps_hash.sh"
 DEPS_HASH="$(omni_ci_deps_hash)"
 
-LOCK_DIR="${UV_CACHE_DIR:-/github/home/.cache/uv}"
+LOCK_DIR="${UV_CACHE_DIR:-/data/omni-ci/uv-cache}"
 mkdir -p "${LOCK_DIR}"
 LOCK_FILE="${LOCK_DIR}/omni-venv-prepare-$(echo -n "${OMNI_CI_HOME}" | sha256sum | awk '{print $1}').lock"
 

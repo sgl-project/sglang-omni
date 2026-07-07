@@ -24,7 +24,7 @@ def _request_netloc(request: httpx.Request) -> str:
 def _router_config(
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
-    max_connections: int = 100,
+    max_connections: int | None = None,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
@@ -1070,14 +1070,14 @@ def test_streaming_upstream_error_cleans_active_count() -> None:
     app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
-        with pytest.raises(httpx.ReadError, match="stream boom"):
-            with client.stream(
-                "POST",
-                "/v1/chat/completions",
-                json={"model": "qwen3-omni", "stream": True},
-            ) as response:
-                b"".join(response.iter_bytes())
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
 
+    assert b"upstream_error" in body
     assert all(worker.active_requests == 0 for worker in app.state.workers)
 
 
@@ -1109,20 +1109,313 @@ def test_streaming_failure_records_single_worker_failure() -> None:
     )
 
     with TestClient(app) as client:
-        with pytest.raises(httpx.ReadError, match="stream boom"):
-            with client.stream(
-                "POST",
-                "/v1/chat/completions",
-                json={"model": "qwen3-omni", "stream": True},
-            ) as response:
-                b"".join(response.iter_bytes())
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
 
+    assert b"upstream_error" in body
     worker = app.state.workers[0]
     assert worker.routed_requests == 1
     assert worker.successful_requests == 0
     assert worker.failed_requests == 1
     assert worker.consecutive_failures == 1
     assert worker.state == "healthy"
+
+
+def test_streaming_inflight_count_decrements_even_if_aclose_raises() -> None:
+    class AcloseRaisingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: chunk\n\n"
+            raise httpx.ReadError("stream boom")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("aclose boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=AcloseRaisingStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            b"".join(response.iter_bytes())
+
+    # Note (Jiaxin Deng): the in-flight count must decrement even though aclose()
+    # raised, otherwise it leaks and least_request drifts permanently.
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+    # Note (Jiaxin Deng): record_routed_request() runs in the same finally, so the
+    # broken stream is still booked as a routed failure rather than silently
+    # dropped; guards against a future change skipping the completion accounting.
+    assert sum(worker.routed_requests for worker in app.state.workers) == 1
+    assert sum(worker.failed_requests for worker in app.state.workers) == 1
+
+
+# Streaming-relay semantics for the non-streaming path (Phase 0, #920): the relay
+# no longer buffers the full body, so failures after the status commits truncate,
+# and the response is chunked with a status-code-based worker error string.
+
+
+def test_non_streaming_midstream_failure_truncates_instead_of_502() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"partial": true'
+            raise httpx.ReadError("body boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        with pytest.raises(httpx.ReadError, match="body boom"):
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={"model": "qwen3-omni", "messages": []},
+            ) as response:
+                assert response.status_code == 200
+                b"".join(response.iter_bytes())
+
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_non_streaming_error_status_relays_full_body_not_truncated() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                502,
+                content=b'{"error": "upstream declined"}',
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    # Note (Jiaxin Deng): a complete error-status body relays cleanly (only a
+    # failure after the body starts truncates); the connect-time 502 boundary is
+    # pinned by test_upstream_request_failure_returns_502_and_cleans_active_count.
+    assert response.status_code == 502
+    assert response.json() == {"error": "upstream declined"}
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_worker_failure_last_error_uses_status_code_not_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                503,
+                content=b'{"detail": "scheduler overloaded, retry later"}',
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            health_failure_threshold=2,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert response.status_code == 503
+    worker = app.state.workers[0]
+    # Note (Jiaxin Deng): recorded as the status code, not a snippet of the
+    # (non-empty) body, since the streaming relay cannot read it without consuming.
+    assert worker.last_error == "status=503"
+
+
+def test_relayed_response_has_no_content_length_header() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                content=b'{"ok": true}',
+                headers={
+                    "content-type": "application/json",
+                    "content-length": "12",
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert response.status_code == 200
+    assert response.content == b'{"ok": true}'
+    assert "content-length" not in {key.lower() for key in response.headers}
+
+
+def test_sse_terminal_error_event_appended_after_prior_events() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"i": 1}\n\n'
+            yield b'data: {"i": 2}\n\n'
+            yield b'data: {"i": 3}\n\n'
+            raise httpx.ReadError("sse boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            body = b"".join(response.iter_bytes())
+
+    assert (
+        body.index(b'{"i": 1}')
+        < body.index(b'{"i": 2}')
+        < body.index(b'{"i": 3}')
+        < body.index(b"upstream_error")
+    )
+    assert body.count(b"data: ") == 4  # 3 upstream events + 1 terminal error event
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_non_sse_midstream_failure_is_not_injected_with_error_event() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"RIFF....partial-wav"
+            raise httpx.ReadError("audio boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "audio/wav"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        # Note (Jiaxin Deng): a non-SSE body truncates (ReadError propagates); if
+        # the SSE error event were wrongly injected, it would end cleanly instead.
+        with pytest.raises(httpx.ReadError, match="audio boom"):
+            with client.stream(
+                "POST",
+                "/v1/audio/speech",
+                json={"model": "qwen3-omni"},
+            ) as response:
+                assert response.status_code == 200
+                b"".join(response.iter_bytes())
+
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_active_requests_held_across_body_relay_then_released() -> None:
+    # Note (Jiaxin Deng): recording active_requests at each yield proves the
+    # count is held while the body is still relaying (0 if released early), 0 after.
+    app_holder: list[FastAPI] = []
+    observed_during_relay: list[int] = []
+
+    class ObservingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            worker = app_holder[0].state.workers[0]
+            observed_during_relay.append(worker.active_requests)
+            yield b"chunk-1"
+            observed_during_relay.append(worker.active_requests)
+            yield b"chunk-2"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            return httpx.Response(
+                200,
+                stream=ObservingStream(),
+                headers={"content-type": "audio/wav"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=async_client,
+    )
+    app_holder.append(app)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/speech", json={"model": "qwen3-omni"})
+
+    assert response.status_code == 200
+    assert response.content == b"chunk-1chunk-2"
+    assert observed_during_relay == [1, 1]
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
 
 
 def test_least_request_avoids_worker_with_active_stream_load() -> None:
@@ -2017,3 +2310,45 @@ def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
     assert result.status_code == 503
     body = json.loads(result.body)
     assert "lock" in body["error"]["message"].lower()
+
+
+def test_max_connections_auto_sizes_to_worker_count() -> None:
+    config = RouterConfig(
+        workers=[
+            WorkerConfig(url="http://worker-a:8101"),
+            WorkerConfig(url="http://worker-b:8102"),
+            WorkerConfig(url="http://worker-c:8103"),
+        ],
+    )
+    # Note: (Jiaxin Deng) 128 per worker: pool-wide cap must exceed in-flight capacity.
+    assert config.max_connections == 384
+
+
+def test_max_connections_auto_caps_at_4096() -> None:
+    workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(40)]
+    config = RouterConfig(workers=workers)
+    assert config.max_connections == 4096
+
+
+def test_max_connections_explicit_value_is_preserved() -> None:
+    config = _router_config(max_connections=512)
+    assert config.max_connections == 512
+
+
+def test_max_connections_explicit_below_worker_budget_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+        config = _router_config(max_connections=100)
+    assert config.max_connections == 100
+    assert any("under-feed" in record.getMessage() for record in caplog.records)
+
+
+def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(70)]
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+        config = RouterConfig(workers=workers)
+    assert config.max_connections == 4096
+    assert any("under-feed" in record.getMessage() for record in caplog.records)
