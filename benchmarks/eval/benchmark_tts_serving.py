@@ -538,15 +538,20 @@ def _format_float(value: float) -> str:
 
 
 def _format_summary(summary: object) -> str:
-    if not isinstance(summary, dict) or not summary.get("count"):
+    if not isinstance(summary, dict) or not summary:
         return "N/A"
-    return (
-        f"count={summary.get('count')} "
-        f"mean={_format_value(summary.get('mean'))} "
-        f"p50={_format_value(summary.get('p50'))} "
-        f"p95={_format_value(summary.get('p95'))} "
-        f"p99={_format_value(summary.get('p99'))} "
-        f"p99.9={_format_value(summary.get('p99_9'))}"
+    fields = (
+        ("mean", "mean"),
+        ("p50", "p50"),
+        ("p95", "p95"),
+        ("p99", "p99"),
+        ("p99_9", "p99.9"),
+        ("max", "max"),
+    )
+    return " ".join(
+        f"{label}={_format_value(summary[key])}"
+        for key, label in fields
+        if summary.get(key) is not None
     )
 
 
