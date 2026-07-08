@@ -4,6 +4,7 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -45,6 +46,8 @@ from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
 
+logger = logging.getLogger(__name__)
+
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
@@ -61,6 +64,79 @@ def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         batch, num_kv_heads, n_rep, seq_len, head_dim
     )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
+
+
+class _PredictorDecodeGraph:
+    """CUDA graph for one Qwen3-Omni predictor single-token decode bucket."""
+
+    def __init__(
+        self,
+        model: "Qwen3OmniTalker",
+        batch_size: int,
+        code_dtype: torch.dtype,
+    ) -> None:
+        self.model = model
+        self.batch_size = batch_size
+        self.code_dtype = code_dtype
+        device = model._predictor_input_buffer.device
+        hidden_size = model._predictor_input_buffer.shape[-1]
+        dtype = model._predictor_input_buffer.dtype
+
+        self.layer0_codes = torch.zeros(
+            batch_size,
+            1,
+            dtype=code_dtype,
+            device=device,
+        )
+        self.talker_hidden = torch.zeros(
+            batch_size,
+            1,
+            hidden_size,
+            dtype=dtype,
+            device=device,
+        )
+        self.graph = torch.cuda.CUDAGraph()
+        self.result_codes: torch.Tensor | None = None
+        self.summed_embeddings: torch.Tensor | None = None
+        self._capture()
+
+    @torch.no_grad()
+    def _capture(self) -> None:
+        device = self.layer0_codes.device
+        warmup_stream = torch.cuda.Stream(device=device)
+        current_stream = torch.cuda.current_stream(device=device)
+        warmup_stream.wait_stream(current_stream)
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                self.model._code_predictor_forward_incremental_eager(
+                    self.layer0_codes,
+                    self.talker_hidden,
+                )
+        current_stream.wait_stream(warmup_stream)
+
+        with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
+            self.result_codes, self.summed_embeddings = (
+                self.model._code_predictor_forward_incremental_eager(
+                    self.layer0_codes,
+                    self.talker_hidden,
+                )
+            )
+
+        if self.result_codes is None or self.summed_embeddings is None:
+            raise RuntimeError("Qwen3-Omni predictor CUDA graph captured no outputs")
+
+    @torch.no_grad()
+    def replay(
+        self,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.layer0_codes.copy_(layer0_codes)
+        self.talker_hidden.copy_(talker_hidden)
+        self.graph.replay()
+        assert self.result_codes is not None
+        assert self.summed_embeddings is not None
+        return self.result_codes, self.summed_embeddings
 
 
 class ResizeMLP(nn.Module):
@@ -873,6 +949,10 @@ class Qwen3OmniTalker(nn.Module):
             device=device,
             dtype=self.model.codec_embedding.weight.dtype,
         )
+        self._predictor_decode_graphs: dict[
+            tuple[int, torch.dtype], _PredictorDecodeGraph
+        ] = {}
+        self._predictor_decode_graph_disabled: set[tuple[int, torch.dtype]] = set()
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -1220,6 +1300,97 @@ class Qwen3OmniTalker(nn.Module):
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the predictor one token at a time using a per-layer single-turn KV cache."""
+        if layer0_codes.ndim == 1:
+            layer0_codes = layer0_codes.unsqueeze(1)
+        if talker_hidden.ndim == 2:
+            talker_hidden = talker_hidden.unsqueeze(1)
+
+        batch_size, seq_len = layer0_codes.shape
+        if talker_hidden.shape[:2] != (batch_size, seq_len):
+            raise ValueError(
+                "talker_hidden shape must align with layer0_codes: "
+                f"{tuple(talker_hidden.shape)} vs {tuple(layer0_codes.shape)}"
+            )
+        if self._can_use_predictor_decode_graph(
+            layer0_codes=layer0_codes,
+            talker_hidden=talker_hidden,
+            seq_len=seq_len,
+        ):
+            graph_result = self._code_predictor_forward_single_token_graph(
+                layer0_codes=layer0_codes,
+                talker_hidden=talker_hidden,
+                batch_size=batch_size,
+                code_dtype=layer0_codes.dtype,
+            )
+            if graph_result is not None:
+                return graph_result
+
+        return self._code_predictor_forward_incremental_eager(
+            layer0_codes=layer0_codes,
+            talker_hidden=talker_hidden,
+        )
+
+    def _can_use_predictor_decode_graph(
+        self,
+        *,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+        seq_len: int,
+    ) -> bool:
+        if seq_len != 1:
+            return False
+        if layer0_codes.dtype not in (torch.int, torch.long):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
+            return False
+        if torch.cuda.is_current_stream_capturing():
+            return False
+        return True
+
+    def _code_predictor_forward_single_token_graph(
+        self,
+        *,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+        batch_size: int,
+        code_dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | None:
+        key = (batch_size, code_dtype)
+        if key in self._predictor_decode_graph_disabled:
+            return None
+
+        graph = self._predictor_decode_graphs.get(key)
+        if graph is None:
+            try:
+                graph = _PredictorDecodeGraph(self, batch_size, code_dtype)
+            except Exception:
+                self._predictor_decode_graph_disabled.add(key)
+                logger.warning(
+                    "Disabling Qwen3-Omni predictor CUDA graph for "
+                    "batch_size=%s dtype=%s",
+                    batch_size,
+                    code_dtype,
+                    exc_info=True,
+                )
+                return None
+            self._predictor_decode_graphs[key] = graph
+            logger.info(
+                "Captured Qwen3-Omni predictor CUDA graph for batch_size=%s "
+                "dtype=%s",
+                batch_size,
+                code_dtype,
+            )
+
+        return graph.replay(layer0_codes, talker_hidden)
+
+    def _code_predictor_forward_incremental_eager(
+        self,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Eager predictor implementation used for prefill and graph fallback."""
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
         if talker_hidden.ndim == 2:

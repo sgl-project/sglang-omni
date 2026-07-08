@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
+import sglang_omni.models.qwen3_omni.components.talker as talker_module
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
@@ -356,6 +360,109 @@ def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
 
     assert sampled.shape == (1, 2)
     assert sampled.tolist() == [[2, 0]]
+
+
+def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> None:
+    """Keeps lazy predictor graph capture scoped to this thread."""
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "sglang_omni"
+        / "models"
+        / "qwen3_omni"
+        / "components"
+        / "talker.py"
+    )
+    tree = ast.parse(source.read_text())
+    graph_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "graph"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "cuda"
+    ]
+
+    assert graph_calls
+    assert any(
+        any(
+            keyword.arg == "capture_error_mode"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "thread_local"
+            for keyword in call.keywords
+        )
+        for call in graph_calls
+    )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
+)
+def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPatch):
+    """Default graph replay matches eager predictor outputs for single-token decode."""
+    monkeypatch.setattr(
+        talker_module,
+        "get_global_server_args",
+        lambda: SimpleNamespace(max_running_requests=4),
+    )
+
+    class FakeLmHead(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(8, 16, bias=False)
+
+        def forward(self, hidden_states: torch.Tensor):
+            return self.proj(hidden_states), None
+
+    torch.manual_seed(0)
+    talker = object.__new__(Qwen3OmniTalker)
+    talker.training = False
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._predictor_input_buffer = torch.zeros(4, 5, 8, device="cuda")
+    talker._output_codes = torch.zeros(4, 4, dtype=torch.long, device="cuda")
+    talker._output_embeds = torch.zeros(4, 8, device="cuda")
+    talker._predictor_decode_graphs = {}
+    talker._predictor_decode_graph_disabled = set()
+    layer0_embedding = nn.Embedding(16, 8).cuda()
+    talker.get_input_embeddings = lambda: layer0_embedding
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(
+            codec_embedding=nn.ModuleList(
+                [nn.Embedding(16, 8).cuda() for _ in range(3)]
+            )
+        ),
+        lm_head=nn.ModuleList([FakeLmHead().cuda() for _ in range(3)]),
+    )
+
+    def fake_forward_one_token(
+        *,
+        token_embeds: torch.Tensor,
+        batch_size: int,
+        cache_len: int,
+    ) -> torch.Tensor:
+        return token_embeds[:batch_size] + float(cache_len + 1)
+
+    talker._predictor_forward_one_token = fake_forward_one_token
+    layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device="cuda")
+    talker_hidden = torch.randn(2, 1, 8, device="cuda")
+
+    with torch.no_grad():
+        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+            layer0_codes,
+            talker_hidden,
+        )
+        eager_codes = eager_codes.clone()
+        eager_embeds = eager_embeds.clone()
+
+        graph_codes, graph_embeds = talker.code_predictor_forward(
+            layer0_codes,
+            talker_hidden,
+        )
+        torch.cuda.synchronize()
+
+    assert (2, torch.int) in talker._predictor_decode_graphs
+    torch.testing.assert_close(graph_codes, eager_codes)
+    torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
 def _build_assistant_part_for_n_chunks(n: int) -> dict[str, torch.Tensor]:
