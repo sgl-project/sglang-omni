@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from typing import Any
 
@@ -48,6 +49,9 @@ class QwenTalkerScheduler(OmniScheduler):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        env_min_chunks = os.getenv("SGLANG_OMNI_QWEN3_PARTIAL_START_MIN_CHUNKS")
+        if env_min_chunks is not None:
+            partial_start_min_chunks = int(env_min_chunks)
         if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
             raise ValueError(
                 f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "

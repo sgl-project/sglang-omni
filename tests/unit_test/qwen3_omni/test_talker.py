@@ -502,6 +502,20 @@ def test_partial_rejects_min_chunks_below_layout_floor(monkeypatch) -> None:
         )
 
 
+def test_partial_min_chunks_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_QWEN3_PARTIAL_START_MIN_CHUNKS", "3")
+    monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *a, **k: None)
+    live = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
+
+    QwenTalkerScheduler.__init__(
+        live,
+        enable_partial_start=True,
+        partial_start_min_chunks=10,
+    )
+
+    assert live._partial_start_min_chunks == 3
+
+
 def test_partial_count_strips_only_trailing_im_end_chunk() -> None:
     scheduler = _fresh_partial_scheduler(
         enable_partial_start=True, partial_start_min_chunks=3
@@ -1800,10 +1814,13 @@ def _talker_seed_self(max_bs: int = 4, vocab: int = 8) -> SimpleNamespace:
         _sampling_top_ks=torch.ones(max_bs, dtype=torch.long),
         _sampling_min_ps=torch.zeros(max_bs),
         _sampling_seeds=torch.zeros(max_bs, dtype=torch.long),
+        _sampler=None,
     )
 
 
-def _talker_seed_req(seed: int | None, rid: str) -> SimpleNamespace:
+def _talker_seed_req(
+    seed: int | None, rid: str
+) -> SimpleNamespace:
     sp = SimpleNamespace(
         repetition_penalty=1.0,  # keep rep/suppress branches off
         temperature=0.8,
@@ -1813,7 +1830,10 @@ def _talker_seed_req(seed: int | None, rid: str) -> SimpleNamespace:
         sampling_seed=seed,
     )
     req = SimpleNamespace(
-        sampling_params=sp, output_ids=[], _codec_suppress_tokens=None, rid=rid
+        sampling_params=sp,
+        output_ids=[],
+        _codec_suppress_tokens=None,
+        rid=rid,
     )
     return SimpleNamespace(data=SimpleNamespace(req=req, suppress_tokens=None))
 

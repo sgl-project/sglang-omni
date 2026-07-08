@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# note (luojiaxuan): Opt-in H200 config for the S2S-faster fused
+# talker_ar/code2wav local-process edge.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-h200-fused
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+fused_stages:
+  - [talker_ar, code2wav]
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.017
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.017
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.769
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.123
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.014

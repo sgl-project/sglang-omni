@@ -11,6 +11,7 @@ import asyncio
 import logging
 import multiprocessing
 import socket
+import time
 from typing import Any
 
 from sglang_omni.config.placement import (
@@ -166,6 +167,37 @@ def _build_stage_groups(
     groups.extend(tp_groups)
 
     return groups
+
+
+def _pop_startup_batch(
+    groups: list[StageGroup],
+) -> tuple[list[StageGroup], list[StageGroup]]:
+    batch: list[StageGroup] = []
+    deferred: list[StageGroup] = []
+    used_gpu_ids: set[int] = set()
+    for group in groups:
+        gpu_ids = getattr(group, "gpu_ids", set())
+        if gpu_ids and used_gpu_ids.intersection(gpu_ids):
+            deferred.append(group)
+            continue
+        batch.append(group)
+        used_gpu_ids.update(gpu_ids)
+    return batch, deferred
+
+
+async def _spawn_and_wait_startup_batches(
+    groups: list[StageGroup],
+    ctx: multiprocessing.context.BaseContext,
+    timeout: float,
+) -> None:
+    pending = list(groups)
+    deadline = time.monotonic() + timeout
+    while pending:
+        batch, pending = _pop_startup_batch(pending)
+        for group in batch:
+            group.spawn(ctx)
+        remaining = max(0.0, deadline - time.monotonic())
+        await asyncio.gather(*(group.wait_ready(remaining) for group in batch))
 
 
 def _resolve_same_process_targets(
@@ -414,10 +446,7 @@ class MultiProcessPipelineRunner:
             if self._config.env_defaults:
                 env_names = ", ".join(sorted(self._config.env_defaults))
                 logger.info(f"Configured stage process env defaults: {env_names}")
-            for group in self._groups:
-                group.spawn(ctx)
-
-            await asyncio.gather(*(g.wait_ready(timeout) for g in self._groups))
+            await _spawn_and_wait_startup_batches(self._groups, ctx, timeout)
 
             for group in self._groups:
                 if group.any_dead():

@@ -4,9 +4,14 @@
 Receives codec code chunks via inbox (stream_chunk), accumulates them,
 runs vocoder incrementally, outputs final audio via outbox.
 """
+
 from __future__ import annotations
 
 import logging
+import os
+import queue as _queue_mod
+import time
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -20,6 +25,15 @@ from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleSch
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _DecodePlan:
+    request_id: str
+    start: int
+    end: int
+    trim: int
+    codes: torch.Tensor
 
 
 def load_code2wav_model(
@@ -58,17 +72,44 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         model: Any,
         device: str,
         stream_chunk_size: int = 10,
+        non_stream_chunk_size: int | None = None,
         left_context_size: int = 25,
         sample_rate: int = 24000,
         codec_eos_token_id: int = 2150,
+        max_batch_size: int = 16,
+        max_batch_wait_ms: int = 1,
+        enable_batched_decode: bool = True,
     ):
         self._model = model
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
+        env_non_stream_chunk_size = os.getenv(
+            "SGLANG_OMNI_QWEN3_CODE2WAV_NON_STREAM_CHUNK_SIZE"
+        )
+        if env_non_stream_chunk_size is not None:
+            non_stream_chunk_size = int(env_non_stream_chunk_size)
+        self._non_stream_chunk_size = (
+            self._stream_chunk_size
+            if non_stream_chunk_size is None
+            else max(int(non_stream_chunk_size), 1)
+        )
+        env_left_context_size = os.getenv(
+            "SGLANG_OMNI_QWEN3_CODE2WAV_LEFT_CONTEXT_SIZE"
+        )
+        if env_left_context_size is not None:
+            left_context_size = int(env_left_context_size)
         self._left_context_size = max(int(left_context_size), 0)
         self._sample_rate = sample_rate
         self._codec_eos_token_id = codec_eos_token_id
         self._total_upsample = int(model.total_upsample)
+        self._decode_max_batch_size = max(int(max_batch_size), 1)
+        env_batch_wait_ms = os.getenv(
+            "SGLANG_OMNI_QWEN3_CODE2WAV_MAX_BATCH_WAIT_MS"
+        )
+        if env_batch_wait_ms is not None:
+            max_batch_wait_ms = float(env_batch_wait_ms)
+        self._decode_max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self._enable_batched_decode = bool(enable_batched_decode)
 
         # Per-request state
         self._code_chunks: dict[str, list[torch.Tensor]] = {}
@@ -112,6 +153,67 @@ class Code2WavScheduler(StreamingSimpleScheduler):
     def on_stream_chunk(
         self, request_id: str, chunk: StreamItem
     ) -> list[OutgoingMessage]:
+        self._append_stream_chunk(request_id, chunk)
+        if self._is_aborted(request_id):
+            return []
+        return self._decode_ready_requests(request_ids=[request_id])
+
+    def _handle_stream_chunk(self, request_id: str, item: Any) -> None:
+        if not isinstance(item, StreamItem):
+            raise TypeError(
+                f"{self.__class__.__name__} expected StreamItem for "
+                f"{request_id!r}, got {type(item).__name__}"
+            )
+        with self._state_lock:
+            self._append_stream_chunk(request_id, item)
+            if self._is_aborted(request_id):
+                return
+            if self._enable_batched_decode:
+                self._collect_more_stream_chunks()
+                messages = self._decode_ready_requests()
+            else:
+                messages = self._decode_ready_requests(request_ids=[request_id])
+            for out in messages:
+                if not self._is_aborted(out.request_id):
+                    self.outbox.put(out)
+
+    def _handle_stream_done(self, request_id: str) -> None:
+        with self._state_lock:
+            done_request_ids = [request_id]
+            if self._enable_batched_decode:
+                done_request_ids.extend(self._collect_more_stream_done())
+
+            ready_to_finalize: list[str] = []
+            for done_request_id in done_request_ids:
+                if done_request_id not in self._stream_payloads:
+                    if done_request_id in self._completed_non_streaming_request_ids:
+                        continue
+                    self._pending_done.add(done_request_id)
+                    continue
+                ready_to_finalize.append(done_request_id)
+
+            if not ready_to_finalize:
+                return
+
+            force_ids = set(ready_to_finalize)
+            request_ids = None if self._enable_batched_decode else ready_to_finalize
+            for out in self._decode_ready_requests(
+                force_request_ids=force_ids,
+                request_ids=request_ids,
+            ):
+                if not self._is_aborted(out.request_id):
+                    self.outbox.put(out)
+
+            for done_request_id in ready_to_finalize:
+                if self._is_aborted(done_request_id):
+                    continue
+                for out in self._finalize_request(done_request_id):
+                    if not self._is_aborted(out.request_id):
+                        self.outbox.put(out)
+                if not self._is_aborted(done_request_id):
+                    self._clear_request_state(done_request_id)
+
+    def _append_stream_chunk(self, request_id: str, chunk: StreamItem) -> None:
         self._ensure_request_state(request_id)
 
         # Latch the stream flag from talker's metadata once per request.
@@ -128,7 +230,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
                         "populate it."
                     ),
                 )
-                return []
+                return
             self._stream_enabled[request_id] = bool(meta["stream"])
 
         codes = chunk.data.to(device=self._device, dtype=torch.long)
@@ -146,20 +248,17 @@ class Code2WavScheduler(StreamingSimpleScheduler):
                 logger.debug(
                     "Code2Wav skip EOS req=%s codes=%s", request_id, codes.tolist()
                 )
-            return []
+            return
         self._code_chunks[request_id].append(codes)
-        ready = len(self._code_chunks[request_id]) - self._emitted[request_id]
-        if ready >= self._stream_chunk_size:
-            return self._decode_and_emit(request_id)
-        return []
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        # Decode remaining
-        chunks = self._code_chunks[request_id]
-        emitted = self._emitted[request_id]
         messages: list[OutgoingMessage] = []
-        if chunks and emitted < len(chunks):
-            messages.extend(self._decode_and_emit(request_id))
+        messages.extend(self._decode_ready_requests(force_request_ids={request_id}))
+        messages.extend(self._finalize_request(request_id))
+        return messages
+
+    def _finalize_request(self, request_id: str) -> list[OutgoingMessage]:
+        messages: list[OutgoingMessage] = []
 
         # Build final output
         audio_parts = self._audio_chunks.get(request_id, [])
@@ -203,61 +302,208 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         )
         return messages
 
-    def _decode_and_emit(self, request_id: str) -> list[OutgoingMessage]:
-        chunks = self._code_chunks[request_id]
-        start = self._emitted[request_id]
-        end = len(chunks)
-        audio = self._decode_incremental(request_id, chunks, start, end)
-        self._emitted[request_id] = end
+    def _decode_ready_requests(
+        self,
+        *,
+        force_request_ids: set[str] | None = None,
+        request_ids: list[str] | None = None,
+    ) -> list[OutgoingMessage]:
+        plans = self._build_decode_plans(
+            force_request_ids=force_request_ids or set(),
+            request_ids=request_ids,
+        )
+        if not plans:
+            return []
+
         messages: list[OutgoingMessage] = []
-        if audio.size > 0:
-            is_first = not self._audio_chunks[request_id]
-            self._audio_chunks[request_id].append(audio)
-            if is_first:
-                _emit_event(
-                    request_id=request_id,
-                    stage=None,
-                    event_name="code2wav_first_audio",
-                    metadata={"samples": int(audio.shape[0])},
-                )
-            if self._stream_enabled.get(request_id, True):
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        target=None,
-                        data=self._build_audio_payload(audio),
-                        metadata={"modality": "audio"},
+        for group in self._group_decode_plans(plans):
+            for plan, audio in zip(group, self._decode_plan_batch(group)):
+                self._emitted[plan.request_id] = plan.end
+                if audio.size == 0:
+                    continue
+                is_first = not self._audio_chunks[plan.request_id]
+                self._audio_chunks[plan.request_id].append(audio)
+                if is_first:
+                    _emit_event(
+                        request_id=plan.request_id,
+                        stage=None,
+                        event_name="code2wav_first_audio",
+                        metadata={"samples": int(audio.shape[0])},
                     )
-                )
+                if self._stream_enabled.get(plan.request_id, True):
+                    messages.append(
+                        OutgoingMessage(
+                            request_id=plan.request_id,
+                            type="stream",
+                            target=None,
+                            data=self._build_audio_payload(audio),
+                            metadata={"modality": "audio"},
+                        )
+                    )
         return messages
 
-    def _decode_incremental(
-        self, request_id: str, code_chunks, start, end
-    ) -> np.ndarray:
-        if start >= end:
-            return np.zeros((0,), dtype=np.float32)
-        context = min(self._left_context_size, start)
-        window = torch.stack(code_chunks[start - context : end], dim=0)
-        codes = window.transpose(0, 1).unsqueeze(0)
+    def _build_decode_plans(
+        self,
+        *,
+        force_request_ids: set[str],
+        request_ids: list[str] | None,
+    ) -> list[_DecodePlan]:
+        plans: list[_DecodePlan] = []
+        candidate_ids = (
+            request_ids if request_ids is not None else list(self._code_chunks)
+        )
+        for request_id in candidate_ids:
+            if self._is_aborted(request_id):
+                continue
+            code_chunks = self._code_chunks.get(request_id)
+            if not code_chunks:
+                continue
+            start = self._emitted.get(request_id, 0)
+            end = len(code_chunks)
+            ready = end - start
+            if ready <= 0:
+                continue
+            if (
+                ready < self._decode_ready_threshold(request_id)
+                and request_id not in force_request_ids
+            ):
+                continue
+            context = min(self._left_context_size, start)
+            window = torch.stack(code_chunks[start - context : end], dim=0)
+            codes = window.transpose(0, 1)
+            plans.append(
+                _DecodePlan(
+                    request_id=request_id,
+                    start=start,
+                    end=end,
+                    trim=context * self._total_upsample,
+                    codes=codes,
+                )
+            )
+        return plans
+
+    def _group_decode_plans(self, plans: list[_DecodePlan]) -> list[list[_DecodePlan]]:
+        if not self._enable_batched_decode:
+            return [[plan] for plan in plans]
+
+        grouped: dict[tuple[tuple[int, ...], int], list[_DecodePlan]] = {}
+        ordered_keys: list[tuple[tuple[int, ...], int]] = []
+        for plan in plans:
+            key = (tuple(plan.codes.shape), plan.trim)
+            if key not in grouped:
+                grouped[key] = []
+                ordered_keys.append(key)
+            grouped[key].append(plan)
+
+        batches: list[list[_DecodePlan]] = []
+        for key in ordered_keys:
+            group = grouped[key]
+            for start in range(0, len(group), self._decode_max_batch_size):
+                batches.append(group[start : start + self._decode_max_batch_size])
+        return batches
+
+    def _decode_plan_batch(self, plans: list[_DecodePlan]) -> list[np.ndarray]:
+        if not plans:
+            return []
+
+        codes = torch.stack([plan.codes for plan in plans], dim=0)
         with torch.no_grad():
             if self._device.type == "cuda":
                 torch.cuda.set_device(self._device)
             wav = self._model(codes)
-        trim = context * self._total_upsample
+        batch_size = len(plans)
+        if batch_size == 1:
+            wav = wav.reshape(1, -1)
+        elif int(wav.shape[0]) != batch_size:
+            raise RuntimeError(
+                "code2wav batched decode returned incompatible batch dimension: "
+                f"expected {batch_size}, got shape {tuple(wav.shape)}"
+            )
+        else:
+            wav = wav.reshape(batch_size, -1)
+
+        trim = plans[0].trim
         if trim:
-            wav = wav[..., trim:]
-        audio = wav.reshape(-1).detach().cpu().float().numpy().copy()
+            wav = wav[:, trim:]
+        audio_batch = wav.detach().to(device="cpu", dtype=torch.float32).numpy()
+        audio_parts = [audio_batch[i].copy() for i in range(batch_size)]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Code2Wav decode window=%s start=%s end=%s trim=%s samples=%s",
+                "Code2Wav decode batch window=%s batch=%s start_end=%s trim=%s samples=%s",
                 tuple(codes.shape),
-                start,
-                end,
+                batch_size,
+                [(plan.start, plan.end) for plan in plans],
                 trim,
-                int(audio.shape[0]),
+                [int(audio.shape[0]) for audio in audio_parts],
             )
-        return audio
+        return audio_parts
+
+    def _ready_request_count(self) -> int:
+        count = 0
+        for request_id, chunks in self._code_chunks.items():
+            if self._is_aborted(request_id):
+                continue
+            ready = len(chunks) - self._emitted.get(request_id, 0)
+            if ready >= self._decode_ready_threshold(request_id):
+                count += 1
+        return count
+
+    def _decode_ready_threshold(self, request_id: str) -> int:
+        if not self._stream_enabled.get(request_id, True):
+            return self._non_stream_chunk_size
+        return self._stream_chunk_size
+
+    def _collect_more_stream_chunks(self) -> None:
+        ready_count = self._ready_request_count()
+        if self._decode_max_batch_size <= 1 or ready_count == 0:
+            return
+
+        deadline = time.monotonic() + self._decode_max_batch_wait_s
+        while ready_count < self._decode_max_batch_size:
+            try:
+                msg = self.inbox.get_nowait()
+            except _queue_mod.Empty:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = self.inbox.get(timeout=remaining)
+                except _queue_mod.Empty:
+                    break
+
+            if self._is_aborted(msg.request_id):
+                continue
+            if msg.type != "stream_chunk" or not isinstance(msg.data, StreamItem):
+                self._pending_messages.append(msg)
+                break
+            self._append_stream_chunk(msg.request_id, msg.data)
+            ready_count = self._ready_request_count()
+
+    def _collect_more_stream_done(self) -> list[str]:
+        if self._decode_max_batch_size <= 1:
+            return []
+
+        request_ids: list[str] = []
+        deadline = time.monotonic() + self._decode_max_batch_wait_s
+        while len(request_ids) + 1 < self._decode_max_batch_size:
+            try:
+                msg = self.inbox.get_nowait()
+            except _queue_mod.Empty:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = self.inbox.get(timeout=remaining)
+                except _queue_mod.Empty:
+                    break
+
+            if self._is_aborted(msg.request_id):
+                continue
+            if msg.type != "stream_done":
+                self._pending_messages.append(msg)
+                break
+            request_ids.append(msg.request_id)
+        return request_ids
 
     def _build_audio_payload(self, audio: np.ndarray) -> dict[str, Any]:
         return audio_waveform_payload(
@@ -275,7 +521,11 @@ def create_code2wav_scheduler(
     dtype: str | None = None,
     gpu_id: int | None = None,
     stream_chunk_size: int = 10,
+    non_stream_chunk_size: int | None = None,
     left_context_size: int = 25,
+    max_batch_size: int = 16,
+    max_batch_wait_ms: int = 1,
+    enable_batched_decode: bool = True,
 ):
     """Factory: returns Code2WavScheduler."""
     if gpu_id is not None:
@@ -285,5 +535,9 @@ def create_code2wav_scheduler(
         model,
         device=device,
         stream_chunk_size=stream_chunk_size,
+        non_stream_chunk_size=non_stream_chunk_size,
         left_context_size=left_context_size,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        enable_batched_decode=enable_batched_decode,
     )

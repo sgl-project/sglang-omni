@@ -207,6 +207,17 @@ class StageGroup:
         return len(self.process_specs)
 
     @property
+    def gpu_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for process_spec in self.process_specs:
+            if process_spec.gpu_id is not None:
+                ids.add(int(process_spec.gpu_id))
+            for stage_spec in process_spec.stage_specs:
+                if stage_spec.gpu_id is not None:
+                    ids.add(int(stage_spec.gpu_id))
+        return ids
+
+    @property
     def specs(self) -> list[StageLaunchConfig]:
         return [
             stage_spec

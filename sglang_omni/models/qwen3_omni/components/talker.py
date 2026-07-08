@@ -13,6 +13,10 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import add_prefix
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components.predictor_kernels import (
+    sample_code_and_stage_,
+    stage_initial_predictor_input_,
+)
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
     Qwen3OmniMoeThinkerTextDecoderLayer,
@@ -61,6 +65,38 @@ def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         batch, num_kv_heads, n_rep, seq_len, head_dim
     )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
+
+
+def _scaled_dot_product_attention_gqa(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    is_causal: bool,
+) -> torch.Tensor:
+    num_kv_groups = q.shape[1] // k.shape[1]
+    if num_kv_groups == 1:
+        return torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+        )
+    try:
+        return torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+            enable_gqa=True,
+        )
+    except TypeError:
+        return torch.nn.functional.scaled_dot_product_attention(
+            q,
+            _repeat_kv(k, num_kv_groups),
+            _repeat_kv(v, num_kv_groups),
+            is_causal=is_causal,
+        )
 
 
 class ResizeMLP(nn.Module):
@@ -705,12 +741,8 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             1, 2
         )
 
-        num_kv_groups = attn.num_heads // attn.num_kv_heads
-        k = _repeat_kv(k, num_kv_groups)
-        v = _repeat_kv(v, num_kv_groups)
-
         # Use SDPA to match HF's attention computation
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
+        attn_output = _scaled_dot_product_attention_gqa(
             q,
             k,
             v,
@@ -795,6 +827,9 @@ class Qwen3OmniTalker(nn.Module):
             predictor_len,
             device=device,
             dtype=torch.long,
+        )
+        self._predictor_position_rows = self._predictor_positions.unsqueeze(1).repeat(
+            1, max_batch_size
         )
         predictor_num_layers = len(self.code_predictor.model.layers)
         predictor_num_kv_heads = self.code_predictor.model.layers[
@@ -922,8 +957,9 @@ class Qwen3OmniTalker(nn.Module):
             sp = req.sampling_params
 
             penalty = float(sp.repetition_penalty)
+            temperature = float(sp.temperature)
             rep_penalties.append(penalty)
-            temperatures.append(float(sp.temperature))
+            temperatures.append(temperature)
             top_ps.append(float(sp.top_p))
             top_ks.append(int(sp.top_k))
             min_ps.append(float(sp.min_p))
@@ -1237,8 +1273,6 @@ class Qwen3OmniTalker(nn.Module):
         num_groups = self.config.num_code_groups
         runtime_single_token = seq_len == 1
         if runtime_single_token:
-            self._output_codes[:batch_size].zero_()
-            self._output_embeds[:batch_size].zero_()
             result_codes = self._output_codes[:batch_size].unsqueeze(-1)
             summed_embeddings = self._output_embeds[:batch_size].unsqueeze(1)
         else:
@@ -1253,20 +1287,31 @@ class Qwen3OmniTalker(nn.Module):
                 device=predictor_input.device,
             )
 
+        codec_weight = self.get_input_embeddings().weight
         for pos in range(seq_len):
-            layer0_code = layer0_codes[:, pos : pos + 1]
-            layer0_embed = self.get_input_embeddings()(layer0_code).to(
-                dtype=predictor_input.dtype
-            )
+            layer0_code = layer0_codes[:, pos]
             pos_codes = result_codes[:, :, pos]
             pos_summed = summed_embeddings[:, pos, :]
-            pos_summed.zero_()
-            predictor_input[:, 0, :] = talker_hidden[:, pos, :].to(
-                dtype=predictor_input.dtype
+            staged = stage_initial_predictor_input_(
+                layer0_code=layer0_code,
+                talker_hidden=talker_hidden[:, pos, :],
+                codec_weight=codec_weight,
+                predictor_input=predictor_input,
+                pos_codes=pos_codes,
+                pos_summed=pos_summed,
             )
-            predictor_input[:, 1, :] = layer0_embed[:, 0, :]
-            pos_codes[:, 0].copy_(layer0_code[:, 0])
-            pos_summed.add_(layer0_embed[:, 0, :])
+            if not staged:
+                layer0_code_2d = layer0_code.unsqueeze(1)
+                layer0_embed = self.get_input_embeddings()(layer0_code_2d).to(
+                    dtype=predictor_input.dtype
+                )
+                pos_summed.zero_()
+                predictor_input[:, 0, :] = talker_hidden[:, pos, :].to(
+                    dtype=predictor_input.dtype
+                )
+                predictor_input[:, 1, :] = layer0_embed[:, 0, :]
+                pos_codes[:, 0].copy_(layer0_code)
+                pos_summed.add_(layer0_embed[:, 0, :])
 
             cache_len = 0
             self._predictor_forward_one_token(
@@ -1284,17 +1329,27 @@ class Qwen3OmniTalker(nn.Module):
 
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self._sample_code_predictor_token(logits)
-                pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
+                embedding = self.code_predictor.model.codec_embedding[layer_idx]
+                staged = sample_code_and_stage_(
+                    logits=logits,
+                    embedding_weight=embedding.weight,
+                    predictor_input=predictor_input,
+                    pos_codes=pos_codes,
+                    pos_summed=pos_summed,
+                    layer_idx=layer_idx,
+                )
+                if not staged:
+                    next_code = self._sample_code_predictor_token(logits)
+                    pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
 
-                new_embed = self.code_predictor.model.codec_embedding[layer_idx](
-                    next_code
-                ).to(dtype=predictor_input.dtype)
-                predictor_input[:, layer_idx + 2, :] = new_embed[:, 0, :]
-                pos_summed.add_(new_embed[:, 0, :])
+                    new_embed = embedding(next_code).to(dtype=predictor_input.dtype)
+                    predictor_input[:, layer_idx + 2, :] = new_embed[:, 0, :]
+                    pos_summed.add_(new_embed[:, 0, :])
                 if layer_idx < num_groups - 2:
                     last_hidden = self._predictor_forward_one_token(
-                        token_embeds=new_embed,
+                        token_embeds=predictor_input[
+                            :, layer_idx + 2 : layer_idx + 3, :
+                        ],
                         batch_size=batch_size,
                         cache_len=cache_len,
                     )
@@ -1312,9 +1367,7 @@ class Qwen3OmniTalker(nn.Module):
         """Process one predictor token against the cached prefix."""
         hidden_states = token_embeds
         hidden_size = hidden_states.shape[-1]
-        positions = self._predictor_positions[cache_len : cache_len + 1].repeat(
-            batch_size
-        )
+        positions = self._predictor_position_rows[cache_len, :batch_size]
 
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
             residual = hidden_states
@@ -1388,11 +1441,8 @@ class Qwen3OmniTalker(nn.Module):
 
         cached_k = layer_k_cache[:, :, : cache_len + 1, :]
         cached_v = layer_v_cache[:, :, : cache_len + 1, :]
-        num_kv_groups = attn.num_heads // attn.num_kv_heads
-        cached_k = _repeat_kv(cached_k, num_kv_groups)
-        cached_v = _repeat_kv(cached_v, num_kv_groups)
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
+        attn_output = _scaled_dot_product_attention_gqa(
             q,
             cached_k,
             cached_v,

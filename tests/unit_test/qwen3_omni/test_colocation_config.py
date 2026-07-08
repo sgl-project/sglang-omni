@@ -10,6 +10,8 @@ from sglang_omni.models.qwen3_omni.config import (
     Variants,
 )
 
+_FUSE_ENV = "SGLANG_OMNI_QWEN3_FUSE_TALKER_CODE2WAV"
+
 
 def _stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
@@ -77,11 +79,17 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     ]
 
 
-def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
+def test_colocated_topology_uses_one_gpu_without_default_fusion(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(_FUSE_ENV, raising=False)
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
     assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
-    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is False
+    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is True
+    assert _stage(config, "code2wav").factory_args["max_batch_wait_ms"] == 5
+    assert _stage(config, "code2wav").factory_args["non_stream_chunk_size"] == 20
+    assert config.fused_stages == []
     for stage_name in (
         "image_encoder",
         "audio_encoder",
@@ -113,6 +121,8 @@ def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction()
         "talker_ar",
         "code2wav",
     ]
+    assert topology.stage_to_process["talker_ar"] == "talker_ar"
+    assert topology.stage_to_process["code2wav"] == "code2wav"
 
 
 def test_colocated_config_marks_same_gpu_stream_targets() -> None:
@@ -123,6 +133,36 @@ def test_colocated_config_marks_same_gpu_stream_targets() -> None:
 
     assert plan.same_gpu_stream_targets["thinker"] == frozenset({"talker_ar"})
     assert plan.same_gpu_stream_targets["talker_ar"] == frozenset({"code2wav"})
+
+
+def test_colocated_config_can_fuse_talker_code2wav_local_edge(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(_FUSE_ENV, "1")
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
+    placement = build_stage_placement_plan(config)
+    topology = build_process_topology_plan(config, placement)
+    talker = _stage(config, "talker_ar")
+
+    assert talker.next == "code2wav"
+    assert "code2wav" in talker.stream_to
+    assert (
+        topology.stage_to_process["talker_ar"] == topology.stage_to_process["code2wav"]
+    )
+
+
+def test_colocated_talker_code2wav_fusion_is_default_off(monkeypatch) -> None:
+    monkeypatch.delenv(_FUSE_ENV, raising=False)
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
+
+    placement = build_stage_placement_plan(config)
+    topology = build_process_topology_plan(config, placement)
+
+    assert config.fused_stages == []
+    assert topology.stage_to_process["talker_ar"] == "talker_ar"
+    assert topology.stage_to_process["code2wav"] == "code2wav"
 
 
 def test_default_speech_marks_only_talker_to_code2wav_same_gpu_stream() -> None:

@@ -280,6 +280,47 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_startup_batches_serialize_same_gpu_groups() -> None:
+    events: list[tuple[str, str]] = []
+
+    class FakeGroup:
+        def __init__(self, name: str, gpu_ids: set[int]) -> None:
+            self.name = name
+            self.gpu_ids = gpu_ids
+
+        def spawn(self, ctx) -> None:
+            del ctx
+            events.append(("spawn", self.name))
+
+        async def wait_ready(self, timeout: float) -> None:
+            assert timeout > 0
+            events.append(("ready", self.name))
+
+    asyncio.run(
+        mp_runner._spawn_and_wait_startup_batches(
+            [
+                FakeGroup("image_encoder", {0}),
+                FakeGroup("thinker", {0}),
+                FakeGroup("other_gpu", {1}),
+                FakeGroup("decode", set()),
+            ],
+            ctx=object(),
+            timeout=10,
+        )
+    )
+
+    assert events == [
+        ("spawn", "image_encoder"),
+        ("spawn", "other_gpu"),
+        ("spawn", "decode"),
+        ("ready", "image_encoder"),
+        ("ready", "other_gpu"),
+        ("ready", "decode"),
+        ("spawn", "thinker"),
+        ("ready", "thinker"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     tmp_path: Path,

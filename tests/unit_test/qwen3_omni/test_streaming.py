@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Qwen3-Omni real-streaming path."""
+
 from __future__ import annotations
 
 import asyncio
@@ -508,9 +509,9 @@ class _FakeCode2Wav:
     total_upsample = 4
 
     def __call__(self, codes: torch.Tensor) -> torch.Tensor:
-        # codes: (1, codebooks, num_frames). Output shape (1, frames * upsample).
+        # codes: (batch, codebooks, num_frames). Output shape (batch, samples).
         n_frames = codes.shape[-1]
-        return torch.zeros(1, n_frames * self.total_upsample)
+        return torch.zeros(codes.shape[0], n_frames * self.total_upsample)
 
 
 def _make_code_chunk(metadata: dict | None) -> StreamItem:

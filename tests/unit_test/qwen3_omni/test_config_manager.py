@@ -92,7 +92,8 @@ def test_config_manager_rejects_trailing_key_without_value() -> None:
         )
 
 
-def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
+def test_qwen3_omni_h20_colocated_example_config_loads_and_plans(monkeypatch) -> None:
+    monkeypatch.delenv("SGLANG_OMNI_QWEN3_FUSE_TALKER_CODE2WAV", raising=False)
     config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config_text = config_path.read_text()
 
@@ -141,6 +142,30 @@ def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
         "talker_ar": 0,
         "code2wav": 0,
     }
+
+
+def test_qwen3_omni_h200_fused_example_config_loads_and_plans() -> None:
+    config_path = (
+        _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h200_fused.yaml"
+    )
+
+    manager = ConfigManager.from_file(str(config_path))
+    config = manager.config
+    plan = build_stage_placement_plan(config)
+    topology = build_process_topology_plan(config, plan)
+
+    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
+    assert config.name == "qwen3-omni-colocated-h200-fused"
+    assert config.fused_stages == [["talker_ar", "code2wav"]]
+    assert [group.name for group in topology.groups] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "fused_talker_ar_code2wav",
+    ]
 
 
 def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:

@@ -6,7 +6,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import tempfile
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +27,117 @@ from .resource_connector import global_thread_pool
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_VIDEO_DECODE_CACHE_BYTES = 8 * 1024 * 1024 * 1024
+
+
+@dataclass
+class _VideoDecodeCacheEntry:
+    video: torch.Tensor
+    sample_fps: float
+    nbytes: int
+
+
+_video_decode_cache: OrderedDict[str, _VideoDecodeCacheEntry] = OrderedDict()
+_video_decode_cache_lock = threading.Lock()
+
 
 class VideoDecodeError(RuntimeError):
     """Raised when video decoding fails."""
+
+
+def clear_video_decode_cache() -> None:
+    with _video_decode_cache_lock:
+        _video_decode_cache.clear()
+
+
+def _video_decode_cache_enabled() -> bool:
+    return os.getenv("SGLANG_OMNI_VIDEO_DECODE_CACHE", "0") == "1"
+
+
+def _video_decode_cache_max_bytes() -> int:
+    raw = os.getenv("SGLANG_OMNI_VIDEO_DECODE_CACHE_MAX_BYTES")
+    if raw is None:
+        return _DEFAULT_VIDEO_DECODE_CACHE_BYTES
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        logger.warning(
+            "Invalid SGLANG_OMNI_VIDEO_DECODE_CACHE_MAX_BYTES=%r; disabling cache",
+            raw,
+        )
+        return 0
+
+
+def _should_cache_video_path(path: Path) -> bool:
+    if not _video_decode_cache_enabled():
+        return False
+    try:
+        path.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+    except OSError:
+        return False
+    except ValueError:
+        return True
+    return False
+
+
+def _video_decode_cache_key(
+    path: Path,
+    *,
+    fps: float | None,
+    max_frames: int | None,
+    min_pixels: int | None,
+    max_pixels: int | None,
+    total_pixels: int | None,
+) -> str | None:
+    if not _should_cache_video_path(path):
+        return None
+    try:
+        stat = path.stat()
+        resolved = path.resolve()
+    except OSError:
+        return None
+    return (
+        f"{resolved}|mtime_ns={stat.st_mtime_ns}|size={stat.st_size}"
+        f"|fps={fps}|max_frames={max_frames}|min_pixels={min_pixels}"
+        f"|max_pixels={max_pixels}|total_pixels={total_pixels}"
+    )
+
+
+def _get_video_decode_cache(key: str | None) -> tuple[torch.Tensor, float] | None:
+    if key is None:
+        return None
+    with _video_decode_cache_lock:
+        entry = _video_decode_cache.get(key)
+        if entry is None:
+            return None
+        _video_decode_cache.move_to_end(key)
+        return entry.video, entry.sample_fps
+
+
+def _put_video_decode_cache(
+    key: str | None,
+    video: torch.Tensor,
+    sample_fps: float,
+) -> None:
+    if key is None or not isinstance(video, torch.Tensor):
+        return
+    max_bytes = _video_decode_cache_max_bytes()
+    if max_bytes <= 0:
+        return
+    nbytes = int(video.numel() * video.element_size())
+    if nbytes <= 0 or nbytes > max_bytes:
+        return
+    with _video_decode_cache_lock:
+        _video_decode_cache.pop(key, None)
+        current_bytes = sum(entry.nbytes for entry in _video_decode_cache.values())
+        while _video_decode_cache and current_bytes + nbytes > max_bytes:
+            _, evicted = _video_decode_cache.popitem(last=False)
+            current_bytes -= evicted.nbytes
+        _video_decode_cache[key] = _VideoDecodeCacheEntry(
+            video=video,
+            sample_fps=sample_fps,
+            nbytes=nbytes,
+        )
 
 
 class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
@@ -300,6 +412,66 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
         return None
 
 
+def _unpack_video_reader_result(result: Any) -> tuple[torch.Tensor, float]:
+    if isinstance(result, tuple) and len(result) == 2:
+        video, sample_fps = result
+    elif isinstance(result, tuple) and len(result) == 3:
+        video, _metadata, sample_fps = result
+    else:
+        raise ValueError(
+            "Video reader must return (video, sample_fps) or "
+            "(video, metadata, sample_fps)"
+        )
+    if not isinstance(video, torch.Tensor):
+        raise TypeError(f"Video reader returned {type(video).__name__}, not Tensor")
+    return video, float(sample_fps)
+
+
+def _read_video_backend(
+    backend: str,
+    ele: dict[str, Any],
+) -> tuple[torch.Tensor, float]:
+    reader = qwen_vision.VIDEO_READER_BACKENDS[backend]
+    return _unpack_video_reader_result(reader(ele))
+
+
+def _image_resize_factor() -> int:
+    return int(getattr(qwen_vision, "IMAGE_FACTOR", 28))
+
+
+def _video_resize_budget(
+    ele: dict[str, Any],
+    *,
+    nframes: int,
+) -> tuple[int | None, int | None]:
+    min_pixels = ele.get("min_pixels", getattr(qwen_vision, "VIDEO_MIN_PIXELS", None))
+    total_pixels = ele.get(
+        "total_pixels",
+        getattr(qwen_vision, "VIDEO_TOTAL_PIXELS", None),
+    )
+    max_pixels_default = getattr(qwen_vision, "VIDEO_MAX_PIXELS", None)
+    frame_factor = getattr(qwen_vision, "FRAME_FACTOR", 2)
+
+    max_pixels = None
+    if total_pixels is not None:
+        max_pixels = total_pixels / nframes * frame_factor
+        if max_pixels_default is not None:
+            max_pixels = min(max_pixels_default, max_pixels)
+        if min_pixels is not None:
+            max_pixels = max(max_pixels, int(min_pixels * 1.05))
+
+    requested_max_pixels = ele.get("max_pixels", max_pixels)
+    if max_pixels is not None and requested_max_pixels is not None:
+        max_pixels = min(requested_max_pixels, max_pixels)
+    else:
+        max_pixels = requested_max_pixels
+
+    return (
+        int(min_pixels) if min_pixels is not None else None,
+        int(max_pixels) if max_pixels is not None else None,
+    )
+
+
 def load_video_path(
     path: str | Path,
     fps: float | None = None,
@@ -310,6 +482,18 @@ def load_video_path(
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
     path = Path(path)
+    cache_key = _video_decode_cache_key(
+        path,
+        fps=fps,
+        max_frames=max_frames,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        total_pixels=total_pixels,
+    )
+    cached = _get_video_decode_cache(cache_key)
+    if cached is not None:
+        return cached
+
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
@@ -322,47 +506,42 @@ def load_video_path(
     if total_pixels is not None:
         ele["total_pixels"] = int(total_pixels)
     backend = qwen_vision.get_video_reader_backend()
-    try:
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
-    except Exception as backend_exc:
-        if backend == "torchvision":
-            raise VideoDecodeError(
-                f"Failed to decode video path={path}; torchvision failed with "
-                f"{type(backend_exc).__name__}: {backend_exc}"
-            ) from backend_exc
-        logger.warning("Video reader %s failed, falling back to torchvision", backend)
+    fallback_backends = [backend, "decord", "torchvision"]
+    errors: list[str] = []
+    for candidate in dict.fromkeys(fallback_backends):
+        if candidate not in qwen_vision.VIDEO_READER_BACKENDS:
+            continue
         try:
-            video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
-        except Exception as fallback_exc:
-            raise VideoDecodeError(
-                f"Failed to decode video path={path}; {backend} failed with "
-                f"{type(backend_exc).__name__}: {backend_exc}; "
-                f"torchvision failed with {type(fallback_exc).__name__}: "
-                f"{fallback_exc}"
-            ) from fallback_exc
+            video, sample_fps = _read_video_backend(candidate, ele)
+            if candidate != backend:
+                logger.warning(
+                    "Video reader %s failed for path=%s, used %s fallback",
+                    backend,
+                    path,
+                    candidate,
+                )
+            break
+        except Exception as exc:
+            errors.append(f"{candidate} failed with {type(exc).__name__}: {exc}")
+            continue
+    else:
+        raise VideoDecodeError(
+            f"Failed to decode video path={path}; " + "; ".join(errors)
+        )
     nframes, _, height, width = video.shape
-    min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
-    total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
-    max_pixels = max(
-        min(
-            qwen_vision.VIDEO_MAX_PIXELS,
-            total_pixels / nframes * qwen_vision.FRAME_FACTOR,
-        ),
-        int(min_pixels * 1.05),
-    )
-    max_pixels_supposed = ele.get("max_pixels", max_pixels)
-    max_pixels = min(max_pixels_supposed, max_pixels)
+    min_pixels, max_pixels = _video_resize_budget(ele, nframes=nframes)
+    image_factor = _image_resize_factor()
     if "resized_height" in ele and "resized_width" in ele:
         resized_height, resized_width = qwen_vision.smart_resize(
             ele["resized_height"],
             ele["resized_width"],
-            factor=qwen_vision.IMAGE_FACTOR,
+            factor=image_factor,
         )
     else:
         resized_height, resized_width = qwen_vision.smart_resize(
             height,
             width,
-            factor=qwen_vision.IMAGE_FACTOR,
+            factor=image_factor,
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
@@ -372,6 +551,7 @@ def load_video_path(
         interpolation=InterpolationMode.BICUBIC,
         antialias=True,
     ).float()
+    _put_video_decode_cache(cache_key, video, sample_fps)
     return video, sample_fps
 
 

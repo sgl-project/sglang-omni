@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar
 
 from pydantic import Field
@@ -20,6 +21,12 @@ MIN_PARTIAL_START_CHUNKS = 3
 # FIXME (Ratish): Replace this with a bounded/pre-ready SGLang DeepGEMM compile
 # policy once that exists outside import-time environment globals.
 _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+
+
+def _colocated_fused_stages() -> list[list[str]]:
+    if os.getenv("SGLANG_OMNI_QWEN3_FUSE_TALKER_CODE2WAV", "0") != "1":
+        return []
+    return [["talker_ar", "code2wav"]]
 
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
@@ -186,7 +193,11 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
-        factory_args={"device": "cuda"},
+        factory_args={
+            "device": "cuda",
+            "max_batch_wait_ms": 5,
+            "non_stream_chunk_size": 20,
+        },
         gpu=gpu,
         terminal=True,
         can_accept_stream_before_payload=True,
@@ -347,9 +358,10 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
             thinker_gpu=0,
             talker_gpu=0,
             process_by_stage=_SPEECH_DEFAULT_PROCESSES,
-            enable_partial_start=False,
+            enable_partial_start=True,
         )
     )
+    fused_stages: list[list[str]] = Field(default_factory=_colocated_fused_stages)
 
 
 EntryClass = Qwen3OmniSpeechPipelineConfig
