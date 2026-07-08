@@ -7,7 +7,9 @@ import asyncio
 import pytest
 import torch
 
+from sglang_omni.config import StageConfig, TensorRefEdgeConfig
 from sglang_omni.pipeline import relay_io
+from sglang_omni.pipeline.mp_runner import _build_tensor_ref_policies
 from sglang_omni.pipeline.tensor_ref import (
     DEFAULT_TENSOR_REF_PATHS,
     DEFAULT_TENSOR_REF_THRESHOLD_MB,
@@ -15,11 +17,11 @@ from sglang_omni.pipeline.tensor_ref import (
     TensorRefPolicy,
     is_tensor_ref_dict,
     tensor_ref_numel,
-    tensor_refs_enabled,
 )
 from tests.unit_test.fixtures.pipeline_fakes import (
     DestructiveFakeRelay,
     FakeRelay,
+    fake_factory_path,
     make_stage_payload,
 )
 
@@ -75,28 +77,26 @@ def test_policy_should_externalize_respects_allowlist_and_threshold() -> None:
     assert not policy.should_externalize("encoder_outs.image_encoder.image_embeds", big)
 
 
-def test_policy_from_env_disabled_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", raising=False)
-    assert not tensor_refs_enabled()
-    assert (
-        TensorRefPolicy.from_env(from_stage="image_encoder", to_stage="mm_aggregate")
-        is None
+def test_explicit_stage_config_builds_tensor_ref_policy() -> None:
+    stage_cfg = StageConfig(
+        name="image_encoder",
+        process="pipeline",
+        factory=fake_factory_path("make_scheduler"),
+        next="mm_aggregate",
+        tensor_ref_edges={
+            "mm_aggregate": TensorRefEdgeConfig(
+                consumer_stage="thinker",
+                threshold_mb=DEFAULT_TENSOR_REF_THRESHOLD_MB,
+                paths=DEFAULT_TENSOR_REF_PATHS,
+            )
+        },
     )
 
+    policies = _build_tensor_ref_policies(stage_cfg, {})
+    policy = policies["mm_aggregate"]
 
-def test_policy_from_env_requires_declared_edge(monkeypatch) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
-    monkeypatch.setenv(
-        "SGLANG_OMNI_TENSOR_REF_EDGES", "image_encoder:mm_aggregate:thinker"
-    )
-    assert tensor_refs_enabled()
-    assert (
-        TensorRefPolicy.from_env(from_stage="mm_aggregate", to_stage="thinker") is None
-    )
-    policy = TensorRefPolicy.from_env(
-        from_stage="image_encoder", to_stage="mm_aggregate"
-    )
-    assert policy is not None
+    assert policy.from_stage == "image_encoder"
+    assert policy.to_stage == "mm_aggregate"
     assert policy.consumer_stage == "thinker"
     assert DEFAULT_TENSOR_REF_THRESHOLD_MB == 2.0
     assert policy.threshold_bytes == 2 * 1024 * 1024

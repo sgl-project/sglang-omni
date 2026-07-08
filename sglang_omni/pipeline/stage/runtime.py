@@ -20,7 +20,7 @@ from typing import Any, Callable, Literal
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.pipeline.tensor_ref import TensorRefPolicy, tensor_refs_enabled
+from sglang_omni.pipeline.tensor_ref import TensorRefPolicy
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -87,6 +87,8 @@ class Stage:
         can_accept_stream_before_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
+        tensor_ref_policies: dict[str, TensorRefPolicy] | None = None,
+        resolve_tensor_refs: bool = False,
     ):
         self.name = name
         self.role = role
@@ -106,6 +108,8 @@ class Stage:
         self._tp_fanout = tp_fanout
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
+        self._tensor_ref_policies = tensor_ref_policies or {}
+        self._resolve_tensor_refs = resolve_tensor_refs
 
         # --- Relay ---
         if relay is not None:
@@ -329,10 +333,11 @@ class Stage:
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
-        # Read payload from relay
         try:
             payload = await relay_io.read_payload(
-                self.relay, request_id, msg.shm_metadata
+                self.relay,
+                request_id,
+                msg.shm_metadata,
             )
         except Exception as exc:
             logger.exception(
@@ -342,7 +347,11 @@ class Stage:
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
-        await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+        await self._receive_payload_from_stage(
+            request_id,
+            msg.from_stage,
+            payload,
+        )
 
     async def receive_local_payload(
         self,
@@ -709,7 +718,7 @@ class Stage:
             # until blob reads are ref-counted/non-destructive.
             self._tp_fanout.fanout_work(payload)
         payload_for_scheduler = payload
-        if tensor_refs_enabled():
+        if self._resolve_tensor_refs:
             payload_for_scheduler = await relay_io.materialize_payload_tensor_refs(
                 self.relay, payload, current_stage=self.name
             )
@@ -1031,9 +1040,7 @@ class Stage:
             )
             return
 
-        tensor_ref_policy = TensorRefPolicy.from_env(
-            from_stage=self.name, to_stage=target
-        )
+        tensor_ref_policy = self._tensor_ref_policies.get(target)
         metadata, op = await relay_io.write_payload(
             self.relay,
             request_id,

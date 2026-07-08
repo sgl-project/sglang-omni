@@ -7,12 +7,22 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    PlacementConfig,
+    StageConfig,
+    TensorRefEdgeConfig,
+)
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 THINKER_STAGE = "thinker"
 MIN_PARTIAL_START_CHUNKS = 3
+_VISUAL_TENSOR_REF_PATHS = (
+    "video_embeds",
+    "deepstack_visual_embeds_image",
+    "deepstack_visual_embeds_video",
+)
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -58,6 +68,13 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         next="mm_aggregate",
         project_payload={
             "mm_aggregate": f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+        },
+        tensor_ref_edges={
+            "mm_aggregate": TensorRefEdgeConfig(
+                consumer_stage="thinker",
+                threshold_mb=2.0,
+                paths=_VISUAL_TENSOR_REF_PATHS,
+            )
         },
     )
 

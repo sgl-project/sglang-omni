@@ -92,6 +92,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     speech_talker = _stage(speech_config, "talker_ar")
     text_thinker = _stage(text_config, "thinker")
     preprocessing = _stage(speech_config, "preprocessing")
+    image_encoder = _stage(speech_config, "image_encoder")
     aggregate = _stage(speech_config, "mm_aggregate")
     # Speech-mode thinker streams hidden states to talker_ar AND text-token
     # ids to decode (for the streaming detokenizer); text-mode thinker
@@ -108,6 +109,14 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     )
     assert aggregate.route_fn == (
         f"{request_builders_path}.resolve_mm_aggregate_next_stages"
+    )
+    tensor_ref = image_encoder.tensor_ref_edges["mm_aggregate"]
+    assert tensor_ref.consumer_stage == "thinker"
+    assert tensor_ref.threshold_mb == 2.0
+    assert tensor_ref.paths == (
+        "video_embeds",
+        "deepstack_visual_embeds_image",
+        "deepstack_visual_embeds_video",
     )
     assert speech_thinker.stream_to == ["talker_ar", "decode"]
     assert speech_thinker.route_fn == (
