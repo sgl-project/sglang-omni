@@ -607,14 +607,34 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
     assert events == ["sync", "launch", "resolve", "idle"]
 
 
-def test_async_pending_drains_before_mixed_prefill_is_built():
+@pytest.mark.parametrize(
+    (
+        "is_mixed_chunk",
+        "batch_is_full",
+        "prefill_source",
+        "has_pending_at_schedule",
+    ),
+    [
+        pytest.param(True, False, "waiting", False, id="mixed-waiting-prefill"),
+        pytest.param(False, False, "waiting", True, id="non-mixed-prefill"),
+        pytest.param(True, True, "chunked", False, id="mixed-chunked-prefill"),
+    ],
+)
+def test_pending_decode_drain_order_for_prefill(
+    is_mixed_chunk,
+    batch_is_full,
+    prefill_source,
+    has_pending_at_schedule,
+):
     events = []
+    pending_during_schedule = []
     pending_batch = _FakeBatch(2)
-    s = _scaffold_async_loop(
-        async_pending=(pending_batch, "prev_sched", "prev_step"),
-    )
-    s.is_mixed_chunk = True
-    s.waiting_queue = [object()]
+    pending = (pending_batch, "prev_sched", "prev_step")
+    s = _scaffold_async_loop(async_pending=pending)
+    s.is_mixed_chunk = is_mixed_chunk
+    s.running_batch.batch_is_full = batch_is_full
+    s.waiting_queue = [object()] if prefill_source == "waiting" else []
+    s.chunked_req = object() if prefill_source == "chunked" else None
     s._batch_is_decode = lambda batch: False
     s._resolve_and_process = lambda *args: events.append("resolve")
     s.process_batch_result = lambda batch, result: None
@@ -626,14 +646,22 @@ def test_async_pending_drains_before_mixed_prefill_is_built():
     s.run_batch = run_batch
 
     def get_next_batch_to_run():
-        events.append(("schedule", s._async_pending))
+        events.append("schedule")
+        pending_during_schedule.append(s._async_pending)
         s._running = False
         return _FakeBatch(1)
 
     s.get_next_batch_to_run = get_next_batch_to_run
     s._event_loop_async_decode()
 
-    assert events == ["resolve", ("schedule", None), "prefill"]
+    expected_events = (
+        ["schedule", "resolve", "prefill"]
+        if has_pending_at_schedule
+        else ["resolve", "schedule", "prefill"]
+    )
+    assert events == expected_events
+    expected_pending = pending if has_pending_at_schedule else None
+    assert pending_during_schedule[0] is expected_pending
 
 
 def test_full_running_batch_keeps_lookahead_with_waiting_requests():
@@ -661,33 +689,6 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s._event_loop_async_decode()
 
     assert events == [("schedule", True), "launch", "resolve"]
-
-
-def test_non_mixed_prefill_is_built_before_pending_decode_drains():
-    events = []
-    pending_batch = _FakeBatch(2)
-    pending = (pending_batch, "prev_sched", "prev_step")
-    s = _scaffold_async_loop(async_pending=pending)
-    s.waiting_queue = [object()]
-    s._batch_is_decode = lambda batch: False
-    s._resolve_and_process = lambda *args: events.append("resolve")
-    s.process_batch_result = lambda batch, result: None
-
-    def run_batch(batch):
-        events.append("prefill")
-        return object()
-
-    s.run_batch = run_batch
-
-    def get_next_batch_to_run():
-        events.append(("schedule", s._async_pending is pending))
-        s._running = False
-        return _FakeBatch(1)
-
-    s.get_next_batch_to_run = get_next_batch_to_run
-    s._event_loop_async_decode()
-
-    assert events == [("schedule", True), "resolve", "prefill"]
 
 
 # ---------------------------------------------------------------------------
