@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract tests for the T7 PreparedRequestQueue (RFC #661, §13). CPU-only.
+"""Contract tests for PreparedRequestQueue. CPU-only.
 
-The seven §13 scenarios plus a thread-storm: the queue exists only to be safe
-across the asyncio-preprocessing stage, the AR-engine thread, and the abort
-path, so a single concurrency test guards the property the others cannot.
+These scenarios cover abort ordering, publish and pop behavior, context reset,
+and a thread storm across preprocessing, AR-engine handoff, and abort paths.
 """
 
 from __future__ import annotations

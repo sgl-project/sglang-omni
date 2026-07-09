@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared preprocessing -> AR-engine handoff queue (RFC #661, Template 7).
+"""Shared preprocessing -> AR-engine handoff queue.
 
-A process-wide tri-state registry — ``prepared`` (published, awaiting the AR
-scheduler), ``inflight`` (currently preprocessing), ``aborted`` (in-flight ids
-aborted before publish, so the pending insert is dropped) — plus the opaque
-per-model preprocessing ``context``. ``moss_tts`` and ``moss_tts_local`` used to
-duplicate these transitions line for line; only the context and payload type
-differ, so the registry is generic over both.
+A process-wide tri-state registry: prepared entries are published and awaiting
+the AR scheduler, inflight entries are still preprocessing, and aborted entries
+were cancelled before publish so the pending insert is dropped. The registry
+also tracks the opaque per-model preprocessing context. moss_tts and
+moss_tts_local used to duplicate these transitions line for line; only the
+context and payload type differ, so the registry is generic over both.
 
 It is correctness-critical: wrong abort-ordering either strands a GPU slot
 forever (ghost request) or publishes a handoff for an already-gone request.
-Every method holds ``lock`` for the whole transition. Pure-Python (no torch).
+Every method holds lock for the whole transition. Pure-Python (no torch).
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ PrepT = TypeVar("PrepT")
 class PreparedRequestQueue(Generic[CtxT, PrepT]):
     """Thread-safe tri-state handoff registry for preprocessing -> AR scheduler.
 
-    The attributes (``context`` / ``prepared`` / ``inflight`` / ``aborted`` /
-    ``lock``) are exposed for introspection; mutate them only through the methods
-    below, each of which holds ``lock`` for the whole transition.
+    The attributes context, prepared, inflight, aborted, and lock are exposed
+    for introspection; mutate them only through the methods below, each of which
+    holds lock for the whole transition.
     """
 
     def __init__(self) -> None:
