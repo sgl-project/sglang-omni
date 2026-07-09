@@ -223,6 +223,30 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
     assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
 
 
+def test_ming_preprocessor_has_threaded_mel_helper() -> None:
+    from sglang_omni.models.ming_omni.components.preprocessor import (
+        _compute_mel_features_for_waveform,
+    )
+
+    assert callable(_compute_mel_features_for_waveform)
+
+
+def test_ming_preprocessor_offloads_mel_to_thread() -> None:
+    from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
+
+    source = Path("sglang_omni/models/ming_omni/components/preprocessor.py").read_text(
+        encoding="utf-8"
+    )
+    call_source = inspect.getsource(MingPreprocessor.__call__)
+
+    assert "_compute_mel_features_for_waveform" in source
+    assert (
+        "asyncio.to_thread(\n                        _compute_mel_features_for_waveform"
+        in source
+    )
+    assert "compute_mel_spectrogram(" not in call_source
+
+
 def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> None:
     from examples.run_ming_omni_server import _launch_text_server
 
