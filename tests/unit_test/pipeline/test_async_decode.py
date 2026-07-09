@@ -520,6 +520,8 @@ def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
     s._admin_lock = threading.Lock()
     s._admin_queue = queue.Queue()
+    s.chunked_req = None
+    s.waiting_queue = []
     return s
 
 
@@ -603,6 +605,27 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
     assert events == ["sync", "launch", "resolve", "idle"]
 
 
+def test_async_pending_drains_before_waiting_prefill_is_scheduled():
+    events = []
+    pending_batch = _FakeBatch(2)
+    s = _scaffold_async_loop(
+        async_pending=(pending_batch, "prev_sched", "prev_step"),
+    )
+    s.waiting_queue = [object()]
+    s.chunked_req = None
+    s._resolve_and_process = lambda *args: events.append("resolve")
+
+    def get_next_batch_to_run():
+        events.append(("schedule", s._async_pending))
+        s._running = False
+        return None
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s._event_loop_async_decode()
+
+    assert events == ["resolve", ("schedule", None)]
+
+
 # ---------------------------------------------------------------------------
 # Stale-batch overrun regression: the fast-path `batch` is built (get_next_batch
 # _to_run, top of loop) BEFORE the in-flight lookahead step is drained. If the
@@ -630,7 +653,7 @@ class _DFBatch:
 
     def __init__(self, reqs):
         self.reqs = list(reqs)
-        self.out_cache_loc = None
+        self.out_cache_loc = torch.arange(100, 100 + len(reqs))
 
     def copy(self):
         return _DFBatch(self.reqs)
@@ -639,6 +662,7 @@ class _DFBatch:
         if keep_indices is None:
             keep_indices = [i for i, r in enumerate(self.reqs) if not r.finished()]
         self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
 
     def is_empty(self):
         return not self.reqs
@@ -673,6 +697,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     # the drain's _drop_stale_overrun consults the step-slot free gate
     s.page_size = 1
     s.server_args = types.SimpleNamespace(disable_radix_cache=False)
+    s.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda t: None)
     # real drain helper -> exercises the real fast-path ordering under test
     s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
 
