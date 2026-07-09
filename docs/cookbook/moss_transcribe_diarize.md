@@ -14,6 +14,58 @@ It transcribes speech, assigns speakers, and predicts timestamps in a single gen
 | Output | Speaker-labelled transcript with start/end timestamps |
 | Endpoint | `/v1/audio/transcriptions` |
 
+## Architecture & Optimization Principles
+
+### Inference Pipeline
+
+MOSS-TD follows the **Audio LLM** pattern: an audio encoder produces continuous embeddings that are injected into a decoder-only LLM, which then autoregressively generates the transcript.
+
+The inference pipeline has three stages:
+
+1. **Encoder** — The Whisper encoder converts the input waveform into a log-mel spectrogram (80 frequency bins), passes it through 24 Transformer layers with bidirectional attention, and applies a 4× Time Merge (concatenating every 4 consecutive frames) to shorten the sequence. A VQAdaptor (MLP projection: Linear → SiLU → Linear → LayerNorm, 4096→1024) maps the merged features into the LLM's embedding space. Despite the "VQ" name, no vector quantization is involved — the representations remain continuous float vectors throughout.
+2. **LLM Prefill** — The projected audio embeddings replace `<|audio_pad|>` placeholder tokens in the prompt. Qwen3 processes the full prompt in one parallel forward pass to build the KV cache.
+3. **AR Decode** — Qwen3 autoregressively generates text tokens (transcript with speaker labels and timestamps) one at a time until EOS.
+
+### Chunked Prefill
+
+For long audio (up to ~90 min), the encoded token sequence can reach tens of thousands of tokens. Prefilling all at once would spike memory usage and block other requests. Chunked Prefill splits the sequence into fixed-size chunks (4096 tokens) and processes one chunk per scheduling step, interleaving decode steps for other requests between chunks. This prevents OOM on long inputs and keeps GPU utilization high under concurrent load.
+
+Stream output is suppressed during chunked prefill to avoid emitting intermediate states as transcript text.
+
+### Where Time Is Spent
+
+Profiling on a single H100 (CUDA Graph, bf16) reveals a clear pattern: **AR Decode dominates latency, but its share shrinks under concurrency as batching amortizes per-token cost.**
+
+| Audio length | Concurrency | Encoder | LLM Prefill | AR Decode | Decode per token | Throughput (× real-time) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 5 s | 1 | 8.9% | 14.7% | **76.4%** | 1.44 ms | 46× |
+| 5 s | 16 | **38.2%** | 29.7% | **32.1%** | 0.13 ms | 267× |
+| 60 s | 1 | 4.0% | 2.1% | **94.0%** | 1.49 ms | 78× |
+| 60 s | 16 | 13.7% | 9.5% | **76.8%** | 0.14 ms | 713× |
+| 20 min | 1 | 4.7% | 0.8% | **94.5%** | 2.17 ms | 78× |
+| 20 min | 16 | 11.6% | 2.6% | **85.7%** | 0.86 ms | 210× |
+
+Key observations:
+
+- At **low concurrency**, decode accounts for 76–95% of wall time. Optimizations targeting the decode loop (CUDA Graph, Async Decode) deliver the most impact.
+- At **high concurrency**, decode is amortized by batching. Encoder + Prefill can account for 40–68% (especially on short audio), making encoder-side optimizations (Torch Compile, caching) worthwhile.
+- **Longer audio has higher per-token decode cost** (0.13 ms vs 0.86 ms at c=16) due to growing KV cache attention overhead.
+
+### Optimization Strategies
+
+**CUDA Graph (decode only)** — The encoder cannot use CUDA Graph because each request has a different audio length, producing variable tensor shapes. The decode step, however, pads its batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured CUDA graph, eliminating kernel launch overhead on every token.
+
+**Async Decode** — Uses one-step lookahead: launch the current decode step's GPU forward pass, then resolve the *previous* step's host-side work (D2H copy, finish detection, result dispatch) in parallel. A minimum batch size of 2 is required — at bs=1, the host work is too small to overlap, so it falls back to synchronous mode. Two alternating pinned host buffers ("ping-pong") prevent read/write races.
+
+**LRU Encoder Cache** — An `StageOutputCache` (max 64 entries, 4 GB, CPU-resident) keyed by audio fingerprint hash. When the same audio is re-submitted (retries, A/B tests, debugging), the encoder forward is skipped entirely. The cache has limited impact in production where most inputs are unique, but it is a low-cost safety net.
+
+**Stream Output** — Emits transcript text incrementally during decode via SSE (`transcript.text.delta` events) instead of waiting for the full sequence. A configurable rate limit (default 50 ms) prevents excessive small messages. Incomplete UTF-8 sequences are buffered until complete, and output is suppressed during chunked prefill.
+
+### Long Audio Considerations
+
+- **Memory allocation**: Long audio (≥ 10 min) requires reserving enough GPU memory for the encoder. The Whisper encoder processes audio in 30-second mel windows — a 20-minute clip produces ~40 windows in a single forward pass. If `mem-fraction-static` is too high (most memory given to the KV cache pool), the encoder forward will OOM. Reduce it (e.g. `0.40`–`0.60`) for long-audio workloads.
+- **Max tokens**: Set `max_new_tokens=65536` for long audio to avoid truncated transcripts.
+
 ## Model Usage
 
 ### Launching Commands
