@@ -414,6 +414,7 @@ def _build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
     talker._output_embeds = torch.zeros(4, 8, device=device)
     talker._predictor_decode_graphs = {}
     talker._predictor_decode_graph_disabled = set()
+    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
     layer0_embedding = nn.Embedding(16, 8).to(device)
     talker.get_input_embeddings = lambda: layer0_embedding
     talker.code_predictor = SimpleNamespace(
@@ -435,6 +436,73 @@ def _build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
 
     talker._predictor_forward_one_token = fake_forward_one_token
     return talker
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
+)
+def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Live exact batch sizes should reuse bounded predictor graph buckets."""
+
+    class RecordingPredictorDecodeGraph:
+        def __init__(
+            self,
+            model: Qwen3OmniTalker,
+            batch_size: int,
+            code_dtype: torch.dtype,
+        ) -> None:
+            self.batch_size = batch_size
+            self.code_dtype = code_dtype
+            self.hidden_size = model._predictor_input_buffer.shape[-1]
+            self.dtype = model._predictor_input_buffer.dtype
+
+        def replay(
+            self,
+            layer0_codes: torch.Tensor,
+            talker_hidden: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            live_batch_size = layer0_codes.shape[0]
+            assert live_batch_size <= self.batch_size
+            assert talker_hidden.shape[0] == live_batch_size
+            return (
+                torch.zeros(
+                    live_batch_size,
+                    4,
+                    1,
+                    dtype=torch.long,
+                    device=layer0_codes.device,
+                ),
+                torch.zeros(
+                    live_batch_size,
+                    1,
+                    self.hidden_size,
+                    dtype=self.dtype,
+                    device=talker_hidden.device,
+                ),
+            )
+
+    monkeypatch.setattr(
+        talker_module,
+        "_PredictorDecodeGraph",
+        RecordingPredictorDecodeGraph,
+    )
+
+    device = torch.device("cuda")
+    talker = _build_fake_predictor_graph_talker(device)
+    layer0_codes = torch.tensor([[1], [7], [3]], dtype=torch.int, device=device)
+    talker_hidden = torch.randn(3, 1, 8, device=device)
+
+    result_codes, result_embeds = talker.code_predictor_forward(
+        layer0_codes,
+        talker_hidden,
+    )
+
+    assert result_codes.shape == (3, 4, 1)
+    assert result_embeds.shape == (3, 1, 8)
+    assert (4, torch.int) in talker._predictor_decode_graphs
+    assert (3, torch.int) not in talker._predictor_decode_graphs
 
 
 @pytest.mark.skipif(

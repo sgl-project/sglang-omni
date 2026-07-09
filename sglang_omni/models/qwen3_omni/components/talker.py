@@ -139,13 +139,26 @@ class _PredictorDecodeGraph:
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        live_batch_size = layer0_codes.shape[0]
+        if live_batch_size > self.batch_size:
+            raise ValueError(
+                "Qwen3-Omni predictor CUDA graph bucket is too small: "
+                f"bucket={self.batch_size}, live={live_batch_size}"
+            )
+
         with torch.cuda.device(self.layer0_codes.device):
-            self.layer0_codes.copy_(layer0_codes)
-            self.talker_hidden.copy_(talker_hidden)
+            self.layer0_codes[:live_batch_size].copy_(layer0_codes)
+            self.talker_hidden[:live_batch_size].copy_(talker_hidden)
+            if live_batch_size < self.batch_size:
+                self.layer0_codes[live_batch_size:].zero_()
+                self.talker_hidden[live_batch_size:].zero_()
             self.graph.replay()
         assert self.result_codes is not None
         assert self.summed_embeddings is not None
-        return self.result_codes, self.summed_embeddings
+        return (
+            self.result_codes[:live_batch_size],
+            self.summed_embeddings[:live_batch_size],
+        )
 
 
 class ResizeMLP(nn.Module):
@@ -865,7 +878,8 @@ class Qwen3OmniTalker(nn.Module):
         device = self.model.codec_embedding.weight.device
         hidden_size = config.text_config.hidden_size
         predictor_len = config.num_code_groups + 1
-        max_batch_size = get_global_server_args().max_running_requests
+        server_args = get_global_server_args()
+        max_batch_size = server_args.max_running_requests
         self._cp_enabled = self.model._cp_enabled
         self._feedback_buffer = self.model._feedback_buffer
         self._feedback_mask = self.model._feedback_mask
@@ -957,6 +971,12 @@ class Qwen3OmniTalker(nn.Module):
             hidden_size,
             device=device,
             dtype=self.model.codec_embedding.weight.dtype,
+        )
+        self._predictor_decode_graph_batch_sizes = (
+            self._normalize_predictor_decode_graph_batch_sizes(
+                server_args,
+                max_batch_size=max_batch_size,
+            )
         )
         self._predictor_decode_graphs: dict[
             tuple[int, torch.dtype], _PredictorDecodeGraph
@@ -1358,6 +1378,33 @@ class Qwen3OmniTalker(nn.Module):
             return False
         return True
 
+    @staticmethod
+    def _normalize_predictor_decode_graph_batch_sizes(
+        server_args: object,
+        *,
+        max_batch_size: int,
+    ) -> tuple[int, ...]:
+        raw_batch_sizes = getattr(server_args, "cuda_graph_bs", None)
+        if raw_batch_sizes is None:
+            raw_batch_sizes = (max_batch_size,)
+
+        normalized = sorted(
+            {
+                int(batch_size)
+                for batch_size in raw_batch_sizes
+                if 1 <= int(batch_size) <= int(max_batch_size)
+            }
+        )
+        if not normalized or normalized[-1] < int(max_batch_size):
+            normalized.append(int(max_batch_size))
+        return tuple(normalized)
+
+    def _predictor_decode_graph_bucket_size(self, batch_size: int) -> int | None:
+        for bucket_size in self._predictor_decode_graph_batch_sizes:
+            if bucket_size >= batch_size:
+                return bucket_size
+        return None
+
     def _code_predictor_forward_single_token_graph(
         self,
         *,
@@ -1366,20 +1413,24 @@ class Qwen3OmniTalker(nn.Module):
         batch_size: int,
         code_dtype: torch.dtype,
     ) -> Tuple[torch.Tensor, torch.Tensor] | None:
-        key = (batch_size, code_dtype)
+        bucket_size = self._predictor_decode_graph_bucket_size(batch_size)
+        if bucket_size is None:
+            return None
+
+        key = (bucket_size, code_dtype)
         if key in self._predictor_decode_graph_disabled:
             return None
 
         graph = self._predictor_decode_graphs.get(key)
         if graph is None:
             try:
-                graph = _PredictorDecodeGraph(self, batch_size, code_dtype)
+                graph = _PredictorDecodeGraph(self, bucket_size, code_dtype)
             except Exception:
                 self._predictor_decode_graph_disabled.add(key)
                 logger.warning(
                     "Disabling Qwen3-Omni predictor CUDA graph for "
                     "batch_size=%s dtype=%s",
-                    batch_size,
+                    bucket_size,
                     code_dtype,
                     exc_info=True,
                 )
@@ -1388,7 +1439,7 @@ class Qwen3OmniTalker(nn.Module):
             logger.info(
                 "Captured Qwen3-Omni predictor CUDA graph for batch_size=%s "
                 "dtype=%s",
-                batch_size,
+                bucket_size,
                 code_dtype,
             )
 
