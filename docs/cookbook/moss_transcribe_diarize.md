@@ -18,6 +18,8 @@ It transcribes speech, assigns speakers, and predicts timestamps in a single gen
 
 ### Inference Pipeline
 
+![ASR Pipeline](../_static/image/moss-td-asr-pipeline.svg)
+
 MOSS-TD follows the Audio LLM pattern: a Whisper encoder produces continuous embeddings, which are projected into a decoder-only LLM that autoregressively generates the transcript.
 
 1. **Encoder.** Waveform → log-mel spectrogram (80 bins) → 24-layer Whisper Transformer → 4× Time Merge (concatenate every 4 frames) → VQAdaptor MLP (4096→1024). The output is a sequence of continuous float vectors in the LLM's embedding space. (The "VQ" name is a misnomer — no vector quantization is involved.)
@@ -59,9 +61,13 @@ Profiling on a single H100 (CUDA Graph, bf16), showing the percentage breakdown 
 | 20 min | 4 | 9.2% | 1.9% | 88.9% |
 | 20 min | 16 | 11.6% | 2.6% | 85.7% |
 
+![Profiling Breakdown](../_static/image/moss-td-profiling.svg)
+
 At c=1 with longer audio, AR Decode takes 94%+ of total time — the leverage is almost entirely in the decode loop. At c=16 with short audio, encoder + prefill together account for 68%, making encoder-side optimizations (CUDA Graph capture, Torch Compile, caching) worthwhile.
 
 ### Optimization Strategies
+
+![Optimization Overview](../_static/image/moss-td-optimization.svg)
 
 The optimization stack mirrors [what we built for TTS](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md), sharing the same core infrastructure with ASR-specific adaptations.
 

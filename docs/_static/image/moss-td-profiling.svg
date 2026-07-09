@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <rect width="800" height="400" fill="#F5F5F5" rx="4"/>
+
+  <!-- Title -->
+  <text x="400" y="24" text-anchor="middle" font-size="14" fill="#333" font-weight="bold">Inference Time Breakdown by Stage</text>
+
+  <!-- Legend -->
+  <rect x="200" y="38" width="14" height="14" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="219" y="50" font-size="11" fill="#333">Encoder</text>
+  <rect x="310" y="38" width="14" height="14" rx="2" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <text x="329" y="50" font-size="11" fill="#333">LLM Prefill</text>
+  <rect x="430" y="38" width="14" height="14" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="449" y="50" font-size="11" fill="#333">AR Decode</text>
+
+  <!-- ===== 5s group ===== -->
+  <text x="42" y="95" font-size="13" fill="#333" font-weight="bold">5s</text>
+
+  <!-- 5s, c=1: E=8.9%, P=14.7%, D=76.4% → widths: 43.6, 72.0, 374.4 -->
+  <text x="130" y="83" text-anchor="end" font-size="10" fill="#777">c=1</text>
+  <rect x="140" y="70" width="43.6" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <rect x="183.6" y="70" width="72.0" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="255.6" y="70" width="374.4" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="442.8" y="85" text-anchor="middle" font-size="9" fill="#444">76%</text>
+
+  <!-- 5s, c=4: E=20%, P=22.3%, D=57.7% → 98, 109.3, 282.7 -->
+  <text x="130" y="110" text-anchor="end" font-size="10" fill="#777">c=4</text>
+  <rect x="140" y="97" width="98" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="189" y="112" text-anchor="middle" font-size="9" fill="#444">20%</text>
+  <rect x="238" y="97" width="109.3" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <text x="292.6" y="112" text-anchor="middle" font-size="9" fill="#444">22%</text>
+  <rect x="347.3" y="97" width="282.7" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="488.6" y="112" text-anchor="middle" font-size="9" fill="#444">58%</text>
+
+  <!-- 5s, c=16: E=38.2%, P=29.7%, D=32.1% → 187.2, 145.5, 157.3 -->
+  <text x="130" y="137" text-anchor="end" font-size="10" fill="#777">c=16</text>
+  <rect x="140" y="124" width="187.2" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="233.6" y="139" text-anchor="middle" font-size="9" fill="#444">38%</text>
+  <rect x="327.2" y="124" width="145.5" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <text x="400" y="139" text-anchor="middle" font-size="9" fill="#444">30%</text>
+  <rect x="472.7" y="124" width="157.3" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="551.3" y="139" text-anchor="middle" font-size="9" fill="#444">32%</text>
+
+  <!-- ===== 60s group ===== -->
+  <text x="42" y="189" font-size="13" fill="#333" font-weight="bold">60s</text>
+
+  <!-- 60s, c=1: E=4%, P=2.1%, D=94% → 19.6, 10.3, 460.1 -->
+  <text x="130" y="177" text-anchor="end" font-size="10" fill="#777">c=1</text>
+  <rect x="140" y="164" width="19.6" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <rect x="159.6" y="164" width="10.3" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="169.9" y="164" width="460.1" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="400" y="179" text-anchor="middle" font-size="9" fill="#444">94%</text>
+
+  <!-- 60s, c=4: E=5%, P=4.6%, D=90.4% → 24.5, 22.5, 443.0 -->
+  <text x="130" y="204" text-anchor="end" font-size="10" fill="#777">c=4</text>
+  <rect x="140" y="191" width="24.5" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <rect x="164.5" y="191" width="22.5" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="187" y="191" width="443" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="408.5" y="206" text-anchor="middle" font-size="9" fill="#444">90%</text>
+
+  <!-- 60s, c=16: E=13.7%, P=9.5%, D=76.8% → 67.1, 46.6, 376.3 -->
+  <text x="130" y="231" text-anchor="end" font-size="10" fill="#777">c=16</text>
+  <rect x="140" y="218" width="67.1" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="173.5" y="233" text-anchor="middle" font-size="9" fill="#444">14%</text>
+  <rect x="207.1" y="218" width="46.6" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <text x="230.4" y="233" text-anchor="middle" font-size="9" fill="#444">10%</text>
+  <rect x="253.7" y="218" width="376.3" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="441.8" y="233" text-anchor="middle" font-size="9" fill="#444">77%</text>
+
+  <!-- ===== 20 min group ===== -->
+  <text x="42" y="283" font-size="13" fill="#333" font-weight="bold">20 min</text>
+
+  <!-- 20min, c=1: E=4.7%, P=0.8%, D=94.5% → 23.0, 3.9, 463.1 -->
+  <text x="130" y="271" text-anchor="end" font-size="10" fill="#777">c=1</text>
+  <rect x="140" y="258" width="23.0" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <rect x="163" y="258" width="3.9" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="166.9" y="258" width="463.1" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="398.4" y="273" text-anchor="middle" font-size="9" fill="#444">95%</text>
+
+  <!-- 20min, c=4: E=9.2%, P=1.9%, D=88.9% → 45.1, 9.3, 435.6 -->
+  <text x="130" y="298" text-anchor="end" font-size="10" fill="#777">c=4</text>
+  <rect x="140" y="285" width="45.1" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="162.5" y="300" text-anchor="middle" font-size="9" fill="#444">9%</text>
+  <rect x="185.1" y="285" width="9.3" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="194.4" y="285" width="435.6" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="412.2" y="300" text-anchor="middle" font-size="9" fill="#444">89%</text>
+
+  <!-- 20min, c=16: E=11.6%, P=2.6%, D=85.7% → 56.8, 12.7, 420.5 -->
+  <text x="130" y="325" text-anchor="end" font-size="10" fill="#777">c=16</text>
+  <rect x="140" y="312" width="56.8" height="22" rx="2" fill="#FFE8A8" stroke="#C8A050" stroke-width="1"/>
+  <text x="168.4" y="327" text-anchor="middle" font-size="9" fill="#444">12%</text>
+  <rect x="196.8" y="312" width="12.7" height="22" fill="#F0C8B0" stroke="#B88868" stroke-width="1"/>
+  <rect x="209.5" y="312" width="420.5" height="22" rx="2" fill="#D4B8A8" stroke="#907058" stroke-width="1"/>
+  <text x="419.7" y="327" text-anchor="middle" font-size="9" fill="#444">86%</text>
+
+  <!-- Insight box -->
+  <rect x="42" y="350" width="580" height="38" rx="8" fill="#FFF8E1" stroke="#E8D098" stroke-width="1"/>
+  <text x="332" y="366" text-anchor="middle" font-size="10" fill="#555" font-weight="500">Higher concurrency → decode is amortized by batching → encoder share rises</text>
+  <text x="332" y="379" text-anchor="middle" font-size="9" fill="#888">At c=16 with 5s audio, encoder+prefill = 68% — encoder optimization has clear ROI</text>
+</svg>
