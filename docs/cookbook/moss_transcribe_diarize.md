@@ -54,9 +54,19 @@ The optimization stack mirrors [what we built for TTS](https://github.com/zhaoch
 
 **Async Decode.** Same one-step lookahead as TTS: launch the current decode step's GPU work, then resolve the previous step's host-side work (D2H copy, finish detection, result dispatch) in parallel. Falls back to synchronous mode at batch size 1, where the host work is too small to overlap. Two alternating pinned host buffers prevent read/write races between the GPU's async D2H write and the CPU's read. For the full mechanism and code pointers, see [Asynchronous Decode + Lookahead](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md#asynchronous-decode--lookahead) in the TTS optimization guide.
 
-**LRU Encoder Cache.** An [`StageOutputCache`](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/scheduling/stage_cache.py) (max 64 entries, 4 GB, CPU-resident) keyed by audio content hash. On a hit, the encoder forward is skipped. Unlike TTS where reference-audio reuse is common (same narrator voice across prompts), ASR inputs are typically unique, so cache hit rate is lower. The cache is still useful for retries and A/B testing.
+**LRU Encoder Cache.** The Whisper encoder forward is deterministic for identical input audio, making it a textbook caching opportunity. An [`StageOutputCache`](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/scheduling/stage_cache.py) (max 64 entries, 4 GB) stores encoder outputs on CPU, keyed by the audio waveform's content hash (`audio_fingerprint`). On a cache hit, the stored tensor is transferred back to GPU with `non_blocking=True` and returned immediately, skipping the entire encoder forward pass. On a miss, the encoder runs normally and the output is detached from the compute graph and moved to CPU for storage.
 
-**Stream Output.** Emits transcript text incrementally during decode via SSE (`transcript.text.delta` events). A rate limit (default 50 ms) prevents excessive small messages, and incomplete UTF-8 sequences are buffered until complete.
+The cache uses `OrderedDict`-backed LRU eviction with dual budget — both entry count (`max_size=64`) and total bytes (`max_bytes`). `get()` calls `move_to_end()` on every hit to track recency; `_evict_over_budget()` drops the coldest entries with `popitem(last=False)` until both limits are satisfied. Only single-audio requests are cached (`len(items) == 1`); multi-audio batches bypass the cache entirely.
+
+Unlike TTS where reference-audio reuse is common (same narrator voice across many prompts), ASR inputs are typically unique in production, so hit rate is lower. The cache is still useful for request retries, A/B testing with different decoding parameters, and development iteration.
+
+**Stream Output.** Emits transcript text incrementally during AR decode via SSE, so users see results as they are generated rather than waiting for the full sequence. The stream output builder ([`make_moss_transcribe_diarize_stream_output_builder`](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/models/moss_transcribe_diarize/request_builders.py)) is called after every decode step for each request, and uses three mechanisms to decide when to emit:
+
+1. **Rate limiting** (default 50 ms interval): The first token is emitted immediately. Subsequent tokens are accumulated in a per-request `pending_ids` buffer and only flushed when `min_emit_interval_s` has elapsed since the last emit. EOS always bypasses the rate limiter and flushes whatever remains in the buffer.
+2. **Chunked prefill suppression**: While `req.is_chunked > 0` (prompt chunks are still being processed), all emission is suppressed — this prevents intermediate KV-cache-building states from being misinterpreted as transcript output.
+3. **Incomplete UTF-8 handling**: The pending token IDs are decoded together. If the decoded string ends with `�` (Unicode replacement character, indicating an incomplete multi-byte sequence split across tokens), emission is held until the next token completes the sequence.
+
+Each emitted delta is wrapped in an `OutgoingMessage` with `type="stream"` containing the incremental text, which the coordinator delivers to the client as an SSE event.
 
 ### Long Audio Considerations
 
