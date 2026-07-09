@@ -24,6 +24,39 @@ def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     return values
 
 
+_GIB = 1024**3
+
+# max_running_requests also drives cuda_graph_max_bs (see
+# build_generation_batch_overrides), so a larger cap raises CUDA-graph capture
+# VRAM. The tiers therefore key off *total* GPU memory and keep the historical
+# (32, 16) as the floor: small / CI-class GPUs stay byte-for-byte unchanged,
+# while big GPUs -- which otherwise leave KV headroom idle -- get a decode batch
+# cap that uses it (and a proportionally larger request-build backlog so bursts
+# are not rejected before they can be built). Thresholds are in GiB.
+_AUTO_BATCH_CAP_TIERS: tuple[tuple[float, int, int], ...] = (
+    (70.0, 128, 256),  # H100/H200/A100-80G and larger
+    (40.0, 64, 128),  # A100-40G, L40/L40S/A6000-48G
+)
+_AUTO_BATCH_CAP_FLOOR: tuple[int, int] = (32, 16)
+
+
+def auto_generation_batch_caps(
+    total_memory_bytes: int | None,
+) -> tuple[int, int]:
+    """Pick ``(max_running_requests, request_build_max_pending)`` for a GPU.
+
+    Returns the historical ``(32, 16)`` floor when total memory is unknown or
+    small, so auto-scaling is a no-op on small / CI-class GPUs. Bigger GPUs get
+    a larger decode batch and a proportionally larger build backlog.
+    """
+    if total_memory_bytes is not None and total_memory_bytes > 0:
+        total_gib = total_memory_bytes / _GIB
+        for threshold_gib, max_running_requests, backlog in _AUTO_BATCH_CAP_TIERS:
+            if total_gib >= threshold_gib:
+                return max_running_requests, backlog
+    return _AUTO_BATCH_CAP_FLOOR
+
+
 def build_generation_batch_overrides(
     *,
     max_running_requests: int,

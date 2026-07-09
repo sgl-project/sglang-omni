@@ -8,10 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    auto_generation_batch_caps,
     build_default_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+
+_GIB = 1024**3
 
 
 def _server_args(**overrides: object) -> SimpleNamespace:
@@ -25,6 +28,33 @@ def _server_args(**overrides: object) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("total_gib", "expected"),
+    [
+        (80, (128, 256)),  # H100/A100-80G
+        (141, (128, 256)),  # H200
+        (70, (128, 256)),  # tier boundary (inclusive)
+        (48, (64, 128)),  # L40S/A6000
+        (40, (64, 128)),  # A100-40G, tier boundary (inclusive)
+        (39.9, (32, 16)),  # just below 40G -> floor
+        (24, (32, 16)),  # A10/L4/consumer
+        (16, (32, 16)),  # T4
+    ],
+)
+def test_auto_generation_batch_caps_tiers_by_memory(
+    total_gib: float, expected: tuple[int, int]
+) -> None:
+    assert auto_generation_batch_caps(int(total_gib * _GIB)) == expected
+
+
+def test_auto_generation_batch_caps_falls_back_to_floor_when_unknown() -> None:
+    # NVML/torch may be unable to report memory (returns None); a zero/negative
+    # reading is equally untrustworthy. Both must yield the unchanged default.
+    assert auto_generation_batch_caps(None) == (32, 16)
+    assert auto_generation_batch_caps(0) == (32, 16)
+    assert auto_generation_batch_caps(-1) == (32, 16)
 
 
 def test_default_cuda_graph_bs_matches_sglang_normal_buckets() -> None:

@@ -24,10 +24,13 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_qwen3_asr_executor",
             factory_args={
                 "device": "cuda:0",
-                "max_running_requests": 32,
+                # "auto" -> tier max_running_requests + request_build_max_pending
+                # to the GPU's total memory (see auto_generation_batch_caps);
+                # small / CI-class GPUs keep the historical 32 / 16.
+                "max_running_requests": "auto",
                 "max_new_tokens": 128,
                 "request_build_max_workers": 2,
-                "request_build_max_pending": 16,
+                "request_build_max_pending": "auto",
             },
             gpu=0,
             terminal=True,
