@@ -30,15 +30,21 @@ For long audio (up to ~90 min), the token sequence after encoding can reach tens
 
 AR Decode dominates at low concurrency, but at high concurrency decode gets amortized by batching and encoder share rises — especially for short audio.
 
-Profiling on a single H100 (CUDA Graph, bf16). The table shows what fraction of end-to-end latency the encoder occupies:
+Profiling on a single H100 (CUDA Graph, bf16), showing the percentage breakdown across all three stages:
 
-| Audio length \ Concurrency | c=1 | c=4 | c=16 |
-|---:|---:|---:|---:|
-| 5 s | 8.9% | 20.0% | 38.2% |
-| 60 s | 4.0% | 5.0% | 13.7% |
-| 20 min | 4.7% | 9.2% | 11.6% |
+| Audio length | Concurrency | Encoder | LLM Prefill | AR Decode |
+|---:|---:|---:|---:|---:|
+| 5 s | 1 | 8.9% | 14.7% | 76.4% |
+| 5 s | 4 | 20.0% | 22.3% | 57.7% |
+| 5 s | 16 | 38.2% | 29.7% | 32.1% |
+| 60 s | 1 | 4.0% | 2.1% | 94.0% |
+| 60 s | 4 | 5.0% | 4.6% | 90.4% |
+| 60 s | 16 | 13.7% | 9.5% | 76.8% |
+| 20 min | 1 | 4.7% | 0.8% | 94.5% |
+| 20 min | 4 | 9.2% | 1.9% | 88.9% |
+| 20 min | 16 | 11.6% | 2.6% | 85.7% |
 
-At c=1 the encoder is a single-digit percentage of total time; at c=16 with short audio it rises to 38%. This means encoder-side optimizations (CUDA Graph capture, Torch Compile, caching) only pay off under high concurrency with short audio. For latency-sensitive single-request scenarios, the leverage is almost entirely in AR Decode.
+At c=1 with longer audio, AR Decode takes 94%+ of total time — the leverage is almost entirely in the decode loop. At c=16 with short audio, encoder + prefill together account for 68%, making encoder-side optimizations (CUDA Graph capture, Torch Compile, caching) worthwhile.
 
 ### Optimization Strategies
 
