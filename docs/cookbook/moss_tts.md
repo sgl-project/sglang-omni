@@ -18,18 +18,26 @@ Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-L
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then
-download the model (public, no token required):
+download the model and its audio-tokenizer codec (both public, no token required):
 
 ```bash
 hf download OpenMOSS-Team/MOSS-TTS-v1.5
+hf download OpenMOSS-Team/MOSS-Audio-Tokenizer
 ```
 
-The processor ships with the checkpoint, so no extra TTS package is needed. Decoding base64
-(data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
+The text/chat-template processor ships with the MOSS-TTS checkpoint. The RVQ codec model
+implementation is owned by SGLang-Omni; `OpenMOSS-Team/MOSS-Audio-Tokenizer` is used only
+for `config.json` and safetensors weights by default, so those artifacts can be
+pre-downloaded, mirrored, or overridden through the stage `codec_model_path`. Decoding
+base64 (data-URI) reference audio additionally requires `soundfile`
+(`uv pip install soundfile`).
 
 ## Server Configuration
 
 The pipeline is `preprocessing → tts_engine → vocoder`.
+The default config places preprocessing and vocoder codec work on `cuda:0` with `float32`
+weights and falls back to CPU if CUDA is not available. To use a local or mirrored codec
+snapshot, set `codec_model_path` in the `preprocessing` and `vocoder` stage factory args.
 
 ```bash
 sgl-omni serve \

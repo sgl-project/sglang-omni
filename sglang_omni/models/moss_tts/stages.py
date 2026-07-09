@@ -8,6 +8,10 @@ from typing import Any
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    DEFAULT_MOSS_AUDIO_TOKENIZER,
+    load_moss_audio_tokenizer,
+)
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
 from sglang_omni.models.moss_tts.hf_loading import (
     load_moss_processor_class,
@@ -34,9 +38,10 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 _MOSS_TTS_INSTALL_HINT = (
-    "MOSS-TTS support requires the upstream custom Transformers code. "
-    "Launch with trust_remote_code=True and make sure the checkpoint can load "
-    "OpenMOSS-Team/MOSS-Audio-Tokenizer."
+    "MOSS-TTS processor support requires the upstream custom Transformers code. "
+    "Launch the MOSS-TTS checkpoint with trust_remote_code=True. The codec "
+    "model implementation is local; make sure the codec config and safetensors "
+    "artifacts are available."
 )
 
 
@@ -52,8 +57,7 @@ def _torch_dtype(dtype: str | torch.dtype) -> torch.dtype:
     return getattr(torch, dtype) if isinstance(dtype, str) else dtype
 
 
-def _normalize_moss_processor_config(processor: Any) -> None:
-    model_config = getattr(processor, "model_config", None)
+def _normalize_moss_model_config(model_config: Any) -> None:
     if model_config is None:
         return
     audio_vocab_size = int(getattr(model_config, "audio_vocab_size", 1024) or 1024)
@@ -62,49 +66,87 @@ def _normalize_moss_processor_config(processor: Any) -> None:
             setattr(model_config, attr, default)
 
 
+def _normalize_moss_processor_config(processor: Any) -> None:
+    model_config = getattr(processor, "model_config", None)
+    _normalize_moss_model_config(model_config)
+
+
+def _load_moss_model_config(model_path: str) -> Any:
+    from transformers import AutoConfig
+
+    checkpoint_dir = resolve_moss_checkpoint(model_path)
+    with moss_transformers_processor_compat():
+        model_config = AutoConfig.from_pretrained(
+            checkpoint_dir,
+            trust_remote_code=True,
+        )
+    _normalize_moss_model_config(model_config)
+    return model_config
+
+
 def _load_moss_processor(
     model_path: str,
     *,
-    device: str = "cpu",
-    dtype: str | torch.dtype = "float32",
+    device: str | None = None,
+    dtype: str | torch.dtype | None = None,
 ) -> Any:
+    del device, dtype
     checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info(f"Loading MOSS-TTS processor from {checkpoint_dir} on {device}")
+    logger.info("Loading MOSS-TTS processor from %s without codec", checkpoint_dir)
     try:
+        from transformers import AutoConfig, AutoTokenizer
+
         with moss_transformers_processor_compat():
             processor_cls = load_moss_processor_class(checkpoint_dir)
-            processor = processor_cls.from_pretrained(
+            model_config = AutoConfig.from_pretrained(
                 checkpoint_dir,
                 trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                checkpoint_dir,
+                trust_remote_code=True,
+            )
+            processor = processor_cls(
+                tokenizer=tokenizer,
+                audio_tokenizer=None,
+                model_config=model_config,
             )
     except Exception as exc:
         raise RuntimeError(_MOSS_TTS_INSTALL_HINT) from exc
 
     _normalize_moss_processor_config(processor)
-    audio_tokenizer = getattr(processor, "audio_tokenizer", None)
-    if audio_tokenizer is not None:
-        if hasattr(audio_tokenizer, "eval"):
-            audio_tokenizer.eval()
-        if hasattr(audio_tokenizer, "to"):
-            kwargs: dict[str, Any] = {"device": device}
-            if device != "cpu":
-                kwargs["dtype"] = _torch_dtype(dtype)
-            audio_tokenizer.to(**kwargs)
     return processor
 
 
+def _resolve_codec_device(device: str) -> str:
+    if str(device).startswith("cuda") and not torch.cuda.is_available():
+        logger.warning("CUDA is unavailable; loading MOSS audio tokenizer on CPU")
+        return "cpu"
+    return device
+
+
 def create_preprocessing_executor(
-    model_path: str, *, max_concurrency: int = 8
+    model_path: str,
+    *,
+    max_concurrency: int = 8,
+    codec_model_path: str = DEFAULT_MOSS_AUDIO_TOKENIZER,
+    device: str = "cuda:0",
+    dtype: str = "float32",
 ) -> SimpleScheduler:
-    processor = _load_moss_processor(model_path, device="cpu", dtype="float32")
-    set_moss_tts_preprocessing_context(processor=processor)
-    # Preprocessing is CPU-heavy: every request tokenizes text and encodes the
-    # reference audio through the MOSS audio tokenizer. Serial execution
-    # (max_concurrency=1) lets the codec encode dominate wall-clock and starves
-    # the AR engine to batch size 1 (the dominant RTF cost). Run several in
-    # parallel — threads release the GIL during the torch codec forward — so the
-    # AR OmniScheduler receives a steady, batchable request stream. Mirrors the
-    # fishaudio_s2_pro preprocessing stage, which encodes references the same way.
+    processor = _load_moss_processor(model_path)
+    device = _resolve_codec_device(device)
+    audio_tokenizer = load_moss_audio_tokenizer(
+        codec_model_path,
+        device=device,
+        dtype=dtype,
+    )
+    set_moss_tts_preprocessing_context(
+        processor=processor,
+        audio_tokenizer=audio_tokenizer,
+    )
+    # Preprocessing tokenizes text and encodes reference audio through the MOSS
+    # audio tokenizer. Run several in parallel so the AR OmniScheduler receives
+    # a steady, batchable request stream.
     return SimpleScheduler(
         preprocess_moss_tts_payload,
         abort_callback=cleanup_prepared_moss_tts_request,
@@ -136,8 +178,9 @@ def create_tts_engine_executor(*args, **kwargs) -> Any:
 
 
 class _MossTTSVocoder(BatchVocoderBase):
-    def __init__(self, processor: Any, device: str) -> None:
-        self._processor = processor
+    def __init__(self, model_config: Any, audio_tokenizer: Any, device: str) -> None:
+        self._model_config = model_config
+        self._audio_tokenizer = audio_tokenizer
         self._device = device
 
     def prepare_item(self, payload: StagePayload) -> tuple[MossTTSState, torch.Tensor]:
@@ -155,21 +198,13 @@ class _MossTTSVocoder(BatchVocoderBase):
         delayed_codes: torch.Tensor,
     ) -> tuple[torch.Tensor, int]:
         delayed_codes = delayed_codes.to(device=self._device, dtype=torch.long)
-        audio_pad_code = int(
-            getattr(
-                getattr(self._processor, "model_config", None),
-                "audio_pad_code",
-                1024,
-            )
-        )
+        audio_pad_code = int(getattr(self._model_config, "audio_pad_code", 1024))
         segments = split_moss_audio_segments(
             delayed_codes,
             audio_pad_code=audio_pad_code,
             assistant_start_length=int(state.assistant_start_length),
         )
-        decoded = []
-        for segment in segments:
-            decoded.extend(self._processor.decode_audio_codes([segment]))
+        decoded = self._audio_tokenizer.decode_codes(segments)
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         waveforms = [
@@ -177,14 +212,8 @@ class _MossTTSVocoder(BatchVocoderBase):
         ]
         waveform = torch.cat(waveforms, dim=0)
         sample_rate = int(
-            getattr(getattr(self._processor, "model_config", None), "sampling_rate", 0)
-            or getattr(
-                getattr(
-                    getattr(self._processor, "audio_tokenizer", None), "config", None
-                ),
-                "sampling_rate",
-                0,
-            )
+            getattr(self._audio_tokenizer, "sample_rate", 0)
+            or getattr(self._model_config, "sampling_rate", 0)
             or state.sample_rate
             or 24000
         )
@@ -220,15 +249,22 @@ def create_vocoder_executor(
     *,
     device: str = "cuda:0",
     gpu_id: int | None = None,
+    codec_model_path: str = DEFAULT_MOSS_AUDIO_TOKENIZER,
     dtype: str = "float32",
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
-    processor = _load_moss_processor(model_path, device=device, dtype=dtype)
+    device = _resolve_codec_device(device)
+    model_config = _load_moss_model_config(model_path)
+    audio_tokenizer = load_moss_audio_tokenizer(
+        codec_model_path,
+        device=device,
+        dtype=dtype,
+    )
 
-    return _MossTTSVocoder(processor, device).build_scheduler(
+    return _MossTTSVocoder(model_config, audio_tokenizer, device).build_scheduler(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

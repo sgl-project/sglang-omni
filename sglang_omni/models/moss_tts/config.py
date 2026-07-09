@@ -8,6 +8,7 @@ from typing import ClassVar
 from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.moss_tts"
+_DEFAULT_MOSS_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 
 
 class MossTTSPipelineConfig(PipelineConfig):
@@ -40,6 +41,12 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_args={
+                "codec_model_path": _DEFAULT_MOSS_AUDIO_TOKENIZER,
+                "device": "cuda:0",
+                "dtype": "float32",
+            },
+            gpu=0,
             next="tts_engine",
         ),
         StageConfig(
@@ -54,7 +61,10 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="vocoder",
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"dtype": "float32"},
+            factory_args={
+                "codec_model_path": _DEFAULT_MOSS_AUDIO_TOKENIZER,
+                "dtype": "float32",
+            },
             gpu=0,
             terminal=True,
         ),

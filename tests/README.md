@@ -378,6 +378,8 @@ that happened to contain an older version of the test.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts
+  - explicit audio-tokenizer codec ownership, local modeling, artifact-only checkpoint
+    resolution, placement, and CPU fallback contracts
   - OmniScheduler-backed AR/vocoder stage factory wiring
   - request mapping for `ref_audio`, `references`, and `token_count`
   - preprocessing handoff and abort cleanup behavior

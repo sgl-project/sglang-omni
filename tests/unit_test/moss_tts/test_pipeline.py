@@ -19,6 +19,7 @@ from benchmarks.tasks.tts import (
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
+from sglang_omni.config import build_stage_placement_plan
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
@@ -125,8 +126,20 @@ def test_moss_tts_config_and_registry_contracts() -> None:
         "vocoder",
     ]
     assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert config.gpu_placement == {"preprocessing": 0, "tts_engine": 0, "vocoder": 0}
     assert {stage.process for stage in config.stages} == {"pipeline"}
+    stages = {stage.name: stage for stage in config.stages}
+    assert stages["preprocessing"].factory_args == {
+        "codec_model_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        "device": "cuda:0",
+        "dtype": "float32",
+    }
+    assert stages["vocoder"].factory_args["codec_model_path"] == (
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer"
+    )
+    assert "gpu_id" not in stages["vocoder"].factory_args
+    placement = build_stage_placement_plan(config)
+    assert placement.stages["preprocessing"].gpu_ids == (0,)
     assert config.supports_uploaded_voice_references() is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
@@ -138,6 +151,140 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     assert MossTTSPipelineConfig.talker_sglang_role_to_stage() == {
         "talker": "tts_engine"
     }
+
+
+def test_moss_preprocessing_executor_loads_owned_codec_with_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import request_builders as rb
+    from sglang_omni.models.moss_tts import stages
+
+    captured: list[tuple[str, str, str]] = []
+
+    class FakeCodec:
+        sample_rate = 24000
+
+    def fake_load_processor(model_path):
+        assert model_path == "ckpt"
+        return object()
+
+    def fake_load_codec(codec_model_path, *, device, dtype):
+        captured.append((codec_model_path, device, dtype))
+        return FakeCodec()
+
+    monkeypatch.setattr(stages, "_load_moss_processor", fake_load_processor)
+    monkeypatch.setattr(stages, "load_moss_audio_tokenizer", fake_load_codec)
+    try:
+        monkeypatch.setattr(stages.torch.cuda, "is_available", lambda: True)
+        stages.create_preprocessing_executor("ckpt")
+        assert captured[-1] == (
+            "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+            "cuda:0",
+            "float32",
+        )
+        assert rb._PREPROCESSING_CONTEXT.audio_tokenizer.sample_rate == 24000
+
+        monkeypatch.setattr(stages.torch.cuda, "is_available", lambda: False)
+        stages.create_preprocessing_executor(
+            "ckpt",
+            codec_model_path="codec-local",
+            device="cuda:1",
+            dtype="bfloat16",
+        )
+        assert captured[-1] == ("codec-local", "cpu", "bfloat16")
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+
+def test_moss_audio_tokenizer_resolves_only_config_and_weight_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import audio_tokenizer
+
+    captured: dict[str, object] = {}
+    fake_hf = types.ModuleType("huggingface_hub")
+
+    def fake_snapshot_download(repo_id, **kwargs):
+        captured["repo_id"] = repo_id
+        captured.update(kwargs)
+        return "/tmp/moss-codec"
+
+    fake_hf.snapshot_download = fake_snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hf)
+
+    assert audio_tokenizer._resolve_checkpoint(
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer"
+    ) == ("/tmp/moss-codec")
+    assert captured["repo_id"] == "OpenMOSS-Team/MOSS-Audio-Tokenizer"
+    assert captured["allow_patterns"] == (
+        "config.json",
+        "*.safetensors",
+        "*.safetensors.index.json",
+    )
+
+
+def test_moss_audio_tokenizer_loads_local_modeling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import audio_tokenizer
+    from sglang_omni.models.moss_tts.configuration_moss_audio_tokenizer import (
+        MossAudioTokenizerConfig,
+    )
+    from sglang_omni.models.moss_tts.modeling_moss_audio_tokenizer import (
+        MossAudioTokenizerModel,
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeConfig:
+        sampling_rate = 24000
+        quantizer_kwargs = {"num_quantizers": 32}
+
+    class FakeModel:
+        config = FakeConfig()
+
+        def eval(self):
+            captured["eval"] = True
+
+        def to(self, **kwargs):
+            captured["to"] = kwargs
+
+    def fake_config_from_pretrained(cls, checkpoint_dir):
+        del cls
+        captured["config_checkpoint_dir"] = checkpoint_dir
+        return FakeConfig()
+
+    def fake_model_from_pretrained(cls, checkpoint_dir, **kwargs):
+        del cls
+        captured["model_checkpoint_dir"] = checkpoint_dir
+        captured["model_kwargs"] = kwargs
+        return FakeModel()
+
+    monkeypatch.setattr(audio_tokenizer, "_resolve_checkpoint", lambda _: "/tmp/codec")
+    monkeypatch.setattr(
+        MossAudioTokenizerConfig,
+        "from_pretrained",
+        classmethod(fake_config_from_pretrained),
+    )
+    monkeypatch.setattr(
+        MossAudioTokenizerModel,
+        "from_pretrained",
+        classmethod(fake_model_from_pretrained),
+    )
+
+    tokenizer = audio_tokenizer.load_moss_audio_tokenizer(
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+        device="cpu",
+        dtype="float32",
+    )
+
+    assert tokenizer.checkpoint_dir == "/tmp/codec"
+    assert captured["config_checkpoint_dir"] == "/tmp/codec"
+    assert captured["model_checkpoint_dir"] == "/tmp/codec"
+    assert captured["model_kwargs"]["local_files_only"] is True
+    assert "trust_remote_code" not in captured["model_kwargs"]
+    assert captured["eval"] is True
+    assert captured["to"] == {"device": "cpu"}
 
 
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
@@ -297,18 +444,23 @@ def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) 
 
     decoded_segments: list[list[list[int]]] = []
 
-    class FakeProcessor:
-        model_config = SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
+    class FakeCodec:
+        sample_rate = 16000
 
-        def decode_audio_codes(self, segments):
+        def decode_codes(self, segments):
             decoded_segments.extend(segment.tolist() for segment in segments)
             offset = float(len(decoded_segments) * 10)
             return [torch.tensor([offset, offset + 1], dtype=torch.float32)]
 
     monkeypatch.setattr(
         stages,
-        "_load_moss_processor",
-        lambda *args, **kwargs: FakeProcessor(),
+        "_load_moss_model_config",
+        lambda model_path: SimpleNamespace(audio_pad_code=1024, sampling_rate=16000),
+    )
+    monkeypatch.setattr(
+        stages,
+        "load_moss_audio_tokenizer",
+        lambda codec_model_path, *, device, dtype: FakeCodec(),
     )
 
     scheduler = stages.create_vocoder_executor(
@@ -594,9 +746,18 @@ def test_moss_preprocess_and_sglang_request_handoff(
                 )
             }
 
+    class FakeCodec:
+        def __init__(self) -> None:
+            self.paths = []
+
+        def encode_paths(self, paths):
+            self.paths.extend(paths)
+            return [torch.tensor([[7, 8], [9, 10]], dtype=torch.long)]
+
+    codec = FakeCodec()
     processor = FakeProcessor()
     payload = make_payload(
-        inputs="hello",
+        inputs={"text": "hello", "references": [{"audio_path": "ref.wav"}]},
         params={"max_new_tokens": 12},
         tts_params={"token_count": 80, "language": "en"},
     )
@@ -611,12 +772,17 @@ def test_moss_preprocess_and_sglang_request_handoff(
     )
 
     try:
-        set_moss_tts_preprocessing_context(processor=processor)
+        set_moss_tts_preprocessing_context(processor=processor, audio_tokenizer=codec)
         prepared_payload = preprocess_moss_tts_payload(payload)
         data = build_sglang_moss_tts_request(prepared_payload, model=model)
     finally:
         clear_moss_tts_preprocessing_context()
 
+    assert codec.paths == ["ref.wav"]
+    assert torch.equal(
+        processor.message_kwargs["reference"][0],
+        torch.tensor([[7, 8], [9, 10]], dtype=torch.long),
+    )
     assert processor.message_kwargs["tokens"] == 80
     assert processor.message_kwargs["language"] == "en"
     assert data.req._input_embeds_are_projected is True
@@ -935,6 +1101,63 @@ def test_moss_delay_codec_splits_non_pad_segments() -> None:
     assert [segment.tolist() for segment in segments] == [[[1, 3], [2, 4]]]
 
 
+def test_moss_vocoder_decodes_with_owned_codec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    class FakeCodec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.decoded_segments = None
+
+        def decode_codes(self, segments):
+            self.decoded_segments = [segment.clone() for segment in segments]
+            return [torch.tensor([0.25, -0.25, 0.5], dtype=torch.float32)]
+
+    codec = FakeCodec()
+
+    def fail_processor_load(*args, **kwargs):
+        raise AssertionError("vocoder must decode through the owned audio tokenizer")
+
+    monkeypatch.setattr(stages, "_load_moss_processor", fail_processor_load)
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_model_config",
+        lambda model_path: SimpleNamespace(audio_pad_code=1024, sampling_rate=24000),
+    )
+    monkeypatch.setattr(
+        stages,
+        "load_moss_audio_tokenizer",
+        lambda codec_model_path, *, device, dtype: codec,
+    )
+
+    scheduler = stages.create_vocoder_executor("ckpt", gpu_id=0)
+    state = MossTTSState(
+        delayed_audio_codes=torch.tensor(
+            [[1, 1024], [2, 3], [1024, 4]],
+            dtype=torch.long,
+        ),
+        assistant_start_length=0,
+    )
+    result = asyncio.run(
+        scheduler._fn(
+            StagePayload(
+                request_id="decode",
+                request=OmniRequest(inputs="hello"),
+                data=state.to_dict(),
+            )
+        )
+    )
+
+    assert [segment.tolist() for segment in codec.decoded_segments] == [
+        [[1, 3], [2, 4]]
+    ]
+    assert result.data["sample_rate"] == 16000
+    assert result.data["modality"] == "audio"
+
+
 def test_moss_sample_tokens_uses_per_row_top_k() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
@@ -1004,7 +1227,8 @@ def test_moss_preprocess_discards_handoff_after_abort(
 
     payload = make_payload(inputs="hello", request_id="abort-me")
 
-    def fake_prepare(pl, *, processor):
+    def fake_prepare(pl, *, processor, audio_tokenizer=None):
+        del audio_tokenizer
         # The abort fires while preprocessing is still running.
         rb.cleanup_prepared_moss_tts_request(pl.request_id)
         return rb.MossTTSPreparedRequest(
@@ -1077,7 +1301,8 @@ def test_moss_preprocess_pre_start_abort_does_not_block(
 ) -> None:
     from sglang_omni.models.moss_tts import request_builders as rb
 
-    def fake_prepare(pl, *, processor):
+    def fake_prepare(pl, *, processor, audio_tokenizer=None):
+        del audio_tokenizer
         return rb.MossTTSPreparedRequest(
             state=MossTTSState(),
             input_ids_list=[],
