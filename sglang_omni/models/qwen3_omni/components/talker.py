@@ -103,24 +103,32 @@ class _PredictorDecodeGraph:
     @torch.no_grad()
     def _capture(self) -> None:
         device = self.layer0_codes.device
-        warmup_stream = torch.cuda.Stream(device=device)
-        current_stream = torch.cuda.current_stream(device=device)
-        warmup_stream.wait_stream(current_stream)
-        with torch.cuda.stream(warmup_stream):
-            for _ in range(2):
-                self.model._code_predictor_forward_incremental_eager(
-                    self.layer0_codes,
-                    self.talker_hidden,
-                )
-        current_stream.wait_stream(warmup_stream)
+        with torch.cuda.device(device):
+            warmup_stream = torch.cuda.Stream(device=device)
+            current_stream = torch.cuda.current_stream(device=device)
+            warmup_stream.wait_stream(current_stream)
+            with torch.cuda.stream(warmup_stream):
+                for _ in range(2):
+                    self.model._code_predictor_forward_incremental_eager(
+                        self.layer0_codes,
+                        self.talker_hidden,
+                    )
+            current_stream.wait_stream(warmup_stream)
 
-        with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
-            self.result_codes, self.summed_embeddings = (
-                self.model._code_predictor_forward_incremental_eager(
-                    self.layer0_codes,
-                    self.talker_hidden,
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(current_stream)
+            with torch.cuda.graph(
+                self.graph,
+                stream=capture_stream,
+                capture_error_mode="thread_local",
+            ):
+                self.result_codes, self.summed_embeddings = (
+                    self.model._code_predictor_forward_incremental_eager(
+                        self.layer0_codes,
+                        self.talker_hidden,
+                    )
                 )
-            )
+            current_stream.wait_stream(capture_stream)
 
         if self.result_codes is None or self.summed_embeddings is None:
             raise RuntimeError("Qwen3-Omni predictor CUDA graph captured no outputs")
@@ -131,9 +139,10 @@ class _PredictorDecodeGraph:
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self.layer0_codes.copy_(layer0_codes)
-        self.talker_hidden.copy_(talker_hidden)
-        self.graph.replay()
+        with torch.cuda.device(self.layer0_codes.device):
+            self.layer0_codes.copy_(layer0_codes)
+            self.talker_hidden.copy_(talker_hidden)
+            self.graph.replay()
         assert self.result_codes is not None
         assert self.summed_embeddings is not None
         return self.result_codes, self.summed_embeddings
