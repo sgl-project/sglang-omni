@@ -1788,8 +1788,13 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
-            if self._async_pending is not None and (
-                self.chunked_req is not None or self.waiting_queue
+            if (
+                self._async_pending is not None
+                and self.is_mixed_chunk
+                and (
+                    self.chunked_req is not None
+                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                )
             ):
                 self._resolve_pending_async()
 
