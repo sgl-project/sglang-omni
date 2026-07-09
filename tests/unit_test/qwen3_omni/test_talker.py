@@ -620,9 +620,9 @@ def _build_real_step_predictor_graph_talker(device: torch.device) -> Qwen3OmniTa
         q_norm=nn.Identity(),
         k_norm=nn.Identity(),
         alt_stream=None,
-        qkv_proj=_TupleLinear(hidden_size, (num_heads + 2 * num_kv_heads) * head_dim).to(
-            device
-        ),
+        qkv_proj=_TupleLinear(
+            hidden_size, (num_heads + 2 * num_kv_heads) * head_dim
+        ).to(device),
         o_proj=_TupleLinear(num_heads * head_dim, hidden_size).to(device),
         rotary_emb=_IdentityRotary(),
     )
