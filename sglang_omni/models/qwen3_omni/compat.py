@@ -15,9 +15,7 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 # Escape hatch: force the SM 80 workaround on any hardware.
-_FORCE_SM80_MOE_TRITON = "1" == os.environ.get(
-    "SGLANG_OMNI_FORCE_SM80_MOE_TRITON", "0"
-)
+_FORCE_SM80_MOE_TRITON = "1" == os.environ.get("SGLANG_OMNI_FORCE_SM80_MOE_TRITON", "0")
 
 
 @lru_cache(maxsize=8)
