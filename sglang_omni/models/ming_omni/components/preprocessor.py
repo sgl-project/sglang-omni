@@ -541,7 +541,8 @@ class MingPreprocessor:
                         ds_stride,
                     )
                     for waveform in waveforms
-                ]
+                ],
+                return_exceptions=False,
             )
 
             for mel_tensor, mel_len, audio_token_count in mel_results:

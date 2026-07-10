@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import numpy as np
+import torch
+
 
 def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
@@ -223,28 +226,34 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
     assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
 
 
-def test_ming_preprocessor_has_threaded_mel_helper() -> None:
-    from sglang_omni.models.ming_omni.components.preprocessor import (
-        _compute_mel_features_for_waveform,
+def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
+    from sglang_omni.models.ming_omni.components import preprocessor
+
+    waveform = np.array([0.0, 0.1, -0.2], dtype=np.float32)
+    mel = np.arange(36, dtype=np.float64).reshape(9, 4)
+
+    def fake_compute_mel_spectrogram(input_waveform):
+        assert input_waveform is waveform
+        return mel
+
+    monkeypatch.setattr(
+        preprocessor,
+        "compute_mel_spectrogram",
+        fake_compute_mel_spectrogram,
     )
 
-    assert callable(_compute_mel_features_for_waveform)
-
-
-def test_ming_preprocessor_offloads_mel_to_thread() -> None:
-    from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
-
-    source = Path("sglang_omni/models/ming_omni/components/preprocessor.py").read_text(
-        encoding="utf-8"
+    mel_tensor, mel_len, audio_token_count = (
+        preprocessor._compute_mel_features_for_waveform(
+            waveform,
+            ds_kernel_size=3,
+            ds_stride=2,
+        )
     )
-    call_source = inspect.getsource(MingPreprocessor.__call__)
 
-    assert "_compute_mel_features_for_waveform" in source
-    assert (
-        "asyncio.to_thread(\n                        _compute_mel_features_for_waveform"
-        in source
-    )
-    assert "compute_mel_spectrogram(" not in call_source
+    assert torch.equal(mel_tensor, torch.from_numpy(mel).float())
+    assert mel_tensor.dtype == torch.float32
+    assert mel_len == 9
+    assert audio_token_count == preprocessor.estimate_audio_feature_length(9, 3, 2)
 
 
 def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> None:
