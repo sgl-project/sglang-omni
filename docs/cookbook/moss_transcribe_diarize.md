@@ -16,6 +16,8 @@ It transcribes speech, assigns speakers, and predicts timestamps in a single gen
 
 ## Architecture and Optimization
 
+MOSS-TD (short for MOSS-Transcribe-Diarize) is served through SGLang-Omni for two reasons. First, SGLang-Omni's multi-stage pipeline is a natural fit — ASR follows the same encoder → prefill → decode pattern that the framework already orchestrates for TTS. Second, ASR is a category of multimodal-input models, and many of the optimizations we have built in SGLang-Omni (CUDA Graph capture, async decode, continuous batching, KV cache management) transfer directly to the ASR setting.
+
 ### Inference Pipeline
 
 ![ASR Pipeline](../_static/image/moss-td-asr-pipeline.svg)
@@ -39,7 +41,7 @@ ASR and TTS share much of the same serving infrastructure in sglang-omni — bot
 | Decoder / Vocoder | Not needed — output is plain text | Vocoder required to reconstruct waveform from codec tokens |
 | Typical input length | Can be very long (MOSS-TD supports ~90 min) | Usually short (reference voice: a few seconds) |
 | Pipeline stages | Single stage (encoder + LLM) | Multi-stage (preprocessing → AR engine → vocoder) |
-| Streaming | Stream output (incremental text) | Stream output (incremental audio) + streaming vocoder |
+| Streaming | Stream output (incremental text); streaming input is possible via cumulative chunking but not yet optimized — a new encoder architecture with native streaming in/out support is in development | Stream output (incremental audio) + streaming vocoder |
 
 These differences shape optimization priorities: ASR optimization focuses on the AR decode loop (which dominates latency) and long-sequence memory management, while TTS optimization additionally targets vocoder batching/streaming and multi-codebook generation strategies. For the full TTS optimization story, see [Optimizing TTS Inference](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md).
 
