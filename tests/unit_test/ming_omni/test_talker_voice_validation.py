@@ -289,7 +289,11 @@ def _fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
 
 
 def _run_process_segment_with_chunk_lengths(
-    chunk_lengths: list[int], *, text: str = "Hi.", sample_rate: int = 10
+    chunk_lengths: list[int],
+    *,
+    text: str = "Hi.",
+    sample_rate: int = 10,
+    stream: bool = True,
 ):
     import torch as _torch
 
@@ -314,7 +318,7 @@ def _run_process_segment_with_chunk_lengths(
             prompt_text=None,
             prompt_wav_lat=None,
             prompt_wav_emb=None,
-            stream=True,
+            stream=stream,
             count=0,
             cache_position={},
             max_length=50,
@@ -413,6 +417,14 @@ def test_process_segment_multi_chunk_below_duration_guard():
 
 def test_process_segment_stops_after_chunk_that_crosses_duration_guard():
     outputs = _run_process_segment_with_chunk_lengths([15, 10, 10], text="Hi.")
+
+    assert [item[0].shape[-1] for item in outputs] == [15, 10]
+
+
+def test_process_segment_duration_guard_applies_without_streaming():
+    outputs = _run_process_segment_with_chunk_lengths(
+        [15, 10, 10], text="Hi.", stream=False
+    )
 
     assert [item[0].shape[-1] for item in outputs] == [15, 10]
 

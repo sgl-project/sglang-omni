@@ -1272,7 +1272,6 @@ class MingOmniTalker(nn.Module):
                 text = text[1:]
 
             use_stream = stream
-            all_wavs: list = []
             total_samples = 0
             next_start_idx = segment_start_idx
 
@@ -1331,7 +1330,6 @@ class MingOmniTalker(nn.Module):
                         if this_start_idx == this_end_idx
                         else text_ori[rel_start_idx : rel_end_idx + 1]
                     )
-                    all_wavs.append(tts_speech)
                     total_samples += tts_speech.shape[-1]
                     yield (
                         tts_speech,
@@ -1340,7 +1338,6 @@ class MingOmniTalker(nn.Module):
                         this_dura * 1000,
                     )
                 else:
-                    all_wavs.append(tts_speech)
                     total_samples += tts_speech.shape[-1]
                     yield (
                         tts_speech,
