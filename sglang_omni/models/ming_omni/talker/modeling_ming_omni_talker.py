@@ -1300,7 +1300,8 @@ class MingOmniTalker(nn.Module):
                 tts_speech = this_tts_speech_dict["tts_speech"]
                 if (
                     total_samples
-                    and total_samples / audio_detokenizer.config.sample_rate
+                    and total_samples
+                    / audio_detokenizer.config.sample_rate
                     * (16000 / 5818)
                     >= len(text)
                     and total_samples / audio_detokenizer.config.sample_rate > 2
