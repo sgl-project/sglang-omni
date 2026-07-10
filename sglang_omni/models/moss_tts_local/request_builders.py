@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +25,7 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
 from sglang_omni.scheduling.types import ARRequestData
 
 _MOSS_TTS_LOCAL_PREPARED_MARKER = "_moss_tts_local_prepared_request"
@@ -39,8 +39,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     req: Any = None
     synced: bool = False
     generation_steps: int = 0
-    # Launch-side seeded-sampling step counter (async decode): advances at launch
-    # while generation_steps moves at resolve. Floored so the sync path is unchanged.
+    # note (Yue Yin): launch-side seeded-sampling step counter (async decode); advances
+    # at launch while generation_steps moves at resolve, floored so the sync path is unchanged.
     sampling_steps: int | None = None
     suppress_tokens: list[int] | None = None
     input_embeds_are_projected: bool = False
@@ -49,9 +49,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     model_config: Any = None
     prompt_rows: torch.Tensor | None = None
     output_rows: list[torch.Tensor] = field(default_factory=list)
-    # Checkpoint generate() defaults: the binary continue/stop head samples at
-    # plain temperature 1.0 while the audio channels use the model-card
-    # recommendation (1.7 / 0.8 / 25, repetition penalty off).
+    # note (Yue Yin): checkpoint generate() defaults — the continue/stop head samples at
+    # temperature 1.0 while audio channels use the model-card values (1.7 / 0.8 / 25, no rep penalty).
     text_temperature: float = 1.0
     text_top_p: float = 1.0
     text_top_k: int = 50
@@ -62,7 +61,6 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     seed: int | None = None
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
-    # Non-None marks a streaming request.
     stream_metadata: dict[str, Any] | None = None
 
 
@@ -83,43 +81,26 @@ class _PreprocessingContext:
     reference_encoder: Any = None
 
 
-_PREPROCESSING_CONTEXT: _PreprocessingContext | None = None
-_PREPARED_REQUESTS: dict[str, MossTTSLocalPreparedRequest] = {}
-_INFLIGHT_REQUESTS: set[str] = set()
-_ABORTED_REQUESTS: set[str] = set()
-_PREPARED_REQUESTS_LOCK = threading.Lock()
+_QUEUE: PreparedRequestQueue[_PreprocessingContext, MossTTSLocalPreparedRequest] = (
+    PreparedRequestQueue()
+)
 
 
 def set_moss_tts_local_preprocessing_context(
     *, processor: Any, reference_encoder: Any = None
 ) -> None:
-    global _PREPROCESSING_CONTEXT
-    with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = _PreprocessingContext(
-            processor=processor, reference_encoder=reference_encoder
-        )
-        _PREPARED_REQUESTS.clear()
-        _INFLIGHT_REQUESTS.clear()
-        _ABORTED_REQUESTS.clear()
+    _QUEUE.set_context(
+        _PreprocessingContext(processor=processor, reference_encoder=reference_encoder)
+    )
 
 
 def clear_moss_tts_local_preprocessing_context() -> None:
-    global _PREPROCESSING_CONTEXT
-    with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = None
-        _PREPARED_REQUESTS.clear()
-        _INFLIGHT_REQUESTS.clear()
-        _ABORTED_REQUESTS.clear()
+    _QUEUE.clear_context()
 
 
 def cleanup_prepared_moss_tts_local_request(request_id: str) -> None:
     """Drop any prepared handoff for an aborted request (see MOSS Delay)."""
-    rid = str(request_id)
-    with _PREPARED_REQUESTS_LOCK:
-        if _PREPARED_REQUESTS.pop(rid, None) is not None:
-            return
-        if rid in _INFLIGHT_REQUESTS:
-            _ABORTED_REQUESTS.add(rid)
+    _QUEUE.abort(str(request_id))
 
 
 def pop_prepared_moss_tts_local_request(
@@ -129,8 +110,7 @@ def pop_prepared_moss_tts_local_request(
     marker = data.get(_MOSS_TTS_LOCAL_PREPARED_MARKER)
     if marker is None:
         return None
-    with _PREPARED_REQUESTS_LOCK:
-        prepared = _PREPARED_REQUESTS.pop(str(marker), None)
+    prepared = _QUEUE.pop(str(marker))
     if prepared is None:
         raise RuntimeError(
             "MOSS-TTS Local preprocessing state is missing for prepared payload "
@@ -193,7 +173,6 @@ def build_generation_kwargs(
 
     generation_kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
-        # Checkpoint generate() / model-card defaults for v1.5.
         "text_temperature": 1.0,
         "audio_temperature": 1.7,
         "text_top_p": 1.0,
@@ -254,7 +233,6 @@ def _build_processor_message(
     ref_audio = state.ref_audio
     if reference_encoder is not None and isinstance(ref_audio, str):
         if _DATA_URI_RE.match(ref_audio) is None:
-            # File-path refs share one batched codec forward via the coalescer.
             reference = [reference_encoder.encode(ref_audio)]
         else:
             # Data-URI refs through the same LRU (bytes: keyspace).
@@ -299,10 +277,7 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     """Run prompt/reference preprocessing outside the AR scheduler."""
 
     rid = str(payload.request_id)
-    with _PREPARED_REQUESTS_LOCK:
-        context = _PREPROCESSING_CONTEXT
-        if context is not None:
-            _INFLIGHT_REQUESTS.add(rid)
+    context = _QUEUE.begin(rid)
     if context is None:
         raise RuntimeError(
             "MOSS-TTS Local preprocessing context is not initialized; "
@@ -316,19 +291,16 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
             reference_encoder=context.reference_encoder,
         )
     except BaseException:
-        with _PREPARED_REQUESTS_LOCK:
-            _INFLIGHT_REQUESTS.discard(rid)
-            _ABORTED_REQUESTS.discard(rid)
+        _QUEUE.fail_inflight(rid)
         raise
-    with _PREPARED_REQUESTS_LOCK:
-        _INFLIGHT_REQUESTS.discard(rid)
-        aborted = rid in _ABORTED_REQUESTS
-        _ABORTED_REQUESTS.discard(rid)
-        if not aborted:
-            _PREPARED_REQUESTS[rid] = prepared
+    # note (Yue Yin): publish fails closed; when it drops the handoff (aborted
+    # mid-flight or context reset) skip the marker, so the AR stage never pops a
+    # marker whose prepared state no longer exists.
+    published = _QUEUE.publish(rid, prepared)
 
     data = prepared.state.to_dict()
-    data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+    if published:
+        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )
@@ -464,8 +436,8 @@ def make_moss_tts_local_scheduler_adapters(*, model: Any):
         try:
             return apply_sglang_moss_tts_local_result(data.stage_payload, data)
         finally:
-            # Release the finished request's decode-state pool row (mirrors
-            # Higgs request_builders.py:186); recycles the row for a waiter.
+            # note (Yue Yin): release the finished request's decode-state pool row
+            # (mirrors higgs_tts/request_builders.py); recycles the row for a waiter.
             model.reset_request(data.stage_payload.request_id)
 
     return request_builder, result_adapter
