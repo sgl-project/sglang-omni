@@ -511,9 +511,14 @@ class _FakeBatch:
     def __init__(self, n):
         # real ScheduleBatch.reqs are Reqs with .finished(); none finish here
         self.reqs = [types.SimpleNamespace(finished=lambda: False) for _ in range(n)]
+        self.out_cache_loc = torch.arange(n)
 
     def copy(self):
         return self
+
+    def filter_batch(self, keep_indices):
+        self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
 
 
 def _new_scheduler_for_async_loop():
@@ -522,7 +527,10 @@ def _new_scheduler_for_async_loop():
     s._admin_queue = queue.Queue()
     s.chunked_req = None
     s.is_mixed_chunk = False
+    s.page_size = 1
     s.running_batch = types.SimpleNamespace(batch_is_full=False)
+    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
+    s.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda _: None)
     s.waiting_queue = []
     return s
 
@@ -759,10 +767,6 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     s.self_check_during_idle = lambda: None
     s.self_check_during_busy = lambda: None
     s._run_batch_launch = lambda b: ("sched_output", "pending_step")
-    # the drain's _drop_stale_overrun consults the step-slot free gate
-    s.page_size = 1
-    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
-    s.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda t: None)
     # real drain helper -> exercises the real fast-path ordering under test
     s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
 
