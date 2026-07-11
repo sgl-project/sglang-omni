@@ -53,12 +53,15 @@ def build_results_report(
     capabilities = _endpoint_capabilities(results, operation_capabilities)
     category_counts = Counter(result.category for result in results)
     status_counts = Counter(result.status for result in results)
-    latencies = [r.latency_s for r in results if r.latency_s > 0]
-    ttfas = [r.ttfa_s for r in results if r.ttfa_s is not None]
-    rtfs = [r.rtf for r in results if r.rtf > 0]
-    queue_waits = [r.queue_wait_s for r in results if r.queue_wait_s is not None]
+    successful_results = _performance_results(results)
+    latencies = [r.latency_s for r in successful_results if r.latency_s > 0]
+    ttfas = [r.ttfa_s for r in successful_results if r.ttfa_s is not None]
+    rtfs = [r.rtf for r in successful_results if r.rtf > 0]
+    queue_waits = [
+        r.queue_wait_s for r in successful_results if r.queue_wait_s is not None
+    ]
     generator_lags = [
-        r.generator_lag_s for r in results if r.generator_lag_s is not None
+        r.generator_lag_s for r in successful_results if r.generator_lag_s is not None
     ]
     load_generation_valid = not any(
         result.load_generator_lagged or result.load_generator_saturated
@@ -1517,15 +1520,22 @@ def _configured_voice_speaker_cap_count(spec: BenchmarkSpec) -> int:
 def _result_group_summary(
     spec: BenchmarkSpec, results: list[ScenarioResult]
 ) -> dict[str, Any]:
-    latencies = [result.latency_s for result in results if result.latency_s > 0]
-    ttfas = [result.ttfa_s for result in results if result.ttfa_s is not None]
-    rtfs = [result.rtf for result in results if result.rtf > 0]
+    successful_results = _performance_results(results)
+    latencies = [
+        result.latency_s for result in successful_results if result.latency_s > 0
+    ]
+    ttfas = [
+        result.ttfa_s for result in successful_results if result.ttfa_s is not None
+    ]
+    rtfs = [result.rtf for result in successful_results if result.rtf > 0]
     queue_waits = [
-        result.queue_wait_s for result in results if result.queue_wait_s is not None
+        result.queue_wait_s
+        for result in successful_results
+        if result.queue_wait_s is not None
     ]
     generator_lags = [
         result.generator_lag_s
-        for result in results
+        for result in successful_results
         if result.generator_lag_s is not None
     ]
     planned_starts = [
@@ -1544,6 +1554,24 @@ def _result_group_summary(
     wall_time_s = (
         last_completion - first_start
         if first_start is not None and last_completion is not None
+        else None
+    )
+    performance_first_start = min(
+        (
+            result.actual_start_s
+            for result in successful_results
+            if result.actual_start_s
+        ),
+        default=None,
+    )
+    performance_last_completion = max(
+        (result.completed_s for result in successful_results if result.completed_s),
+        default=None,
+    )
+    performance_wall_time_s = (
+        performance_last_completion - performance_first_start
+        if performance_first_start is not None
+        and performance_last_completion is not None
         else None
     )
     planned_window_s = (
@@ -1596,7 +1624,11 @@ def _result_group_summary(
             else None
         ),
         "achieved_rps": (
-            len(results) / wall_time_s if wall_time_s and wall_time_s > 0 else None
+            len(successful_results) / performance_wall_time_s
+            if performance_wall_time_s
+            and performance_wall_time_s > 0
+            and successful_results
+            else None
         ),
         "latency_s": _summary(latencies),
         "ttfa_s": _summary(ttfas),
@@ -1633,6 +1665,17 @@ def _admission_status_counts(results: list[ScenarioResult]) -> dict[str, int]:
         if result.error_type and "Timeout" in result.error_type:
             counts["timeout"] += 1
     return dict(counts)
+
+
+def _performance_results(results: list[ScenarioResult]) -> list[ScenarioResult]:
+    return [
+        result
+        for result in results
+        if result.success
+        if result.status == "ok"
+        if result.endpoint != "voices"
+        if not result.was_cancelled
+    ]
 
 
 def _load_generation_error(results: list[ScenarioResult]) -> str | None:

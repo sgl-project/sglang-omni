@@ -168,21 +168,21 @@ to let the model infer from the text):
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `model` | (required) | Served model identifier |
-| `input` | (required) | Text to synthesize; may carry a `${token:N}` duration prefix and inline markup |
-| `voice` | (required) | Voice identifier |
-| `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
+| `model` | served model | Served model identifier |
+| `input` | (required) | Text to synthesize. It may carry a `${token:N}` duration prefix and inline markup |
+| `voice` | `default` | Voice identifier |
+| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `stream` | `false` | Stream raw PCM audio chunks |
-| `language` | `null` | Optional target-language hint; omit to let the model infer |
+| `language` | `null` | Optional target-language hint. Omit to let the model infer |
 | `instructions` / `instruct` | `null` | Optional free-text style directive |
-| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames; must be `> 0` |
-| `max_new_tokens` | `4096` | Maximum generated frames; an explicit value must be `> 0` |
-| `temperature` | `1.5` text / `1.7` audio | Sampling temperature; a single `temperature` overrides both channels |
-| `top_p` | `1.0` text / `0.8` audio | Top-p sampling; a single `top_p` overrides both channels |
-| `top_k` | `50` text / `25` audio | Top-k sampling; a single `top_k` overrides both channels |
+| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames. It must be `> 0` |
+| `max_new_tokens` | `4096` | Maximum generated frames. An explicit value must be `> 0` |
+| `temperature` | `1.5` text / `1.7` audio | Sampling temperature. A single `temperature` overrides both channels |
+| `top_p` | `1.0` text / `0.8` audio | Top-p sampling. A single `top_p` overrides both channels |
+| `top_k` | `50` text / `25` audio | Top-k sampling. A single `top_k` overrides both channels |
 | `repetition_penalty` | `1.0` | Audio repetition penalty |
-| `seed` | `null` | Non-negative integer; see [Seed Reproducibility](#seed-reproducibility) |
+| `seed` | `null` | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility) |
 
 The per-channel fields (`text_temperature`, `audio_temperature`, `text_top_p`, `audio_top_p`,
 `text_top_k`, `audio_top_k`, `audio_repetition_penalty`) are also accepted and take precedence

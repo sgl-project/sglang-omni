@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 import pytest
@@ -98,13 +99,14 @@ def _fault_client(model_name: str) -> Client:
 class SuccessfulSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
         self.sample_rate = sample_rate
+        self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
     async def generate(self, request: Any, request_id: str | None = None):
-        del request
+        self.generate_requests.append(request)
         yield GenerateChunk(
             request_id=request_id or "speech-1",
             modality="audio",
@@ -437,14 +439,13 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech",
         json={
-            "model": "tts",
             "input": "hello",
-            "voice": "default",
             "response_format": "wav",
         },
     )
@@ -452,6 +453,38 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert speech_client.speech_requests[0].model == "tts"
+    assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_endpoint_accepts_seedtts_reference_payload_without_voice(
+    stream: bool,
+) -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="served-model"))
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "seedtts",
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "response_format": "pcm" if stream else "wav",
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == 200
+    request = (
+        speech_client.generate_requests[0]
+        if stream
+        else speech_client.speech_requests[0]
+    )
+    assert request.model == "seedtts"
+    assert request.metadata["tts_params"]["voice"] == "default"
 
 
 def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:

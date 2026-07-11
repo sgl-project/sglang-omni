@@ -37,7 +37,6 @@ from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
     internal_error,
-    not_found,
     openai_error_payload,
     service_unavailable,
 )
@@ -126,7 +125,6 @@ class SpeechRequestValidator:
             key: value for key, value in payload.items() if key != "items"
         }
         self._validate_raw_payload(default_payload)
-        self._validate_raw_batch_generation_fields(payload)
         try:
             request = CreateSpeechBatchRequest.model_validate(payload)
         except ValidationError as exc:
@@ -149,33 +147,23 @@ class SpeechRequestValidator:
     def validate_raw_speech_fields(
         self,
         payload: dict[str, Any],
-        *,
-        require_explicit_model_and_voice: bool = False,
     ) -> None:
         """Validate speech fields before Pydantic can coerce JSON values."""
 
         self._validate_raw_payload(payload)
-        if require_explicit_model_and_voice:
-            _validate_required_generation_fields(payload)
 
     def parse_generation_request(self, payload: Any) -> PreparedSpeechRequest:
         """Parse and prepare a raw HTTP payload for GenerateRequest lowering."""
 
-        return self.prepare_generation_request(
-            self._parse_raw_request(payload, require_explicit_model_and_voice=True)
-        )
+        return self.prepare_generation_request(self._parse_raw_request(payload))
 
     def _parse_raw_request(
         self,
         payload: Any,
-        *,
-        require_explicit_model_and_voice: bool = False,
     ) -> CreateSpeechRequest:
         if not isinstance(payload, dict):
             raise bad_request("speech request body must be a JSON object")
         self._validate_raw_payload(payload)
-        if require_explicit_model_and_voice:
-            _validate_required_generation_fields(payload)
         try:
             request = CreateSpeechRequest.model_validate(payload)
         except ValidationError as exc:
@@ -492,7 +480,6 @@ class SpeechRequestValidator:
         item_payload = item.model_dump(exclude_none=True)
         payload.update(item_payload)
         self._validate_raw_payload(payload)
-        _validate_required_generation_fields(payload, prefix=f"items.{index}")
         if item_payload.get("stream"):
             raise bad_request(
                 "stream is not supported for batch speech requests",
@@ -506,26 +493,6 @@ class SpeechRequestValidator:
                 _validation_error_message(exc),
                 param=_validation_error_param(exc, prefix=f"items.{index}"),
             ) from exc
-
-    def _validate_raw_batch_generation_fields(self, payload: dict[str, Any]) -> None:
-        items = payload.get("items")
-        if not isinstance(items, list):
-            return
-        default_payload = {
-            key: value for key, value in payload.items() if key != "items"
-        }
-        for index, item in enumerate(items):
-            if not isinstance(item, dict):
-                continue
-            merged = {
-                key: value
-                for key, value in default_payload.items()
-                if value is not None
-            }
-            merged.update(
-                {key: value for key, value in item.items() if value is not None}
-            )
-            _validate_required_generation_fields(merged, prefix=f"items.{index}")
 
     def _validate_batch_defaults(self, batch: CreateSpeechBatchRequest) -> None:
         response_format = _normalize_response_format(batch.response_format)
@@ -560,7 +527,7 @@ class SpeechRequestValidator:
         ):
             uploaded_voice = self.voice_store.resolve_reference(batch.voice)
             if uploaded_voice is None and self.requires_uploaded_voice_for_named_voice:
-                raise not_found(
+                raise bad_request(
                     f"Unknown voice '{batch.voice}'. Upload a voice first via "
                     "POST /v1/audio/voices, or use ref_audio + ref_text.",
                     param="voice",
@@ -589,7 +556,7 @@ class SpeechRequestValidator:
             return None
         uploaded_voice = self.voice_store.resolve_reference(request.voice)
         if uploaded_voice is None and self.requires_uploaded_voice_for_named_voice:
-            raise not_found(
+            raise bad_request(
                 f"Unknown voice '{request.voice}'. Upload a voice first via "
                 "POST /v1/audio/voices, or use ref_audio + ref_text.",
                 param="voice",
@@ -725,35 +692,6 @@ def _explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
         )
         if field in request.model_fields_set
     )
-
-
-def _validate_required_generation_fields(
-    payload: dict[str, Any],
-    *,
-    prefix: str | None = None,
-) -> None:
-    model = payload.get("model")
-    model_is_blank = isinstance(model, str) and not model.strip()
-    if model is None or model_is_blank:
-        raise bad_request(
-            "model is required",
-            param=_field_param("model", prefix=prefix),
-        )
-    voice = payload.get("voice")
-    speaker = payload.get("speaker")
-    voice_is_blank = isinstance(voice, str) and not voice.strip()
-    speaker_is_blank = isinstance(speaker, str) and not speaker.strip()
-    if (voice is None or voice_is_blank) and (speaker is None or speaker_is_blank):
-        raise bad_request(
-            "voice is required",
-            param=_field_param("voice", prefix=prefix),
-        )
-
-
-def _field_param(field_name: str, *, prefix: str | None) -> str:
-    if prefix is None:
-        return field_name
-    return f"{prefix}.{field_name}"
 
 
 def _build_tts_params(

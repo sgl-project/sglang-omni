@@ -210,10 +210,7 @@ class SpeechWebSocketSession:
                 "session.config session must be an object",
                 param="session",
             )
-        self.speech_service.validate_raw_speech_fields(
-            raw_config,
-            require_explicit_model_and_voice=True,
-        )
+        self.speech_service.validate_raw_speech_fields(raw_config)
         _validate_raw_session_fields(raw_config)
         config = SpeechStreamSessionConfig.model_validate(raw_config)
         if config.split_granularity not in SUPPORTED_SPLIT_GRANULARITIES:

@@ -555,8 +555,8 @@ def test_speech_service_rejects_unknown_required_uploaded_voice(
 
     with pytest.raises(SpeechAPIError, match="Unknown voice") as exc_info:
         service.parse_request({"input": "hello", "voice": "missing"})
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.error_type == "NotFoundError"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.error_type == "BadRequestError"
 
 
 def test_speech_service_rejects_batch_default_uploaded_voice_task_type(

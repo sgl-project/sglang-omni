@@ -557,9 +557,9 @@ Pair each token with the matching onomatopoeia immediately after it.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `model` | string | (required) | Served Higgs TTS model identifier |
+| `model` | string | served model | Served Higgs TTS model identifier |
 | `input` | string | (required) | Text to synthesize |
-| `voice` | string | (required) | Voice identifier. Send `"default"` explicitly for the default voice |
+| `voice` | string | `"default"` | Voice identifier |
 | `response_format` | string | `"wav"` | Output audio format (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | bool | `false` | Enable raw PCM streaming |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path, file URL, data URL, or HTTP URL) and `text` (transcript) |

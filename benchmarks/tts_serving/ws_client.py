@@ -79,6 +79,7 @@ async def run_ws_scenario(
             )
         else:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "http_error"
         result.error_type = exc.__class__.__name__
@@ -86,12 +87,14 @@ async def run_ws_scenario(
             result.error = str(exc)
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         result.status = "transport_error"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "transport_error"
         result.error = str(exc)
     except Exception as exc:
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "client_error"
@@ -159,6 +162,7 @@ async def _run_ws_script(
                     return
             else:
                 result.status = "failed"
+                result.success = False
                 result.capability = "fail"
                 result.error = f"unknown WebSocket benchmark action: {action_type}"
                 return
@@ -216,6 +220,7 @@ async def _expect_next_event(
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "transport_error"
             result.error = str(ws.exception())
@@ -274,6 +279,7 @@ async def _expect_audio_until_done(
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "transport_error"
             result.error = str(ws.exception())
@@ -334,6 +340,7 @@ async def _expect_audio_until_session_done(
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "transport_error"
             result.error = str(ws.exception())
@@ -354,6 +361,7 @@ def _merge_text_event(
         event = json.loads(data)
     except json.JSONDecodeError as exc:
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "protocol_error"
@@ -361,6 +369,7 @@ def _merge_text_event(
         return "error"
     if not isinstance(event, dict):
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_class = "protocol_error"
         result.error = "WebSocket event is not a JSON object"
@@ -376,6 +385,7 @@ def _merge_text_event(
             )
             return "error"
         result.status = "failed" if expect_success else "expected_error"
+        result.success = False
         result.capability = "fail" if expect_success else "pass"
         result.error_class = (
             "server_error_event" if expect_success else "expected_client_error"
@@ -417,6 +427,7 @@ def _merge_text_event(
             return event_type
         if event.get("error") is True:
             result.status = "failed" if expect_success else "expected_error"
+            result.success = False
             result.capability = "fail" if expect_success else "pass"
             result.error_class = (
                 "server_error_event" if expect_success else "expected_client_error"

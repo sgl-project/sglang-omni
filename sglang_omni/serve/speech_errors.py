@@ -83,16 +83,6 @@ def bad_request(message: str, *, param: str | None = None) -> SpeechAPIError:
     )
 
 
-def not_found(message: str, *, param: str | None = None) -> SpeechAPIError:
-    return SpeechAPIError(
-        message=message,
-        status_code=404,
-        error_type="NotFoundError",
-        param=param,
-        code=404,
-    )
-
-
 def internal_error(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,

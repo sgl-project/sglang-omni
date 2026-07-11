@@ -470,9 +470,9 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `model` | string | (required) | Served model identifier |
+| `model` | string | served model | Served model identifier |
 | `input` | string | (required) | Text to synthesize |
-| `voice` | string | (required) | Preset or uploaded voice identifier |
+| `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |

@@ -283,8 +283,6 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
             {
                 "type": "session.config",
                 "session": {
-                    "model": "tts",
-                    "voice": "default",
                     "response_format": "pcm",
                     "stream_audio": True,
                     "split_granularity": "sentence",
@@ -318,6 +316,34 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
         assert session_done["total_sentences"] == 2
 
     assert client_impl.generated_prompts == ["Hello.", "Second"]
+
+
+def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
+    async def run() -> None:
+        speech_service = SpeechRequestValidator(default_model="served-model")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=StreamingSpeechClient(),
+            speech_service=speech_service,
+        )
+
+        config = await session._parse_config(
+            {"type": "session.config", "response_format": "pcm"}
+        )
+        prepared = session.config_prepared_request
+
+        assert config.model is None
+        assert config.voice == "default"
+        assert prepared is not None
+        generate_request = speech_service.build_generate_request(
+            prepared.request,
+            validate=False,
+            reference_descriptors=prepared.reference_descriptors,
+        )
+        assert generate_request.model == "served-model"
+        assert generate_request.metadata["tts_params"]["voice"] == "default"
+
+    asyncio.run(run())
 
 
 def test_speech_websocket_rejects_missing_initial_config() -> None:

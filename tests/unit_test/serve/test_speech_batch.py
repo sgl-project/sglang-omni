@@ -178,7 +178,7 @@ def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
     assert client_impl.requests == []
 
 
-def test_batch_speech_requires_resolved_model_and_voice_before_item_work() -> None:
+def test_batch_speech_uses_served_model_and_default_voice() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -187,9 +187,10 @@ def test_batch_speech_requires_resolved_model_and_voice_before_item_work() -> No
         json={"items": [{"input": "one"}]},
     )
 
-    assert response.status_code == 400
-    assert response.json()["error"]["param"] == "items.0.model"
-    assert client_impl.requests == []
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == 1
+    assert client_impl.requests[0].model == "tts"
+    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
 
 
 def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
@@ -199,8 +200,6 @@ def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
     response = client.post(
         "/v1/audio/speech/batch",
         json={
-            "model": "tts",
-            "voice": "default",
             "items": [{"input": "one", "voice": None}],
         },
     )

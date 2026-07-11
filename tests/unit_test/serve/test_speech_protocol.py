@@ -40,27 +40,46 @@ def test_speech_service_rejects_non_string_input() -> None:
     assert exc_info.value.param == "input"
 
 
-@pytest.mark.parametrize(
-    ("payload", "expected_param"),
-    [
-        ({"input": "hello", "voice": "default"}, "model"),
-        ({"model": "tts", "input": "hello"}, "voice"),
-        ({"model": "", "input": "hello", "voice": "default"}, "model"),
-        ({"model": "   ", "input": "hello", "voice": "default"}, "model"),
-        ({"model": "tts", "input": "hello", "voice": ""}, "voice"),
-        ({"model": "tts", "input": "hello", "voice": "   "}, "voice"),
-    ],
-)
-def test_speech_generation_requires_explicit_model_and_voice(
-    payload: dict[str, object], expected_param: str
-) -> None:
+def test_speech_generation_uses_served_model_and_default_voice() -> None:
     service = SpeechRequestValidator(default_model="tts")
+    prepared = service.parse_generation_request({"input": "hello"})
+    generate_request = service.build_generate_request(prepared.request, validate=False)
 
-    with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_generation_request(payload)
+    assert prepared.request.model is None
+    assert prepared.request.voice == "default"
+    assert generate_request.model == "tts"
+    assert generate_request.metadata["tts_params"]["voice"] == "default"
 
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.param == expected_param
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_generation_accepts_seedtts_reference_payload_without_voice(
+    stream: bool,
+) -> None:
+    service = SpeechRequestValidator(default_model="served-model")
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    prepared = service.parse_generation_request(
+        {
+            "model": "seedtts",
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "response_format": "pcm" if stream else "wav",
+            "stream": stream,
+        }
+    )
+    generate_request = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+
+    assert generate_request.model == "seedtts"
+    assert generate_request.stream is stream
+    assert generate_request.metadata["tts_params"]["voice"] == "default"
+    assert generate_request.prompt["references"] == [
+        {"data": ref_audio, "media_type": "audio/wav", "text": "reference transcript"}
+    ]
 
 
 @pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])

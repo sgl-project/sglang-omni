@@ -160,10 +160,10 @@ for a full Python raw PCM consumer.
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `model` | (required) | Served model identifier |
+| `model` | served model | Served model identifier |
 | `input` | (required) | Text to synthesize |
-| `voice` | (required) | Voice identifier. For Base reference cloning, use `default`. The reference clip provides the speaker conditioning |
-| `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
+| `voice` | `default` | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning |
+| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `language` | `auto` | Target-language hint (see list above) |
 | `temperature` | `0.9` | Sampling temperature |

@@ -157,9 +157,10 @@ Malformed HTTP requests must return a structured JSON error body:
 }
 ```
 
-Missing resources must use the same shape with `type: "NotFoundError"` and
-`code: 404`. The missing-voice `DELETE /v1/audio/voices/{name}` contract is a
-voice-management response instead of the generic error envelope:
+Missing voice-management resources use the same shape with `type:
+"NotFoundError"` and `code: 404`. The missing-voice
+`DELETE /v1/audio/voices/{name}` contract is a voice-management response
+instead of the generic error envelope:
 
 ```json
 {
@@ -230,9 +231,9 @@ The matrix is deterministic for a given spec seed. It covers:
 
 Voice scenarios are stateful. Successful standalone uploads verify uploaded
 metadata with `GET /v1/audio/voices`, delete the created voice, and list again
-to prove cleanup. Lifecycle delete also requires a structured 404 when a
-deleted voice is used for synthesis. Repeated runs should not consume
-persistent speaker slots or change later baselines.
+to prove cleanup. Lifecycle delete also verifies that using the deleted voice
+for synthesis returns a structured `400 BadRequestError`. Repeated runs should
+not consume persistent speaker slots or change later baselines.
 
 Compressed response formats are decoded through `ffmpeg` before validation.
 The benchmark checks decoded PCM duration and non-zero signal so container

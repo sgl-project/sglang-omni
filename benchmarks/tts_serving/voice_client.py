@@ -249,7 +249,7 @@ async def run_voice_lifecycle(
             return
         if not _require_voice_absent_in_list(after_delete, result, voice_name):
             return
-        if not await _expect_deleted_voice_speech_404(
+        if not await _expect_deleted_voice_speech_bad_request(
             session, spec, scenario, result, voice_name
         ):
             return
@@ -1397,7 +1397,6 @@ async def _post_speech_with_uploaded_voice(
             )
             return False
         result.audio_bytes += len(body)
-        result.audio_duration_s += validation.duration_s
         return True
 
 
@@ -1412,6 +1411,7 @@ async def _post_batch_with_uploaded_voice(
     payload["voice"] = voice_name
     result.request_bytes += len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     batch_url = api_url(spec.base_url, "/v1/audio/speech/batch")
+    audio_duration_before = result.audio_duration_s
     async with session.post(batch_url, json=payload) as response:
         result.http_status = response.status
         result.http_status_class = classify_http_status(response.status)
@@ -1432,10 +1432,11 @@ async def _post_batch_with_uploaded_voice(
             _classify_http_failure(response.status, body_text, result, scenario)
             return False
         handle_batch_success(body, result, scenario)
+        result.audio_duration_s = audio_duration_before
         return result.status == "ok"
 
 
-async def _expect_deleted_voice_speech_404(
+async def _expect_deleted_voice_speech_bad_request(
     session: aiohttp.ClientSession,
     spec: BenchmarkSpec,
     scenario: Scenario,
@@ -1460,22 +1461,22 @@ async def _expect_deleted_voice_speech_404(
             return False
         status = response.status
     body_text = body.decode("utf-8", errors="replace")
-    if status != 404:
+    if status != 400:
         _mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
-                "speech with a deleted uploaded voice must return HTTP 404 "
+                "speech with a deleted uploaded voice must return HTTP 400 "
                 f"with structured error JSON; got HTTP {status}: {body_text}"
             ),
         )
         return False
-    if not _is_valid_error_response(status, body_text, expected_status=404):
+    if not _is_valid_error_response(status, body_text, expected_status=400):
         _mark_protocol_error(
             result,
             status="invalid_error_response",
             error=(
-                "speech with a deleted uploaded voice returned HTTP 404 without "
+                "speech with a deleted uploaded voice returned HTTP 400 without "
                 f"OpenAI-compatible error JSON: {body_text}"
             ),
         )

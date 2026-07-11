@@ -119,9 +119,9 @@ for a full Python raw PCM consumer.
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `model` | (required) | Served model identifier |
+| `model` | served model | Served model identifier |
 | `input` | (required) | Text to synthesize |
-| `voice` | (required) | Preset voice name from the checkpoint's `voice_embedding/` directory |
+| `voice` | `default` | Preset voice name from the checkpoint's `voice_embedding/` directory |
 | `max_new_tokens` | `4096` | Maximum number of generated acoustic tokens |
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream raw PCM audio chunks |
