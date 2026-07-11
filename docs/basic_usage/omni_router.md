@@ -188,7 +188,7 @@ The table below lists the router command-line arguments.
 | `--model` | not set | Model name assigned to every worker when using `--worker-urls`. Do not use with `--worker-config`. |
 | `--request-timeout-secs` | `1800` | Timeout for proxied worker requests. |
 | `--max-payload-size` | `536870912` | Maximum request body size accepted by the router, in bytes. |
-| `--max-connections` | `100` | Maximum number of HTTP connections used by the router's upstream worker client. |
+| `--max-connections` | auto: `128 x workers`, capped at `4096` | Pool-wide cap on concurrent upstream connections across all workers (one shared client). Explicit values below `64 x workers` log an under-feed warning. |
 | `--health-failure-threshold` | `3` | Consecutive failed health checks or routed request failures before a worker becomes unhealthy. |
 | `--health-success-threshold` | `2` | Consecutive successful health checks before an unhealthy or unknown worker becomes healthy. |
 | `--health-check-timeout-secs` | `5` | Timeout for one worker health-check request. |

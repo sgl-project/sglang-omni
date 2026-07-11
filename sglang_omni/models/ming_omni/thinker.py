@@ -20,131 +20,48 @@ import math
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
+from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
 from torch import nn
-from transformers import PretrainedConfig
 
+from sglang_omni.models.ming_omni.configuration import (
+    BailingMM2Config,
+    BailingMoeV2Config,
+)
+from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
+    LayerCommunicator,
+    LayerScatterModes,
+    MergedColumnParallelLinear,
     QKVParallelLinear,
     QuantizationConfig,
     RadixAttention,
     ReplicatedLinear,
     RMSNorm,
     RowParallelLinear,
+    SiluAndMul,
     VocabParallelEmbedding,
+    get_attention_tp_rank,
+    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
+    should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
-from sglang_omni.vendor.sglang.utils import make_layers
+from sglang_omni.vendor.sglang.utils import add_prefix, make_layers
 
 logger = logging.getLogger(__name__)
 
-
-class BailingMoeV2Config(PretrainedConfig):
-    """Adapter config that maps Ming's config.json to SGLang expectations."""
-
-    model_type = "bailing_moe_v2"
-
-    def __init__(
-        self,
-        vocab_size=157184,
-        hidden_size=4096,
-        intermediate_size=9216,
-        moe_intermediate_size=1024,
-        num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=4,
-        hidden_act="silu",
-        rms_norm_eps=1e-6,
-        max_position_embeddings=32768,
-        rope_theta=2400000.0,
-        partial_rotary_factor=0.5,
-        use_qk_norm=True,
-        use_qkv_bias=False,
-        num_experts=256,
-        num_experts_per_tok=8,
-        num_shared_experts=1,
-        n_group=8,
-        topk_group=4,
-        routed_scaling_factor=2.5,
-        use_expert_bias=True,
-        first_k_dense_replace=1,
-        rope_scaling=None,
-        tie_word_embeddings=False,
-        **kwargs,
-    ):
-        super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.moe_intermediate_size = moe_intermediate_size
-        self.num_hidden_layers = num_hidden_layers
-        self.num_attention_heads = num_attention_heads
-        self.num_key_value_heads = num_key_value_heads
-        self.hidden_act = hidden_act
-        self.rms_norm_eps = rms_norm_eps
-        self.max_position_embeddings = max_position_embeddings
-        self.rope_theta = rope_theta
-        self.partial_rotary_factor = partial_rotary_factor
-        self.use_qk_norm = use_qk_norm
-        self.use_qkv_bias = use_qkv_bias
-        self.num_experts = num_experts
-        self.num_experts_per_tok = num_experts_per_tok
-        self.num_shared_experts = num_shared_experts
-        self.n_group = n_group
-        self.topk_group = topk_group
-        self.routed_scaling_factor = routed_scaling_factor
-        self.use_expert_bias = use_expert_bias
-        self.first_k_dense_replace = first_k_dense_replace
-        # Sanitize rope_scaling: SGLang expects factor to be non-None
-        if isinstance(rope_scaling, dict) and rope_scaling.get("factor") is None:
-            self.rope_scaling = None
-        else:
-            self.rope_scaling = rope_scaling
-
-        # Derived
-        self.head_dim = hidden_size // num_attention_heads
-        self.rotary_dim = int(self.head_dim * partial_rotary_factor)
-
-
-class BailingMM2Config(PretrainedConfig):
-    """Top-level composite config for BailingMM2 (Ming-Omni).
-
-    Registered with AutoConfig so that SGLang can load config.json from HF
-    repos that are missing the custom ``configuration_bailingmm2.py`` file.
-    """
-
-    model_type = "bailingmm_moe_v2_lite"
-
-    def __init__(
-        self,
-        mlp_depth=1,
-        llm_config=None,
-        vision_config=None,
-        audio_config=None,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.mlp_depth = mlp_depth
-        self.llm_config = (
-            BailingMoeV2Config(**llm_config)
-            if isinstance(llm_config, dict)
-            else llm_config
-        )
-        # Use PretrainedConfig for sub-configs so they're JSON-serializable
-        self.audio_config = (
-            PretrainedConfig(**audio_config)
-            if isinstance(audio_config, dict)
-            else audio_config
-        )
-        self.vision_config = (
-            PretrainedConfig(**vision_config)
-            if isinstance(vision_config, dict)
-            else vision_config
-        )
+__all__ = [
+    "BailingMM2Config",
+    "BailingMoeV2Config",
+    "BailingMoeV2ForCausalLM",
+]
 
 
 # ============================================================================
@@ -160,6 +77,7 @@ class BailingMoeV2Attention(nn.Module):
         config: BailingMoeV2Config,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.config = config
@@ -171,9 +89,19 @@ class BailingMoeV2Attention(nn.Module):
         self.rotary_dim = config.rotary_dim
         self.use_qk_norm = config.use_qk_norm
 
-        tp_size = get_tensor_model_parallel_world_size()
-        self.num_heads_per_tp = self.num_heads // tp_size
-        self.num_kv_heads_per_tp = max(1, self.num_kv_heads // tp_size)
+        attn_tp_rank = get_attention_tp_rank()
+        attn_tp_size = get_attention_tp_size()
+        validate_attention_tp_config(
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_kv_heads,
+            tp_size=attn_tp_size,
+            context=f"BailingMoeV2Attention(layer_id={layer_id})",
+        )
+
+        self.attn_tp_rank = attn_tp_rank
+        self.attn_tp_size = attn_tp_size
+        self.num_heads_per_tp = self.num_heads // attn_tp_size
+        self.num_kv_heads_per_tp = max(1, self.num_kv_heads // attn_tp_size)
         self.q_size = self.num_heads_per_tp * self.head_dim
         self.kv_size = self.num_kv_heads_per_tp * self.head_dim
 
@@ -184,12 +112,20 @@ class BailingMoeV2Attention(nn.Module):
             self.num_kv_heads,
             bias=config.use_qkv_bias,
             quant_config=quant_config,
+            tp_rank=attn_tp_rank,
+            tp_size=attn_tp_size,
+            prefix=add_prefix("qkv_proj", prefix),
         )
+
         self.o_proj = RowParallelLinear(
             self.num_heads * self.head_dim,
             self.hidden_size,
             bias=False,
+            reduce_results=False,
             quant_config=quant_config,
+            tp_rank=attn_tp_rank,
+            tp_size=attn_tp_size,
+            prefix=add_prefix("o_proj", prefix),
         )
 
         # QK normalization layers (per-head)
@@ -274,32 +210,57 @@ class BailingMoeV2Attention(nn.Module):
 
 
 class BailingMoeV2MLP(nn.Module):
-    """Standard SiLU-gated MLP."""
+    """Standard SwiGLU MLP implemented with SGLang tensor parallel layers."""
 
     def __init__(
         self,
         config: BailingMoeV2Config,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
+        prefix: str = "",
+        tp_rank: Optional[int] = None,
+        tp_size: Optional[int] = None,
     ):
         super().__init__()
-        self.gate_up_proj = ReplicatedLinear(
+        self.tp_size = tp_size
+        self.gate_up_proj = MergedColumnParallelLinear(
             config.hidden_size,
-            intermediate_size * 2,
+            [intermediate_size] * 2,
             bias=False,
             quant_config=quant_config,
+            prefix=add_prefix("gate_up_proj", prefix),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
         )
-        self.down_proj = ReplicatedLinear(
+        self.down_proj = RowParallelLinear(
             intermediate_size,
             config.hidden_size,
             bias=False,
+            reduce_results=reduce_results,
             quant_config=quant_config,
+            prefix=add_prefix("down_proj", prefix),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
         )
+        self.act_fn = SiluAndMul()
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        forward_batch: Optional[ForwardBatch] = None,
+        should_allreduce_fusion: bool = False,
+        use_reduce_scatter: bool = False,
+    ) -> torch.Tensor:
+        if (self.tp_size == 1) and hidden_states.shape[0] == 0:
+            return hidden_states
         gate_up, _ = self.gate_up_proj(hidden_states)
-        gate, up = gate_up.chunk(2, dim=-1)
-        return self.down_proj(torch.nn.functional.silu(gate) * up)[0]
+        hidden_states = self.act_fn(gate_up)
+        hidden_states, _ = self.down_proj(
+            hidden_states,
+            skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
+        )
+        return hidden_states
 
 
 # ============================================================================
@@ -323,6 +284,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         config: BailingMoeV2Config,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.config = config
@@ -332,6 +294,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
+        self.tp_size = get_tensor_model_parallel_world_size()
 
         # Gate: linear projection for router scores
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
@@ -344,13 +307,8 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         else:
             self.expert_bias = None
 
-        # （wenyao）reduce_results=True so the expert output is all_reduced across TP
-        # ranks before it is combined with the replicated shared-expert output.
-        # Upstream sglang bailing_moe.py uses reduce_results=False + a manual
-        # all_reduce after adding a parallel shared_experts; since our
-        # shared_experts is ReplicatedLinear (full value on every rank), we
-        # must reduce the experts output before the add to avoid double
-        # counting the shared expert contribution.
+        # Routed and shared experts produce TP-partial outputs, combine first,
+        # then reduce once here or via LayerCommunicator all-reduce fusion.
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -359,7 +317,8 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             intermediate_size=config.moe_intermediate_size,
             layer_id=layer_id,
             quant_config=quant_config,
-            reduce_results=True,
+            reduce_results=False,
+            prefix=add_prefix("experts", prefix),
         )
 
         # Shared expert
@@ -367,16 +326,33 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             shared_intermediate = (
                 config.moe_intermediate_size * config.num_shared_experts
             )
+            if should_use_flashinfer_cutlass_moe_fp4_allgather():
+                shared_tp_rank, shared_tp_size = 0, 1
+            else:
+                shared_tp_rank, shared_tp_size = None, None
             self.shared_experts = BailingMoeV2MLP(
-                config, shared_intermediate, quant_config
+                config,
+                shared_intermediate,
+                quant_config,
+                reduce_results=False,
+                prefix=add_prefix("shared_experts", prefix),
+                tp_rank=shared_tp_rank,
+                tp_size=shared_tp_size,
             )
         else:
             self.shared_experts = None
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # Clone for shared expert input: FusedMoE with inplace=True overwrites
-        # hidden_states, so the shared expert must use a separate copy.
-        identity = (
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        forward_batch: Optional[ForwardBatch] = None,
+        should_allreduce_fusion: bool = False,
+        use_reduce_scatter: bool = False,
+    ) -> torch.Tensor:
+        del forward_batch
+        num_tokens, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        shared_input = (
             hidden_states.clone() if self.shared_experts is not None else hidden_states
         )
 
@@ -412,13 +388,24 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             topk_ids=topk_ids,
             router_logits=router_logits,
         )
-        y = self.experts(hidden_states, topk_output)
+        routed_output = self.experts(hidden_states, topk_output)
 
         # Add shared expert output
         if self.shared_experts is not None:
-            y = y + self.shared_experts(identity)
+            shared_output = self.shared_experts(shared_input)
+            final_hidden_states = routed_output + shared_output
+        else:
+            final_hidden_states = routed_output
 
-        return y
+        if (
+            self.tp_size > 1
+            and not should_allreduce_fusion
+            and not use_reduce_scatter
+            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
+        ):
+            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+
+        return final_hidden_states.view(num_tokens, hidden_dim)
 
     def _group_limited_topk(
         self, scores: torch.Tensor
@@ -475,6 +462,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
         config: BailingMoeV2Config,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.layer_id = layer_id
@@ -483,16 +471,56 @@ class BailingMoeV2DecoderLayer(nn.Module):
 
         # Attention
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = BailingMoeV2Attention(config, layer_id, quant_config)
+        self.self_attn = BailingMoeV2Attention(
+            config,
+            layer_id,
+            quant_config,
+            prefix=add_prefix("self_attn", prefix),
+        )
 
         # FFN: dense MLP for first_k_dense_replace layers, MoE for rest
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
         if self.is_dense:
-            self.mlp = BailingMoeV2MLP(config, config.intermediate_size, quant_config)
+            if enable_moe_dense_fully_dp():
+                mlp_tp_rank, mlp_tp_size = 0, 1
+            else:
+                mlp_tp_rank, mlp_tp_size = None, None
+            self.mlp = BailingMoeV2MLP(
+                config,
+                config.intermediate_size,
+                quant_config,
+                prefix=add_prefix("mlp", prefix),
+                tp_rank=mlp_tp_rank,
+                tp_size=mlp_tp_size,
+            )
         else:
-            self.mlp = BailingMoeV2SparseMoeBlock(config, layer_id, quant_config)
+            self.mlp = BailingMoeV2SparseMoeBlock(
+                config,
+                layer_id,
+                quant_config,
+                prefix=add_prefix("mlp", prefix),
+            )
+
+        is_layer_sparse = not self.is_dense
+        is_previous_layer_sparse = layer_id - 1 >= config.first_k_dense_replace
+        is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
+
+        self.layer_scatter_modes = LayerScatterModes.init_new(
+            layer_id=layer_id,
+            num_layers=config.num_hidden_layers,
+            is_layer_sparse=is_layer_sparse,
+            is_previous_layer_sparse=is_previous_layer_sparse,
+            is_next_layer_sparse=is_next_layer_sparse,
+        )
+        self.layer_communicator = LayerCommunicator(
+            layer_scatter_modes=self.layer_scatter_modes,
+            input_layernorm=self.input_layernorm,
+            post_attention_layernorm=self.post_attention_layernorm,
+            allow_reduce_scatter=True,
+            is_last_layer=(self.layer_id == config.num_hidden_layers - 1),
+        )
 
     def forward(
         self,
@@ -500,18 +528,48 @@ class BailingMoeV2DecoderLayer(nn.Module):
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Self attention with pre-norm
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, residual = (
+            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
+                hidden_states,
+                residual,
+                forward_batch,
+                captured_last_layer_outputs=None,
+            )
+        )
+
+        if hidden_states.shape[0] != 0:
+            hidden_states = self.self_attn(hidden_states, forward_batch)
+
+        hidden_states, residual = self.layer_communicator.prepare_mlp(
+            hidden_states=hidden_states,
+            residual=residual,
+            forward_batch=forward_batch,
+        )
+
+        should_allreduce_fusion = (
+            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
+                forward_batch
+            )
+        )
+        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
+            forward_batch
+        )
+
+        hidden_states = self.mlp(
+            hidden_states,
+            forward_batch=forward_batch,
+            should_allreduce_fusion=should_allreduce_fusion,
+            use_reduce_scatter=use_reduce_scatter,
+        )
+
+        if should_allreduce_fusion:
+            hidden_states._sglang_needs_allreduce_fusion = True
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-
-        hidden_states = self.self_attn(hidden_states, forward_batch)
-
-        # FFN with post-attention norm
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+            hidden_states, residual = self.layer_communicator.postprocess_layer(
+                hidden_states,
+                residual,
+                forward_batch,
+            )
 
         return hidden_states, residual
 
@@ -536,7 +594,10 @@ class BailingMoeV2TextModel(nn.Module):
         )
         self.layers = make_layers(
             config.num_hidden_layers,
-            lambda idx, prefix="": BailingMoeV2DecoderLayer(config, idx, quant_config),
+            lambda idx, prefix="": BailingMoeV2DecoderLayer(
+                config, idx, quant_config, prefix=prefix
+            ),
+            prefix="layers",
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -575,9 +636,10 @@ class BailingMoeV2TextModel(nn.Module):
         }
 
         params_dict = dict(self.named_parameters())
-
-        # Buffer for shared expert gate/up fusion
-        _shared_expert_buf: dict[str, dict[str, torch.Tensor]] = {}
+        _loaded_weight_count = 0
+        _skipped_weight_count = 0
+        _unmatched_weight_names: list[str] = []
+        _gate_up_fused_shards: dict[str, set[int]] = {}
 
         for name, loaded_weight in weights:
             # Strip common prefixes from Ming checkpoint
@@ -613,6 +675,7 @@ class BailingMoeV2TextModel(nn.Module):
                     if fused_key in params_dict:
                         param = params_dict[fused_key]
                         param.weight_loader(param, loaded_weight, shard_id)
+                        _loaded_weight_count += 1
                         matched_attn = True
                         break
             if matched_attn:
@@ -646,30 +709,27 @@ class BailingMoeV2TextModel(nn.Module):
                             shard_id=shard_id,
                             expert_id=expert_id,
                         )
+                        _loaded_weight_count += 1
                         continue
 
             # 3. Handle gate/up -> fused gate_up_proj
             # Applies to both shared_experts and dense MLP (layer 0)
             # Ming ckpt: *.gate_proj.weight / *.up_proj.weight
-            # Our model: *.gate_up_proj.weight (concatenated)
-            if ".gate_proj." in name or ".up_proj." in name:
-                # Try to find the corresponding gate_up_proj parameter
-                fused_key = name.replace(".gate_proj.", ".gate_up_proj.").replace(
-                    ".up_proj.", ".gate_up_proj."
-                )
-                if fused_key in params_dict:
-                    buf = _shared_expert_buf.setdefault(fused_key, {})
-                    if "gate_proj" in name:
-                        buf["gate"] = loaded_weight
-                    else:
-                        buf["up"] = loaded_weight
-                    if "gate" in buf and "up" in buf:
-                        param = params_dict[fused_key]
-                        fused = torch.cat([buf["gate"], buf["up"]], dim=0)
-                        default_weight_loader(param, fused)
-                        del _shared_expert_buf[fused_key]
-
+            # Our model: *.gate_up_proj.weight (MergedColumnParallelLinear)
+            matched_mlp_gate_up = False
+            for weight_name, shard_id in ((".gate_proj.", 0), (".up_proj.", 1)):
+                if weight_name not in name:
                     continue
+                fused_key = name.replace(weight_name, ".gate_up_proj.")
+                if fused_key in params_dict:
+                    param = params_dict[fused_key]
+                    param.weight_loader(param, loaded_weight, shard_id)
+                    _loaded_weight_count += 1
+                    _gate_up_fused_shards.setdefault(fused_key, set()).add(shard_id)
+                    matched_mlp_gate_up = True
+                    break
+            if matched_mlp_gate_up:
+                continue
 
             # 4. Handle shared expert gate_up_proj / down_proj directly
             # (already fused in checkpoint)
@@ -677,6 +737,35 @@ class BailingMoeV2TextModel(nn.Module):
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
+                _loaded_weight_count += 1
+                continue
+
+            _skipped_weight_count += 1
+            _unmatched_weight_names.append(name)
+
+        incomplete_gate_up_pairs = {
+            key: sorted({0, 1} - shards)
+            for key, shards in _gate_up_fused_shards.items()
+            if shards != {0, 1}
+        }
+        if incomplete_gate_up_pairs:
+            raise ValueError(
+                "Incomplete Ming gate/up fused weights: "
+                f"missing_pairs={incomplete_gate_up_pairs}"
+            )
+        if _unmatched_weight_names:
+            logger.warning(
+                "Ming thinker text loader skipped unmatched weights: "
+                "count=%d sample=%s",
+                len(_unmatched_weight_names),
+                _unmatched_weight_names[:10],
+            )
+        logger.info(
+            "Ming thinker text loader summary: loaded=%d skipped=%d unmatched=%d",
+            _loaded_weight_count,
+            _skipped_weight_count,
+            len(_unmatched_weight_names),
+        )
 
 
 # ============================================================================
@@ -816,6 +905,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
         - everything else → self.model (BailingMoeV2TextModel)
         """
         model_weights = []
+        _loaded_lm_head_count = 0
+        _skipped_tower_count = 0
         lm_head_params = dict(self.lm_head.named_parameters())
 
         for name, tensor in weights:
@@ -836,20 +927,24 @@ class BailingMoeV2ForCausalLM(nn.Module):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, tensor)
+                    _loaded_lm_head_count += 1
                 continue
 
             # Skip vision encoder + projector weights (handled by IMAGE_STAGE)
             if stripped.startswith("vision."):
+                _skipped_tower_count += 1
                 continue
             if stripped.startswith("linear_proj.") and not stripped.startswith(
                 "linear_proj_audio."
             ):
+                _skipped_tower_count += 1
                 continue
 
             # Skip audio weights (handled by AUDIO_STAGE)
             if stripped.startswith("audio.") or stripped.startswith(
                 "linear_proj_audio."
             ):
+                _skipped_tower_count += 1
                 continue
 
             # Pass original name to text model (it does its own prefix stripping)
@@ -857,6 +952,13 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
         # Load text model weights
         self.model.load_weights(iter(model_weights))
+        logger.info(
+            "Ming top-level loader summary: lm_head_loaded=%d tower_skipped=%d "
+            "text_weight_candidates=%d",
+            _loaded_lm_head_count,
+            _skipped_tower_count,
+            len(model_weights),
+        )
 
         # Handle weight tying
         llm_cfg = getattr(self.config, "llm_config", self.config)

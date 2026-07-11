@@ -1,0 +1,18 @@
+name: Omni Cleanup Host
+description: >
+  Reclaim an ephemeral CI home directory (run-*) on the self-hosted runner.
+  PR-scoped homes (pr-*) are preserved across pushes and removed on PR close or
+  by runner TTL; do not pass pr-* paths here after normal PR CI runs.
+
+inputs:
+  ci-home:
+    description: >
+      PR-scoped CI home directory (for example /data/omni-ci/pr-557).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cleanup PR CI home
+      shell: bash
+      run: bash .github/scripts/cleanup_ci_pr_home.sh "${{ inputs.ci-home }}"

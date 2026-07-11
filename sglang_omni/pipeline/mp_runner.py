@@ -18,7 +18,10 @@ from sglang_omni.config.placement import (
     resolve_same_gpu_stream_targets,
     resolve_stage_gpu_ids,
 )
-from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_arg_defaults,
+    resolve_stage_static_factory_args,
+)
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
@@ -28,8 +31,11 @@ from sglang_omni.pipeline.runtime_config import (
     build_relay_config,
     prepare_pipeline_runtime,
 )
-from sglang_omni.pipeline.stage_group import StageGroup
-from sglang_omni.pipeline.stage_process import StageProcessSpec, StageWorkerProcessSpec
+from sglang_omni.pipeline.stage_workers import (
+    StageGroup,
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+)
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -58,10 +64,11 @@ def _build_stage_groups(
     for scfg in stages_cfg:
         for target in scfg.stream_to:
             stream_receivers.add(target)
+    stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
 
     nccl_port_counter = _NcclPortAllocator()
 
-    single_stage_specs: dict[str, StageProcessSpec] = {}
+    single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
         tp_size = stage_cfg.tp_size
@@ -72,9 +79,17 @@ def _build_stage_groups(
             placement_plan,
             stage_cfg,
         )
+        same_process_targets = _resolve_same_process_targets(
+            stage_cfg,
+            stage_cfg_by_name,
+            name_map,
+            process_plan,
+        )
 
-        # Pre-resolve factory args (inject model_path, gpu_id)
-        base_factory_args = resolve_stage_factory_args(stage_cfg, config)
+        # Avoid importing stage factories in the parent process. The child
+        # injects signature-dependent args after importing the factory it must
+        # construct anyway.
+        base_factory_args = resolve_stage_static_factory_args(stage_cfg, config)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
@@ -82,6 +97,7 @@ def _build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
+            env_defaults=dict(config.env_defaults),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -95,6 +111,7 @@ def _build_stage_groups(
             stream_targets=list(stage_cfg.stream_to),
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             same_gpu_targets=same_gpu_targets,
+            same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             name_map=name_map,
@@ -125,7 +142,6 @@ def _build_stage_groups(
                         spec.tp_rank
                     ],
                     stage_specs=[spec],
-                    gpu_id=spec.gpu_id,
                 )
                 for spec in specs
             ]
@@ -143,7 +159,6 @@ def _build_stage_groups(
                             single_stage_specs[stage_name]
                             for stage_name in group.stage_names
                         ],
-                        gpu_id=group.gpu_id,
                     )
                 ],
             )
@@ -151,6 +166,36 @@ def _build_stage_groups(
     groups.extend(tp_groups)
 
     return groups
+
+
+def _resolve_same_process_targets(
+    stage_cfg: StageConfig,
+    stage_cfg_by_name: dict[str, StageConfig],
+    name_map: dict[str, str],
+    process_plan: ProcessTopologyPlan,
+) -> set[str]:
+    if stage_cfg.tp_size > 1:
+        return set()
+    source_process = process_plan.stage_to_process.get(stage_cfg.name)
+    if source_process is None:
+        return set()
+
+    raw_targets: list[str] = []
+    if stage_cfg.next is not None:
+        raw_targets.extend(
+            [stage_cfg.next] if isinstance(stage_cfg.next, str) else stage_cfg.next
+        )
+    raw_targets.extend(stage_cfg.stream_to)
+
+    same_process_targets: set[str] = set()
+    for raw_target in raw_targets:
+        target = name_map.get(raw_target, raw_target)
+        target_cfg = stage_cfg_by_name.get(target)
+        if target_cfg is None or target_cfg.tp_size > 1:
+            continue
+        if process_plan.stage_to_process.get(target) == source_process:
+            same_process_targets.add(target)
+    return same_process_targets
 
 
 def _build_single_stage_spec(
@@ -161,18 +206,19 @@ def _build_single_stage_spec(
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
-) -> StageProcessSpec:
+) -> StageLaunchConfig:
     factory_args = dict(base_factory_args)
-    if "gpu_id" in base_factory_args:
-        factory_args["gpu_id"] = gpu_id
     relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
-    return StageProcessSpec(
+    return StageLaunchConfig(
         role="single",
         tp_rank=0,
         tp_size=1,
         gpu_id=gpu_id,
         nccl_port=None,
         factory_args=factory_args,
+        factory_arg_defaults=resolve_stage_factory_arg_defaults(
+            stage_cfg, config, gpu_id=gpu_id
+        ),
         relay_config=relay_config,
         recv_endpoint=recv_endpoint,
         **stage_kwargs,
@@ -189,18 +235,17 @@ def _build_tp_stage_specs(
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
-) -> list[StageProcessSpec]:
+) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
-    specs: list[StageProcessSpec] = []
+    follower_admin_result_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
+    specs: list[StageLaunchConfig] = []
 
     for tp_rank in range(stage_cfg.tp_size):
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
         factory_args = dict(base_factory_args)
-        if "gpu_id" in base_factory_args:
-            factory_args["gpu_id"] = gpu_id
         factory_args["tp_rank"] = tp_rank
         factory_args["tp_size"] = stage_cfg.tp_size
         factory_args["nccl_port"] = nccl_port
@@ -209,17 +254,21 @@ def _build_tp_stage_specs(
 
         if tp_rank == 0:
             specs.append(
-                StageProcessSpec(
+                StageLaunchConfig(
                     role="leader",
                     tp_rank=tp_rank,
                     tp_size=stage_cfg.tp_size,
                     gpu_id=gpu_id,
                     nccl_port=nccl_port,
                     factory_args=factory_args,
+                    factory_arg_defaults=resolve_stage_factory_arg_defaults(
+                        stage_cfg, config, gpu_id=gpu_id
+                    ),
                     relay_config=relay_config,
                     recv_endpoint=recv_endpoint,
                     follower_work_queues=follower_work_queues,
                     follower_abort_queues=follower_abort_queues,
+                    follower_admin_result_queues=follower_admin_result_queues,
                     **stage_kwargs,
                 )
             )
@@ -227,17 +276,21 @@ def _build_tp_stage_specs(
 
         idx = tp_rank - 1
         specs.append(
-            StageProcessSpec(
+            StageLaunchConfig(
                 role="follower",
                 tp_rank=tp_rank,
                 tp_size=stage_cfg.tp_size,
                 gpu_id=gpu_id,
                 nccl_port=nccl_port,
                 factory_args=factory_args,
+                factory_arg_defaults=resolve_stage_factory_arg_defaults(
+                    stage_cfg, config, gpu_id=gpu_id
+                ),
                 relay_config=relay_config,
                 recv_endpoint="",
                 internal_work_queue=follower_work_queues[idx],
                 internal_abort_queue=follower_abort_queues[idx],
+                internal_admin_result_queue=follower_admin_result_queues[idx],
                 **stage_kwargs,
             )
         )
@@ -358,6 +411,9 @@ class MultiProcessPipelineRunner:
             )
 
             self._groups = groups
+            if self._config.env_defaults:
+                env_names = ", ".join(sorted(self._config.env_defaults))
+                logger.info(f"Configured stage process env defaults: {env_names}")
             for group in self._groups:
                 group.spawn(ctx)
 

@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 import httpx
 import pytest
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from sglang_omni_router import proxy as proxy_module
-from sglang_omni_router.app import create_app
+from sglang_omni_router.app import _broadcast_admin_request, create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.worker import build_workers
@@ -23,7 +24,7 @@ def _request_netloc(request: httpx.Request) -> str:
 def _router_config(
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
-    max_connections: int = 100,
+    max_connections: int | None = None,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
@@ -160,6 +161,80 @@ def test_health_checks_use_separate_client_from_data_plane_client() -> None:
     assert response.status_code == 200
     assert health_paths == ["/health"]
     assert data_paths == ["/v1/chat/completions"]
+
+
+def test_generate_is_forwarded_opaquely_to_a_worker() -> None:
+    data_paths: list[str] = []
+
+    def data_handler(request: httpx.Request) -> httpx.Response:
+        data_paths.append(request.url.path)
+        if request.url.path == "/generate":
+            return httpx.Response(
+                200, json={"text": "hi", "meta_info": {}}, request=request
+            )
+        raise AssertionError(f"data-plane client should not call {request.url.path}")
+
+    def health_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        raise AssertionError(f"health client should not call {request.url.path}")
+
+    data_client = httpx.AsyncClient(transport=httpx.MockTransport(data_handler))
+    health_client = httpx.AsyncClient(transport=httpx.MockTransport(health_handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=data_client,
+        health_client=health_client,
+    )
+
+    with TestClient(app) as client:
+        ready = client.get("/ready")
+        response = client.post(
+            "/generate",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "sampling_params": {},
+            },
+        )
+
+    assert ready.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["text"] == "hi"
+    assert data_paths == ["/generate"]
+
+
+def test_generate_audio_output_routes_to_audio_worker() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/generate":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(
+                200, json={"text": "hi", "meta_info": {}}, request=request
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"chat", "audio_output"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(worker_configs=worker_configs), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/generate",
+            json={
+                "messages": [{"role": "user", "content": "say hi"}],
+                "sampling_params": {},
+                "output_modalities": ["audio"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
 
 
 def test_router_liveness_does_not_wait_for_worker_health_probe() -> None:
@@ -362,6 +437,130 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     assert response.json()["data"] == [
         {"id": "qwen3-omni", "object": "model", "created": 0}
     ]
+
+
+def test_admin_routes_broadcast_to_live_workers_and_preserve_query() -> None:
+    seen: list[tuple[str, bytes, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/weights_checker":
+            seen.append((_request_netloc(request), request.url.query, request.content))
+            return httpx.Response(
+                200,
+                json={"success": True, "worker": _request_netloc(request)},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/weights_checker?action=checksum")
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert {item[0] for item in seen} == {"worker-a:8101", "worker-b:8102"}
+    assert [item[1] for item in seen] == [b"action=checksum", b"action=checksum"]
+    assert [item[2] for item in seen] == [b"", b""]
+
+
+def test_model_info_broadcast_exposes_sglang_compatible_weight_version() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/model_info":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "weight_version": "v7",
+                    "model_path": "/tmp/model-v7",
+                    "load_format": "safetensors",
+                    "stages": [
+                        {
+                            "stage": "decode",
+                            "success": True,
+                            "data": {
+                                "weight_version": "v7",
+                                "model_path": "/tmp/model-v7",
+                                "load_format": "safetensors",
+                            },
+                        }
+                    ],
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/model_info")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["weight_version"] == "v7"
+    assert body["model_path"] == "/tmp/model-v7"
+    assert body["load_format"] == "safetensors"
+    assert len(body["workers"]) == 2
+
+
+def test_model_info_broadcast_rejects_mixed_worker_weight_versions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/model_info":
+            version = "v1" if _request_netloc(request) == "worker-a:8101" else "v2"
+            return httpx.Response(
+                200,
+                json={"success": True, "weight_version": version},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/model_info")
+
+    body = response.json()["detail"]
+    assert response.status_code == 409
+    assert body["success"] is False
+    assert set(body["mixed_state"]["weight_version"]) == {"v1", "v2"}
+
+
+def test_admin_update_temporarily_disables_workers_and_restores_state() -> None:
+    app_holder: dict[str, Any] = {}
+    disabled_snapshots: list[tuple[bool, bool]] = []
+    seen_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/pause_generation":
+            workers = app_holder["app"].state.workers
+            disabled_snapshots.append(tuple(worker.disabled for worker in workers))
+            seen_bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"success": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+    app_holder["app"] = app
+
+    with TestClient(app) as client:
+        app.state.workers[1].set_disabled(True)
+        response = client.post("/pause_generation", json={"mode": "in_place"})
+
+    assert response.status_code == 200
+    assert disabled_snapshots == [(True, True), (True, True)]
+    assert seen_bodies == [{"mode": "in_place"}, {"mode": "in_place"}]
+    assert [worker.disabled for worker in app.state.workers] == [False, True]
 
 
 def test_models_merge_queries_workers_concurrently_with_control_timeout() -> None:
@@ -871,14 +1070,14 @@ def test_streaming_upstream_error_cleans_active_count() -> None:
     app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
-        with pytest.raises(httpx.ReadError, match="stream boom"):
-            with client.stream(
-                "POST",
-                "/v1/chat/completions",
-                json={"model": "qwen3-omni", "stream": True},
-            ) as response:
-                b"".join(response.iter_bytes())
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
 
+    assert b"upstream_error" in body
     assert all(worker.active_requests == 0 for worker in app.state.workers)
 
 
@@ -910,20 +1109,313 @@ def test_streaming_failure_records_single_worker_failure() -> None:
     )
 
     with TestClient(app) as client:
-        with pytest.raises(httpx.ReadError, match="stream boom"):
-            with client.stream(
-                "POST",
-                "/v1/chat/completions",
-                json={"model": "qwen3-omni", "stream": True},
-            ) as response:
-                b"".join(response.iter_bytes())
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
 
+    assert b"upstream_error" in body
     worker = app.state.workers[0]
     assert worker.routed_requests == 1
     assert worker.successful_requests == 0
     assert worker.failed_requests == 1
     assert worker.consecutive_failures == 1
     assert worker.state == "healthy"
+
+
+def test_streaming_inflight_count_decrements_even_if_aclose_raises() -> None:
+    class AcloseRaisingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: chunk\n\n"
+            raise httpx.ReadError("stream boom")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("aclose boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=AcloseRaisingStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            b"".join(response.iter_bytes())
+
+    # Note (Jiaxin Deng): the in-flight count must decrement even though aclose()
+    # raised, otherwise it leaks and least_request drifts permanently.
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+    # Note (Jiaxin Deng): record_routed_request() runs in the same finally, so the
+    # broken stream is still booked as a routed failure rather than silently
+    # dropped; guards against a future change skipping the completion accounting.
+    assert sum(worker.routed_requests for worker in app.state.workers) == 1
+    assert sum(worker.failed_requests for worker in app.state.workers) == 1
+
+
+# Streaming-relay semantics for the non-streaming path (Phase 0, #920): the relay
+# no longer buffers the full body, so failures after the status commits truncate,
+# and the response is chunked with a status-code-based worker error string.
+
+
+def test_non_streaming_midstream_failure_truncates_instead_of_502() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"partial": true'
+            raise httpx.ReadError("body boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        with pytest.raises(httpx.ReadError, match="body boom"):
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={"model": "qwen3-omni", "messages": []},
+            ) as response:
+                assert response.status_code == 200
+                b"".join(response.iter_bytes())
+
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_non_streaming_error_status_relays_full_body_not_truncated() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                502,
+                content=b'{"error": "upstream declined"}',
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    # Note (Jiaxin Deng): a complete error-status body relays cleanly (only a
+    # failure after the body starts truncates); the connect-time 502 boundary is
+    # pinned by test_upstream_request_failure_returns_502_and_cleans_active_count.
+    assert response.status_code == 502
+    assert response.json() == {"error": "upstream declined"}
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_worker_failure_last_error_uses_status_code_not_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                503,
+                content=b'{"detail": "scheduler overloaded, retry later"}',
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            health_failure_threshold=2,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert response.status_code == 503
+    worker = app.state.workers[0]
+    # Note (Jiaxin Deng): recorded as the status code, not a snippet of the
+    # (non-empty) body, since the streaming relay cannot read it without consuming.
+    assert worker.last_error == "status=503"
+
+
+def test_relayed_response_has_no_content_length_header() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                content=b'{"ok": true}',
+                headers={
+                    "content-type": "application/json",
+                    "content-length": "12",
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert response.status_code == 200
+    assert response.content == b'{"ok": true}'
+    assert "content-length" not in {key.lower() for key in response.headers}
+
+
+def test_sse_terminal_error_event_appended_after_prior_events() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"i": 1}\n\n'
+            yield b'data: {"i": 2}\n\n'
+            yield b'data: {"i": 3}\n\n'
+            raise httpx.ReadError("sse boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            body = b"".join(response.iter_bytes())
+
+    assert (
+        body.index(b'{"i": 1}')
+        < body.index(b'{"i": 2}')
+        < body.index(b'{"i": 3}')
+        < body.index(b"upstream_error")
+    )
+    assert body.count(b"data: ") == 4  # 3 upstream events + 1 terminal error event
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_non_sse_midstream_failure_is_not_injected_with_error_event() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"RIFF....partial-wav"
+            raise httpx.ReadError("audio boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "audio/wav"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        # Note (Jiaxin Deng): a non-SSE body truncates (ReadError propagates); if
+        # the SSE error event were wrongly injected, it would end cleanly instead.
+        with pytest.raises(httpx.ReadError, match="audio boom"):
+            with client.stream(
+                "POST",
+                "/v1/audio/speech",
+                json={"model": "qwen3-omni"},
+            ) as response:
+                assert response.status_code == 200
+                b"".join(response.iter_bytes())
+
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_active_requests_held_across_body_relay_then_released() -> None:
+    # Note (Jiaxin Deng): recording active_requests at each yield proves the
+    # count is held while the body is still relaying (0 if released early), 0 after.
+    app_holder: list[FastAPI] = []
+    observed_during_relay: list[int] = []
+
+    class ObservingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            worker = app_holder[0].state.workers[0]
+            observed_during_relay.append(worker.active_requests)
+            yield b"chunk-1"
+            observed_during_relay.append(worker.active_requests)
+            yield b"chunk-2"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            return httpx.Response(
+                200,
+                stream=ObservingStream(),
+                headers={"content-type": "audio/wav"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=async_client,
+    )
+    app_holder.append(app)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/speech", json={"model": "qwen3-omni"})
+
+    assert response.status_code == 200
+    assert response.content == b"chunk-1chunk-2"
+    assert observed_during_relay == [1, 1]
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
 
 
 def test_least_request_avoids_worker_with_active_stream_load() -> None:
@@ -1543,3 +2035,320 @@ def test_payload_without_content_length_is_rejected_while_streaming_body() -> No
 
     assert response.status_code == 413
     assert seen_paths == []
+
+
+# ---------------------------------------------------------------------------
+# Admin auth tests - router
+# ---------------------------------------------------------------------------
+
+_ROUTER_ADMIN_PATHS = [
+    ("GET", "/model_info"),
+    ("POST", "/model_info"),
+    ("POST", "/pause_generation"),
+    ("POST", "/continue_generation"),
+    ("POST", "/update_weights_from_disk"),
+    ("POST", "/update_weights_from_tensor"),
+    ("POST", "/update_weights_from_distributed"),
+    ("POST", "/init_weights_update_group"),
+    ("POST", "/destroy_weights_update_group"),
+    ("GET", "/weights_checker"),
+    ("POST", "/weights_checker"),
+]
+
+_ROUTER_ADMIN_API_KEY = "router-secret"
+
+
+def _admin_headers(
+    key: str = _ROUTER_ADMIN_API_KEY,
+    *,
+    scheme: str = "Bearer",
+) -> dict[str, str]:
+    return {"Authorization": f"{scheme} {key}"}
+
+
+def _admin_router_app(admin_api_key: str | None = None) -> FastAPI:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path in ("/model_info", "/weights_checker"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "message": "ok",
+                    "results": [],
+                    "weight_version": "v1",
+                    "model_path": "/tmp/m",
+                    "load_format": "safetensors",
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"success": True, "message": "ok", "results": []},
+            request=request,
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return create_app(
+        _router_config(),
+        client=async_client,
+        admin_api_key=admin_api_key,
+    )
+
+
+def test_router_admin_routes_open_without_key() -> None:
+    """Admin routes are accessible with no auth header when no key is configured."""
+    app = _admin_router_app(admin_api_key=None)
+    with TestClient(app) as client:
+        resp = client.get("/model_info")
+        assert resp.status_code == 200
+
+
+def test_router_admin_routes_require_bearer_when_key_set() -> None:
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
+    with TestClient(app) as client:
+        for method, path in _ROUTER_ADMIN_PATHS:
+            resp = client.request(method, path, json={})
+            assert (
+                resp.status_code == 401
+            ), f"{method} {path} expected 401, got {resp.status_code}"
+            assert "WWW-Authenticate" in resp.headers
+
+
+def test_router_admin_routes_reject_wrong_token() -> None:
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
+    with TestClient(app) as client:
+        resp = client.get("/model_info", headers=_admin_headers("wrong"))
+        assert resp.status_code == 403
+
+
+def test_router_admin_routes_accept_correct_token() -> None:
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
+    with TestClient(app) as client:
+        resp = client.get("/model_info", headers=_admin_headers(scheme="bearer"))
+        assert resp.status_code == 200
+
+
+def test_router_admin_env_key(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "env-router-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "message": "ok",
+                "results": [],
+                "weight_version": None,
+                "model_path": None,
+                "load_format": None,
+            },
+            request=request,
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        assert client.get("/model_info").status_code == 401
+        resp = client.get("/model_info", headers=_admin_headers("env-router-key"))
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Router stub endpoint 501 tests
+# ---------------------------------------------------------------------------
+
+
+def test_router_unimplemented_tensor_weight_update_returns_501() -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post("/update_weights_from_tensor", json={})
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/update_weights_from_distributed",
+            {"names": ["w.0"], "dtypes": ["bfloat16"], "shapes": [[2, 2]]},
+        ),
+        ("/destroy_weights_update_group", {"group_name": "weight_update_group"}),
+    ],
+)
+def test_router_distributed_weight_update_routes_broadcast(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post(path, json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+
+_INIT_GROUP_PAYLOAD = {
+    "master_address": "localhost",
+    "master_port": 12355,
+    "world_size": 2,
+    "rank_offset": 1,
+    "group_name": "weight_update_group",
+    "backend": "nccl",
+}
+
+
+def test_router_init_weights_update_group_single_replica_broadcasts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        return httpx.Response(
+            200, json={"success": True, "message": "ok", "results": []}, request=request
+        )
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=async_client,
+    )
+    with TestClient(app) as client:
+        resp = client.post("/init_weights_update_group", json=_INIT_GROUP_PAYLOAD)
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert app.state.workers[0].disabled is False
+
+
+def test_router_init_weights_update_group_failure_keeps_worker_disabled() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/init_weights_update_group":
+            return httpx.Response(
+                504,
+                json={"success": False, "message": "rendezvous timed out"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=async_client,
+    )
+    with TestClient(app) as client:
+        resp = client.post("/init_weights_update_group", json=_INIT_GROUP_PAYLOAD)
+    assert resp.status_code == 502
+    assert resp.json()["success"] is False
+    assert app.state.workers[0].disabled is True
+
+
+def test_router_init_weights_update_group_rejects_multiple_replicas() -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post("/init_weights_update_group", json=_INIT_GROUP_PAYLOAD)
+    assert resp.status_code == 422
+    assert "single-replica" in resp.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Router admin_update_lock timeout test
+# ---------------------------------------------------------------------------
+
+
+def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
+    """If the lock is held beyond timeout, the request returns 503."""
+
+    async def _run():
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "healthy"}, request=request)
+            return httpx.Response(
+                200,
+                json={"success": True, "message": "ok", "results": []},
+                request=request,
+            )
+
+        async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        app = create_app(_router_config(), client=async_client)
+
+        # Simulate a held lock by acquiring it before the request
+        async with app.router.lifespan_context(app):
+            lock = app.state.admin_update_lock
+            await lock.acquire()
+            monkeypatch.setattr(
+                "sglang_omni_router.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
+                0.05,
+            )
+            try:
+                scope = {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/update_weights_from_disk",
+                    "headers": [(b"content-type", b"application/json")],
+                    "query_string": b"",
+                    "scheme": "http",
+                    "server": ("testserver", 80),
+                    "client": ("testclient", 50000),
+                }
+
+                async def receive():
+                    return {"type": "http.request", "body": b"{}", "more_body": False}
+
+                fake_request = Request(scope, receive)
+                result = await _broadcast_admin_request(
+                    app, fake_request, "/update_weights_from_disk"
+                )
+                return result
+            finally:
+                lock.release()
+
+    result = asyncio.run(_run())
+    assert result.status_code == 503
+    body = json.loads(result.body)
+    assert "lock" in body["error"]["message"].lower()
+
+
+def test_max_connections_auto_sizes_to_worker_count() -> None:
+    config = RouterConfig(
+        workers=[
+            WorkerConfig(url="http://worker-a:8101"),
+            WorkerConfig(url="http://worker-b:8102"),
+            WorkerConfig(url="http://worker-c:8103"),
+        ],
+    )
+    # Note: (Jiaxin Deng) 128 per worker: pool-wide cap must exceed in-flight capacity.
+    assert config.max_connections == 384
+
+
+def test_max_connections_auto_caps_at_4096() -> None:
+    workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(40)]
+    config = RouterConfig(workers=workers)
+    assert config.max_connections == 4096
+
+
+def test_max_connections_explicit_value_is_preserved() -> None:
+    config = _router_config(max_connections=512)
+    assert config.max_connections == 512
+
+
+def test_max_connections_explicit_below_worker_budget_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+        config = _router_config(max_connections=100)
+    assert config.max_connections == 100
+    assert any("under-feed" in record.getMessage() for record in caplog.records)
+
+
+def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(70)]
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+        config = RouterConfig(workers=workers)
+    assert config.max_connections == 4096
+    assert any("under-feed" in record.getMessage() for record in caplog.records)

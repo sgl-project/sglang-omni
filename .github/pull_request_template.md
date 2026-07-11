@@ -32,4 +32,6 @@
 
 CI runs on self-hosted GPU runners and requires a maintainer to add the
 `run-ci` label. Once labeled, every subsequent push re-triggers CI as
-long as the label remains. Draft PRs are skipped even if labeled.
+long as the label remains. Use `/tag-and-rerun-ci higgs` or
+`/tag-and-rerun-ci moss` to select a TTS CI model. Draft PRs are skipped even
+if labeled.

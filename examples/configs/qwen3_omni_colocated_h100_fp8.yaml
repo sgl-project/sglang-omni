@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Note (Xuesong): FP8 colocated profile for the H100 video-CI router stages (2 DP replicas);
+#   distinct from examples/configs/qwen3_omni_fp8_colocated.yaml (thinker 0.75) — this profile uses 0.55.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-h100-fp8
+model_path: marksverdhei/Qwen3-Omni-30B-A3B-FP8
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.55  # Note (Xuesong): Qwen3-Omni subtracts default encoder_mem_reserve=0.05, so the effective SGLang/KV thinker budget is 0.50.
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.12
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.02

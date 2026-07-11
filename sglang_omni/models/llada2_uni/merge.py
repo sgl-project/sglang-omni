@@ -5,14 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.models.llada2_uni.payload_types import OmniEvent
+from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniEvent
 
 
 def decode_events(
     *,
     thinker_out: dict[str, Any],
     tokenizer: Any,
-) -> list[OmniEvent]:
+) -> list[LLaDA2UniEvent]:
     """Convert thinker output tokens to a text_final event."""
     # TODO: add streaming support
     output_ids = thinker_out.get("output_ids", [])
@@ -22,7 +22,7 @@ def decode_events(
     text = tokenizer.decode(output_ids, skip_special_tokens=True)
 
     return [
-        OmniEvent(
+        LLaDA2UniEvent(
             type="text_final",
             modality="text",
             payload={"text": text},

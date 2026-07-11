@@ -1,0 +1,831 @@
+<svg viewBox="0 0 1060 864" xmlns="http://www.w3.org/2000/svg">
+<style>
+            :root {
+                --bg: #fafaf7;
+                --ink: #1a1a1a;
+                --muted: #6b6b6b;
+                --line: #d8d2c4;
+                --accent: #c4633f;
+                --coord: #6b5b8a;
+                --stage: #5b7a8a;
+                --sched: #7a8a5b;
+                --runner: #b87a5a;
+                --gpu0: #d4e2ec;
+                --cpu: #e6e3d8;
+                --zmq: #a85e8a;
+                --relay: #4a7a5e;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Helvetica Neue",
+                    sans-serif;
+                background: var(--bg);
+                color: var(--ink);
+                margin: 0;
+                padding: 0;
+            }
+            .container {
+                max-width: 1100px;
+                margin: 0 auto;
+                padding: 32px 24px;
+            }
+
+            .legend-inline {
+                background: #fafaf7;
+                border: 1px solid var(--line);
+                border-radius: 6px;
+                padding: 10px 14px;
+                margin: 0 0 16px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 14px;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+            .legend-item {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+            }
+            .legend-swatch {
+                width: 13px;
+                height: 13px;
+                border-radius: 2px;
+                border: 1px solid rgba(0, 0, 0, 0.15);
+            }
+            .legend-line {
+                width: 22px;
+                height: 0;
+                border-top: 2px solid;
+            }
+            .legend-sep {
+                color: var(--line);
+                margin: 0 4px;
+            }
+
+            .svg-wrap {
+                background: white;
+                border: 1px solid var(--line);
+                border-radius: 10px;
+                padding: 20px;
+                overflow-x: auto;
+            }
+            svg {
+                display: block;
+                max-width: 100%;
+                height: auto;
+            }
+
+            .box-coord {
+                fill: #efebf5;
+                stroke: var(--coord);
+                stroke-width: 2;
+            }
+            .box-stage {
+                fill: #e3eaef;
+                stroke: var(--stage);
+                stroke-width: 1.5;
+            }
+            .box-sched {
+                fill: #ecefe3;
+                stroke: var(--sched);
+                stroke-width: 1.5;
+            }
+            .box-runner {
+                fill: #f5ebe3;
+                stroke: var(--runner);
+                stroke-width: 1.5;
+            }
+            .box-gpu0 {
+                fill: var(--gpu0);
+                stroke: #5b8aa6;
+                stroke-width: 1.5;
+            }
+            .box-cpu {
+                fill: var(--cpu);
+                stroke: #888;
+                stroke-width: 1.5;
+            }
+            .box-client {
+                fill: #f7e8d8;
+                stroke: #c47a3a;
+                stroke-width: 2;
+            }
+            .box-http {
+                fill: #ddd;
+                stroke: #555;
+                stroke-width: 2;
+            }
+            .box-user {
+                fill: #fff;
+                stroke: #888;
+                stroke-width: 1.5;
+                stroke-dasharray: 4 3;
+            }
+
+            .label-title {
+                font: 600 13px sans-serif;
+                fill: var(--ink);
+            }
+            .label-sub {
+                font: 11px sans-serif;
+                fill: var(--muted);
+            }
+            .label-tiny {
+                font: 10px sans-serif;
+                fill: var(--muted);
+            }
+            .label-mono {
+                font:
+                    10px "SF Mono",
+                    Menlo,
+                    Consolas,
+                    monospace;
+                fill: var(--ink);
+            }
+
+            .arrow-zmq {
+                stroke: var(--zmq);
+                stroke-width: 1.8;
+                fill: none;
+                marker-end: url(#arrow-zmq);
+            }
+            .arrow-relay {
+                stroke: var(--relay);
+                stroke-width: 2.5;
+                fill: none;
+                marker-end: url(#arrow-relay);
+            }
+            .arrow-flow {
+                stroke: var(--accent);
+                stroke-width: 2;
+                fill: none;
+                marker-end: url(#arrow-flow);
+            }
+
+            .label-zmq {
+                font: 600 10px sans-serif;
+                fill: var(--zmq);
+            }
+            .label-relay {
+                font: 600 10px sans-serif;
+                fill: var(--relay);
+            }
+            .label-flow {
+                font: 600 10px sans-serif;
+                fill: var(--accent);
+            }
+
+            .layer-group {
+                fill: rgba(0, 0, 0, 0.02);
+                stroke: rgba(0, 0, 0, 0.1);
+                stroke-width: 1;
+                stroke-dasharray: 4 3;
+            }
+            .layer-label {
+                font: 600 11px sans-serif;
+                fill: var(--muted);
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+  </style>
+<g font-family="sans-serif" font-size="12" fill="#1a1a1a">
+<rect x="20" y="8" width="1020" height="50" rx="6" fill="#fafaf7" stroke="#d8d2c4"/>
+<rect x="34" y="20" width="13" height="13" rx="2" fill="#ddd" stroke="rgba(0,0,0,0.2)"/>
+<text x="52" y="31">HTTP</text>
+<rect x="94" y="20" width="13" height="13" rx="2" fill="#f7e8d8" stroke="rgba(0,0,0,0.2)"/>
+<text x="112" y="31">Client</text>
+<rect x="167" y="20" width="13" height="13" rx="2" fill="#efebf5" stroke="rgba(0,0,0,0.2)"/>
+<text x="185" y="31">Coordinator</text>
+<rect x="273" y="20" width="13" height="13" rx="2" fill="#e3eaef" stroke="rgba(0,0,0,0.2)"/>
+<text x="291" y="31">Stage</text>
+<rect x="340" y="20" width="13" height="13" rx="2" fill="#ecefe3" stroke="rgba(0,0,0,0.2)"/>
+<text x="358" y="31">Scheduler</text>
+<rect x="433" y="20" width="13" height="13" rx="2" fill="#f5ebe3" stroke="rgba(0,0,0,0.2)"/>
+<text x="451" y="31">ModelRunner</text>
+<rect x="539" y="20" width="13" height="13" rx="2" fill="#e6e3d8" stroke="rgba(0,0,0,0.2)"/>
+<text x="557" y="31">CPU</text>
+<rect x="592" y="20" width="13" height="13" rx="2" fill="#d4e2ec" stroke="rgba(0,0,0,0.2)"/>
+<text x="610" y="31">GPU 0</text>
+<line x1="34" y1="47" x2="56" y2="47" stroke="#c4633f" stroke-width="2.5"/>
+<text x="62" y="51">Request flow</text>
+<line x1="159" y1="47" x2="181" y2="47" stroke="#a85e8a" stroke-width="2.5"/>
+<text x="187" y="51">ZMQ (signals)</text>
+<line x1="290" y1="47" x2="312" y2="47" stroke="#4a7a5e" stroke-width="2.5"/>
+<text x="318" y="51">Relay (tensors)</text>
+</g>
+<g transform="translate(0,64)">
+
+                    <defs>
+                        <marker
+                            id="arrow-zmq"
+                            viewBox="0 0 10 10"
+                            refX="9"
+                            refY="5"
+                            markerWidth="7"
+                            markerHeight="7"
+                            orient="auto"
+                        >
+                            <path d="M0,0 L10,5 L0,10 z" fill="#a85e8a" />
+                        </marker>
+                        <marker
+                            id="arrow-relay"
+                            viewBox="0 0 10 10"
+                            refX="9"
+                            refY="5"
+                            markerWidth="7"
+                            markerHeight="7"
+                            orient="auto"
+                        >
+                            <path d="M0,0 L10,5 L0,10 z" fill="#4a7a5e" />
+                        </marker>
+                        <marker
+                            id="arrow-flow"
+                            viewBox="0 0 10 10"
+                            refX="9"
+                            refY="5"
+                            markerWidth="8"
+                            markerHeight="8"
+                            orient="auto"
+                        >
+                            <path d="M0,0 L10,5 L0,10 z" fill="#c4633f" />
+                        </marker>
+                    </defs>
+
+                    <!-- ====== LEFT COLUMN: Request lifecycle ====== -->
+                    <g>
+                        <text x="20" y="30" class="layer-label">
+                            ① Request lifecycle
+                        </text>
+                        <rect
+                            x="20"
+                            y="50"
+                            width="220"
+                            height="680"
+                            rx="8"
+                            class="layer-group"
+                        />
+
+                        <rect
+                            x="50"
+                            y="80"
+                            width="160"
+                            height="55"
+                            rx="6"
+                            class="box-user"
+                        />
+                        <text
+                            x="130"
+                            y="103"
+                            text-anchor="middle"
+                            class="label-title"
+                        >
+                            User
+                        </text>
+                        <text
+                            x="130"
+                            y="121"
+                            text-anchor="middle"
+                            class="label-sub"
+                        >
+                            "Read this aloud"
+                        </text>
+
+                        <rect
+                            x="50"
+                            y="165"
+                            width="160"
+                            height="70"
+                            rx="6"
+                            class="box-http"
+                        />
+                        <text
+                            x="130"
+                            y="188"
+                            text-anchor="middle"
+                            class="label-title"
+                        >
+                            HTTP API Server
+                        </text>
+                        <text
+                            x="130"
+                            y="206"
+                            text-anchor="middle"
+                            class="label-sub"
+                        >
+                            OpenAI-compatible
+                        </text>
+                        <text
+                            x="130"
+                            y="223"
+                            text-anchor="middle"
+                            class="label-mono"
+                        >
+                            POST /v1/audio/speech
+                        </text>
+
+                        <rect
+                            x="50"
+                            y="265"
+                            width="160"
+                            height="65"
+                            rx="6"
+                            class="box-client"
+                        />
+                        <text
+                            x="130"
+                            y="287"
+                            text-anchor="middle"
+                            class="label-title"
+                        >
+                            Client
+                        </text>
+                        <text
+                            x="130"
+                            y="305"
+                            text-anchor="middle"
+                            class="label-sub"
+                        >
+                            Protocol adapter
+                        </text>
+                        <text
+                            x="130"
+                            y="321"
+                            text-anchor="middle"
+                            class="label-tiny"
+                        >
+                            HTTP body → request
+                        </text>
+
+                        <rect
+                            x="50"
+                            y="360"
+                            width="160"
+                            height="115"
+                            rx="6"
+                            class="box-coord"
+                        />
+                        <text
+                            x="130"
+                            y="382"
+                            text-anchor="middle"
+                            class="label-title"
+                        >
+                            Coordinator
+                        </text>
+                        <text
+                            x="130"
+                            y="399"
+                            text-anchor="middle"
+                            class="label-sub"
+                        >
+                            Global router
+                        </text>
+                        <text x="60" y="420" class="label-tiny">
+                            • Submit to entry stage
+                        </text>
+                        <text x="60" y="434" class="label-tiny">
+                            • Listen for terminals
+                        </text>
+                        <text x="60" y="448" class="label-tiny">
+                            • Merge multi-terminal
+                        </text>
+                        <text x="60" y="462" class="label-tiny">
+                            • Broadcast abort
+                        </text>
+
+                        <path d="M 130 135 L 130 163" class="arrow-flow" />
+                        <path d="M 130 235 L 130 263" class="arrow-flow" />
+                        <path d="M 130 330 L 130 358" class="arrow-flow" />
+
+                        <text
+                            x="130"
+                            y="510"
+                            text-anchor="middle"
+                            class="label-sub"
+                            style="font-style: italic"
+                        >
+                            ⇡ result returns
+                        </text>
+                        <text
+                            x="130"
+                            y="525"
+                            text-anchor="middle"
+                            class="label-sub"
+                            style="font-style: italic"
+                        >
+                            via same path
+                        </text>
+
+                        <rect
+                            x="50"
+                            y="555"
+                            width="160"
+                            height="100"
+                            rx="6"
+                            fill="#fff4d6"
+                            stroke="#d4b76a"
+                            stroke-width="1"
+                        />
+                        <text
+                            x="130"
+                            y="575"
+                            text-anchor="middle"
+                            class="label-title"
+                            style="font-size: 11px"
+                        >
+                            Key observation
+                        </text>
+                        <text x="56" y="594" class="label-tiny">
+                            This column is true
+                        </text>
+                        <text x="56" y="607" class="label-tiny">
+                            linear hand-off. Each
+                        </text>
+                        <text x="56" y="620" class="label-tiny">
+                            component holds the
+                        </text>
+                        <text x="56" y="633" class="label-tiny">
+                            request and passes it
+                        </text>
+                        <text x="56" y="646" class="label-tiny">
+                            to the next.
+                        </text>
+
+                        <rect
+                            x="50"
+                            y="675"
+                            width="160"
+                            height="45"
+                            rx="6"
+                            fill="#f5ebf2"
+                            stroke="#c89bb8"
+                            stroke-width="1"
+                        />
+                        <text
+                            x="130"
+                            y="693"
+                            text-anchor="middle"
+                            class="label-zmq"
+                            style="font-size: 10px"
+                        >
+                            Abort: PUB/SUB
+                        </text>
+                        <text
+                            x="130"
+                            y="708"
+                            text-anchor="middle"
+                            class="label-tiny"
+                        >
+                            broadcast to all stages
+                        </text>
+                    </g>
+
+                    <!-- ====== MIDDLE: Coordinator → Stages ====== -->
+                    <g>
+                        <path
+                            d="M 210 380 C 280 380, 320 130, 380 130"
+                            class="arrow-zmq"
+                        />
+                        <text x="265" y="180" class="label-zmq">
+                            SubmitMessage
+                        </text>
+                        <text
+                            x="265"
+                            y="194"
+                            class="label-tiny"
+                            style="fill: var(--zmq)"
+                        >
+                            (to entry stage)
+                        </text>
+
+                        <path
+                            d="M 380 605 C 320 605, 280 440, 210 440"
+                            class="arrow-zmq"
+                            style="stroke-dasharray: 4 3"
+                        />
+                        <text x="245" y="540" class="label-zmq">
+                            Completion
+                        </text>
+                        <text
+                            x="245"
+                            y="554"
+                            class="label-tiny"
+                            style="fill: var(--zmq)"
+                        >
+                            (from terminal)
+                        </text>
+                    </g>
+
+                    <!-- ====== RIGHT: 3 Stages ====== -->
+                    <g>
+                        <text x="395" y="30" class="layer-label">
+                            ② Three pipeline stages
+                        </text>
+                        <rect
+                            x="380"
+                            y="50"
+                            width="660"
+                            height="680"
+                            rx="8"
+                            class="layer-group"
+                        />
+
+                        <!-- Stage 1 -->
+                        <g>
+                            <rect
+                                x="400"
+                                y="75"
+                                width="620"
+                                height="170"
+                                rx="8"
+                                class="box-cpu"
+                            />
+                            <text x="415" y="97" class="label-title">
+                                Stage 1: preprocessing
+                            </text>
+                            <text x="415" y="113" class="label-sub">
+                                CPU · entry stage
+                            </text>
+
+                            <rect
+                                x="430"
+                                y="130"
+                                width="370"
+                                height="100"
+                                rx="6"
+                                class="box-sched"
+                            />
+                            <text x="445" y="150" class="label-title">
+                                ThreadedSimpleScheduler
+                            </text>
+                            <text x="445" y="166" class="label-sub">
+                                Simple + thread pool
+                            </text>
+                            <text x="445" y="184" class="label-mono">
+                                while not stopped:
+                            </text>
+                            <text x="445" y="198" class="label-mono">
+                                &#160;&#160;msg = inbox.get()
+                            </text>
+                            <text x="445" y="212" class="label-mono">
+                                &#160;&#160;executor.submit(fn, msg)
+                            </text>
+
+                            <rect
+                                x="820"
+                                y="130"
+                                width="185"
+                                height="100"
+                                rx="6"
+                                fill="#f7f3e8"
+                                stroke="#d4c890"
+                                stroke-width="1"
+                            />
+                            <text
+                                x="912"
+                                y="150"
+                                text-anchor="middle"
+                                class="label-title"
+                                style="font-size: 11px"
+                            >
+                                What it does
+                            </text>
+                            <text x="828" y="170" class="label-tiny">
+                                • Tokenize text
+                            </text>
+                            <text x="828" y="184" class="label-tiny">
+                                • Build prompt
+                            </text>
+                            <text x="828" y="198" class="label-tiny">
+                                • Non-AR
+                            </text>
+                            <text x="828" y="212" class="label-tiny">
+                                • Output: token ids
+                            </text>
+                        </g>
+
+                        <!-- Stage 1 → Stage 2 -->
+                        <g>
+                            <path d="M 720 245 L 720 295" class="arrow-relay" />
+                            <text x="730" y="275" class="label-relay">
+                                Relay: payload (tensors)
+                            </text>
+                            <path d="M 580 245 L 580 295" class="arrow-zmq" />
+                            <text
+                                x="480"
+                                y="275"
+                                class="label-zmq"
+                                text-anchor="end"
+                            >
+                                ZMQ: DataReady
+                            </text>
+                        </g>
+
+                        <!-- Stage 2 -->
+                        <g>
+                            <rect
+                                x="400"
+                                y="300"
+                                width="620"
+                                height="245"
+                                rx="8"
+                                class="box-gpu0"
+                            />
+                            <text x="415" y="322" class="label-title">
+                                Stage 2: tts_engine
+                            </text>
+                            <text x="415" y="338" class="label-sub">
+                                GPU 0 · AR generation
+                            </text>
+
+                            <rect
+                                x="430"
+                                y="355"
+                                width="370"
+                                height="180"
+                                rx="6"
+                                class="box-sched"
+                            />
+                            <text x="445" y="375" class="label-title">
+                                OmniScheduler
+                            </text>
+                            <text x="445" y="391" class="label-sub">
+                                shared AR scheduler
+                            </text>
+                            <text x="445" y="410" class="label-tiny">
+                                Reuses SGLang core: KV cache, batch,
+                            </text>
+                            <text x="445" y="423" class="label-tiny">
+                                prefill/decode scheduling
+                            </text>
+
+                            <rect
+                                x="445"
+                                y="436"
+                                width="340"
+                                height="90"
+                                rx="5"
+                                class="box-runner"
+                            />
+                            <text
+                                x="460"
+                                y="455"
+                                class="label-title"
+                                style="font-size: 11px"
+                            >
+                                FishS2ProModelRunner
+                            </text>
+                            <text
+                                x="460"
+                                y="470"
+                                class="label-sub"
+                                style="font-size: 10px"
+                            >
+                                FeedbackARModelRunner + Fish callbacks
+                            </text>
+                            <text x="460" y="488" class="label-mono">
+                                prepare_forward() ← write_fish_buffers
+                            </text>
+                            <text x="460" y="503" class="label-mono">
+                                forward() ← text2semantic
+                            </text>
+                            <text x="460" y="518" class="label-mono">
+                                post_forward() ← extract_fish_output
+                            </text>
+
+                            <rect
+                                x="820"
+                                y="355"
+                                width="185"
+                                height="180"
+                                rx="6"
+                                fill="#f7f3e8"
+                                stroke="#d4c890"
+                                stroke-width="1"
+                            />
+                            <text
+                                x="912"
+                                y="375"
+                                text-anchor="middle"
+                                class="label-title"
+                                style="font-size: 11px"
+                            >
+                                What it does
+                            </text>
+                            <text x="828" y="395" class="label-tiny">
+                                • Text → semantic codes
+                            </text>
+                            <text x="828" y="409" class="label-tiny">
+                                • AR (token by token)
+                            </text>
+                            <text x="828" y="423" class="label-tiny">
+                                • Uses KV cache
+                            </text>
+                            <text x="828" y="445" class="label-tiny">
+                                callbacks.py provides:
+                            </text>
+                            <text x="828" y="459" class="label-tiny">
+                                &#160;&#160;- write_fish_buffers
+                            </text>
+                            <text x="828" y="473" class="label-tiny">
+                                &#160;&#160;- extract_fish_output
+                            </text>
+                            <text x="828" y="487" class="label-tiny">
+                                &#160;&#160;- fish_prefill_forward
+                            </text>
+                            <text x="828" y="509" class="label-tiny">
+                                • Output: audio codes
+                            </text>
+                        </g>
+
+                        <!-- Stage 2 → Stage 3 -->
+                        <g>
+                            <path d="M 720 545 L 720 595" class="arrow-relay" />
+                            <text x="730" y="575" class="label-relay">
+                                Relay: audio codes
+                            </text>
+                            <path d="M 580 545 L 580 595" class="arrow-zmq" />
+                            <text
+                                x="480"
+                                y="575"
+                                class="label-zmq"
+                                text-anchor="end"
+                            >
+                                ZMQ: DataReady
+                            </text>
+                        </g>
+
+                        <!-- Stage 3 -->
+                        <g>
+                            <rect
+                                x="400"
+                                y="600"
+                                width="620"
+                                height="115"
+                                rx="8"
+                                class="box-gpu0"
+                            />
+                            <text x="415" y="622" class="label-title">
+                                Stage 3: vocoder
+                            </text>
+                            <text x="415" y="638" class="label-sub">
+                                GPU 0 · terminal
+                            </text>
+
+                            <rect
+                                x="430"
+                                y="650"
+                                width="370"
+                                height="55"
+                                rx="6"
+                                class="box-sched"
+                            />
+                            <text x="445" y="670" class="label-title">
+                                S2ProVocoderScheduler
+                            </text>
+                            <text
+                                x="445"
+                                y="687"
+                                class="label-sub"
+                                style="font-size: 10px"
+                            >
+                                Specialized vocoder (not generic Simple)
+                            </text>
+                            <text x="445" y="700" class="label-mono">
+                                DAC codec: codes → waveform
+                            </text>
+
+                            <rect
+                                x="820"
+                                y="650"
+                                width="185"
+                                height="55"
+                                rx="6"
+                                fill="#f7f3e8"
+                                stroke="#d4c890"
+                                stroke-width="1"
+                            />
+                            <text
+                                x="912"
+                                y="670"
+                                text-anchor="middle"
+                                class="label-title"
+                                style="font-size: 11px"
+                            >
+                                What it does
+                            </text>
+                            <text x="828" y="685" class="label-tiny">
+                                • Terminal stage
+                            </text>
+                            <text x="828" y="699" class="label-tiny">
+                                • Outputs waveform
+                            </text>
+                        </g>
+                    </g>
+
+</g>
+</svg>

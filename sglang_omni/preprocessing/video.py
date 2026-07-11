@@ -383,8 +383,31 @@ def build_video_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compute_video_cache_key(videos: Any) -> str | None:
-    return compute_media_cache_key(videos, prefix="video")
+def compute_video_cache_key(
+    videos: Any,
+    *,
+    fps: float | None = None,
+    max_frames: int | None = None,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+    total_pixels: int | None = None,
+) -> str | None:
+    """Compute cache key from raw video inputs + effective decode params.
+
+    Decode params change the resulting frame count and thus the encoder
+    output length. They must be part of the cache key — otherwise an entry
+    produced under one (fps, max_frames, pixel-limit) tuple could be
+    returned for a request with different params, yielding ``video_embeds``
+    whose length no longer matches the prompt placeholders.
+    """
+    base = compute_media_cache_key(videos, prefix="video")
+    if base is None:
+        return None
+    decode_sig = (
+        f"|fps={fps}|max_frames={max_frames}"
+        f"|min_px={min_pixels}|max_px={max_pixels}|total_px={total_pixels}"
+    )
+    return base + decode_sig
 
 
 def _check_if_video_has_audio(video_path: str | Path) -> bool:

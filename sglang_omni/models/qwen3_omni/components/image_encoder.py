@@ -152,9 +152,12 @@ class Qwen3OmniImageEncoder(nn.Module):
         ):
             image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
             pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
-            image_embeds, image_embeds_multiscale = self.visual(
-                pixel_values, grid_thw=image_grid_thw
-            )
+            # Note:(Chenchen Hong) transformers 5.6's Qwen3OmniMoeVisionEncoder
+            # returns BaseModelOutputWithDeepstackFeatures (pooler_output = merged
+            # image embeds, deepstack_features = multiscale) instead of a 2-tuple.
+            vision_outputs = self.visual(pixel_values, grid_thw=image_grid_thw)
+            image_embeds = vision_outputs.pooler_output
+            image_embeds_multiscale = vision_outputs.deepstack_features
             image_token_counts = image_grid_thw.prod(-1) // merge
             outputs.update(
                 {
@@ -172,9 +175,9 @@ class Qwen3OmniImageEncoder(nn.Module):
             pixel_values_videos = pixel_values_videos.to(
                 device=self._device, dtype=self.visual.dtype
             )
-            video_embeds, video_embeds_multiscale = self.visual(
-                pixel_values_videos, grid_thw=video_grid_thw
-            )
+            video_outputs = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+            video_embeds = video_outputs.pooler_output
+            video_embeds_multiscale = video_outputs.deepstack_features
             video_token_counts = video_grid_thw.prod(-1) // merge
             outputs.update(
                 {

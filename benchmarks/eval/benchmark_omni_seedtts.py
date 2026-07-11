@@ -37,12 +37,12 @@ CI Usage:
         --max-concurrency 16 \
         --model qwen3-omni --port 8000 --max-samples 50
 
-    # Transcribe + WER only (server not needed)
+    # Transcribe + WER only (ASR server must be running on --port)
     python -m benchmarks.eval.benchmark_omni_seedtts \
         --transcribe-only \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --output-dir results/qwen3_omni_en \
-        --model qwen3-omni --lang en --device cuda:0
+        --model qwen3-omni --lang en --port 8000
 
 
 H200 Full-Set Reference Results
@@ -96,7 +96,7 @@ are not comparable to codec-token TTS models (e.g. S2-Pro in
 benchmark_tts_seedtts.py); the two backends emit token streams with different
 semantics and rates.
 
-ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
+ASR speed (asr.speed) — historical baseline
 
 | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                      |
 | ---- | ------------------ | ------------ | ---------------------------- | ------------------------------------------- |
@@ -154,11 +154,16 @@ from benchmarks.metrics.performance import (
     compute_speed_metrics,
     print_speed_summary,
 )
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
+)
 from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
     run_seedtts_transcribe,
+    run_seedtts_utmos,
     save_generated_audio_metadata,
     save_speed_results,
 )
@@ -170,6 +175,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 60
+DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
 @dataclass
@@ -188,11 +194,13 @@ class OmniSeedttsBenchmarkConfig:
     max_new_tokens: int = 256
     temperature: float = 0.7
     warmup: int = 1
-    max_concurrency: int = 1
+    max_concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     # Transcribe phase
     device: str = "cuda:0"
+    asr_model_path: str = QWEN3_ASR_MODEL_PATH
+    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     similarity_checkpoint: str | None = None
     # Optional system prompt prepended to chat messages. Default ``None``
     # preserves the legacy Qwen3-Omni behavior (no system role). Pass a
@@ -246,6 +254,8 @@ def make_send_fn(
             request_id=sample.sample_id,
             text=sample.target_text[:TEXT_PREVIEW_LENGTH],
         )
+        chunk_times: list[float] = []
+        text_first_time_holder: list[float] = []
         start_time = time.perf_counter()
         try:
             wav_bytes, _, usage = await task.generate_speech(
@@ -260,6 +270,8 @@ def make_send_fn(
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                chunk_times_out=chunk_times if stream else None,
+                text_first_time_holder=text_first_time_holder if stream else None,
             )
             result.audio_duration_s = get_wav_duration(wav_bytes)
             elapsed = time.perf_counter() - start_time
@@ -287,6 +299,15 @@ def make_send_fn(
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
             result.wav_path = wav_path
+
+            if chunk_times:
+                result.audio_ttfp_s = chunk_times[0] - start_time
+                result.inter_chunk_s = [
+                    chunk_times[i + 1] - chunk_times[i]
+                    for i in range(len(chunk_times) - 1)
+                ]
+            if text_first_time_holder:
+                result.text_ttft_s = text_first_time_holder[0] - start_time
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
@@ -343,24 +364,31 @@ async def run_omni_seedtts_benchmark(
     return benchmark_results
 
 
-def evaluate_generated_audio(config: OmniSeedttsBenchmarkConfig) -> dict:
+def evaluate_generated_audio(
+    config: OmniSeedttsBenchmarkConfig,
+) -> dict:
     """Transcribe previously saved audio with ASR and compute WER + ASR speed.
 
-    note (Chenyang): Server need not be running.
+    note (Chenyang): Stop the TTS server first; the ASR server is expected on
+    ``config.port``.
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
     wer_config = {
         "model": config.model,
+        "tts_model": config.model,
+        "asr_model": config.asr_model_path,
         "speaker": config.speaker,
         "voice_clone": config.voice_clone,
         "meta": config.meta,
         "max_samples": config.max_samples,
+        "asr_concurrency": config.asr_concurrency,
     }
     return run_seedtts_transcribe(
         config,
         wer_config=wer_config,
         log_per_sample=True,
+        asr_router_port=config.port,
     )
 
 
@@ -390,6 +418,8 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         device=device,
+        asr_model_path=args.asr_model_path,
+        asr_concurrency=args.asr_concurrency,
         similarity_checkpoint=args.similarity_checkpoint,
         system_prompt=args.system_prompt,
     )
@@ -474,7 +504,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-concurrency",
         type=int,
-        default=1,
+        default=DEFAULT_TTS_BENCHMARK_CONCURRENCY,
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
@@ -505,6 +535,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Legacy alias for --device (ASR transcription device).",
     )
     parser.add_argument(
+        "--asr-model-path",
+        type=str,
+        default=QWEN3_ASR_MODEL_PATH,
+        help="HuggingFace model id served by the ASR endpoint on --port. "
+        f"Defaults to {QWEN3_ASR_MODEL_PATH}; openai/whisper-large-v3 "
+        "can also be used.",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent transcription requests during WER evaluation.",
+    )
+    parser.add_argument(
         "--similarity-checkpoint",
         type=str,
         default=None,
@@ -527,6 +571,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "Pass a strict TTS-only prompt for models that leak chat-style "
         "preambles or refusals (e.g. Ming-Omni).",
     )
+    parser.add_argument(
+        "--with-similarity",
+        action="store_true",
+        help="Also score speaker similarity (WavLM-ECAPA-TDNN) after WER, "
+        "per seed-tts-eval protocol.",
+    )
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -544,6 +594,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run speaker similarity on existing output-dir.",
     )
+    mode.add_argument(
+        "--utmos-only",
+        action="store_true",
+        help="Only run UTMOS MOS scoring on existing output-dir.",
+    )
     return parser
 
 
@@ -559,6 +614,10 @@ def main() -> None:
         run_seedtts_similarity(config, log_per_sample=True)
         return
 
+    if args.utmos_only:
+        run_seedtts_utmos(config, log_per_sample=True)
+        return
+
     if args.transcribe_only:
         evaluate_generated_audio(config)
         return
@@ -570,6 +629,9 @@ def main() -> None:
         return
 
     accuracy_results = evaluate_generated_audio(config)
+    similarity_results = None
+    if args.with_similarity:
+        similarity_results = run_seedtts_similarity(config, log_per_sample=False)
     combined = {
         "generation": {
             "speed": gen_results["summary"],
@@ -577,10 +639,14 @@ def main() -> None:
             "per_request": gen_results["per_request"],
         },
         "accuracy": {
-            "asr_speed": accuracy_results["asr_speed"],
             "wer": accuracy_results["wer_summary"],
         },
+        "asr": {
+            "speed": accuracy_results["asr_speed"],
+        },
     }
+    if similarity_results is not None:
+        combined["similarity"] = similarity_results.get("summary", similarity_results)
     save_json_results(combined, config.output_dir, "eval_results.json")
 
 

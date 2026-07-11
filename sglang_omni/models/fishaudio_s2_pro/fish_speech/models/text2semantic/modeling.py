@@ -10,7 +10,7 @@ This module contains the model implementations:
 import math
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -945,6 +945,13 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         self.layers = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layer)]
         )
+        self._eager_forward_kvcached_layers: list[
+            Callable[[Tensor, Tensor, Tensor], Tensor]
+        ] = [layer.forward_kvcached for layer in self.layers]
+        self._compiled_forward_kvcached_layers: (
+            list[Callable[[Tensor, Tensor, Tensor], Tensor]] | None
+        ) = None
+        self._compiled_forward_kvcached_max_bs = 0
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -999,12 +1006,44 @@ class FishQwen3AudioDecoder(PreTrainedModel):
             persistent=False,
         )
 
+    @property
+    def kv_cache_max_batch_size(self) -> int:
+        if not self.layers:
+            raise RuntimeError("Audio decoder layers are not initialized")
+        kv_cache = self.layers[0].attention.kv_cache
+        if kv_cache is None:
+            raise RuntimeError("Audio decoder KV cache is not initialized")
+        return int(kv_cache.k_cache.shape[0])
+
     def reset_caches(self):
         """Reset all KV caches to zeros."""
         for layer in self.layers:
             if layer.attention.kv_cache is not None:
                 layer.attention.kv_cache.k_cache.zero_()
                 layer.attention.kv_cache.v_cache.zero_()
+
+    def set_compiled_forward_kvcached_layers(
+        self,
+        forward_kvcached_layers: list[Callable[[Tensor, Tensor, Tensor], Tensor]],
+        *,
+        max_batch_size: int,
+    ) -> None:
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be >= 1")
+        if len(forward_kvcached_layers) != len(self.layers):
+            raise ValueError("compiled layer count must match decoder layer count")
+        self._compiled_forward_kvcached_layers = forward_kvcached_layers
+        self._compiled_forward_kvcached_max_bs = max_batch_size
+
+    def _select_forward_kvcached_layers(
+        self, bsz: int
+    ) -> list[Callable[[Tensor, Tensor, Tensor], Tensor]]:
+        if (
+            self._compiled_forward_kvcached_layers is not None
+            and bsz <= self._compiled_forward_kvcached_max_bs
+        ):
+            return self._compiled_forward_kvcached_layers
+        return self._eager_forward_kvcached_layers
 
     def forward_kvcached(
         self,
@@ -1031,8 +1070,8 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         # cache_seqlens: current position in cache for each batch item
         cache_seqlens = self.input_pos.expand(bsz).to(torch.int32)
 
-        for layer in self.layers:
-            x = layer.forward_kvcached(x, freqs_cis, cache_seqlens)
+        for layer in self._select_forward_kvcached_layers(bsz):
+            x = layer(x, freqs_cis, cache_seqlens)
 
         x = self.norm(x)
         return self.output(x)

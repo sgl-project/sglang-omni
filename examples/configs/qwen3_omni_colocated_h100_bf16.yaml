@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# BF16 colocated profile for the TTS CI stage (2 DP replicas behind the router).
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-h100-bf16
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.02
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.02
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.78
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.10
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.02

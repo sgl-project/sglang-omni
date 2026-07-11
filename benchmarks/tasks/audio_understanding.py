@@ -288,6 +288,7 @@ def save_mmsu_results(
     config: dict[str, Any],
     output_dir: str,
     *,
+    benchmark_name: str = "mmsu",
     speed_metrics: dict[str, Any] | None = None,
     wer_metrics: dict[str, Any] | None = None,
 ) -> None:
@@ -301,15 +302,15 @@ def save_mmsu_results(
     if wer_metrics:
         summary_output["wer"] = wer_metrics
 
-    save_json_results(summary_output, output_dir, "mmsu_results.json")
+    save_json_results(summary_output, output_dir, f"{benchmark_name}_results.json")
 
     os.makedirs(output_dir, exist_ok=True)
-    jsonl_path = os.path.join(output_dir, "mmsu_predictions.jsonl")
+    jsonl_path = os.path.join(output_dir, f"{benchmark_name}_predictions.jsonl")
     with open(jsonl_path, "w") as file_obj:
         for result in results:
             file_obj.write(json.dumps(asdict(result)) + "\n")
 
-    csv_path = os.path.join(output_dir, "mmsu_results.csv")
+    csv_path = os.path.join(output_dir, f"{benchmark_name}_results.csv")
     if results:
         fieldnames = list(asdict(results[0]).keys())
         with open(csv_path, "w", newline="") as file_obj:

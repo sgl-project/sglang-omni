@@ -130,8 +130,11 @@ class GenerateChunk:
     token_ids: list[int] = field(default_factory=list)
     text: str = ""
     logprobs: list[float] | None = None
+    output_token_logprobs: list[Any] | None = None
+    omni_rollout: dict[str, Any] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
+    weight_version: str | None = None
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
@@ -145,8 +148,11 @@ class GenerateChunk:
             "token_ids": list(self.token_ids),
             "text": self.text,
             "logprobs": self.logprobs,
+            "output_token_logprobs": self.output_token_logprobs,
+            "omni_rollout": self.omni_rollout,
             "finish_reason": self.finish_reason,
             "usage": self.usage.to_dict() if self.usage else None,
+            "weight_version": self.weight_version,
             "stage_id": self.stage_id,
             "stage_name": self.stage_name,
             "modality": self.modality,
@@ -194,6 +200,9 @@ class CompletionResult:
     audio: CompletionAudio | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
+    output_token_logprobs: list[Any] | None = None
+    omni_rollout: dict[str, Any] | None = None
+    weight_version: str | None = None
 
 
 @dataclass
@@ -216,6 +225,7 @@ class SpeechResult:
     audio_bytes: bytes
     mime_type: str
     format: str
+    sample_rate: int | None = None
     usage: UsageInfo | None = None
 
 

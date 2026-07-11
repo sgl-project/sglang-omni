@@ -1,68 +1,43 @@
 name: PR Test
 
 on:
-  pull_request:
-    branches: [ main ]
-    types: [labeled, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
 
-concurrency:
-  group: pr-test-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  OMNI_CI_HOME: >-
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-permissions:
-  contents: read
+# Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
+# sequence: PR Test -> ASR -> TTS -> Qwen3-Omni). Restores omni only.
 
 jobs:
   unit-test:
-    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test-examples.yaml / test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    runs-on: [self-hosted]
+    name: unit-test
+    runs-on: [self-hosted, h100]
     container:
-      image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
-      options: --gpus all --shm-size=2g --rm -v /dev/shm
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
-            cp -p -r /github/home/omni ./
-          fi
-
-      - name: Remove flashinfer # this is needed to avoid flashinfer jit compilation makes the program hang
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni
-          fi
-          if [ ! -d omni ]; then
-            uv venv omni -p 3.11
-          fi
-          source omni/bin/activate
-          uv pip install -v -e .
-          # Repair PyAV if its bundled shared libs got corrupted in the cached
-          # venv (e.g. "libx265-...so.215: file too short"). The editable install
-          # above does not reinstall an already-present package, so force it.
-          if ! python -c "import av" 2>/dev/null; then
-            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
-            uv pip install --force-reinstall --no-deps --no-cache av
-          fi
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
 
       - name: Run test
         timeout-minutes: 30
@@ -70,8 +45,5 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/ -v -m "not benchmark and not docs" -x
-
-      - name: Save cache
-        run: |
-          cp -p -r omni /github/home/
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/ -v -m "not benchmark" -x

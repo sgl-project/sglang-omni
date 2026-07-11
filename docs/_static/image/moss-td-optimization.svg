@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 200" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <rect width="860" height="200" fill="#F5F5F5" rx="4"/>
+
+  <defs>
+    <marker id="a3" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0.5, 6 2.5, 0 4.5" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Pipeline stages -->
+  <rect x="20" y="20" width="220" height="44" rx="10" fill="#FFE8A8" stroke="#C8A050" stroke-width="1.8"/>
+  <text x="130" y="40" text-anchor="middle" font-size="13" fill="#333" font-weight="bold">Encoder</text>
+  <text x="130" y="54" text-anchor="middle" font-size="9" fill="#888">Whisper + Merge + Adaptor</text>
+
+  <line x1="240" y1="42" x2="268" y2="42" stroke="#555" stroke-width="1.2" marker-end="url(#a3)"/>
+
+  <rect x="272" y="20" width="200" height="44" rx="10" fill="#F0C8B0" stroke="#B88868" stroke-width="1.8"/>
+  <text x="372" y="40" text-anchor="middle" font-size="13" fill="#333" font-weight="bold">Chunked Prefill</text>
+  <text x="372" y="54" text-anchor="middle" font-size="9" fill="#888">Build KV Cache in chunks</text>
+
+  <line x1="472" y1="42" x2="500" y2="42" stroke="#555" stroke-width="1.2" marker-end="url(#a3)"/>
+
+  <rect x="504" y="20" width="220" height="44" rx="10" fill="#D4B8A8" stroke="#907058" stroke-width="1.8"/>
+  <text x="614" y="40" text-anchor="middle" font-size="13" fill="#333" font-weight="bold">AR Decode</text>
+  <text x="614" y="54" text-anchor="middle" font-size="9" fill="#888">Autoregressive token generation</text>
+
+  <!-- Encoder optimizations -->
+  <rect x="20" y="84" width="105" height="30" rx="6" fill="#FFF8E1" stroke="#C8A050" stroke-width="1"/>
+  <text x="72" y="103" text-anchor="middle" font-size="10" fill="#8A6D2B" font-weight="500">LRU Cache</text>
+
+  <rect x="135" y="84" width="105" height="30" rx="6" fill="#FFF8E1" stroke="#C8A050" stroke-width="1"/>
+  <text x="187" y="103" text-anchor="middle" font-size="10" fill="#8A6D2B" font-weight="500">CUDA Graph</text>
+
+  <!-- Decode optimizations -->
+  <rect x="504" y="84" width="105" height="30" rx="6" fill="#E8E0D8" stroke="#907058" stroke-width="1"/>
+  <text x="556" y="103" text-anchor="middle" font-size="10" fill="#604830" font-weight="500">CUDA Graph</text>
+
+  <rect x="619" y="84" width="105" height="30" rx="6" fill="#E8E0D8" stroke="#907058" stroke-width="1"/>
+  <text x="671" y="103" text-anchor="middle" font-size="10" fill="#604830" font-weight="500">Async Decode</text>
+
+  <!-- Stream output spans decode -->
+  <rect x="504" y="124" width="220" height="30" rx="6" fill="#E8E0D8" stroke="#907058" stroke-width="1"/>
+  <text x="614" y="143" text-anchor="middle" font-size="10" fill="#604830" font-weight="500">Stream Output</text>
+
+  <!-- Caption -->
+  <text x="430" y="188" text-anchor="middle" font-size="10" fill="#999">ASR Inference Optimization Overview</text>
+</svg>

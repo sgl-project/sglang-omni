@@ -573,7 +573,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
         config = VoxtralModelConfig.from_model_path(checkpoint_dir)
         audio_args = asdict(config.audio_model_args)
 
-        logger.info("Loading model from %s …", checkpoint_dir)
+        logger.info(f"Loading model from {checkpoint_dir} …")
         t0 = time.perf_counter()
         mem0 = torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
 

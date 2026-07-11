@@ -387,8 +387,9 @@ async def _run_launcher_with_fake_runner(
     config: PipelineConfig,
     serve_mock: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[object, FastAPI]:
+) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
+    profiler_calls = SimpleNamespace(starts=[], stops=[])
 
     from sglang_omni.serve import launcher
 
@@ -426,14 +427,25 @@ async def _run_launcher_with_fake_runner(
         async def wait_failed(self) -> None:
             await asyncio.Future()
 
+    class FakeProfilerControl:
+        def __init__(self, stage_control_endpoints: dict[str, str]) -> None:
+            del stage_control_endpoints
+
+        async def broadcast_start(self, **kwargs) -> None:
+            profiler_calls.starts.append(kwargs)
+
+        async def broadcast_stop(self, **kwargs) -> None:
+            profiler_calls.stops.append(kwargs)
+
     monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "ProfilerControlClient", FakeProfilerControl)
     monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
     monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
     await launcher._run_server(config, port=8000)
     assert runner_ref is not None
-    return runner_ref, app
+    return runner_ref, app, profiler_calls
 
 
 @pytest.mark.asyncio
@@ -444,7 +456,7 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     config = _make_config(tmp_path)
     server_serve = AsyncMock(return_value=None)
 
-    runner, app = await _run_launcher_with_fake_runner(
+    runner, app, profiler_calls = await _run_launcher_with_fake_runner(
         config=config,
         serve_mock=server_serve,
         monkeypatch=monkeypatch,
@@ -453,9 +465,26 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     assert runner.started
     assert runner.stopped
     server_serve.assert_awaited_once()
-    mounted_paths = {route.path for route in app.routes}
-    assert "/start_profile" in mounted_paths
-    assert "/stop_profile" in mounted_paths
+    try:
+        with TestClient(app) as client:
+            start_resp = client.post(
+                "/start_profile",
+                json={
+                    "enable_torch": False,
+                    "event_dir": str(tmp_path / "events"),
+                },
+            )
+            stop_resp = client.post("/stop_profile", json={})
+        assert start_resp.status_code == 200
+        assert stop_resp.status_code == 200
+        assert profiler_calls.starts
+        assert profiler_calls.starts[0]["enable_torch"] is False
+        assert profiler_calls.starts[0]["event_dir"] == str(tmp_path / "events")
+        assert profiler_calls.stops == [{"run_id": None}]
+    finally:
+        rec = get_recorder()
+        if rec.is_active():
+            rec.stop()
 
 
 def test_start_profile_request_only_mode_does_not_require_trace_template(

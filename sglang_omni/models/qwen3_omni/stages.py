@@ -22,13 +22,17 @@ from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPrepr
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     create_streaming_detokenize_scheduler,
 )
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -148,11 +152,11 @@ def _apply_colocated_encoder_mem_reserve(
     return round(effective_total_gpu_memory_fraction, 3)
 
 
-def load_state(payload: StagePayload) -> PipelineState:
-    return PipelineState.from_dict(payload.data)
+def load_state(payload: StagePayload) -> Qwen3OmniPipelineState:
+    return Qwen3OmniPipelineState.from_dict(payload.data)
 
 
-def store_state(payload: StagePayload, state: PipelineState) -> StagePayload:
+def store_state(payload: StagePayload, state: Qwen3OmniPipelineState) -> StagePayload:
     payload.data = state.to_dict()
     return payload
 
@@ -940,10 +944,28 @@ def create_sglang_thinker_executor_from_config(
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
 ):
     """Returns OmniScheduler for thinker."""
-
-    overrides: dict[str, Any] = {"disable_cuda_graph": False}
+    # note (luojiaxuan):
+    # The thinker runs prefill XOR decode per scheduler step, so under
+    # concurrent streaming a large fraction of steps are prefill-only while
+    # in-flight decodes stall (measured on Qwen3-Omni-30B TP=2, 32 streams:
+    # ~98% of prefill steps had decode-ready reqs in running_batch passed over,
+    # ~18/step). Mixed-chunk folds those running decodes into the chunk-prefill
+    # (extend) step, restoring the decode duty cycle: +14% throughput and ~6%
+    # lower computation-aware latency at quality parity, with no low-concurrency
+    # regression and robustness to chunked_prefill_size (#760). Defaults here so
+    # the streaming-SST thinker path benefits out of the box; either key can be
+    # overridden via server_args_overrides (set enable_mixed_chunk=False to opt
+    # out). Note: mixed-chunk only engages when chunked_prefill_size > 0.
+    overrides: dict[str, Any] = {
+        "disable_cuda_graph": False,
+        "enable_mixed_chunk": True,
+        "chunked_prefill_size": 8192,
+        "sampling_backend": "pytorch",
+    }
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
@@ -1006,6 +1028,8 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
@@ -1036,6 +1060,8 @@ def create_talker_ar_executor_from_config(
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",
     total_gpu_memory_fraction: float | None = None,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = 5,
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1045,15 +1071,15 @@ def create_talker_ar_executor_from_config(
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
     # override via factory_args or the `--talker-cuda-graph off` CLI flag.
     # Note (Xuesong): pytorch backend works around an sglang upstream gap —
-    # Sampler.forward doesn't forward sampling_seed to flashinfer, so
+    # Sampler.forward doesn't forward seed to flashinfer, so
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
     # trigger degenerate AR loops (see #408). Revert once upstream lands.
-    overrides: dict[str, Any] = {
-        "disable_cuda_graph": False,
-        "sampling_backend": "pytorch",
-    }
-    if server_args_overrides:
-        overrides.update(server_args_overrides)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=32,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        sampling_backend="pytorch",
+    )
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,
@@ -1064,6 +1090,10 @@ def create_talker_ar_executor_from_config(
         model_path,
         context_length=talker_max_seq_len,
         **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name="Qwen3-Omni talker_ar",
+        server_args=server_args,
     )
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
@@ -1085,6 +1115,8 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_partial_start=enable_partial_start,
+        partial_start_min_chunks=partial_start_min_chunks,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(

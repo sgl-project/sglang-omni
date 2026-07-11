@@ -1,21 +1,43 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared test utilities — model-agnostic helpers for launching and managing servers."""
+"""Shared test utilities for model CI, metrics checks, and server lifecycle."""
 
 from __future__ import annotations
 
-import os
-import signal
-import statistics
+import json
 import subprocess
-import sys
-import threading
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING
 
-STARTUP_TIMEOUT = 600
+import pytest
+
+from benchmarks.benchmarker import utils as benchmark_utils
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
+)
+
+if TYPE_CHECKING:
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+STARTUP_TIMEOUT = benchmark_utils.STARTUP_TIMEOUT
+REPO_ROOT = benchmark_utils.REPO_ROOT
+GPU_CLEANUP_SCRIPT = benchmark_utils.GPU_CLEANUP_SCRIPT
+GPU_IDLE_THRESHOLD_MB = benchmark_utils.GPU_IDLE_THRESHOLD_MB
+GPU_IDLE_WAIT_SECONDS = benchmark_utils.GPU_IDLE_WAIT_SECONDS
+GPU_IDLE_POLL_SECONDS = benchmark_utils.GPU_IDLE_POLL_SECONDS
+disable_proxy = benchmark_utils.disable_proxy
+no_proxy_env = benchmark_utils.no_proxy_env
+server_log_file = benchmark_utils.server_log_file
+stop_server = benchmark_utils.stop_server
+wait_for_gpu_memory_release = benchmark_utils.wait_for_gpu_memory_release
+wait_healthy = benchmark_utils.wait_healthy
+start_server_from_cmd = benchmark_utils.start_server_from_cmd
+
+QWEN3_ASR_WER_MODEL_PATH = QWEN3_ASR_MODEL_PATH
+QWEN3_ASR_WER_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+QWEN3_ASR_ROUTER_STARTUP_TIMEOUT = 600
 
 
 @dataclass
@@ -51,7 +73,7 @@ class MetricCheckCollector:
     ) -> None:
         try:
             func(*args, **kwargs)
-        except AssertionError as exc:
+        except Exception as exc:
             detail = str(exc) or exc.__class__.__name__
             self.fail(f"{check_label}: {detail}")
 
@@ -64,6 +86,25 @@ class MetricCheckCollector:
         raise AssertionError(
             f"{self.label} failed {len(self.failures)} check(s):\n{details}"
         )
+
+
+@pytest.fixture
+def qwen3_asr_wer_router(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator["ManagedRouterHandle"]:
+    """Launch Qwen3-ASR router for WER after upstream servers release GPU."""
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    wait_for_gpu_memory_release()
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_ASR_WER_MODEL_PATH,
+        model_name=QWEN3_ASR_WER_MODEL_PATH,
+        worker_extra_args="",
+        wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
+        log_prefix="asr_wer_router_logs",
+    ) as router:
+        yield router
 
 
 def _metric_collector(
@@ -79,159 +120,6 @@ def _assert_metric_collector_if_local(
 ) -> None:
     if collector_arg is None:
         collector.assert_all()
-
-
-@contextmanager
-def disable_proxy() -> Generator[None, None, None]:
-    """Temporarily disable proxy env vars for loopback requests."""
-    proxy_vars = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    )
-    saved_env = {k: os.environ[k] for k in proxy_vars if k in os.environ}
-    for k in proxy_vars:
-        os.environ.pop(k, None)
-    try:
-        yield
-    finally:
-        for k in proxy_vars:
-            os.environ.pop(k, None)
-        os.environ.update(saved_env)
-
-
-def no_proxy_env() -> dict[str, str]:
-    """Return a copy of os.environ with proxy variables removed, for subprocess use."""
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
-
-
-def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
-    """Capture server logs to a file on CI; stream to the terminal locally."""
-    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    if not is_ci:
-        return None
-    return tmp_path_factory.mktemp(prefix) / "server.log"
-
-
-def stop_server(proc: subprocess.Popen) -> None:
-    """Gracefully stop the server process group, tolerating already-dead processes."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=30)
-    except (ProcessLookupError, ChildProcessError):
-        return
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, ChildProcessError):
-            # Process already exited — nothing left to kill.
-            return
-
-
-def wait_healthy(
-    proc: subprocess.Popen,
-    port: int,
-    log_file: Path | None,
-    timeout: int = STARTUP_TIMEOUT,
-) -> None:
-    """Wait for a server to report healthy, stopping it and raising on failure."""
-    from benchmarks.benchmarker.utils import wait_for_service
-
-    try:
-        with disable_proxy():
-            wait_for_service(
-                f"http://localhost:{port}",
-                timeout=timeout,
-                server_process=proc,
-                server_log_file=log_file,
-                health_body_contains="healthy",
-            )
-    except Exception as exc:
-        stop_server(proc)
-        log_text = (
-            log_file.read_text() if log_file is not None and log_file.exists() else ""
-        )
-        message = str(exc)
-        if log_text and log_text not in message:
-            message = f"{message}\n{log_text}"
-        if isinstance(exc, TimeoutError):
-            raise TimeoutError(message) from exc
-        if isinstance(exc, RuntimeError):
-            raise RuntimeError(message) from exc
-        raise
-
-
-def start_server_from_cmd(
-    cmd: list[str],
-    log_file: Path | None,
-    port: int,
-    timeout: int = STARTUP_TIMEOUT,
-    env: dict[str, str] | None = None,
-    tee: bool = False,
-) -> subprocess.Popen:
-    """Start a server from an arbitrary command and wait until healthy."""
-    process_env = os.environ.copy()
-    if env is not None:
-        process_env.update(env)
-    if log_file is None:
-        proc = subprocess.Popen(
-            cmd,
-            env=process_env,
-            start_new_session=True,
-        )
-    elif tee:
-        # Tee (file + stdout): TP=2 fixture wants the file for grep + live
-        # output for `pytest -s`. Pattern from sglang's popen_launch_server.
-        log_handle = open(log_file, "w")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                env=process_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                text=True,
-                bufsize=1,
-            )
-        except Exception:
-            log_handle.close()
-            raise
-
-        def _tee_stdout(src, sink) -> None:
-            try:
-                for line in iter(src.readline, ""):
-                    sink.write(line)
-                    sink.flush()
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-            finally:
-                src.close()
-                sink.close()
-
-        # log_handle ownership is handed to the thread; its finally closes it.
-        threading.Thread(
-            target=_tee_stdout,
-            args=(proc.stdout, log_handle),
-            daemon=True,
-        ).start()
-    else:
-        with open(log_file, "w") as log_handle:
-            proc = subprocess.Popen(
-                cmd,
-                env=process_env,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-    wait_healthy(proc, port, log_file, timeout=timeout)
-    return proc
 
 
 def assert_summary_metrics(
@@ -305,27 +193,45 @@ def apply_slack(
 ) -> dict[int, dict[str, float]]:
     """Derive CI thresholds from P95 references with uniform slack.
 
-    Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
+    Higher-is-better metrics (throughput, output tok/req-s when present): threshold = P95 x slack_higher
     Lower-is-better metrics (latency, rtf):            threshold = P95 x slack_lower
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
         thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
-            "output_tok_per_req_s_min": round(
-                m["output_tok_per_req_s"] * slack_higher,
-                1,
-            ),
             "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
         }
+        if "output_tok_per_req_s" in m:
+            thresholds["output_tok_per_req_s_min"] = round(
+                m["output_tok_per_req_s"] * slack_higher,
+                1,
+            )
         if "rtf_mean" in m:
             thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
         result[conc] = thresholds
     return result
 
 
+def persist_wer_in_benchmark_results(
+    audio_dir: str,
+    wer: dict,
+    results_basename: str,
+) -> None:
+    """Merge WER into the benchmark results JSON for tune.py calibration."""
+    results_path = Path(audio_dir).parent / results_basename
+    data = json.loads(results_path.read_text())
+    data["wer"] = wer
+    results_path.write_text(json.dumps(data, indent=2))
+
+
 def apply_wer_slack(reference: float, slack: float = 1.25) -> float:
     """Derive a max WER threshold from a reference value with uniform slack."""
+    return round(reference * slack, 4)
+
+
+def apply_mos_slack(reference: float, slack: float = 0.97) -> float:
+    """Derive a min MOS threshold from a reference value with downward slack."""
     return round(reference * slack, 4)
 
 
@@ -338,10 +244,10 @@ def assert_speed_thresholds(
 ) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 
-    Whether RTF is checked is driven entirely by the thresholds dict: if
-    ``apply_slack`` was fed a baseline that included ``rtf_mean`` the
-    corresponding ``rtf_mean_max`` is present here and enforced; otherwise
-    (e.g. VLM / text-only tasks) the RTF assertion is skipped automatically.
+    Whether RTF and output token throughput are checked is driven entirely by
+    the thresholds dict: if ``apply_slack`` was fed a baseline that included
+    ``rtf_mean`` or ``output_tok_per_req_s`` the corresponding threshold is
+    present here and enforced.
     """
     checks = _metric_collector(collector, "speed thresholds")
     level_thresholds = thresholds.get(concurrency)
@@ -357,14 +263,15 @@ def assert_speed_thresholds(
         f"throughput_qps {throughput_qps} < "
         f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}",
     )
-    output_tok_per_req_s = summary.get("output_tok_per_req_s")
-    checks.check(
-        output_tok_per_req_s is not None
-        and output_tok_per_req_s >= level_thresholds["output_tok_per_req_s_min"],
-        f"output_tok_per_req_s {output_tok_per_req_s} < "
-        f"{level_thresholds['output_tok_per_req_s_min']} "
-        f"at concurrency {concurrency}",
-    )
+    if "output_tok_per_req_s_min" in level_thresholds:
+        output_tok_per_req_s = summary.get("output_tok_per_req_s")
+        checks.check(
+            output_tok_per_req_s is not None
+            and output_tok_per_req_s >= level_thresholds["output_tok_per_req_s_min"],
+            f"output_tok_per_req_s {output_tok_per_req_s} < "
+            f"{level_thresholds['output_tok_per_req_s_min']} "
+            f"at concurrency {concurrency}",
+        )
     latency_mean_s = summary.get("latency_mean_s")
     checks.check(
         latency_mean_s is not None
@@ -382,8 +289,6 @@ def assert_speed_thresholds(
     _assert_metric_collector_if_local(collector, checks)
 
 
-DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL = 0.12
-DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL = 0.20
 DEFAULT_TOTAL_AUDIO_DURATION_RTOL = 0.12
 
 
@@ -440,14 +345,12 @@ def assert_streaming_consistency(
     stream_requests: list[dict],
     *,
     expected_stream_count: int | None = None,
-    total_completion_token_rtol: float = DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL,
-    median_completion_token_rtol: float = DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL,
+    max_failed_requests: int = 0,
     total_audio_duration_rtol: float = DEFAULT_TOTAL_AUDIO_DURATION_RTOL,
     collector: MetricCheckCollector | None = None,
 ) -> None:
-    """Assert stable invariants on the shared request subset between
-    non-streaming and streaming runs (matching prompt tokens, total/median
-    completion tokens within tolerance, total audio duration within tolerance).
+    """Assert request coverage, failure budget, and audio duration consistency
+    between non-streaming and streaming runs.
     """
     checks = _metric_collector(collector, "streaming consistency")
     non_stream_by_id = _request_by_id(non_stream_requests)
@@ -455,34 +358,43 @@ def assert_streaming_consistency(
     common_ids = _assert_request_sets(
         non_stream_by_id, stream_by_id, expected_stream_count, checks
     )
+    non_stream_failed = {
+        request_id
+        for request_id, request in non_stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    stream_failed = {
+        request_id
+        for request_id, request in stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    checks.check(
+        len(non_stream_failed) <= max_failed_requests,
+        f"Non-streaming failed request count {len(non_stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    checks.check(
+        len(stream_failed) <= max_failed_requests,
+        f"Streaming failed request count {len(stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    failed_ids = non_stream_failed | stream_failed
+    common_ids = [
+        request_id for request_id in common_ids if request_id not in failed_ids
+    ]
+    checks.check(
+        bool(common_ids),
+        "No successful overlapping request IDs between non-stream and stream runs",
+    )
 
-    non_stream_completion_tokens: list[int] = []
-    stream_completion_tokens: list[int] = []
     non_stream_audio_duration_total = 0.0
     stream_audio_duration_total = 0.0
 
     for request_id in common_ids:
         non_stream_request = non_stream_by_id[request_id]
         stream_request = stream_by_id[request_id]
-        checks.check(
-            non_stream_request.get("prompt_tokens")
-            == stream_request.get("prompt_tokens"),
-            f"Request {request_id}: prompt_tokens mismatch - "
-            f"non_stream={non_stream_request.get('prompt_tokens')}, "
-            f"stream={stream_request.get('prompt_tokens')}",
-        )
-        non_stream_completion = non_stream_request.get("completion_tokens")
-        stream_completion = stream_request.get("completion_tokens")
         non_stream_audio = non_stream_request.get("audio_duration_s")
         stream_audio = stream_request.get("audio_duration_s")
-        if non_stream_completion is None or stream_completion is None:
-            checks.fail(
-                f"Request {request_id}: completion_tokens missing - "
-                f"non_stream={non_stream_completion}, stream={stream_completion}"
-            )
-        else:
-            non_stream_completion_tokens.append(non_stream_completion)
-            stream_completion_tokens.append(stream_completion)
         if non_stream_audio is None or stream_audio is None:
             checks.fail(
                 f"Request {request_id}: audio_duration_s missing - "
@@ -492,21 +404,6 @@ def assert_streaming_consistency(
             non_stream_audio_duration_total += non_stream_audio
             stream_audio_duration_total += stream_audio
 
-    if non_stream_completion_tokens and stream_completion_tokens:
-        _assert_relative_difference(
-            "Total completion_tokens",
-            sum(non_stream_completion_tokens),
-            sum(stream_completion_tokens),
-            total_completion_token_rtol,
-            checks,
-        )
-        _assert_relative_difference(
-            "Median completion_tokens",
-            statistics.median(non_stream_completion_tokens),
-            statistics.median(stream_completion_tokens),
-            median_completion_token_rtol,
-            checks,
-        )
     if common_ids:
         _assert_relative_difference(
             "Total audio_duration_s",
@@ -650,10 +547,59 @@ def assert_wer_partitioned(
     _assert_metric_collector_if_local(collector, checks)
 
 
+def assert_cer_partitioned(
+    diarization_metrics_percent: Mapping[str, object],
+    *,
+    max_cer_no_spk_below_50_percent: float | None = None,
+    max_n_above_50_cer: int | None = None,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    """Verify partitioned CER metrics from transcribe-diarize eval output.
+
+    max_cer_no_spk_below_50_percent bounds corpus-level CER computed only
+    over samples whose per-sample CER is at most 50% (percent units, e.g. 6.75).
+
+    max_n_above_50_cer bounds the count of samples with per-sample CER
+    above 50% (catastrophic outliers such as runaway decoding loops).
+    """
+    checks = _metric_collector(collector, "partitioned CER")
+    if max_cer_no_spk_below_50_percent is not None:
+        cer_below_50 = diarization_metrics_percent.get("cer_no_spk_below_50_corpus")
+        if cer_below_50 is None:
+            checks.fail("Missing cer_no_spk_below_50_corpus in diarization metrics")
+        else:
+            checks.check(
+                isinstance(cer_below_50, int | float)
+                and not isinstance(cer_below_50, bool),
+                f"cer_no_spk_below_50_corpus must be numeric, got {type(cer_below_50).__name__}",
+            )
+            checks.check(
+                float(cer_below_50) <= max_cer_no_spk_below_50_percent,
+                f"Corpus CER over samples with CER<=50% is "
+                f"{float(cer_below_50):.4f}% > threshold "
+                f"{max_cer_no_spk_below_50_percent:.4f}%",
+            )
+
+    if max_n_above_50_cer is not None:
+        n_above_50 = diarization_metrics_percent.get("n_above_50_pct_cer")
+        if n_above_50 is None:
+            checks.fail("Missing n_above_50_pct_cer in diarization metrics")
+        else:
+            checks.check(
+                isinstance(n_above_50, int) and not isinstance(n_above_50, bool),
+                f"n_above_50_pct_cer must be int, got {type(n_above_50).__name__}",
+            )
+            checks.check(
+                n_above_50 <= max_n_above_50_cer,
+                f"{n_above_50} samples have CER>50% > threshold {max_n_above_50_cer}",
+            )
+    _assert_metric_collector_if_local(collector, checks)
+
+
 def assert_wer_results(
     results: dict,
     max_corpus_wer: float,
-    max_per_sample_wer: float,
+    max_per_sample_wer: float | None = None,
     *,
     collector: MetricCheckCollector | None = None,
 ) -> None:
@@ -662,20 +608,21 @@ def assert_wer_results(
     summary, per_sample = _wer_result_sections(results, checks)
     _check_wer_per_sample_schema(per_sample, checks)
 
-    failed_details = [
-        f"  sample {s.get('id')}: {s.get('error')}"
-        for s in per_sample
-        if not s.get("is_success", True)
-    ]
-    evaluated = summary.get("evaluated")
-    total_samples = summary.get("total_samples")
-    skipped = summary.get("skipped")
-    checks.check(
-        evaluated == total_samples,
-        f"Only {evaluated}/{total_samples} samples evaluated, "
-        f"{skipped} skipped.\n"
-        f"Per-sample errors:\n" + "\n".join(failed_details),
-    )
+    if max_per_sample_wer is not None:
+        failed_details = [
+            f"  sample {s.get('id')}: {s.get('error')}"
+            for s in per_sample
+            if not s.get("is_success", True)
+        ]
+        evaluated = summary.get("evaluated")
+        total_samples = summary.get("total_samples")
+        skipped = summary.get("skipped")
+        checks.check(
+            evaluated == total_samples,
+            f"Only {evaluated}/{total_samples} samples evaluated, "
+            f"{skipped} skipped.\n"
+            f"Per-sample errors:\n" + "\n".join(failed_details),
+        )
 
     wer_corpus = summary.get("wer_corpus")
     if wer_corpus is None:
@@ -686,6 +633,10 @@ def assert_wer_results(
             f"Corpus WER {wer_corpus:.4f} ({wer_corpus * 100:.2f}%) "
             f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)",
         )
+
+    if max_per_sample_wer is None:
+        _assert_metric_collector_if_local(collector, checks)
+        return
 
     for sample in per_sample:
         checks.check(

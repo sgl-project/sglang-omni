@@ -9,10 +9,12 @@ from typing import Any, Mapping
 from transformers.utils.hub import cached_file
 
 
-def load_chat_template(model_path: str) -> str | None:
-    """Load chat_template.json from the local HF cache if available."""
+def load_chat_template(model_path: str, *, local_files_only: bool = True) -> str | None:
+    """Load chat_template.json through the HF cache."""
     try:
-        path = cached_file(model_path, "chat_template.json", local_files_only=True)
+        path = cached_file(
+            model_path, "chat_template.json", local_files_only=local_files_only
+        )
     except (OSError, ValueError):
         return None
 
@@ -31,13 +33,22 @@ def load_chat_template(model_path: str) -> str | None:
     return template if isinstance(template, str) and template else None
 
 
-def ensure_chat_template(tokenizer: Any, *, model_path: str) -> None:
+def ensure_chat_template(
+    tokenizer: Any,
+    *,
+    model_path: str,
+    fallback_model_paths: tuple[str, ...] = (),
+) -> None:
     """Ensure tokenizer.chat_template is populated when possible."""
     if tokenizer.chat_template:
         return
-    template = load_chat_template(model_path)
-    if template:
-        tokenizer.chat_template = template
+    candidates = [(model_path, True)]
+    candidates.extend((fallback_path, False) for fallback_path in fallback_model_paths)
+    for candidate, local_files_only in candidates:
+        template = load_chat_template(candidate, local_files_only=local_files_only)
+        if template:
+            tokenizer.chat_template = template
+            return
 
 
 def normalize_messages(messages: Any) -> list[dict[str, str]]:

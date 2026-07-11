@@ -28,6 +28,7 @@ from typing import Iterable, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from sglang_omni.models.weight_loader import default_weight_loader
 
@@ -99,6 +100,23 @@ def _build_qwen3_vision_block_kwargs(
     if "head_size" in inspect.signature(block_cls.__init__).parameters:
         kwargs["head_size"] = head_size
     return kwargs
+
+
+def _linear_patch_embed(
+    patch_embed: nn.Module, pixel_values: torch.Tensor
+) -> torch.Tensor:
+    """Run Qwen3VLVisionPatchEmbed's Conv3d projection as an equivalent Linear."""
+    patch_dim = (
+        patch_embed.in_channels
+        * patch_embed.temporal_patch_size
+        * patch_embed.patch_size
+        * patch_embed.patch_size
+    )
+    return F.linear(
+        pixel_values.view(-1, patch_dim),
+        patch_embed.proj.weight.view(patch_embed.embed_dim, -1),
+        patch_embed.proj.bias,
+    )
 
 
 class MingOmniVisionEncoder(nn.Module):
@@ -326,7 +344,9 @@ class MingOmniVisionEncoder(nn.Module):
             Otherwise: [seq_len, out_hidden_size].
         """
         x = pixel_values.to(device=self.device, dtype=self.dtype)
-        x = self.patch_embed(x)
+        # Qwen3VLVisionPatchEmbed wraps a Conv3d with one output cell per
+        # patch. This is equivalent to Linear and avoids a slow cuDNN path.
+        x = _linear_patch_embed(self.patch_embed, x)
 
         # Convert grid_thw to list for iteration
         if isinstance(grid_thw, torch.Tensor):

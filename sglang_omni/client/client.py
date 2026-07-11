@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import replace
 from typing import Any, AsyncIterator, Callable
@@ -10,6 +11,7 @@ from typing import Any, AsyncIterator, Callable
 import numpy as np
 
 from sglang_omni.client.audio import (
+    DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
     audio_to_base64,
     encode_audio,
@@ -87,8 +89,13 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
+        logprobs_parts: list[Any] = []
+        saw_output_token_logprobs = False
+        omni_rollout: dict[str, Any] | None = None
+        weight_version: str | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
@@ -96,8 +103,17 @@ class Client:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.sample_rate is not None:
+                sample_rate = chunk.sample_rate
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
+            if chunk.output_token_logprobs is not None:
+                saw_output_token_logprobs = True
+                logprobs_parts.extend(chunk.output_token_logprobs)
+            if chunk.omni_rollout is not None:
+                omni_rollout = chunk.omni_rollout
+            if chunk.weight_version is not None:
+                weight_version = chunk.weight_version
 
         if last_chunk is None:
             raise ClientError("No response from pipeline")
@@ -109,8 +125,14 @@ class Client:
             if len(audio_chunks) == 1:
                 combined = audio_chunks[0]
             else:
-                combined = np.concatenate([to_numpy(c) for c in audio_chunks])
-            audio_b64 = audio_to_base64(combined, output_format=audio_format)
+                arrays = [to_numpy(c) for c in audio_chunks]
+                axis = -1 if arrays[0].ndim > 1 else 0
+                combined = np.concatenate(arrays, axis=axis)
+            audio_b64 = audio_to_base64(
+                combined,
+                sample_rate=sample_rate or DEFAULT_SAMPLE_RATE,
+                output_format=audio_format,
+            )
             audio = CompletionAudio(
                 id=f"audio-{request_id}",
                 data=audio_b64,
@@ -123,6 +145,11 @@ class Client:
             audio=audio,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
+            output_token_logprobs=(
+                logprobs_parts if saw_output_token_logprobs else None
+            ),
+            omni_rollout=omni_rollout,
+            weight_version=weight_version,
         )
 
     # ------------------------------------------------------------------
@@ -145,7 +172,9 @@ class Client:
             audio_b64: str | None = None
             if chunk.modality == "audio" and chunk.audio_data is not None:
                 audio_b64 = audio_to_base64(
-                    chunk.audio_data, output_format=audio_format
+                    chunk.audio_data,
+                    sample_rate=chunk.sample_rate or DEFAULT_SAMPLE_RATE,
+                    output_format=audio_format,
                 )
 
             yield CompletionStreamChunk(
@@ -169,6 +198,7 @@ class Client:
         request_id: str,
         response_format: str = "wav",
         speed: float = 1.0,
+        allow_format_fallback: bool = True,
     ) -> SpeechResult:
         """Run a TTS request and return encoded audio bytes.
 
@@ -195,16 +225,21 @@ class Client:
         if len(audio_chunks) == 1:
             audio_data = audio_chunks[0]
         else:
-            audio_data = np.concatenate([to_numpy(c) for c in audio_chunks])
+            arrays = [to_numpy(c) for c in audio_chunks]
+            axis = -1 if arrays[0].ndim > 1 else 0
+            audio_data = np.concatenate(arrays, axis=axis)
 
         encode_kwargs: dict[str, Any] = {
             "response_format": response_format,
             "speed": speed,
+            "allow_format_fallback": allow_format_fallback,
         }
         if sample_rate is not None:
             encode_kwargs["sample_rate"] = sample_rate
 
-        audio_bytes, mime_type = encode_audio(audio_data, **encode_kwargs)
+        audio_bytes, mime_type = await asyncio.to_thread(
+            encode_audio, audio_data, **encode_kwargs
+        )
 
         # Derive actual format from MIME type (encode_audio may fall back
         # to WAV if the requested codec is unavailable).
@@ -218,6 +253,7 @@ class Client:
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
+            sample_rate=sample_rate,
             usage=last_chunk.usage if last_chunk else None,
         )
 
@@ -241,6 +277,123 @@ class Client:
 
     def health(self) -> dict[str, Any]:
         return self._coordinator.health()
+
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.admin(
+            action,
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def model_info(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.model_info(
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.pause_generation(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.continue_generation(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.update_weights_from_disk(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def init_weights_update_group(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.init_weights_update_group(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def destroy_weights_update_group(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.destroy_weights_update_group(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def update_weights_from_distributed(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.update_weights_from_distributed(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return await self._coordinator.weights_checker(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
 
     # ------------------------------------------------------------------
     # Internals
@@ -303,10 +456,11 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
-            # Multi-terminal merged result, e.g. decode + code2wav/talker.
+            # Multi-terminal merged result, e.g. decode + code2wav/talker/
+            # talker_stream.
             audio_result = None
             if "decode" in result:
-                for audio_stage in ("code2wav", "talker"):
+                for audio_stage in ("code2wav", "talker", "talker_stream"):
                     if audio_stage in result:
                         audio_result = result[audio_stage] or {}
                         break
@@ -318,6 +472,15 @@ class Client:
                 finish_reason = decode_result.get("finish_reason")
                 if finish_reason is not None:
                     chunk.finish_reason = finish_reason
+                output_token_logprobs = decode_result.get("output_token_logprobs")
+                if output_token_logprobs is not None:
+                    chunk.output_token_logprobs = output_token_logprobs
+                omni_rollout = decode_result.get("omni_rollout")
+                if omni_rollout is not None:
+                    chunk.omni_rollout = omni_rollout
+                weight_version = decode_result.get("weight_version")
+                if weight_version is not None:
+                    chunk.weight_version = weight_version
                 Client._set_audio_data(chunk, audio_result)
                 chunk.usage = Client._build_usage_info(
                     decode_result
@@ -334,6 +497,15 @@ class Client:
             logprobs = result.get("logprobs")
             if logprobs is not None:
                 chunk.logprobs = logprobs
+            output_token_logprobs = result.get("output_token_logprobs")
+            if output_token_logprobs is not None:
+                chunk.output_token_logprobs = output_token_logprobs
+            omni_rollout = result.get("omni_rollout")
+            if omni_rollout is not None:
+                chunk.omni_rollout = omni_rollout
+            weight_version = result.get("weight_version")
+            if weight_version is not None:
+                chunk.weight_version = weight_version
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
@@ -381,6 +553,15 @@ class Client:
             logprobs = data.get("logprobs")
             if logprobs is not None:
                 chunk.logprobs = logprobs
+            output_token_logprobs = data.get("output_token_logprobs")
+            if output_token_logprobs is not None:
+                chunk.output_token_logprobs = output_token_logprobs
+            omni_rollout = data.get("omni_rollout")
+            if omni_rollout is not None:
+                chunk.omni_rollout = omni_rollout
+            weight_version = data.get("weight_version")
+            if weight_version is not None:
+                chunk.weight_version = weight_version
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason

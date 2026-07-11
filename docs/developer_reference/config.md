@@ -73,7 +73,7 @@ stages = [
 | --- | --- | --- | --- |
 | `name` | `str` | required | Unique stage identifier. |
 | `factory` | `str` | required | Dotted import path to the stage factory. |
-| `factory_args` | `dict[str, Any]` | `{}` | Arguments forwarded to the factory. Runtime prep may inject `model_path` and `gpu_id` if the factory accepts them and they are not already set. |
+| `factory_args` | `dict[str, Any]` | `{}` | Explicit arguments forwarded to the factory after runtime overrides and typed runtime fields are merged. Signature-dependent defaults such as `model_path`, `gpu_id`, and `total_gpu_memory_fraction` are not written here during runtime prep; the worker injects them after importing the factory. `gpu_id` is owned by placement and is **rejected** here (set the device via `gpu` instead). |
 | `next` | `str`, `list[str]`, or `None` | `None` | Static downstream stage or stages for normal result routing. |
 | `terminal` | `bool` | `False` | Marks a stage as terminal; terminal results are sent to the coordinator. |
 | `route_fn` | `str` or `None` | `None` | Dotted function path for request-aware result routing. The function receives `(request_id, stage_output)` and returns a downstream stage name or list of stage names. |
@@ -118,8 +118,9 @@ Derived from stages:
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Optional override for the stage that receives new requests. |
 | `relay_backend` | one of `shm`, `nccl`, `nixl`, `mooncake` | `shm` | Global relay backend used when creating per-stage relays. |
-| `fused_stages` | `list[list[str]]` | `[]` | Validated as adjacent stage groups, but fusion is not implemented yet. |
+| `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process, enabling Stage-level local dispatch while preserving normal Stage ownership. |
 | `runtime_overrides` | `dict[str, dict[str, Any]]` | `{}` | Per-stage factory argument overrides applied during runtime prep. |
+| `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. `base_path` controls where Unix-domain sockets are created. |
 | `terminal_stages_fn` | `str` or `None` | `None` | Dotted function path for request-aware terminal-stage resolution. The function receives the normalized `OmniRequest` and returns terminal stage names for that request, or `None` to use static terminals. |
 | `config_cls` | `str` or `None` | class name | Stored automatically and used when loading a saved config file. |
@@ -133,6 +134,25 @@ Derived values are computed from stages, not manually maintained:
 `RelayConfig` is the per-stage data-transfer override. It currently contains
 `slot_size_mb`, `credits`, `rank`, `world_size`, and `device`.
 
+### Stage Fusion
+
+`fused_stages` is a framework-level colocation hint. It keeps every listed
+logical stage as a normal `Stage`; it does not create a synthetic scheduler or
+move routing, relay, fan-in, streaming, abort, or terminal completion into the
+scheduler layer.
+
+At runtime prep, each fused group adds a process-colocation constraint. The
+process topology planner merges the process groups that contain those stages.
+Once colocated, ordinary Stage routing can use process-local object dispatch for
+eligible full-payload hops and process-local stream dispatch for same-process
+stream edges. Cross-process or unsafe fan-out edges still use the relay/control
+plane path.
+
+The first supported fusion form is conservative: a group must be adjacent,
+linear, non-TP, and fit on at most one GPU. Internal stages must route only to
+the next stage in the group. Existing explicit `process` groups are not split;
+if fusion connects two process groups, those groups are merged.
+
 ## Runtime Prep and Runner
 
 Runtime prep builds the resolved state used by the runner:
@@ -140,10 +160,12 @@ Runtime prep builds the resolved state used by the runner:
 - validate stage names and static topology
 - compute the entry stage and terminal stages
 - allocate ZMQ endpoints
-- resolve dotted factory, merge, and projection functions
-- merge `factory_args` with `runtime_overrides`
-- inject global values such as `model_path` and `gpu_id` into factory args when
-  accepted by the factory
+- carry dotted factory, merge, route, and projection paths into worker specs
+- merge `factory_args` with `runtime_overrides` and typed runtime fields without
+  importing stage factories
+- prepare signature-dependent defaults such as `model_path`, `gpu_id`, and
+  `total_gpu_memory_fraction`; the worker injects them after importing the
+  factory when the factory accepts them
 - build relay config from stage placement and relay backend
 - wire stream targets and same-GPU stream fast paths
 
@@ -164,8 +186,7 @@ explicit and fit the configured placement limit.
 
 ```text
 pipeline/
-|-- stage_process.py    # StageProcessSpec and subprocess entrypoint
-|-- stage_group.py      # StageGroup lifecycle for topology process groups
+|-- stage_workers.py    # StageLaunchConfig, subprocess entrypoint, StageGroup
 |-- runtime_config.py   # endpoint/runtime-dir/placement prep
 `-- mp_runner.py        # Cross-stage orchestration and coordinator ownership
 ```

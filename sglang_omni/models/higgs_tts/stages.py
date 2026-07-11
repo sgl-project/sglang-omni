@@ -14,16 +14,18 @@ Pipeline shape::
 - ``create_sglang_tts_engine_executor``: runs :class:`HiggsTTSModel` under
   sglang's worker; the model runner computes the fused multi-codebook
   embedding inline in prefill from ``reference_codes_delayed`` and overlays
-  it at ``-100`` placeholder positions. Returns a :class:`HiggsScheduler`.
-- ``create_vocoder_executor``: reverses the delay pattern, decodes via
-  :class:`HiggsAudioCodec` into a mono 24 kHz waveform. Returns a
-  :class:`SimpleScheduler`.
+  it at ``-100`` placeholder positions. Returns a :class:`OmniScheduler`.
+- ``create_vocoder_executor``: creates the Higgs vocoder scheduler, preserving
+  batched non-streaming decode and incremental streaming audio chunks.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import threading
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -31,28 +33,33 @@ import torchaudio.functional as F_audio
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
-from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
-from sglang_omni.models.higgs_tts.higgs_scheduler import HiggsScheduler
-from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-from sglang_omni.models.higgs_tts.request_builders import make_higgs_scheduler_adapters
 from sglang_omni.models.higgs_tts.text_tokenizer import HiggsTokenizerAdapter
 from sglang_omni.models.higgs_tts.utils import (
     apply_delay_pattern,
     get_or_load_codec,
     load_audio_to_24k,
     resolve_checkpoint,
-    reverse_delay_pattern,
     to_codes_TN,
-    truncate_rope_to_bf16,
+)
+from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    HiggsStreamingVocoderScheduler,
+)
+
+# _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
+# reset it; the underscored alias keeps this module's historical API.
+from sglang_omni.preprocessing.cache_key import _REF_PATH_HASH_MEMO  # noqa: F401
+from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
+from sglang_omni.preprocessing.cache_key import (
+    reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
-from sglang_omni.scheduling.sglang_backend import (
-    SGLangOutputProcessor,
-    build_sglang_server_args,
-)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.speaker_cache import (
+    SpeakerCacheKey,
+    get_speaker_artifact_cache,
+)
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
 logger = logging.getLogger(__name__)
@@ -61,6 +68,78 @@ logger = logging.getLogger(__name__)
 # Codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe
 # (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
+_REF_CODE_CACHE_MAX_ITEMS = 256
+_REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_REF_WAVEFORM_CACHE_MAX_ITEMS = 256
+_REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _reference_audio_cache_key(reference_audio: Any) -> str | None:
+    """Safe source key for preprocessing waveform-cache lookup."""
+    if isinstance(reference_audio, (str, Path)):
+        return _reference_path_cache_key(reference_audio)
+    if not isinstance(reference_audio, dict):
+        return None
+    path = reference_audio.get("audio_path") or reference_audio.get("path")
+    if path:
+        return _reference_path_cache_key(path)
+    if "bytes" in reference_audio:
+        data = reference_audio["bytes"]
+        if isinstance(data, str):
+            data = data.encode()
+        return hash_media_item(data)
+    encoded = reference_audio.get("base64") or reference_audio.get("data")
+    if encoded is None:
+        return None
+    raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
+    return hash_media_item(raw)
+
+
+def _reference_code_cache_key_from_waveform(
+    waveform: torch.Tensor, sample_rate: int
+) -> str:
+    """Content key for the reference-code cache after audio decode/resample.
+
+    Hashing the waveform consumed by the codec keeps cache reuse tied to actual
+    audio content across local files, bytes/base64 payloads, and URL refs.
+    """
+    wav = waveform.detach().cpu().contiguous().float()
+    meta = f"sr:{int(sample_rate)}|shape:{tuple(wav.shape)}"
+    return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
+
+
+def _uploaded_voice_cache_key(
+    reference_audio: Any,
+    *,
+    artifact_kind: str,
+) -> SpeakerCacheKey | None:
+    if not isinstance(reference_audio, dict):
+        return None
+    voice_name = reference_audio.get("uploaded_voice_name")
+    created_at = reference_audio.get("uploaded_voice_created_at")
+    if voice_name is None or created_at is None:
+        return None
+    return SpeakerCacheKey(
+        model_type="higgs_tts",
+        voice_name=str(voice_name),
+        voice_version=int(created_at),
+        artifact_kind=artifact_kind,
+    )
+
+
+def _state_uploaded_voice_cache_key(
+    state: HiggsTtsState,
+    *,
+    artifact_kind: str,
+) -> SpeakerCacheKey | None:
+    if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
+        return None
+    return SpeakerCacheKey(
+        model_type="higgs_tts",
+        voice_name=state.uploaded_voice_name,
+        voice_version=int(state.uploaded_voice_created_at),
+        artifact_kind=artifact_kind,
+    )
 
 
 def create_preprocessing_executor(
@@ -68,7 +147,7 @@ def create_preprocessing_executor(
     *,
     num_codebooks: int = 8,
     codebook_size: int = 1026,
-    max_concurrency: int = 8,
+    max_concurrency: int = 16,
 ):
     """CPU stage: text tokenize + optional ref-audio file IO.
 
@@ -79,11 +158,17 @@ def create_preprocessing_executor(
     """
     checkpoint_dir = resolve_checkpoint(model_path)
 
-    # Higgs ckpt tokenizer_config.json uses transformers v5 metadata and crashes
-    # transformers<5's from_pretrained; load tokenizer.json directly to avoid it.
+    # Note:(Chenchen Hong) Load tokenizer.json directly to avoid checkpoint metadata drift.
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
+    # Runs on a ThreadedSimpleScheduler pool for preprocessing;
+    reference_waveform_cache = StageOutputCache(
+        max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS,
+        max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
+    )
+    reference_waveform_cache_lock = threading.Lock()
+    speaker_cache = get_speaker_artifact_cache()
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -117,17 +202,56 @@ def create_preprocessing_executor(
             )
 
         waveform_tensor = None
+        reference_code_cache_key = None
+        uploaded_voice_name = None
+        uploaded_voice_created_at = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
-            waveform_np, sample_rate = load_audio_to_24k(inputs["reference_audio"])
-            wav = torch.from_numpy(waveform_np)
-            if sample_rate != 24000:
-                wav = F_audio.resample(wav, sample_rate, 24000)
-            if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
-                raise ValueError(
-                    f"reference_audio is too long "
-                    f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
+            reference_audio = inputs["reference_audio"]
+            speaker_waveform_cache_key = _uploaded_voice_cache_key(
+                reference_audio,
+                artifact_kind="reference_waveform",
+            )
+            if speaker_waveform_cache_key is not None:
+                uploaded_voice_name = speaker_waveform_cache_key.voice_name
+                uploaded_voice_created_at = speaker_waveform_cache_key.voice_version
+                cached_reference = speaker_cache.get(speaker_waveform_cache_key)
+                if cached_reference is not None:
+                    waveform_tensor, reference_code_cache_key = cached_reference
+                    waveform_tensor = waveform_tensor.clone()
+            else:
+                reference_source_key = _reference_audio_cache_key(reference_audio)
+                with reference_waveform_cache_lock:
+                    cached_reference = reference_waveform_cache.get(
+                        reference_source_key
+                    )
+                if cached_reference is not None:
+                    cached_waveform, reference_code_cache_key = cached_reference
+                    waveform_tensor = cached_waveform.clone()
+            if waveform_tensor is None:
+                waveform_np, sample_rate = load_audio_to_24k(reference_audio)
+                wav = torch.from_numpy(waveform_np)
+                if sample_rate != 24000:
+                    wav = F_audio.resample(wav, sample_rate, 24000)
+                if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
+                    raise ValueError(
+                        f"reference_audio is too long "
+                        f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
+                    )
+                waveform_tensor = wav.view(1, 1, -1).contiguous().float()
+                reference_code_cache_key = _reference_code_cache_key_from_waveform(
+                    waveform_tensor, 24000
                 )
-            waveform_tensor = wav.view(1, 1, -1).contiguous().float()
+                if speaker_waveform_cache_key is not None:
+                    speaker_cache.put(
+                        speaker_waveform_cache_key,
+                        (waveform_tensor.clone(), reference_code_cache_key),
+                    )
+                elif reference_source_key is not None:
+                    with reference_waveform_cache_lock:
+                        reference_waveform_cache.put(
+                            reference_source_key,
+                            (waveform_tensor.clone(), reference_code_cache_key),
+                        )
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -156,8 +280,11 @@ def create_preprocessing_executor(
             prompt_token_ids=prompt_ids,
             reference_codes_delayed=ref_codes_delayed,
             reference_waveform=waveform_tensor,
+            reference_code_cache_key=reference_code_cache_key,
             target_text=target_text_for_encoder,
             reference_text=reference_text_for_encoder,
+            uploaded_voice_name=uploaded_voice_name,
+            uploaded_voice_created_at=uploaded_voice_created_at,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             max_new_tokens=int(params.get("max_new_tokens", 2048)),
@@ -165,6 +292,8 @@ def create_preprocessing_executor(
             top_p=params.get("top_p"),
             top_k=params.get("top_k"),
             seed=params.get("seed"),
+            return_logprob=bool(params.get("return_logprob", False)),
+            return_omni_rollout=bool(params.get("return_omni_rollout", False)),
         )
         payload.data = state.to_dict()
         return payload
@@ -178,8 +307,6 @@ def create_audio_encoder_executor(
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 2,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -193,6 +320,20 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
+    codec.model.acoustic_encoder = torch.compile(
+        codec.model.acoustic_encoder, mode="default", dynamic=True
+    )
+    codec.encode_reference(
+        torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
+    )
+    # Single-threaded SimpleScheduler stage, so no lock needed. Cache a CPU
+    # tensor (not list[list[int]]) so StageOutputCache can byte-bound it.
+    reference_code_cache = StageOutputCache(
+        max_size=_REF_CODE_CACHE_MAX_ITEMS,
+        max_bytes=_REF_CODE_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
+    speaker_cache = get_speaker_artifact_cache()
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -200,97 +341,72 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
-            torch.long
+        speaker_code_cache_key = _state_uploaded_voice_cache_key(
+            state,
+            artifact_kind="reference_codes",
         )
-        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != num_codebooks:
-            raise ValueError(
-                f"codec output must be [T, {num_codebooks}], got "
-                f"{tuple(ref_codes_TN.shape)}"
+        if speaker_code_cache_key is not None:
+            cached_delayed = speaker_cache.get(speaker_code_cache_key)
+        else:
+            cached_delayed = reference_code_cache.get(state.reference_code_cache_key)
+        if cached_delayed is not None:
+            delayed_rows = cached_delayed.tolist()
+        else:
+            ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
+                torch.long
             )
-        delayed = apply_delay_pattern(ref_codes_TN)
-        state.reference_codes_delayed = delayed.tolist()
+            if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != num_codebooks:
+                raise ValueError(
+                    f"codec output must be [T, {num_codebooks}], got "
+                    f"{tuple(ref_codes_TN.shape)}"
+                )
+            delayed = apply_delay_pattern(ref_codes_TN)
+            delayed_rows = delayed.tolist()
+            cached_codes = delayed.to("cpu", torch.int32)
+            if speaker_code_cache_key is not None:
+                speaker_cache.put(speaker_code_cache_key, cached_codes)
+            else:
+                reference_code_cache.put(state.reference_code_cache_key, cached_codes)
+        state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",
-            num_ref_tokens=delayed.shape[0],
+            num_ref_tokens=len(delayed_rows),
             reference_text=state.reference_text,
         )
         state.reference_waveform = None
+        state.reference_code_cache_key = None
         state.target_text = None
         state.reference_text = None
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(
-        _encode,
-        max_batch_size=max_batch_size,
-        max_batch_wait_ms=max_batch_wait_ms,
-    )
+    return SimpleScheduler(_encode)
 
 
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
-    max_new_tokens: int = 2048,
+    max_new_tokens: int | None = 2048,
+    max_running_requests: int = 64,
+    cuda_graph_max_bs: int = 64,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_async_decode: bool = False,
+    async_decode_min_batch_size: int = 2,
 ):
     """sglang-backed AR engine for Higgs TTS."""
-    checkpoint_dir = resolve_checkpoint(model_path)
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+    from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
 
-    overrides: dict[str, Any] = {
-        "disable_cuda_graph": False,
-        "cuda_graph_max_bs": 32,
-        "mem_fraction_static": 0.85,
-        "max_running_requests": 16,
-        "chunked_prefill_size": 8192,
-        "dtype": "bfloat16",
-        # Radix cache is namespaced per ref-audio via Req.extra_key (set in
-        # build_sglang_higgs_request); shared -100 placeholder prefixes from
-        # different ref audios can't cross-contaminate the KV tree.
-    }
-    if server_args_overrides:
-        overrides.update(server_args_overrides)
-
-    server_args = build_sglang_server_args(
-        checkpoint_dir,
-        context_length=4096,
-        **overrides,
-    )
-    server_args.disable_overlap_schedule = True
-
-    (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        _model_config,
-    ) = create_sglang_infrastructure(server_args, gpu_id)
-
-    truncate_rope_to_bf16(model_worker.model_runner.model)
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
-    )
-    model_runner = HiggsTTSModelRunner(model_worker, output_proc)
-    request_builder, result_adapter = make_higgs_scheduler_adapters()
-
-    return HiggsScheduler(
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        server_args=server_args,
-        model_runner=model_runner,
-        request_builder=request_builder,
-        result_adapter=result_adapter,
+    return HiggsTtsEngineBuilder(
         max_new_tokens=max_new_tokens,
+        max_running_requests=max_running_requests,
+        cuda_graph_max_bs=cuda_graph_max_bs,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+    ).build(
+        model_path,
+        device=device,
+        server_args_overrides=server_args_overrides,
     )
 
 
@@ -299,8 +415,12 @@ def create_vocoder_executor(
     *,
     device: str = "cuda:0",
     dtype: str = "bfloat16",
-    max_batch_size: int = 4,
+    vocoder_decode_batch_size: int = 16,
     max_batch_wait_ms: int = 2,
+    stream_stride: int = 75,
+    stream_followup_stride: int = 75,
+    stream_overlap_tokens: int = 8,
+    stream_holdback_tokens: int = 4,
 ):
     """Decode Higgs delayed codes to a mono 24 kHz waveform.
 
@@ -308,52 +428,15 @@ def create_vocoder_executor(
     """
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    sample_rate = HiggsAudioCodec.SAMPLE_RATE
 
-    def _vocode(payload: StagePayload) -> StagePayload:
-        state = HiggsTtsState.from_dict(payload.data)
-        delayed_rows = state.output_codes_delayed
-
-        if not delayed_rows:
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = sample_rate
-            payload.data["modality"] = "audio"
-            return payload
-
-        delayed_LN = torch.tensor(delayed_rows, dtype=torch.long)
-        N = state.num_codebooks
-        if delayed_LN.shape[0] < N:
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = sample_rate
-            payload.data["modality"] = "audio"
-            return payload
-
-        codes_TN = reverse_delay_pattern(delayed_LN)
-        codec_vocab = state.codebook_size - 2  # 1026 - BOC - EOC
-        codes_TN = torch.where(
-            codes_TN >= codec_vocab, torch.zeros_like(codes_TN), codes_TN
-        )
-        waveform = codec.decode(codes_TN)
-        audio_np = waveform.detach().to(torch.float32).cpu().numpy()
-
-        payload.data["audio_data"] = audio_np.tolist()
-        payload.data["sample_rate"] = sample_rate
-        payload.data["modality"] = "audio"
-        if state.prompt_tokens or state.completion_tokens or state.engine_time_s:
-            usage = {
-                "prompt_tokens": state.prompt_tokens,
-                "completion_tokens": state.completion_tokens,
-                "total_tokens": state.prompt_tokens + state.completion_tokens,
-            }
-            if state.engine_time_s:
-                usage["engine_time_s"] = round(state.engine_time_s, 6)
-            payload.data["usage"] = usage
-        return payload
-
-    return SimpleScheduler(
-        _vocode,
-        max_batch_size=max_batch_size,
+    return HiggsStreamingVocoderScheduler(
+        codec,
+        max_batch_size=vocoder_decode_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
+        stream_stride=stream_stride,
+        stream_followup_stride=stream_followup_stride,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_holdback_tokens=stream_holdback_tokens,
     )
 
 

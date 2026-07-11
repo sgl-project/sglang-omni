@@ -35,7 +35,7 @@ class ThinkerOutput(TypedDict, total=False):
 
 
 @dataclass
-class PipelineState:
+class Qwen3OmniPipelineState:
     """Typed view of the per-request pipeline state.
 
     This stays msgpack-safe by converting back to plain dicts before crossing
@@ -53,7 +53,7 @@ class PipelineState:
     stream_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "PipelineState":
+    def from_dict(cls, data: Any) -> "Qwen3OmniPipelineState":
         if not isinstance(data, dict):
             data = {}
         mm_inputs = data.get("mm_inputs")
@@ -98,7 +98,7 @@ class PipelineState:
         return data
 
 
-OmniEventType = Literal[
+Qwen3OmniEventType = Literal[
     "text_delta",
     "text_final",
     "audio_chunk",
@@ -112,10 +112,10 @@ OmniEventType = Literal[
 
 
 @dataclass
-class OmniEvent:
+class Qwen3OmniEvent:
     """Streaming-friendly event emitted by decode logic."""
 
-    type: OmniEventType
+    type: Qwen3OmniEventType
     modality: str
     payload: dict[str, Any]
     is_final: bool = False

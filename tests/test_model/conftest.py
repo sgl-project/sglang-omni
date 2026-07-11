@@ -9,26 +9,29 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+pytest_plugins = ["tests.utils"]
+
 if TYPE_CHECKING:
     from typing import Generator
 
     from tests.utils import ServerHandle
 
-S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
-S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
-S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
-S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"
-S2PRO_CI_STAGES = (
-    S2PRO_STAGE_NONSTREAM,
-    S2PRO_STAGE_STREAM,
-    S2PRO_STAGE_CONSISTENCY,
+TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+TTS_STAGE_NONSTREAM = "tts-stage-1-nonstream"
+TTS_STAGE_STREAM = "tts-stage-2-stream"
+TTS_STAGE_CONSISTENCY = "tts-stage-3-consistency"
+TTS_CI_STAGES = (
+    TTS_STAGE_NONSTREAM,
+    TTS_STAGE_STREAM,
+    TTS_STAGE_CONSISTENCY,
 )
-S2PRO_TTS_FULL_SWEEP_VALUE = "all"
-S2PRO_STAGE_ALL = "all"
-S2PRO_TTS_CONCURRENCY_OPTION = "--concurrency"
-SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
-S2PRO_STAGE_OPTION = "--s2pro-stage"
-SELECTED_S2PRO_CI_STAGE = pytest.StashKey[str]()
+TTS_FULL_SWEEP_VALUE = "all"
+TTS_STAGE_ALL = "all"
+TTS_CONCURRENCY_OPTION = "--concurrency"
+SELECTED_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
+TTS_STAGE_OPTION = "--tts-stage"
+SELECTED_TTS_CI_STAGE = pytest.StashKey[str]()
+TTS_CI_MODEL_OPTION = "--tts-ci-model"
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Single source of truth for the model path used by Qwen3-Omni vision-encoder
 # benchmarks and the SGLang state they bring up. Honors
@@ -37,109 +40,256 @@ QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_MODEL", QWEN3_OMNI_MODEL_PATH
 )
+QWEN3_OMNI_FP8_MODEL_PATH = "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
+QWEN3_OMNI_FP8_TEST_MODEL_PATH = os.environ.get(
+    "SGLANG_OMNI_TEST_QWEN3_FP8_MODEL", QWEN3_OMNI_FP8_MODEL_PATH
+)
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
-QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
-QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
+QWEN3_OMNI_TP2_THINKER_MEM_FRACTION = "0.55"
+QWEN3_OMNI_TP2_TALKER_MEM_FRACTION = "0.20"
+QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN = 32768
+QWEN3_OMNI_FP8_COLOCATED_CONFIG = "examples/configs/qwen3_omni_colocated_h100_fp8.yaml"
+QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS = (
+    f"--config {QWEN3_OMNI_FP8_COLOCATED_CONFIG} --colocate "
+    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
-QWEN3_OMNI_MMSU_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
+QWEN3_OMNI_BF16_COLOCATED_CONFIG = (
+    "examples/configs/qwen3_omni_colocated_h100_bf16.yaml"
 )
-QWEN3_OMNI_VIDEO_WORKER_ARGS = (
-    f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
-    "--stages.0.factory-args.thinker-max-seq-len 32768 "
-    "--stages.4.factory-args.thinker-max-seq-len 32768"
+QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS = (
+    f"--config {QWEN3_OMNI_BF16_COLOCATED_CONFIG} --colocate "
+    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
+QWEN3_OMNI_BF16_THINKER_CONFIG = "examples/configs/qwen3_omni_mmmu_h100.yaml"
+QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"
+QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION = "0.82"
+QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION = "0.40"
+QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION = "0.40"
 
 
 @pytest.fixture(scope="module")
-def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start two colocated Qwen3-Omni workers behind the router."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_mmsu_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint tuned for MMSU text-output CI."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_MMSU_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint used by text-output benchmarks."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni endpoint used by audio-output benchmarks."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
-    """Start Qwen3-Omni TP=2 thinker + disaggregated talker on the same two-card host."""
-    yield from _start_qwen3_omni_speech_server(
-        tmp_path_factory,
-        extra_args=[
-            "--thinker-tp-size",
-            "2",
-            "--gpu-thinker-tp",
-            "0,1",
-            "--gpu-talker",
-            "1",
-            "--gpu-code2wav",
-            "1",
-            "--thinker-mem-fraction-static",
-            "0.55",
-            "--talker-mem-fraction-static",
-            "0.20",
-        ],
-        timeout=450,
-        log_prefix="server_logs_tp2",
-        force_log=True,
+def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 colocated-DP2, thinker-only (0.92); MMMU."""
+    yield from _start_qwen3_omni_bf16_colocated_router(
+        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_THINKER_ARGS
     )
 
 
-def _launch_qwen3_omni_router(
+@pytest.fixture(scope="module")
+def qwen3_omni_bf16_colocated_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 colocated-DP2, full thinker+talker; TTS."""
+    yield from _start_qwen3_omni_bf16_colocated_router(
+        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS
+    )
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_fp8_colocated_server(tmp_path_factory: pytest.TempPathFactory):
+    """FP8 colocated-DP2; MMMU, Video-AMME."""
+    yield from _start_qwen3_omni_fp8_colocated_router(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_bf16_disagg_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 disaggregated (thinker GPU 0 / talker GPU 1); Video-MME (+talker)."""
+    yield from _start_qwen3_omni_disagg(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_fp8_tp2_server(tmp_path_factory: pytest.TempPathFactory):
+    """FP8 thinker-TP=2; MMSU-talker, Video-AMME-talker."""
+    yield from _start_qwen3_omni_fp8_tp2(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
+    """BF16 thinker-TP=2 (short context); thinker_length context-length checks."""
+    yield from _start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
+
+
+def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
+    """Start 2 FP8 colocated replicas (one per H100) behind the managed router."""
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
+        model_name=QWEN3_OMNI_MODEL_NAME,
+        worker_extra_args=QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS,
+        num_workers=2,
+        num_gpus_per_worker=1,
+    ) as router:
+        yield router
+
+
+def _start_qwen3_omni_bf16_colocated_router(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     worker_extra_args: str,
 ):
+    """Start 2 BF16 colocated replicas (one per H100) behind the managed router."""
     from tests.test_model.omni_router_utils import launch_managed_router
 
-    return launch_managed_router(
+    with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
         model_path=QWEN3_OMNI_TEST_MODEL_PATH,
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=worker_extra_args,
-        wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
+        num_workers=2,
+        num_gpus_per_worker=1,
+    ) as router:
+        yield router
+
+
+def _start_qwen3_omni_disagg(tmp_path_factory: pytest.TempPathFactory):
+    """Start a BF16 disaggregated server (thinker GPU 0 / talker GPU 1) as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    extra_args = [
+        "--gpu-thinker",
+        "0",
+        "--gpu-image-encoder",
+        "0",
+        "--gpu-audio-encoder",
+        "0",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION,
+    ]
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        extra_args=extra_args,
+        timeout=600,
+        log_prefix="server_logs_disagg_ci",
+        force_log=True,
     )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
+
+
+def _start_qwen3_omni_fp8_tp2(tmp_path_factory: pytest.TempPathFactory):
+    """Start an FP8 thinker-TP=2 server (talker stacked on GPU 1) as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    extra_args = [
+        "--thinker-tp-size",
+        "2",
+        "--gpu-thinker-tp",
+        "0,1",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
+    ]
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
+        extra_args=extra_args,
+        timeout=600,
+        log_prefix="server_logs_fp8_tp2_ci",
+        force_log=True,
+    )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
+
+
+def _start_qwen3_omni_tp2(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    thinker_max_seq_len: int = QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN,
+):
+    """Start a BF16 thinker-TP=2 server as a non-router handle."""
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+    model_path = QWEN3_OMNI_TEST_MODEL_PATH
+    is_short_thinker_context = thinker_max_seq_len != QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN
+    thinker_mem_fraction = (
+        QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION
+        if is_short_thinker_context
+        else QWEN3_OMNI_TP2_THINKER_MEM_FRACTION
+    )
+    extra_args = [
+        "--thinker-tp-size",
+        "2",
+        "--gpu-thinker-tp",
+        "0,1",
+        "--gpu-talker",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--thinker-mem-fraction-static",
+        thinker_mem_fraction,
+        "--talker-mem-fraction-static",
+        QWEN3_OMNI_TP2_TALKER_MEM_FRACTION,
+    ]
+    if is_short_thinker_context:
+        extra_args.extend(
+            [
+                "--talker-max-seq-len",
+                str(thinker_max_seq_len),
+            ]
+        )
+    gen = _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=model_path,
+        extra_args=extra_args,
+        thinker_max_seq_len=thinker_max_seq_len,
+        timeout=600,
+        log_prefix="server_logs_tp2_ci",
+        force_log=True,
+    )
+    server = next(gen)
+    try:
+        yield ManagedRouterHandle(
+            proc=server.proc,
+            port=server.port,
+            worker_ports=[server.port],
+            log_file=server.log_file,
+            is_router=False,
+        )
+    finally:
+        gen.close()
 
 
 def _start_qwen3_omni_speech_server(
     tmp_path_factory: pytest.TempPathFactory,
     *,
+    model_path: str = QWEN3_OMNI_TEST_MODEL_PATH,
     extra_args: list[str],
     timeout: int,
     log_prefix: str,
     force_log: bool,
+    thinker_max_seq_len: int = QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN,
 ) -> Generator[ServerHandle, None, None]:
     """Shared bring-up for run_qwen3_omni_speech_server.py-based fixtures."""
     import sys
@@ -162,13 +312,13 @@ def _start_qwen3_omni_speech_server(
         sys.executable,
         "examples/run_qwen3_omni_speech_server.py",
         "--model-path",
-        QWEN3_OMNI_TEST_MODEL_PATH,
+        model_path,
         "--port",
         str(port),
         "--model-name",
         "qwen3-omni",
         "--thinker-max-seq-len",
-        "32768",
+        str(thinker_max_seq_len),
         *extra_args,
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=timeout, tee=force_log)
@@ -293,74 +443,97 @@ def qwen3_omni_vision_sglang_env():
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        S2PRO_TTS_CONCURRENCY_OPTION,
+        TTS_CONCURRENCY_OPTION,
         action="store",
-        default="1",
+        default="16",
         help=(
-            "Select the S2-Pro TTS benchmark concurrency. "
+            "Select the TTS benchmark concurrency. "
             "Use one of {1,2,4,8,16} or 'all' for the full sweep."
         ),
     )
     parser.addoption(
-        S2PRO_STAGE_OPTION,
+        TTS_STAGE_OPTION,
         action="store",
-        default=S2PRO_STAGE_ALL,
+        default=TTS_STAGE_ALL,
         help=(
-            "Select the S2-Pro CI stage. "
-            f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
+            f"Select the TTS CI stage. Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
+        ),
+    )
+    parser.addoption(
+        TTS_CI_MODEL_OPTION,
+        action="store",
+        default="",
+        help=(
+            "Select the TTS CI model preset. "
+            "Use one of the presets in tests/test_model/tts_ci_config.py. "
+            "If omitted, use TTS_CI_MODEL from the environment."
         ),
     )
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    option_value = config.getoption(S2PRO_TTS_CONCURRENCY_OPTION)
-    config.stash[SELECTED_S2PRO_TTS_CONCURRENCIES] = _parse_s2pro_tts_concurrency(
-        option_value
-    )
-    stage_value = config.getoption(S2PRO_STAGE_OPTION)
-    config.stash[SELECTED_S2PRO_CI_STAGE] = _parse_s2pro_ci_stage(stage_value)
+    option_value = config.getoption(TTS_CONCURRENCY_OPTION)
+    config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
+    stage_value = config.getoption(TTS_STAGE_OPTION)
+    config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
+    model_value = config.getoption(TTS_CI_MODEL_OPTION)
+    if model_value:
+        os.environ["TTS_CI_MODEL"] = _parse_tts_ci_model(model_value)
 
 
 @pytest.fixture(scope="session")
-def selected_s2pro_tts_concurrencies(
+def selected_tts_concurrencies(
     pytestconfig: pytest.Config,
 ) -> tuple[int, ...]:
-    return pytestconfig.stash[SELECTED_S2PRO_TTS_CONCURRENCIES]
+    return pytestconfig.stash[SELECTED_TTS_CONCURRENCIES]
 
 
 @pytest.fixture(scope="session")
-def selected_s2pro_ci_stage(pytestconfig: pytest.Config) -> str:
-    return pytestconfig.stash[SELECTED_S2PRO_CI_STAGE]
+def selected_tts_ci_stage(pytestconfig: pytest.Config) -> str:
+    return pytestconfig.stash[SELECTED_TTS_CI_STAGE]
 
 
-def _parse_s2pro_tts_concurrency(option_value: str) -> tuple[int, ...]:
+def _parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
     normalized_value = option_value.strip().lower()
-    if normalized_value == S2PRO_TTS_FULL_SWEEP_VALUE:
-        return S2PRO_TTS_ALLOWED_CONCURRENCIES
+    if normalized_value == TTS_FULL_SWEEP_VALUE:
+        return TTS_ALLOWED_CONCURRENCIES
 
     try:
         concurrency = int(normalized_value)
     except ValueError as exc:
         raise pytest.UsageError(
-            "Invalid value for --concurrency. " "Use one of {1,2,4,8,16} or 'all'."
+            "Invalid value for --concurrency. Use one of {1,2,4,8,16} or 'all'."
         ) from exc
 
-    if concurrency not in S2PRO_TTS_ALLOWED_CONCURRENCIES:
+    if concurrency not in TTS_ALLOWED_CONCURRENCIES:
         raise pytest.UsageError(
             f"Unsupported concurrency {concurrency}. "
-            f"Use one of {S2PRO_TTS_ALLOWED_CONCURRENCIES} or 'all'."
+            f"Use one of {TTS_ALLOWED_CONCURRENCIES} or 'all'."
         )
     return (concurrency,)
 
 
-def _parse_s2pro_ci_stage(option_value: str) -> str:
+def _parse_tts_ci_stage(option_value: str) -> str:
     normalized_value = option_value.strip().lower()
-    if normalized_value == S2PRO_STAGE_ALL:
-        return S2PRO_STAGE_ALL
-    if normalized_value not in S2PRO_CI_STAGES:
+    if normalized_value == TTS_STAGE_ALL:
+        return TTS_STAGE_ALL
+    if normalized_value not in TTS_CI_STAGES:
         raise pytest.UsageError(
-            f"Unsupported value for {S2PRO_STAGE_OPTION}: {option_value!r}. "
-            f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
+            f"Unsupported value for {TTS_STAGE_OPTION}: {option_value!r}. "
+            f"Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
+        )
+    return normalized_value
+
+
+def _parse_tts_ci_model(option_value: str) -> str:
+    from tests.test_model.tts_ci_config import TTS_CI_PRESETS
+
+    normalized_value = option_value.strip().lower()
+    if normalized_value not in TTS_CI_PRESETS:
+        allowed = tuple(sorted(TTS_CI_PRESETS))
+        raise pytest.UsageError(
+            f"Unsupported value for {TTS_CI_MODEL_OPTION}: {option_value!r}. "
+            f"Use one of {allowed}."
         )
     return normalized_value
 
@@ -369,35 +542,35 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     for item in items:
-        if item.path.name != "test_s2pro_tts_ci.py":
+        if item.path.name != "test_tts_ci.py":
             continue
 
-        stage_markers = tuple(item.iter_markers(name="s2pro_stage"))
+        stage_markers = tuple(item.iter_markers(name="tts_stage"))
         if len(stage_markers) != 1:
             raise pytest.UsageError(
-                "Each test in tests/test_model/test_s2pro_tts_ci.py must have "
-                "exactly one s2pro_stage marker."
+                "Each test in tests/test_model/test_tts_ci.py must have "
+                "exactly one tts_stage marker."
             )
 
         stage_ids = tuple(str(arg) for arg in stage_markers[0].args)
-        if len(stage_ids) != 1 or stage_ids[0] not in S2PRO_CI_STAGES:
+        if len(stage_ids) != 1 or stage_ids[0] not in TTS_CI_STAGES:
             raise pytest.UsageError(
-                "Each s2pro_stage marker in tests/test_model/test_s2pro_tts_ci.py "
-                f"must provide exactly one valid stage ID from {S2PRO_CI_STAGES}."
+                "Each tts_stage marker in tests/test_model/test_tts_ci.py "
+                f"must provide exactly one valid stage ID from {TTS_CI_STAGES}."
             )
 
-    selected_stage = config.stash.get(SELECTED_S2PRO_CI_STAGE, S2PRO_STAGE_ALL)
-    if selected_stage == S2PRO_STAGE_ALL:
+    selected_stage = config.stash.get(SELECTED_TTS_CI_STAGE, TTS_STAGE_ALL)
+    if selected_stage == TTS_STAGE_ALL:
         return
 
     selected_items: list[pytest.Item] = []
     deselected_items: list[pytest.Item] = []
     for item in items:
-        if item.path.name != "test_s2pro_tts_ci.py":
+        if item.path.name != "test_tts_ci.py":
             selected_items.append(item)
             continue
 
-        stage_marker = item.get_closest_marker("s2pro_stage")
+        stage_marker = item.get_closest_marker("tts_stage")
         assert stage_marker is not None
         stage_ids = tuple(str(arg) for arg in stage_marker.args)
         if selected_stage in stage_ids:

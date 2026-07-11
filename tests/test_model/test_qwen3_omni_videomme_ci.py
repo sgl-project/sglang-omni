@@ -20,6 +20,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.test_model.omni_router_utils import (
@@ -31,13 +32,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 CONCURRENCY = 16
 MAX_SAMPLES = 50
 
-VIDEOMME_MIN_ACCURACY = 0.52
+VIDEOMME_MIN_ACCURACY = 0.58
 
 _VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 0.996,
-        "output_tok_per_req_s": 7.7,
-        "latency_mean_s": 15.296,
+        "throughput_qps": 1.087,
+        "output_tok_per_req_s": 8.6,
+        "latency_mean_s": 12.684,
     },
 }
 VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
@@ -45,13 +46,13 @@ VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
 
 @pytest.mark.benchmark
 def test_videomme_accuracy_and_speed(
-    qwen3_omni_thinker_server: ManagedRouterHandle,
+    qwen3_omni_bf16_disagg_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run videomme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_thinker_server.port,
+        port=qwen3_omni_bf16_disagg_server.port,
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videomme"),
@@ -63,7 +64,7 @@ def test_videomme_accuracy_and_speed(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_thinker_server,
+        qwen3_omni_bf16_disagg_server,
         label="Qwen3-Omni Video-MME",
     ) as router_guard:
         results = asyncio.run(
@@ -76,12 +77,17 @@ def test_videomme_accuracy_and_speed(
         )
 
     summary = results["summary"]
-    print_videomme_accuracy_summary(summary, config.model)
+    dataset_label = format_benchmark_dataset_label(
+        dataset="videomme-ci-50",
+        repo_id=config.repo_id,
+    )
+    print_videomme_accuracy_summary(summary, config.model, dataset=dataset_label)
     print_speed_summary(
         results["speed"],
         config.model,
         CONCURRENCY,
         title="Video-MME Speed",
+        dataset=dataset_label,
     )
     total = summary.get("total_samples", 0)
     checks = MetricCheckCollector("Video-MME accuracy and speed")

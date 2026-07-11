@@ -189,6 +189,14 @@ class VoxtralSGLangTTSModel(nn.Module):
         )
         self.audio_token_id = self.voxtral_config.audio_model_args.audio_token_id
         self.hidden_size = text_cfg.dim
+        max_batch_size = server_args.max_running_requests
+        embed_weight = next(self.language_model.embed_tokens.parameters())
+        self._decode_input_embed_buffer = torch.zeros(
+            max_batch_size,
+            text_cfg.dim,
+            device=embed_weight.device,
+            dtype=embed_weight.dtype,
+        )
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
@@ -201,6 +209,8 @@ class VoxtralSGLangTTSModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
     ) -> LogitsProcessorOutput:
+        if input_embeds is None and forward_batch.forward_mode.is_decode():
+            input_embeds = self._decode_input_embed_buffer[: input_ids.shape[0]]
         hidden_states = self.language_model(
             input_ids=input_ids,
             positions=positions,
@@ -210,8 +220,11 @@ class VoxtralSGLangTTSModel(nn.Module):
         if forward_batch.forward_mode.is_extend():
             last_index = self._extend_last_index(forward_batch, hidden_states.device)
             hidden_states = hidden_states[last_index]
+        # Voxtral samples acoustic codes from hidden_states in the model runner,
+        # but SGLang's CUDA graph replay expects this field to be sliceable.
+        next_token_logits = hidden_states.new_empty((hidden_states.shape[0], 1))
         return LogitsProcessorOutput(
-            next_token_logits=None,
+            next_token_logits=next_token_logits,
             hidden_states=hidden_states,
         )
 

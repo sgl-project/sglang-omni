@@ -9,6 +9,9 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
+from sglang_omni.models.qwen3_omni.quantization import (
+    convert_fp8_weight_scale_inv_for_sglang,
+)
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
-        if "weight_loader" not in param.__dict__:
+        if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
 
 
@@ -260,6 +263,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         return None, forward_batch, inner_state
 
     def apply_qk_norm_rope(self, qkv, positions, forward_batch):
+        # Note:(Chenchen Hong) the talker uses a base (non-MRoPE) RotaryEmbedding
+        # but post1 still passes MRoPE [3, seq] positions; collapse to the
+        # temporal row so it isn't misread as 3 batches (all sections equal here).
+        if positions.dim() == 2 and not isinstance(self.rotary_emb, MRotaryEmbedding):
+            positions = positions[0]
         use_fused = self.use_fused_qk_norm_rope and qkv.dtype == torch.bfloat16
         if use_fused:
             theta = self.config.rope_theta
@@ -352,8 +360,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
-        if attn_output.dtype != self.o_proj.weight.dtype:
-            attn_output = attn_output.to(dtype=self.o_proj.weight.dtype)
+        # Note:(Chenchen Hong) cast attn output to the compute dtype (v.dtype),
+        # not o_proj.weight.dtype: for FP8 weights the latter feeds an fp8
+        # activation to the quantizer, which post1's sgl_kernel rejects.
+        if attn_output.dtype != v.dtype:
+            attn_output = attn_output.to(dtype=v.dtype)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -697,7 +708,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             visual_pos_masks = visual_pos_masks[..., 0]
         visual_pos_masks = visual_pos_masks.to(hidden_states.device)
         visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
-        local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds
+        local_this = hidden_states[visual_pos_masks, :] + visual_embeds
         hidden_states[visual_pos_masks, :] = local_this
         return hidden_states
 
@@ -729,6 +740,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             else:
                 if name in params_dict.keys():
                     param = params_dict[name]
+                    loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                        name, loaded_weight
+                    )
                     param.weight_loader(param, loaded_weight)
                     continue
             logger.warning(f"Parameter {name} not found in params_dict")
@@ -757,6 +771,7 @@ def maybe_update_fused_qkv_proj(
 
             name = name.replace(shard_name, fused_param_name)
             param = params_dict[name]
+            loaded_weight = convert_fp8_weight_scale_inv_for_sglang(name, loaded_weight)
             param.weight_loader(param, loaded_weight, shard_id)
             return True
     return False
@@ -777,6 +792,7 @@ def maybe_update_fused_moe_proj(params_dict, name, loaded_weight, config):
 
         if name in params_dict:
             param = params_dict[name]
+            loaded_weight = convert_fp8_weight_scale_inv_for_sglang(name, loaded_weight)
             param.weight_loader(
                 param,
                 loaded_weight,

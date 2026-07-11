@@ -10,6 +10,8 @@ import zmq.asyncio
 
 from sglang_omni.proto import (
     AbortMessage,
+    AdminMessage,
+    AdminResultMessage,
     CompleteMessage,
     DataReadyMessage,
     ProfilerStartMessage,
@@ -22,27 +24,10 @@ from sglang_omni.proto import (
 
 logger = logging.getLogger(__name__)
 
-
-def serialize_message(
-    msg: (
-        DataReadyMessage
-        | AbortMessage
-        | CompleteMessage
-        | StreamMessage
-        | ShutdownMessage
-        | SubmitMessage
-        | ProfilerStartMessage
-        | ProfilerStopMessage
-    ),
-) -> bytes:
-    """Serialize a message to bytes."""
-    return msgpack.packb(msg.to_dict(), use_bin_type=True)
-
-
-def deserialize_message(
-    data: bytes,
-) -> (
-    DataReadyMessage
+ControlMessage = (
+    AdminMessage
+    | AdminResultMessage
+    | DataReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -50,7 +35,15 @@ def deserialize_message(
     | SubmitMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
-):
+)
+
+
+def serialize_message(msg: ControlMessage) -> bytes:
+    """Serialize a message to bytes."""
+    return msgpack.packb(msg.to_dict(), use_bin_type=True)
+
+
+def deserialize_message(data: bytes) -> ControlMessage:
     """Deserialize bytes to a message."""
     d = msgpack.unpackb(data, raw=False)
     return parse_message(d)
@@ -91,17 +84,7 @@ class PushSocket:
         self._socket.connect(self.endpoint)
         logger.debug("PUSH socket connected to %s", self.endpoint)
 
-    async def send(
-        self,
-        msg: (
-            DataReadyMessage
-            | AbortMessage
-            | CompleteMessage
-            | StreamMessage
-            | ShutdownMessage
-            | SubmitMessage
-        ),
-    ) -> None:
+    async def send(self, msg: ControlMessage) -> None:
         """Send a message."""
         if self._socket is None:
             raise RuntimeError("Socket not connected")
@@ -135,16 +118,7 @@ class PullSocket:
             self._socket.connect(self.endpoint)
             logger.debug("PULL socket connected to %s", self.endpoint)
 
-    async def recv(
-        self,
-    ) -> (
-        DataReadyMessage
-        | AbortMessage
-        | CompleteMessage
-        | StreamMessage
-        | ShutdownMessage
-        | SubmitMessage
-    ):
+    async def recv(self) -> ControlMessage:
         """Receive a message (blocking)."""
         if self._socket is None:
             raise RuntimeError("Socket not started")
@@ -153,17 +127,7 @@ class PullSocket:
         logger.debug("PULL received %s", type(msg).__name__)
         return msg
 
-    async def recv_nowait(
-        self,
-    ) -> (
-        DataReadyMessage
-        | AbortMessage
-        | CompleteMessage
-        | StreamMessage
-        | ShutdownMessage
-        | SubmitMessage
-        | None
-    ):
+    async def recv_nowait(self) -> ControlMessage | None:
         """Try to receive a message (non-blocking)."""
         if self._socket is None:
             raise RuntimeError("Socket not started")
@@ -296,7 +260,8 @@ class StageControlPlane:
     async def recv(
         self,
     ) -> (
-        DataReadyMessage
+        AdminMessage
+        | DataReadyMessage
         | SubmitMessage
         | ShutdownMessage
         | ProfilerStartMessage
@@ -314,6 +279,7 @@ class StageControlPlane:
                 ShutdownMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
+                AdminMessage,
             ),
         ):
             return msg
@@ -338,6 +304,12 @@ class StageControlPlane:
 
     async def send_stream(self, msg: StreamMessage) -> None:
         """Send a stream chunk to coordinator."""
+        if self._coordinator_socket is None:
+            raise RuntimeError("Control plane not started")
+        await self._coordinator_socket.send(msg)
+
+    async def send_admin_result(self, msg: AdminResultMessage) -> None:
+        """Send an administrative result to coordinator."""
         if self._coordinator_socket is None:
             raise RuntimeError("Control plane not started")
         await self._coordinator_socket.send(msg)
@@ -398,7 +370,10 @@ class CoordinatorControlPlane:
         logger.info("Coordinator control plane started")
 
     async def submit_to_stage(
-        self, stage_name: str, stage_endpoint: str, msg: SubmitMessage
+        self,
+        stage_name: str,
+        stage_endpoint: str,
+        msg: SubmitMessage | AdminMessage | ShutdownMessage,
     ) -> None:
         """Submit a request to a stage."""
         if stage_name not in self._stage_sockets:
@@ -408,14 +383,23 @@ class CoordinatorControlPlane:
 
         await self._stage_sockets[stage_name].send(msg)
 
-    async def recv_event(self) -> CompleteMessage | StreamMessage:
+    async def recv_event(self) -> CompleteMessage | StreamMessage | AdminResultMessage:
         """Receive completion or stream event from a stage."""
         if self._completion_socket is None:
             raise RuntimeError("Control plane not started")
         msg = await self._completion_socket.recv()
-        if isinstance(msg, (CompleteMessage, StreamMessage)):
+        if isinstance(msg, (CompleteMessage, StreamMessage, AdminResultMessage)):
             return msg
-        raise ValueError(f"Expected CompleteMessage or StreamMessage, got {type(msg)}")
+        raise ValueError(
+            "Expected CompleteMessage, StreamMessage, or AdminResultMessage, "
+            f"got {type(msg)}"
+        )
+
+    async def send_admin(
+        self, stage_name: str, stage_endpoint: str, msg: AdminMessage
+    ) -> None:
+        """Send an administrative operation to a stage."""
+        await self.submit_to_stage(stage_name, stage_endpoint, msg)
 
     async def broadcast_abort(self, msg: AbortMessage) -> None:
         """Broadcast abort to all stages."""

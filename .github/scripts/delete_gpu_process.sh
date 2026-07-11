@@ -1,10 +1,70 @@
+set -uo pipefail
+
+memory_threshold_mb="${OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB:-1024}"
+wait_timeout_seconds="${OMNI_CI_GPU_CLEAN_WAIT_SECONDS:-120}"
+poll_seconds="${OMNI_CI_GPU_CLEAN_POLL_SECONDS:-5}"
+target_gpu_ids="${CUDA_VISIBLE_DEVICES:-}"
+
+selected_gpu_ids() {
+    if [ -n "${target_gpu_ids}" ] && [ "${target_gpu_ids}" != "all" ]; then
+        echo "${target_gpu_ids}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d'
+    else
+        nvidia-smi --query-gpu=index --format=csv,noheader,nounits
+    fi
+}
+
+# note (Yue Yin): kill orphan processes that hold /dev/nvidia* fds but are
+# invisible to nvidia-smi (e.g. multiprocessing.spawn workers after a crash).
+_kill_orphan_gpu_processes() {
+    # Do not global-pkill by pattern — concurrent calibration may share the host.
+    # Orphans are removed only when they hold /dev/nvidia* fds on selected GPUs.
+    rm -f /tmp/sglang_omni_gpu_*_startup.lock
+
+    local pid cmdline gpu_regex fd_target
+    if [ -n "${target_gpu_ids}" ] && [ "${target_gpu_ids}" != "all" ]; then
+        gpu_regex="$(echo "${target_gpu_ids}" | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | sed -n '/^[0-9][0-9]*$/p' | paste -sd'|' -)"
+    else
+        gpu_regex=""
+    fi
+
+    for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' || true); do
+        if [ -n "${gpu_regex}" ]; then
+            fd_target="$(find "/proc/${pid}/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null || true)"
+            if ! echo "${fd_target}" | grep -Eq "/dev/nvidia(${gpu_regex})$"; then
+                continue
+            fi
+        elif ! ls -l "/proc/${pid}/fd" 2>/dev/null | grep -q nvidia; then
+            continue
+        fi
+        cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+        if [ -n "${cmdline}" ]; then
+            echo "  killing orphan GPU PID ${pid}: ${cmdline}"
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+    done
+}
+
+kill_orphans=0
+for arg in "$@"; do
+    [ "${arg}" = "--kill-orphans" ] && kill_orphans=1
+done
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "nvidia-smi not found; skipping GPU cleanup."
+    exit 0
+fi
+
+if [ "${kill_orphans}" = "1" ]; then
+    _kill_orphan_gpu_processes
+    sleep 2
+fi
+
 echo "=== Checking GPU Utilization ==="
 
-# Get GPU indices and their utilization
-nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits | while IFS=',' read -r gpu_index utilization; do
+while IFS= read -r gpu_index; do
     gpu_index=$(echo "$gpu_index" | tr -d ' ')
-    utilization=$(echo "$utilization" | tr -d ' ')
-
     # Get PIDs running on this GPU
     pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader --id="$gpu_index")
     if [ -z "$pids" ]; then
@@ -15,9 +75,48 @@ nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits | whi
             pid=$(echo "$pid" | tr -d ' ')
             echo "  Killing PID $pid..."
             # kill -9 "$pid" && echo "  PID $pid killed." || echo "  Failed to kill PID $pid (may need sudo)."
-            kill -9 $pid
+            kill -9 "$pid" || true
         done
     fi
+done < <(selected_gpu_ids)
+
+if ! [[ "${memory_threshold_mb}" =~ ^[0-9]+$ ]] || [ "${memory_threshold_mb}" -lt 1 ]; then
+    echo "::error::OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB must be a positive integer; got '${memory_threshold_mb}'"
+    exit 2
+fi
+
+if ! [[ "${wait_timeout_seconds}" =~ ^[0-9]+$ ]] || ! [[ "${poll_seconds}" =~ ^[0-9]+$ ]] || [ "${poll_seconds}" -lt 1 ]; then
+    echo "::error::OMNI_CI_GPU_CLEAN_WAIT_SECONDS and OMNI_CI_GPU_CLEAN_POLL_SECONDS must be non-negative integers, with poll >= 1"
+    exit 2
+fi
+
+echo "Waiting for selected GPU memory.used to drop below ${memory_threshold_mb} MiB..."
+deadline=$((SECONDS + wait_timeout_seconds))
+while true; do
+    max_used_mb=0
+    while IFS= read -r gpu_index; do
+        gpu_index=$(echo "$gpu_index" | tr -d ' ')
+        used_mb=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="$gpu_index" | head -n 1 | tr -d ' ')
+        if [ -z "${used_mb}" ]; then
+            continue
+        fi
+        if [ "${used_mb}" -gt "${max_used_mb}" ]; then
+            max_used_mb="${used_mb}"
+        fi
+        echo "  GPU ${gpu_index}: ${used_mb} MiB used"
+    done < <(selected_gpu_ids)
+
+    if [ "${max_used_mb}" -lt "${memory_threshold_mb}" ]; then
+        echo "GPU memory cleanup complete: max memory.used=${max_used_mb} MiB."
+        break
+    fi
+
+    if [ "${SECONDS}" -ge "${deadline}" ]; then
+        echo "::error::Timed out waiting for GPU memory.used < ${memory_threshold_mb} MiB; max memory.used=${max_used_mb} MiB."
+        exit 1
+    fi
+
+    sleep "${poll_seconds}"
 done
 
 echo ""

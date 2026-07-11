@@ -2,7 +2,7 @@
 """Vision projector for Ming-Omni: maps vision encoder output to LLM hidden space.
 
 Architecture (mlp_depth=2, default for Ming-flash-omni-2.0):
-  Linear(3584, 4096) → GELU → Linear(4096, 4096)
+  ColumnParallelLinear(3584, 4096) → GELU → RowParallelLinear(4096, 4096)
 
 Weight checkpoint mapping (direct, no remapping needed):
   linear_proj.0.weight → proj.0.weight
@@ -18,6 +18,7 @@ from typing import Iterable, Tuple
 
 import torch
 import torch.nn as nn
+from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
 
 from sglang_omni.models.weight_loader import default_weight_loader
 
@@ -35,14 +36,31 @@ class VisionProjector(nn.Module):
 
     def __init__(self, vision_dim: int, llm_dim: int, mlp_depth: int = 1) -> None:
         super().__init__()
-        layers: list[nn.Module] = [nn.Linear(vision_dim, llm_dim)]
+        gather_first = mlp_depth == 1
+        layers: list[nn.Module] = [
+            ColumnParallelLinear(
+                vision_dim,
+                llm_dim,
+                bias=True,
+                gather_output=gather_first,
+                quant_config=None,
+            )
+        ]
         for _ in range(1, mlp_depth):
             layers.append(nn.GELU())
-            layers.append(nn.Linear(llm_dim, llm_dim))
+            layers.append(
+                RowParallelLinear(llm_dim, llm_dim, bias=True, quant_config=None)
+            )
         self.proj = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.proj(x)
+        out, _ = self.proj[0](x)
+        for layer in self.proj[1:]:
+            if isinstance(layer, RowParallelLinear):
+                out, _ = layer(out)
+            else:
+                out = layer(out)
+        return out
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> set[str]:
         """Load weights with prefix normalization.

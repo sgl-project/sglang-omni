@@ -17,7 +17,7 @@ from transformers import AutoConfig, DacConfig, HubertConfig, WavLMConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import ModelOutput, logging
 
-# Patch vs. upstream: ``transformers<5`` doesn't ship the ``initialization``
+# Patch vs. upstream: older Transformers releases do not ship ``initialization``.
 # module. Route everything to ``torch.nn.init`` and add ``copy_`` (the only
 # call in this file that isn't already in torch's namespace).
 try:  # pragma: no cover - only true on transformers>=5

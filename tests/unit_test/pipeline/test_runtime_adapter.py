@@ -11,6 +11,7 @@ from sglang_omni.config import (
     StageRuntimeConfig,
     resolve_stage_factory_args,
 )
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
@@ -164,6 +165,26 @@ def test_untyped_total_memory_fraction_runtime_override_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
         resolve_stage_factory_args(stage, config)
+
+
+def test_gpu_id_factory_arg_is_rejected() -> None:
+    stage = _stage(factory_args={"gpu_id": 0})
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    with pytest.raises(ValueError, match="owned by placement"):
+        resolve_stage_static_factory_args(stage, config)
+
+
+def test_gpu_id_runtime_override_is_rejected() -> None:
+    stage = _stage()
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        runtime_overrides={"thinker": {"gpu_id": 0}},
+    )
+
+    with pytest.raises(ValueError, match="owned by placement"):
+        resolve_stage_static_factory_args(stage, config)
 
 
 def test_mapped_runtime_field_requires_stage_arg_mapping() -> None:

@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
-
-_MAPPED_STAGE_RUNTIME_FIELDS = ("max_seq_len", "video_fps")
 
 
 def resolve_stage_factory_args(
@@ -25,32 +24,65 @@ def resolve_stage_factory_args(
     Placement budgets are injected only when the factory declares them.
     """
 
+    args = resolve_stage_static_factory_args(stage_cfg, global_cfg)
+    factory = import_string(stage_cfg.factory)
+    return resolve_factory_signature_args(
+        factory,
+        args,
+        defaults=resolve_stage_factory_arg_defaults(
+            stage_cfg,
+            global_cfg,
+            gpu_id=gpu_id,
+        ),
+    )
+
+
+def resolve_stage_static_factory_args(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Resolve factory kwargs that do not require importing the factory."""
+
     args = dict(stage_cfg.factory_args)
     runtime_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
     _validate_runtime_sources(stage_cfg, args, runtime_overrides)
     _merge_factory_arg_overrides(args, runtime_overrides)
     _apply_typed_runtime_args(args, stage_cfg)
+    return args
 
-    factory = import_string(stage_cfg.factory)
+
+def resolve_stage_factory_arg_defaults(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+    *,
+    gpu_id: int | None = None,
+) -> dict[str, Any]:
+    """Return standard factory kwargs used only when the factory declares them."""
+
+    defaults: dict[str, Any] = {"model_path": global_cfg.model_path}
+    if gpu_id is None:
+        gpu_id = _resolve_primary_gpu_id(stage_cfg, global_cfg)
+    defaults["gpu_id"] = gpu_id
+    total_gpu_memory_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
+    if total_gpu_memory_fraction is not None:
+        defaults["total_gpu_memory_fraction"] = total_gpu_memory_fraction
+    return defaults
+
+
+def resolve_factory_signature_args(
+    factory: Callable[..., Any],
+    args: dict[str, Any],
+    *,
+    defaults: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Inject standard factory kwargs when the resolved factory declares them."""
+
+    args = dict(args)
     sig = inspect.signature(factory)
 
-    if "model_path" in sig.parameters and "model_path" not in args:
-        args["model_path"] = global_cfg.model_path
-
-    if "gpu_id" in sig.parameters and "gpu_id" not in args:
-        args["gpu_id"] = (
-            gpu_id
-            if gpu_id is not None
-            else _resolve_primary_gpu_id(stage_cfg, global_cfg)
-        )
-
-    total_gpu_memory_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
-    if (
-        total_gpu_memory_fraction is not None
-        and "total_gpu_memory_fraction" in sig.parameters
-        and "total_gpu_memory_fraction" not in args
-    ):
-        args["total_gpu_memory_fraction"] = total_gpu_memory_fraction
+    for name, value in defaults.items():
+        if name in sig.parameters and name not in args:
+            args[name] = value
 
     return args
 
@@ -69,6 +101,19 @@ def reject_untyped_total_gpu_memory_fraction(
         f"Stage {stage_name!r} sets total_gpu_memory_fraction through "
         "factory_args/runtime_overrides; set "
         "runtime.resources.total_gpu_memory_fraction instead"
+    )
+
+
+def reject_gpu_id_in_factory_args(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    if "gpu_id" not in factory_args and "gpu_id" not in runtime_overrides:
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets gpu_id through factory_args/runtime_overrides; "
+        "gpu_id is owned by placement — set the device via stage.gpu instead"
     )
 
 
@@ -96,8 +141,13 @@ def _validate_runtime_sources(
         runtime_overrides,
     )
 
-    for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
-        value = getattr(stage_cfg.runtime, field_name)
+    reject_gpu_id_in_factory_args(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
+
+    for field_name, value in _mapped_stage_runtime_values(stage_cfg).items():
         if value is None:
             continue
         target_arg = stage_cfg.runtime_arg_map.get(field_name)
@@ -142,8 +192,7 @@ def _merge_factory_arg_overrides(
 def _apply_typed_runtime_args(args: dict[str, Any], stage_cfg: StageConfig) -> None:
     runtime = stage_cfg.runtime
 
-    for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
-        value = getattr(runtime, field_name)
+    for field_name, value in _mapped_stage_runtime_values(stage_cfg).items():
         if value is None:
             continue
         target_arg = stage_cfg.runtime_arg_map.get(field_name)
@@ -159,6 +208,14 @@ def _apply_typed_runtime_args(args: dict[str, Any], stage_cfg: StageConfig) -> N
         overrides = dict(args.get("server_args_overrides") or {})
         overrides["mem_fraction_static"] = mem_fraction_static
         args["server_args_overrides"] = overrides
+
+
+def _mapped_stage_runtime_values(stage_cfg: StageConfig) -> dict[str, Any]:
+    runtime = stage_cfg.runtime
+    return {
+        "max_seq_len": runtime.max_seq_len,
+        "video_fps": runtime.video_fps,
+    }
 
 
 def _resolve_primary_gpu_id(

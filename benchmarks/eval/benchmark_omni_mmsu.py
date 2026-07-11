@@ -96,6 +96,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -106,12 +107,15 @@ from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
 from benchmarks.metrics.mmsu import compute_mmsu_metrics, print_mmsu_summary
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    compute_text_audio_consistency,
+)
 from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
     make_mmsu_send_fn,
     save_mmsu_results,
 )
-from benchmarks.tasks.tts import compute_text_audio_consistency
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,10 +127,14 @@ async def run(
     args: argparse.Namespace,
     *,
     samples: list[MmsuSample] | None = None,
+    compute_wer: bool = True,
 ) -> dict:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
     modalities = ["text", "audio"] if args.modalities == "text+audio" else ["text"]
+    asr_concurrency = getattr(
+        args, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+    )
 
     if samples is None:
         samples = load_mmsu_samples(
@@ -172,13 +180,18 @@ async def run(
         )
         speed["audio_expected"] = len(request_results)
 
-    output: dict = {"accuracy": metrics, "speed": speed}
+    output: dict = {
+        "accuracy": metrics,
+        "speed": speed,
+        "per_sample": [asdict(result) for result in results],
+    }
     wer_results = None
-    if audio_mode:
+    if audio_mode and compute_wer:
         wer_results = compute_text_audio_consistency(
             request_results,
             args.lang,
             args.asr_device,
+            asr_concurrency=asr_concurrency,
         )
         output["wer"] = wer_results
 
@@ -194,6 +207,7 @@ async def run(
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
                 "seed": args.seed,
+                "asr_concurrency": asr_concurrency,
             },
             args.output_dir,
             speed_metrics=speed,
@@ -236,6 +250,12 @@ def main() -> None:
     )
     p.add_argument(
         "--asr-device", type=str, default="cuda:0", help="Device for ASR model"
+    )
+    p.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent ASR transcription requests for WER.",
     )
 
     args = p.parse_args()

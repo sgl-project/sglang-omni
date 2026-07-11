@@ -16,13 +16,16 @@ from sglang_omni.models.llada2_uni.config import (
     IMAGE_STAGE,
     THINKER_STAGE,
 )
-from sglang_omni.models.llada2_uni.payload_types import PipelineState, ThinkerOutput
+from sglang_omni.models.llada2_uni.payload_types import (
+    LLaDA2UniPipelineState,
+    ThinkerOutput,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
 
 
 def build_encoder_request(
-    state: PipelineState,
+    state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
 ) -> dict[str, Any]:
@@ -36,7 +39,7 @@ def build_encoder_request(
 
 
 def apply_encoder_result(
-    state: PipelineState,
+    state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
     result: Any,
@@ -45,7 +48,7 @@ def apply_encoder_result(
     state.encoder_outs[stage_name] = result
 
 
-def merge_image_tokens_for_thinker(state: PipelineState) -> None:
+def merge_image_tokens_for_thinker(state: LLaDA2UniPipelineState) -> None:
     """Merge VQ token IDs from image encoder output into prompt input_ids.
 
     Replaces DUMMY_IMAGE_TOKEN_ID placeholders with actual VQ token IDs
@@ -97,7 +100,7 @@ def merge_image_tokens_for_thinker(state: PipelineState) -> None:
 
 
 def build_dllm_thinker_request(
-    state: PipelineState,
+    state: LLaDA2UniPipelineState,
     *,
     params: dict[str, Any],
     tokenizer: Any,
@@ -159,7 +162,7 @@ def build_dllm_thinker_request(
 
 
 def apply_dllm_thinker_result(
-    state: PipelineState,
+    state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
     output_ids: list[int],
@@ -188,7 +191,7 @@ def make_dllm_thinker_scheduler_adapters(
     """Build StagePayload <-> scheduler adapters for the dLLM thinker."""
 
     def request_builder(payload: StagePayload) -> SGLangDLLMRequestData:
-        state = PipelineState.from_dict(payload.data)
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
         data = build_dllm_thinker_request(
             state,
             params=payload.request.params,
@@ -202,7 +205,7 @@ def make_dllm_thinker_scheduler_adapters(
 
     def result_adapter(data: SGLangDLLMRequestData) -> StagePayload:
         payload = data.stage_payload
-        state = PipelineState.from_dict(payload.data)
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
         apply_dllm_thinker_result(
             state,
             stage_name=stage_name,

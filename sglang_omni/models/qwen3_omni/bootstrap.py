@@ -14,6 +14,8 @@ def create_thinker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -30,8 +32,9 @@ def create_thinker_scheduler(
 
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
-    if want_cuda_graph and capture_hidden:
+    want_cuda_graph = not bool(server_args.disable_cuda_graph)
+    defer_cuda_graph_capture = want_cuda_graph and capture_hidden
+    if defer_cuda_graph_capture:
         server_args.enable_return_hidden_states = True
         server_args.disable_cuda_graph = True
 
@@ -53,7 +56,7 @@ def create_thinker_scheduler(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
 
-    if want_cuda_graph:
+    if defer_cuda_graph_capture:
         server_args.disable_cuda_graph = False
         model_worker.model_runner.init_device_graphs()
 
@@ -98,6 +101,8 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
 
 
@@ -111,6 +116,8 @@ def create_talker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = 5,
 ):
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -149,6 +156,14 @@ def create_talker_scheduler(
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
+    # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
+    # the repetition-penalty orchestrator from model_config.vocab_size (the
+    # thinker text vocab), which mismatches the talker's codec-vocab logits.
+    _codec_vocab_size = model_config.hf_config.talker_config.text_config.vocab_size
+    model_config.vocab_size = _codec_vocab_size
+    _runner_cfg = getattr(model_worker.model_runner, "model_config", None)
+    if _runner_cfg is not None and _runner_cfg is not model_config:
+        _runner_cfg.vocab_size = _codec_vocab_size
     if hasattr(model_worker.model_runner, "sampler"):
         model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
@@ -214,6 +229,9 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         stream_chunk_handler=stream_chunk_handler,
         stream_done_handler=stream_done_handler,
+        enable_partial_start=enable_partial_start,
+        partial_start_min_chunks=partial_start_min_chunks,
+        im_end_token_id=root_config.im_end_token_id,
     )
 
     scheduler._model_runner = QwenTalkerModelRunner(

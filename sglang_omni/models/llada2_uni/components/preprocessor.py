@@ -19,7 +19,7 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
-from sglang_omni.models.llada2_uni.payload_types import PipelineState
+from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
@@ -196,7 +196,7 @@ class LLaDA2Preprocessor:
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         request = payload.request
-        raw_inputs = request.inputs if hasattr(request, "inputs") else {}
+        raw_inputs = request.inputs
         if isinstance(raw_inputs, list):
             messages = raw_inputs
             raw_images, image_counts_per_msg = self._extract_raw_images(messages)
@@ -275,7 +275,7 @@ class LLaDA2Preprocessor:
 
         prompt = {"input_ids": input_ids_tensor}
 
-        state = PipelineState(
+        state = LLaDA2UniPipelineState(
             prompt=prompt,
             encoder_inputs=encoder_inputs,
         )

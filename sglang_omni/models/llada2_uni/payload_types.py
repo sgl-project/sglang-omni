@@ -16,7 +16,7 @@ class ThinkerOutput(TypedDict, total=False):
 
 
 @dataclass
-class PipelineState:
+class LLaDA2UniPipelineState:
     """Typed view of the per-request pipeline state."""
 
     prompt: dict[str, Any] | None = None
@@ -26,7 +26,7 @@ class PipelineState:
     engine_outputs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "PipelineState":
+    def from_dict(cls, data: Any) -> "LLaDA2UniPipelineState":
         if not isinstance(data, dict):
             data = {}
         encoder_inputs = data.get("encoder_inputs")
@@ -57,7 +57,7 @@ class PipelineState:
 
 
 @dataclass
-class OmniEvent:
+class LLaDA2UniEvent:
     """Streaming-friendly event emitted by decode logic."""
 
     type: str

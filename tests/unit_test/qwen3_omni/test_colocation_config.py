@@ -48,6 +48,7 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
     assert _stage(config, "code2wav").gpu == 1
+    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is True
     assert config.placement.require_memory_fraction_for_colocation is False
     assert {stage.name: stage.process for stage in config.stages} == {
         "preprocessing": "preprocessing",
@@ -80,6 +81,7 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
     assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
+    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is False
     for stage_name in (
         "image_encoder",
         "audio_encoder",

@@ -123,6 +123,15 @@ class LLaDA2MoeAttention(nn.Module):
         # RoPE — sglang's rotary_emb handles partial rotation internally
         # via cos_sin_cache whose width equals rotary_dim (< head_dim).
         # Only the first rotary_dim dims are rotated; the rest pass through.
+        #
+        # Note:(Chenchen Hong) post1's fused rope+kv-store kernel only supports
+        # full rotary; LLaDA2 has partial rotary, so when the fused store is
+        # skipped self.attn must write the kv cache (else wrong attn -> slower).
+        can_fuse_set_kv = (
+            enable_fused_set_kv_buffer(forward_batch)
+            and self.rotary_dim == self.head_dim
+        )
+
         q, k = self.rotary_emb(
             forward_batch.positions,
             q,
@@ -133,7 +142,7 @@ class LLaDA2MoeAttention(nn.Module):
                     layer=self.attn,
                     forward_batch=forward_batch,
                 )
-                if enable_fused_set_kv_buffer(forward_batch)
+                if can_fuse_set_kv
                 else None
             ),
         )
@@ -143,7 +152,7 @@ class LLaDA2MoeAttention(nn.Module):
             k,
             v,
             forward_batch,
-            save_kv_cache=not enable_fused_set_kv_buffer(forward_batch),
+            save_kv_cache=not can_fuse_set_kv,
         )
         output, _ = self.dense(attn_output)
         return output

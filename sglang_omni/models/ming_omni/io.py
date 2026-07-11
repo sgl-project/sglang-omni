@@ -35,7 +35,7 @@ class ThinkerOutput(TypedDict, total=False):
 
 
 @dataclass
-class PipelineState:
+class MingOmniPipelineState:
     """Typed view of the per-request pipeline state.
 
     Stays msgpack-safe by converting back to plain dicts before crossing
@@ -53,7 +53,7 @@ class PipelineState:
     stream_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "PipelineState":
+    def from_dict(cls, data: Any) -> "MingOmniPipelineState":
         if not isinstance(data, dict):
             data = {}
         mm_inputs = data.get("mm_inputs")
@@ -98,7 +98,7 @@ class PipelineState:
         return data
 
 
-OmniEventType = Literal[
+MingOmniEventType = Literal[
     "text_delta",
     "text_final",
     "audio_chunk",
@@ -109,10 +109,10 @@ OmniEventType = Literal[
 
 
 @dataclass
-class OmniEvent:
+class MingOmniEvent:
     """Streaming-friendly event emitted by decode logic."""
 
-    type: OmniEventType
+    type: MingOmniEventType
     modality: str
     payload: dict[str, Any]
     is_final: bool = False

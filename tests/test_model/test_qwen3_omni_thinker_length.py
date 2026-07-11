@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for thinker length validation and finish_reason propagation.
 
-Starts router-backed colocated Qwen3-Omni workers and verifies that:
+Starts a BF16 thinker-TP=2 Qwen3-Omni server and verifies that:
 1. overlong prompts return HTTP 400 with SGLang-aligned wording;
 2. prompt + max_tokens overflow returns HTTP 400 with SGLang-aligned wording;
 3. decode hitting max_tokens returns HTTP 200 with finish_reason="length".
@@ -14,16 +14,10 @@ import sys
 import pytest
 import requests
 
-from tests.test_model.omni_router_utils import (
-    ManagedRouterHandle,
-    launch_managed_router,
-)
+from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import disable_proxy
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
-THINKER_MAX_SEQ_LEN = 128
-ROUTER_WAIT_TIMEOUT = 180
 REQUEST_TIMEOUT = 120
 
 pytestmark = pytest.mark.benchmark
@@ -40,28 +34,11 @@ def _post_chat(
         )
 
 
-@pytest.fixture(scope="module")
-def router_server(tmp_path_factory: pytest.TempPathFactory):
-    worker_extra_args = (
-        "--config examples/configs/qwen3_omni_colocated_h20.yaml "
-        "--colocate "
-        f"--stages.0.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN} "
-        f"--stages.4.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN}"
-    )
-    with launch_managed_router(
-        tmp_path_factory=tmp_path_factory,
-        model_path=MODEL_PATH,
-        model_name=MODEL_NAME,
-        worker_extra_args=worker_extra_args,
-        wait_timeout=ROUTER_WAIT_TIMEOUT,
-        log_prefix="thinker_length_router_logs",
-    ) as router:
-        yield router
-
-
-def test_overlong_prompt_returns_400(router_server: ManagedRouterHandle) -> None:
+def test_overlong_prompt_returns_400(
+    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+) -> None:
     resp = _post_chat(
-        router_server.port,
+        qwen3_omni_bf16_tp2_server.port,
         {
             "model": MODEL_NAME,
             "messages": [
@@ -81,9 +58,11 @@ def test_overlong_prompt_returns_400(router_server: ManagedRouterHandle) -> None
     assert "is longer than the model's context length" in body["detail"]
 
 
-def test_total_token_overflow_returns_400(router_server: ManagedRouterHandle) -> None:
+def test_total_token_overflow_returns_400(
+    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+) -> None:
     resp = _post_chat(
-        router_server.port,
+        qwen3_omni_bf16_tp2_server.port,
         {
             "model": MODEL_NAME,
             "messages": [{"role": "user", "content": "hello"}],
@@ -100,9 +79,11 @@ def test_total_token_overflow_returns_400(router_server: ManagedRouterHandle) ->
     )
 
 
-def test_length_finish_reason_is_preserved(router_server: ManagedRouterHandle) -> None:
+def test_length_finish_reason_is_preserved(
+    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+) -> None:
     resp = _post_chat(
-        router_server.port,
+        qwen3_omni_bf16_tp2_server.port,
         {
             "model": MODEL_NAME,
             "messages": [

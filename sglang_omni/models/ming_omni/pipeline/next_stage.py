@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.models.ming_omni.io import PipelineState
+from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.proto import StagePayload
 
 PREPROCESSING_STAGE = "preprocessing"
@@ -15,6 +15,8 @@ AGGREGATE_STAGE = "mm_aggregate"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker"
+SEGMENTER_STAGE = "segmenter"
+TALKER_STREAM_STAGE = "talker_stream"
 
 
 def preprocessing_next(request_id: str, output: Any) -> list[str]:
@@ -22,7 +24,7 @@ def preprocessing_next(request_id: str, output: Any) -> list[str]:
     del request_id
     if not isinstance(output, StagePayload):
         return [AGGREGATE_STAGE]
-    state = PipelineState.from_dict(output.data)
+    state = MingOmniPipelineState.from_dict(output.data)
     encoder_inputs = state.encoder_inputs
     if not isinstance(encoder_inputs, dict):
         return [AGGREGATE_STAGE]

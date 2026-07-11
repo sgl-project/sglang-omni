@@ -13,8 +13,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
+from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
+from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
+
+# Sentinel seed for rows with no user seed: keeps the legacy unseeded
+# torch.multinomial path, so unseeded decode is byte-identical to before.
+NO_SEED = -1
 
 # Sentinel returned by ``step`` after ``generation_done``; engine treats as stop.
 STOP_CODE = -1
@@ -30,11 +37,6 @@ class HiggsSamplerState:
     eoc_countdown: int | None = None
     generation_done: bool = False
     last_codes: torch.Tensor | None = None
-
-
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-compatible) sampler state
-# ---------------------------------------------------------------------------
 
 
 class HiggsBatchedSamplerState:
@@ -77,6 +79,14 @@ class HiggsBatchedSamplerState:
             dtype=torch.long,
             device=self.device,
         )
+        # Per-request seed (``NO_SEED`` = unseeded) and monotonic AR step, used
+        # to seed each ``(step, codebook)`` draw reproducibly.
+        self.seeds = torch.full(
+            (self.max_batch_size,), NO_SEED, dtype=torch.long, device=self.device
+        )
+        self.step_count = torch.zeros(
+            self.max_batch_size, dtype=torch.long, device=self.device
+        )
 
     def reset_row(self, row: int) -> None:
         """Wipe row ``row`` so the next owner can't read stale state."""
@@ -84,6 +94,8 @@ class HiggsBatchedSamplerState:
         self.eoc_countdown[row] = -1
         self.generation_done[row] = False
         self.last_codes[row].zero_()
+        self.seeds[row] = NO_SEED
+        self.step_count[row] = 0
 
     def view_row(self, row: int) -> HiggsSamplerState:
         """Materialise row ``row`` as a per-request :class:`HiggsSamplerState`.
@@ -206,43 +218,96 @@ def step(
     return codes_N
 
 
-# ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-friendly) sampler step
-# ---------------------------------------------------------------------------
-
-
 def _sample_independent_batched(
     logits_BNV: torch.Tensor,
     *,
     temperature: torch.Tensor,
     top_p: torch.Tensor | None,
     top_k_buf: torch.Tensor | None = None,
+    seeds_B: torch.Tensor | None = None,
+    step_B: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Batched ``[B, N, V] → [B, N]`` sampler."""
+    """Batched ``[B, N, V] → [B, N]`` sampler.
+
+    Greedy rows short-circuit to ``argmax`` over the raw logits — mirroring the
+    per-row :func:`_sample_independent` — so they are RNG-free and reproducible.
+    A row is greedy when ``temperature <= _GREEDY_TEMP_THRESHOLD`` (or
+    ``top_k == 1``). Without this, multinomial on the near-one-hot distribution
+    that ``temperature≈0`` produces breaks near-ties differently run-to-run,
+    making ``temperature=0`` decode non-deterministic. The selection is
+    branchless (compute both, then ``torch.where``) because this runs inside the
+    captured CUDA graph, where data-dependent host control flow is illegal.
+    """
     B, N, V = logits_BNV.shape
+
+    # Per-row greedy mask (broadcast over codebooks). argmax over RAW logits,
+    # exactly as _sample_independent does.
+    greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
+    if top_k_buf is not None:
+        greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+    argmax_BN = logits_BNV.argmax(dim=-1)
+
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
+    # PR-D: fused top-k/top-p renormalization replaces full-vocab torch.sort +
+    # logit masking. Numerically equivalent to the sort path (max prob diff ~5e-7,
+    # identical support across temp/top_k/top_p sweeps); only differs from the prior
+    # code at an exact cumsum==top_p boundary, where it uses the standard nucleus
+    # convention. Inputs MUST be contiguous fp32 for the flashinfer renorm kernels.
+    probs = logits.float().softmax(dim=-1).reshape(B * N, V).contiguous()
     if top_k_buf is not None:
-        top_vals = logits.topk(K_MAX, dim=-1).values
-        k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
-        kth = top_vals.gather(-1, k_idx)
-        logits = torch.where(logits < kth, float("-inf"), logits)
-
+        tk = (
+            top_k_buf.view(B, 1)
+            .expand(B, N)
+            .reshape(B * N)
+            .clamp(min=1, max=V)
+            .to(torch.int32)
+            .contiguous()
+        )
+        probs = _fused_top_k_renorm(probs, tk)
     if top_p is not None:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-        cum_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
-        thresh = top_p.view(B, 1, 1)
-        remove = cum_probs > thresh
-        remove[..., 1:] = remove[..., :-1].clone()
-        remove[..., 0] = False
-        scatter = torch.zeros_like(remove)
-        scatter.scatter_(-1, sorted_indices, remove)
-        logits = torch.where(scatter, float("-inf"), logits)
+        tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
+        probs = _fused_top_p_renorm(probs, tp)
 
-    probs = logits.softmax(dim=-1)
-    codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
-    return codes_flat.view(B, N).to(torch.long)
+    codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
+    if seeds_B is not None:
+        # Seeded rows draw deterministically from (seed, step*N + codebook);
+        # unseeded rows (seed == NO_SEED) keep the torch.multinomial draw above.
+        cb = torch.arange(N, device=logits_BNV.device).view(1, N).expand(B, N)
+        positions = (step_B.view(B, 1) * N + cb).reshape(B * N)
+        seeds_flat = seeds_B.clamp_min(0).view(B, 1).expand(B, N).reshape(B * N)
+        seeded_flat = multinomial_with_seed(
+            torch.log(probs), seeds_flat, positions
+        ).squeeze(-1)
+        has_seed = (seeds_B >= 0).view(B, 1).expand(B, N).reshape(B * N)
+        codes_flat = torch.where(has_seed, seeded_flat, codes_flat)
+    sampled_BN = codes_flat.view(B, N)
+
+    return torch.where(greedy_B1, argmax_BN, sampled_BN).to(torch.long)
+
+
+def selected_token_logprobs(
+    logits_BNV: torch.Tensor,
+    codes_BN: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_k_buf: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Selected-action log-prob ``[B, N]`` of the sampled codes"""
+    B = logits_BNV.shape[0]
+    logits = logits_BNV.float()
+
+    greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
+    if top_k_buf is not None:
+        greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+
+    safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
+    eff_temp = torch.where(
+        greedy_B1.unsqueeze(-1), torch.ones_like(safe_temp), safe_temp
+    )
+    logprobs_full = torch.log_softmax(logits / eff_temp, dim=-1)
+    return logprobs_full.gather(-1, codes_BN.long().unsqueeze(-1)).squeeze(-1)
 
 
 def batched_step(
@@ -259,11 +324,15 @@ def batched_step(
     """Eager-path wrapper: gather pool state by ``row_indices``, call
     :func:`batched_step_direct`, scatter the new state back. Done rows
     return :data:`STOP_CODE` with state untouched.
+
+    Returns ``out_codes``.
     """
     delay_count = state.delay_count[row_indices]
     eoc_countdown = state.eoc_countdown[row_indices]
     generation_done = state.generation_done[row_indices]
     last_codes = state.last_codes[row_indices]
+    seeds = state.seeds[row_indices]
+    step_count = state.step_count[row_indices]
 
     (
         out_codes,
@@ -271,6 +340,7 @@ def batched_step(
         new_eoc_countdown,
         new_generation_done,
         new_last_codes,
+        new_step_count,
     ) = batched_step_direct(
         logits_BNV,
         delay_count,
@@ -280,6 +350,8 @@ def batched_step(
         temperature=temperature,
         top_p=top_p,
         top_k_buf=top_k_buf,
+        seeds=seeds,
+        step_count=step_count,
         boc_id=boc_id,
         eoc_id=eoc_id,
     )
@@ -288,6 +360,7 @@ def batched_step(
     state.eoc_countdown[row_indices] = new_eoc_countdown.to(state.eoc_countdown.dtype)
     state.generation_done[row_indices] = new_generation_done
     state.last_codes[row_indices] = new_last_codes
+    state.step_count[row_indices] = new_step_count
 
     return out_codes
 
@@ -300,16 +373,28 @@ def batched_step_direct(
     last_codes: torch.Tensor,
     *,
     temperature: torch.Tensor,
+    seeds: torch.Tensor,
+    step_count: torch.Tensor,
     top_p: torch.Tensor | None = None,
     top_k_buf: torch.Tensor | None = None,
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     """CG-friendly state machine: state in/out as direct ``[B, ...]`` tensors,
     no ``state``/``row_indices`` indirection. Caller persists the returned
     new state. See :func:`batched_step` for arg semantics.
+
+    ``seeds``/``step_count`` (both ``[B]``) make seeded rows reproducible; the
+    returned ``new_step_count`` advances active rows for the next step.
     """
-    B, N, V = logits_BNV.shape
+    B, N, _ = logits_BNV.shape
     device = logits_BNV.device
 
     delay_count = delay_count.to(torch.long)
@@ -320,8 +405,9 @@ def batched_step_direct(
         temperature=temperature,
         top_p=top_p,
         top_k_buf=top_k_buf,
+        seeds_B=seeds,
+        step_B=step_count,
     )
-
     cb_idx = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
     in_delay = (delay_count < N).unsqueeze(-1)
     delay_mask = in_delay & (cb_idx > delay_count.unsqueeze(-1))
@@ -355,6 +441,8 @@ def batched_step_direct(
     update_codes = (active & (~done_this_step)).unsqueeze(-1)
     new_last_codes = torch.where(update_codes, codes_BN, last_codes)
 
+    new_step_count = step_count + active.to(step_count.dtype)
+
     stop = torch.full_like(codes_BN, STOP_CODE)
     out_codes = torch.where(generation_done.unsqueeze(-1), stop, codes_BN)
     return (
@@ -363,6 +451,7 @@ def batched_step_direct(
         new_eoc_countdown,
         new_generation_done,
         new_last_codes,
+        new_step_count,
     )
 
 
@@ -373,5 +462,6 @@ __all__ = [
     "HiggsSamplerState",
     "batched_step",
     "batched_step_direct",
+    "selected_token_logprobs",
     "step",
 ]

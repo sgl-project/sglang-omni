@@ -28,6 +28,7 @@ class ThreadedSimpleScheduler:
     def __init__(self, compute_fn: Callable, *, max_concurrency: int = 8):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.requires_tp_work_fanout: bool = True
         self._fn = compute_fn
         self._max_concurrency = max(int(max_concurrency), 1)
         self._executor = ThreadPoolExecutor(max_workers=self._max_concurrency)

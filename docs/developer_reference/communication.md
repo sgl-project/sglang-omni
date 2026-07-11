@@ -1,8 +1,9 @@
 # Communication
 
 For the communication among stages in sglang-omni, the control plane moves small
-coordination messages over ZMQ; data plane, which is relay moves tensors and tensor-like blobs between
-stage processes.
+coordination messages over ZMQ; the data plane uses relay for cross-process
+tensors and tensor-like blobs, with process-local shortcuts for selected
+same-process edges.
 
 The main implementation entry points are:
 
@@ -11,6 +12,7 @@ The main implementation entry points are:
 | ------------------------------------------------- | ----------------------------------------------------------------------- |
 | `sglang_omni/pipeline/control_plane.py`         | ZMQ sockets, msgpack serialization, stage/coordinator message routing |
 | `sglang_omni/pipeline/relay_io.py`              | Stage-facing payload and stream transfer helpers                      |
+| `sglang_omni/pipeline/local_dispatch.py`        | Same-process Python object dispatch between colocated stages          |
 | `sglang_omni/relay/base.py`                     | Backend interface and backend registry                                |
 | `sglang_omni/relay/{shm,nccl,nixl,mooncake}.py` | Concrete relay backends                                               |
 | `sglang_omni/proto/messages.py`                 | Control-plane message types                                           |
@@ -36,6 +38,7 @@ sequenceDiagram
 | Control                   | ZMQ`PUSH/PULL`               | `SubmitMessage`, `DataReadyMessage`, `CompleteMessage`, `StreamMessage`, `ShutdownMessage`, profiler control |
 | Broadcast control         | ZMQ`PUB/SUB`                 | `AbortMessage`                                                                                               |
 | Data                      | Relay backend                | Full`StagePayload` tensor buffers and cross-GPU stream blobs                                                 |
+| Same-process fast path    | LOCAL_OBJECT                 | Full`StagePayload` objects and stream chunks passed by Python reference within one OS process                |
 | Same-GPU stream fast path | CUDA IPC via`ForkingPickler` | Stream chunks and stream metadata tensors when sender and receiver share the same primary GPU                |
 
 `DataReadyMessage.shm_metadata` is the bridge between the planes. The field name
@@ -46,7 +49,9 @@ metadata. The message itself may also carry stream fields such as `chunk_id`,
 ## Normal Payload Flow
 
 The coordinator submits the first `StagePayload` directly to the entry stage in a
-`SubmitMessage`. After that, stage-to-stage payloads use relay.
+`SubmitMessage`. After that, stage-to-stage payloads normally use relay. A
+same-process edge may use LOCAL_OBJECT instead when the runtime has registered
+the target in the same OS process and the route is safe for reference passing.
 
 1. The sender calls `relay_io.write_payload(relay, request_id, payload)`.
 2. `write_payload()` recursively extracts tensors from `payload.data`, replaces
@@ -67,6 +72,20 @@ The payload relay format is intentionally backend-neutral. Backends only need to
 move a flat tensor buffer and return metadata that another backend instance can
 use for `get_async()`.
 
+LOCAL_OBJECT bypasses relay and the ZMQ `DataReadyMessage`: the sender calls the
+process-local dispatcher, which invokes `receive_local_payload()` on the target
+stage with the projected `StagePayload` object itself. This is a direct Python
+reference transfer, not serialization. Receivers must treat the payload, nested
+data containers, tensors, stream chunks, and metadata as read-only. The object
+must also stay valid for the receiver's scheduler queue lifetime; senders and
+projection functions must not mutate or recycle objects after dispatch.
+
+For full payloads, LOCAL_OBJECT is allowed for single-target same-process routes.
+For fan-out, it is allowed only when each projected payload is a `StagePayload`
+with its own `data` container, so downstream stages do not share mutable payload
+state. Tensor leaves may still be shared intentionally and must be treated as
+read-only.
+
 ## Streaming Flow
 
 Streaming is used for producer-consumer edges such as thinker to talker hidden
@@ -81,6 +100,12 @@ For same-GPU stream targets:
 - `send_stream_chunk()` serializes the chunk with `ForkingPickler`
 - CUDA tensors are shared through CUDA IPC instead of copied through relay
 - the `DataReadyMessage` carries `_ipc=True` metadata and a `chunk_id`
+
+For same-process stream targets:
+
+- the stage sends the chunk through `LocalStageDispatcher.send_stream_chunk()`
+- the receiver gets the original Python object and metadata by reference
+- the same read-only and lifetime caveats as payload LOCAL_OBJECT apply
 
 For cross-GPU stream targets:
 
@@ -147,6 +172,8 @@ The stage layer follows a simple ownership rule:
   when required by the backend
 - receiver allocates the destination buffer, waits for the get operation,
   restores the payload, and calls `relay.cleanup(request_id)`
+- LOCAL_OBJECT has no backend cleanup; sender and receiver share Python object
+  references, so correctness depends on read-only use until the receiver is done
 - aborts call `relay.cleanup(request_id)` from the stage abort path
 - stage shutdown calls `relay.close()`
 

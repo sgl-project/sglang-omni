@@ -9,6 +9,7 @@ which the stage runtime forwards to the Coordinator. Final result is emitted
 on ``new_request`` (the thinker's terminal payload via ``next``), preserving
 the existing non-streaming result shape.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +21,10 @@ from typing import Any
 from transformers import AutoTokenizer
 
 from sglang_omni.models.qwen3_omni.merge import decode_events
-from sglang_omni.models.qwen3_omni.payload_types import OmniEvent, PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import (
+    Qwen3OmniEvent,
+    Qwen3OmniPipelineState,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -34,7 +38,7 @@ _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
 
-def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: Qwen3OmniEvent) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -78,11 +82,11 @@ class StreamingDetokenizeScheduler:
                 continue
 
             # Per-request failure isolation: a malformed payload, tokenizer
-            # edge case, or PipelineState/decode_events bug must fail only
+            # edge case, or Qwen3OmniPipelineState/decode_events bug must fail only
             # the offending request — letting the exception escape `start()`
             # trips `Stage._handle_scheduler_crash`, which fails every
             # active request on the decode stage. Mirrors the
-            # SimpleScheduler / FishScheduler / Code2WavScheduler contract.
+            # SimpleScheduler / OmniScheduler / Code2WavScheduler contract.
             try:
                 if msg.type == "new_request":
                     self._on_new_request(msg.request_id, msg.data)
@@ -214,7 +218,7 @@ class StreamingDetokenizeScheduler:
     def _build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
     ) -> dict[str, Any]:
-        state = PipelineState.from_dict(payload.data)
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
             thinker_out = {
@@ -268,6 +272,13 @@ class StreamingDetokenizeScheduler:
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
+
+        output_token_logprobs = thinker_out.get("output_token_logprobs")
+        if output_token_logprobs is not None:
+            result.setdefault("output_token_logprobs", output_token_logprobs)
+        weight_version = thinker_out.get("weight_version")
+        if weight_version is not None:
+            result.setdefault("weight_version", weight_version)
 
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None

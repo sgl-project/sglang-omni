@@ -22,6 +22,15 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     """
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
+    requires_model_capabilities: ClassVar[bool] = True
+
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "tts_engine"}
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
 
     model_path: str
     stages: list[StageConfig] = [
@@ -43,9 +52,14 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="tts_engine",
             process="pipeline",
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory_args={"device": "cuda", "max_new_tokens": 2048},
+            factory_args={
+                "device": "cuda",
+                "max_new_tokens": 2048,
+                "enable_async_decode": True,
+            },
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -54,8 +68,15 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda"},
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
+
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        return True
+
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
 
 
 EntryClass = HiggsTtsPipelineConfig

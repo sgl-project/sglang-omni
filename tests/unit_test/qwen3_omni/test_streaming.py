@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import struct
 import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -18,12 +20,14 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
 )
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
+    resolve_mm_aggregate_next_stages,
     resolve_terminal_stages,
     resolve_thinker_next_stages,
     resolve_thinker_stream_done_targets,
     should_generate_audio_output,
 )
 from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
@@ -67,7 +71,7 @@ def _make_payload(stream: bool) -> StagePayload:
         request_id="req-1",
         request=OmniRequest(inputs=[], params={"stream": stream}),
         data={
-            # Minimal PipelineState dict shape (decode_events will produce []).
+            # Minimal Qwen3OmniPipelineState dict shape (decode_events will produce []).
             "engine_outputs": {
                 "thinker": {
                     "output_ids": [],
@@ -104,6 +108,7 @@ def _thinker_stage_payload(output_modalities: list[str] | None) -> StagePayload:
 def test_qwen_text_output_uses_text_only_active_subgraph():
     payload = _thinker_stage_payload(["text"])
 
+    assert resolve_mm_aggregate_next_stages("req-1", payload) == "thinker"
     assert resolve_thinker_next_stages("req-1", payload) == "decode"
     assert resolve_thinker_stream_done_targets("req-1", payload) == ["decode"]
     assert resolve_terminal_stages(payload.request) == ["decode"]
@@ -112,10 +117,11 @@ def test_qwen_text_output_uses_text_only_active_subgraph():
 def test_qwen_audio_output_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(["text", "audio"])
 
-    assert resolve_thinker_next_stages("req-1", payload) == [
-        "decode",
+    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+        "thinker",
         "talker_ar",
     ]
+    assert resolve_thinker_next_stages("req-1", payload) == "decode"
     assert resolve_thinker_stream_done_targets("req-1", payload) == [
         "talker_ar",
         "decode",
@@ -126,10 +132,11 @@ def test_qwen_audio_output_uses_speech_active_subgraph():
 def test_qwen_missing_output_modalities_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(None)
 
-    assert resolve_thinker_next_stages("req-1", payload) == [
-        "decode",
+    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+        "thinker",
         "talker_ar",
     ]
+    assert resolve_thinker_next_stages("req-1", payload) == "decode"
     assert resolve_thinker_stream_done_targets("req-1", payload) == [
         "talker_ar",
         "decode",
@@ -506,9 +513,14 @@ class _FakeCode2Wav:
         return torch.zeros(1, n_frames * self.total_upsample)
 
 
-def _make_code_chunk(metadata: dict | None) -> _StreamItem:
+def _make_code_chunk(metadata: dict | None) -> StreamItem:
     """One frame per chunk, single codebook, non-EOS code id."""
-    return _StreamItem(data=torch.tensor([7], dtype=torch.long), metadata=metadata)
+    return StreamItem(
+        chunk_id=0,
+        data=torch.tensor([7], dtype=torch.long),
+        from_stage="talker",
+        metadata=metadata,
+    )
 
 
 def test_code2wav_chunk_without_stream_metadata_emits_error():
@@ -640,6 +652,10 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s._stream_queue = None
     s._stream_chunk_counters = {}
     s._first_stream_chunk_seen = set()
+    s._local_stream_targets = {}
+    s._nonlocal_stream_targets = {}
+    s._unresolved_tensor_refs = {}
+    s.relay = SimpleNamespace()
     s.input_handler = SimpleNamespace(cancel=lambda request_id: None)
     s.scheduler = SimpleNamespace(abort=lambda request_id: None)
     s.control_plane = SimpleNamespace(completions=[])
@@ -804,7 +820,7 @@ def test_scheduler_isolates_per_request_chunk_failure():
 
 
 def test_scheduler_isolates_per_request_finalize_failure():
-    """An exception inside ``_finalize`` (e.g., via PipelineState.from_dict
+    """An exception inside ``_finalize`` (e.g., via Qwen3OmniPipelineState.from_dict
     on a malformed payload) must isolate to that request without taking
     down the scheduler thread.
     """
@@ -1021,6 +1037,70 @@ def test_client_completion_stream_non_streaming_keeps_full_text():
     assert len(chunks) == 1
     assert chunks[0].text == "hi there"
     assert chunks[0].finish_reason == "stop"
+
+
+def test_client_completion_audio_uses_chunk_sample_rate():
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+
+    coordinator = _FakeCoordinatorForClient(
+        [],
+        submit_result={
+            "audio_data": [0.0, 0.1, -0.1, 0.0],
+            "sample_rate": 48000,
+            "modality": "audio",
+        },
+    )
+    client = Client(coordinator=coordinator)
+
+    result = asyncio.run(
+        client.completion(
+            GenerateRequest(prompt="ignored", stream=False),
+            request_id="req-1",
+            audio_format="wav",
+        )
+    )
+
+    assert result.audio is not None
+    wav = base64.b64decode(result.audio.data)
+    assert struct.unpack("<I", wav[24:28])[0] == 48000
+
+
+def test_client_completion_stream_audio_uses_chunk_sample_rate():
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+    from sglang_omni.proto import StreamMessage
+
+    messages = [
+        StreamMessage(
+            request_id="req-1",
+            from_stage="vocoder",
+            chunk={
+                "audio_data": [0.0, 0.1, -0.1, 0.0],
+                "sample_rate": 48000,
+                "modality": "audio",
+            },
+            stage_name="vocoder",
+            modality="audio",
+        )
+    ]
+    client = Client(coordinator=_FakeCoordinatorForClient(messages))
+
+    async def _collect():
+        out = []
+        async for chunk in client.completion_stream(
+            GenerateRequest(prompt="ignored", stream=True),
+            request_id="req-1",
+            audio_format="wav",
+        ):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_collect())
+
+    assert chunks[0].audio_b64 is not None
+    wav = base64.b64decode(chunks[0].audio_b64)
+    assert struct.unpack("<I", wav[24:28])[0] == 48000
 
 
 def test_client_speech_forces_non_streaming_request(

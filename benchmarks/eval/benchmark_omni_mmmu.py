@@ -84,7 +84,10 @@ from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.mmmu import compute_mmmu_metrics, print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    compute_text_audio_consistency,
+)
 from benchmarks.tasks.visual_understand import (
     build_mmmu_result_records,
     make_mmmu_send_fn,
@@ -113,6 +116,7 @@ class MMMUEvalConfig:
     disable_tqdm: bool = False
     enable_audio: bool = False
     asr_device: str = "cuda:0"
+    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
     repo_id: str | None = None
     prompt_override: str | None = None
@@ -123,7 +127,11 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
+async def run_mmmu_eval(
+    config: MMMUEvalConfig,
+    *,
+    compute_wer: bool = True,
+) -> dict:
     """Run full MMMU evaluation and return results dict.
 
     Returns a dict with keys: summary, speed, config,
@@ -179,6 +187,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "max_concurrency": config.max_concurrency,
         "warmup": config.warmup,
         "enable_audio": config.enable_audio,
+        "asr_concurrency": config.asr_concurrency,
     }
 
     results = {
@@ -188,9 +197,12 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "per_sample": per_sample,
     }
 
-    if config.enable_audio:
+    if config.enable_audio and compute_wer:
         results["wer"] = compute_text_audio_consistency(
-            request_results, config.lang, config.asr_device
+            request_results,
+            config.lang,
+            config.asr_device,
+            asr_concurrency=config.asr_concurrency,
         )
 
     if config.output_dir:
@@ -215,6 +227,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         disable_tqdm=args.disable_tqdm,
         enable_audio=args.enable_audio,
         asr_device=args.asr_device,
+        asr_concurrency=args.asr_concurrency,
         lang=args.lang,
         repo_id=args.repo_id,
     )
@@ -281,6 +294,12 @@ def main() -> None:
         type=str,
         default="cuda:0",
         help="Device for ASR model (default: cuda:0).",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent ASR transcription requests for WER.",
     )
     parser.add_argument(
         "--lang",

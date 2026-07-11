@@ -17,7 +17,7 @@ from sglang_omni.models.ming_omni.components.common import (
 )
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
-from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
+from sglang_omni.models.ming_omni.io import MingOmniEvent, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.engine_io import (
     apply_encoder_result,
     apply_thinker_result,
@@ -34,7 +34,7 @@ from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_sta
 from sglang_omni.proto import StagePayload
 
 
-def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: MingOmniEvent) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -92,11 +92,21 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
 ) -> EngineExecutor:
     """Create an image encoder executor for the Ming-Omni vision pipeline."""
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    model = MingImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = MingImageEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+    )
 
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
@@ -185,7 +195,9 @@ def create_sglang_thinker_executor(
         store_state(payload, state)
         if eos_token_id is not None and token_id == eos_token_id and not events:
             events = [
-                OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
+                MingOmniEvent(
+                    type="text_final", modality="text", payload={}, is_final=True
+                )
             ]
 
         text_to_add = ""
@@ -239,7 +251,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
 
     from transformers import AutoConfig
 
-    from sglang_omni.models.ming_omni.thinker import BailingMM2Config
+    from sglang_omni.models.ming_omni.configuration import BailingMM2Config
 
     AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config, exist_ok=True)
 
@@ -254,7 +266,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
         if not os.path.exists(shim_path):
             with open(shim_path, "w") as f:
                 f.write(
-                    "from sglang_omni.models.ming_omni.thinker "
+                    "from sglang_omni.models.ming_omni.configuration "
                     "import BailingMM2Config\n"
                 )
 
@@ -307,8 +319,10 @@ def create_sglang_thinker_executor_from_config(
     _ensure_ming_config_registered(model_path)
     # Use local snapshot path so AutoConfig finds our patched files
     local_path = _resolve_local_model_path(model_path)
+    overrides = {"sampling_backend": "pytorch"}
+    overrides.update(server_args_overrides or {})
     server_args = build_sglang_server_args(
-        local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        local_path, context_length=thinker_max_seq_len, **overrides
     )
     _log.getLogger(__name__).info(
         "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",

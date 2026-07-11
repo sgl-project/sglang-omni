@@ -4,17 +4,7 @@ This guide uses [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Inst
 
 ## Prerequisites
 
-```bash
-docker pull frankleeeee/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
-```
-
-```bash
-git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v .
-```
+Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 ## Text-Only Mode
 
@@ -242,6 +232,42 @@ python examples/run_qwen3_omni_speech_server.py \
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
 
+## Single-GPU FP8 on H100/H20
+
+SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
+the checkpoint quantization config when loading the thinker and talker AR stages,
+while keeping the same Qwen3-Omni request format shown below.
+
+For one-GPU H100/H20 colocated launch, use the FP8 colocated config:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
+The config file contains the FP8 checkpoint path:
+`marksverdhei/Qwen3-Omni-30B-A3B-FP8`. You can still pass `--model-path` to
+override the config value.
+
+The FP8 path keeps dense FP8 GEMM on SGLang `auto` and defaults native FP8 MoE
+to CUTLASS when supported. For Qwen3-Omni pipeline launches,
+`SGLANG_JIT_DEEPGEMM_PRECOMPILE=0` is set as a default unless the operator has
+already set that environment variable. This disables SGLang's all-M DeepGEMM
+precompile session while keeping DeepGEMM available for dense FP8 GEMMs.
+
+To opt back into SGLang's all-M DeepGEMM precompile behavior:
+
+```bash
+SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
 ### Image and Text Input
 
 Send an image with a text question to get both text and audio responses. Set `"modalities": ["text", "audio"]` to enable audio output.
@@ -394,11 +420,12 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `audios` | list | `null` | List of audio file paths (local paths or URLs) |
 | `videos` | list | `null` | List of video file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
+| `max_completion_tokens` | int | `null` | OpenAI-compatible alias for `max_tokens` |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Random seed for reproducibility |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `audio` | dict | `null` | Audio output configuration, e.g. `{"voice": "default", "format": "wav"}` |
+| `audio` | dict | `null` | Speech response format configuration, e.g. `{"format": "wav"}` |
 | `stage_sampling` | dict | `null` | Per-stage sampling overrides, e.g. `{"thinker": {"temperature": 0.8}}` |

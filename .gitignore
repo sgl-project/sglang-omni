@@ -13,6 +13,7 @@ build/
 venv/
 .venv/
 env/
+/omni
 
 # IDE
 .idea/
@@ -43,5 +44,6 @@ results/
 .tune-runs/
 .eval-runs/
 benchmarks/eval/*.edit.lock
+asr_seedtts_results.json
 .claude/*
 !.claude/skills/

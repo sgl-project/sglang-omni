@@ -85,7 +85,10 @@ from benchmarks.metrics.video import (
     print_videomme_accuracy_summary,
 )
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.tts import compute_text_audio_consistency
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    compute_text_audio_consistency,
+)
 from benchmarks.tasks.video_understanding import (
     build_videomme_result_records,
     make_video_send_fn,
@@ -122,6 +125,7 @@ class VideoEvalConfig:
     repo_id: str | None = None
     enable_audio: bool = False
     asr_device: str = "cuda:0"
+    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
 
 
@@ -139,6 +143,7 @@ async def run_video_eval(
     audio_output_dir_default: str,
     enable_audio_input: bool = False,
     fixed_prompt: str | None = None,
+    compute_wer: bool = True,
 ) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
@@ -203,15 +208,17 @@ async def run_video_eval(
             "warmup": config.warmup,
             "enable_audio": config.enable_audio,
             "asr_device": config.asr_device,
+            "asr_concurrency": config.asr_concurrency,
             "lang": config.lang,
         },
         "per_sample": per_sample,
     }
-    if config.enable_audio:
+    if config.enable_audio and compute_wer:
         results["wer"] = compute_text_audio_consistency(
             request_results,
             config.lang,
             config.asr_device,
+            asr_concurrency=config.asr_concurrency,
         )
 
     if config.output_dir:
@@ -244,6 +251,7 @@ def video_eval_config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
         timeout_s=args.timeout_s,
         enable_audio=args.enable_audio,
         asr_device=args.asr_device,
+        asr_concurrency=args.asr_concurrency,
         lang=args.lang,
     )
 
@@ -283,6 +291,12 @@ def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> N
         type=str,
         default="cuda:0",
         help="Device for ASR model when --enable-audio is used.",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent ASR transcription requests for WER.",
     )
     parser.add_argument(
         "--lang",

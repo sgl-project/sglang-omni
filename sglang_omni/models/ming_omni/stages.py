@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.models.ming_omni.io import PipelineState
+from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
-from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
+from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
 
@@ -24,8 +24,8 @@ def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayloa
 
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
-    projected = PipelineState(
+    state = MingOmniPipelineState.from_dict(payload.data)
+    projected = MingOmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=dict(state.mm_inputs),
         encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
@@ -35,9 +35,9 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
 
 
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
+    state = MingOmniPipelineState.from_dict(payload.data)
     stage_name = _single_encoder_stage_name(state)
-    projected = PipelineState(
+    projected = MingOmniPipelineState(
         encoder_outs={stage_name: state.encoder_outs.get(stage_name, {})}
     )
     return _payload_with_state(payload, projected)
@@ -48,15 +48,19 @@ def _project_preprocessing_to_encoder(
     *,
     stage_name: str,
 ) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
+    state = MingOmniPipelineState.from_dict(payload.data)
     stage_inputs = state.encoder_inputs.get(stage_name)
     projected_inputs = (
         {stage_name: dict(stage_inputs)} if isinstance(stage_inputs, dict) else {}
     )
-    return _payload_with_state(payload, PipelineState(encoder_inputs=projected_inputs))
+    return _payload_with_state(
+        payload, MingOmniPipelineState(encoder_inputs=projected_inputs)
+    )
 
 
-def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePayload:
+def _payload_with_state(
+    payload: StagePayload, state: MingOmniPipelineState
+) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -82,23 +86,12 @@ def _project_encoder_input_metadata(
     return projected
 
 
-def _single_encoder_stage_name(state: PipelineState) -> str:
+def _single_encoder_stage_name(state: MingOmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
         )
     return next(iter(state.encoder_outs))
-
-
-def _attach_decode_final_metadata(
-    result: dict[str, Any],
-    state: PipelineState,
-    thinker_out: dict[str, Any],
-) -> None:
-    finish_reason = thinker_out.get("finish_reason")
-    if finish_reason is not None:
-        result.setdefault("finish_reason", finish_reason)
-    result.setdefault("usage", build_text_usage(state, thinker_out))
 
 
 def create_preprocessing_executor(model_path: str):
@@ -122,6 +115,33 @@ def create_aggregate_executor():
     return SimpleScheduler(_identity)
 
 
+def create_streaming_segmenter_executor(
+    *,
+    segment_min_tokens: int = 8,
+    segment_max_tokens: int = 40,
+    first_segment_min_tokens: int = 4,
+    first_segment_max_wait_ms: int = 450,
+):
+    """Factory for the streaming TTS segmenter stage.
+
+    Returns a stream-aware scheduler that consumes text deltas from the
+    thinker's stream channel and emits speakable segments on its own
+    stream channel to the talker stream stage.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_segmenter import (
+        MingStreamingSegmenterScheduler,
+    )
+    from sglang_omni.models.ming_omni.components.streaming_text import SegmenterConfig
+
+    config = SegmenterConfig(
+        segment_min_tokens=segment_min_tokens,
+        segment_max_tokens=segment_max_tokens,
+        first_segment_min_tokens=first_segment_min_tokens,
+        first_segment_max_wait_ms=first_segment_max_wait_ms,
+    )
+    return MingStreamingSegmenterScheduler(config=config)
+
+
 def create_audio_encoder_executor(
     model_path: str,
     *,
@@ -134,7 +154,7 @@ def create_audio_encoder_executor(
     model = MingAudioEncoder(model_path=model_path, device=device, dtype=dtype)
 
     def _encode(payload: StagePayload) -> StagePayload:
-        state = PipelineState.from_dict(payload.data)
+        state = MingOmniPipelineState.from_dict(payload.data)
         inputs = state.encoder_inputs.get(AUDIO_STAGE)
         if not isinstance(inputs, dict) or not inputs:
             result = {}
@@ -158,14 +178,24 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
 ):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-    model = MingImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = MingImageEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+    )
 
     def _encode(payload: StagePayload) -> StagePayload:
-        state = PipelineState.from_dict(payload.data)
+        state = MingOmniPipelineState.from_dict(payload.data)
         inputs = state.encoder_inputs.get(IMAGE_STAGE)
         if not isinstance(inputs, dict) or not inputs:
             result = {}
@@ -192,7 +222,10 @@ def create_sglang_thinker_executor_from_config(
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_streaming_tts: bool = False,
 ):
+    validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)
+
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
@@ -200,6 +233,7 @@ def create_sglang_thinker_executor_from_config(
     register_ming_hf_config()
 
     overrides = dict(server_args_overrides or {})
+    overrides.setdefault("sampling_backend", "pytorch")
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
@@ -214,6 +248,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,
+        enable_streaming_tts=enable_streaming_tts,
     )
 
 
@@ -252,71 +287,34 @@ def create_talker_executor(
     return SimpleScheduler(_talk)
 
 
+def create_streaming_talker_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    voice: str = "DB30",
+):
+    """Factory for the streaming TTS talker stage.
+
+    Consumes text segments emitted by the segmenter and produces audio
+    chunks on the outbox stream channel. Terminal stage — chunks go to
+    the coordinator and out to the client.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_talker import (
+        MingStreamingTalkerScheduler,
+    )
+    from sglang_omni.models.weight_loader import resolve_model_path
+
+    local_path = resolve_model_path(model_path)
+    return MingStreamingTalkerScheduler(
+        model_path=local_path,
+        device=device,
+        voice=voice,
+    )
+
+
 def create_decode_executor(model_path: str):
-    from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
-    from sglang_omni.models.ming_omni.io import OmniEvent
-    from sglang_omni.models.ming_omni.pipeline.merge import decode_events
-    from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
-    from sglang_omni.models.ming_omni.pipeline.state_io import load_state
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
+        create_ming_streaming_detokenize_scheduler,
+    )
 
-    tokenizer = load_ming_tokenizer(model_path)
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-
-    def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
-        return {
-            "type": event.type,
-            "modality": event.modality,
-            "payload": dict(event.payload),
-            "is_final": bool(event.is_final),
-        }
-
-    def _decode(payload: StagePayload) -> StagePayload:
-        state = load_state(payload)
-        thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
-        if not isinstance(thinker_out, dict):
-            thinker_out = {
-                "output_ids": [],
-                "step": 0,
-                "is_final": True,
-                "extra_model_outputs": {},
-            }
-
-        step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
-        events = list(
-            decode_events(
-                thinker_out=thinker_out,  # type: ignore[arg-type]
-                state=state,
-                tokenizer=tokenizer,
-                eos_token_id=eos_token_id,
-                step=step,
-            )
-        )
-        result: dict[str, Any] = {"events": [_event_to_dict(event) for event in events]}
-        final_event = next(
-            (
-                event
-                for event in reversed(events)
-                if event.is_final or event.type in {"text_final", "final"}
-            ),
-            None,
-        )
-        if final_event is not None:
-            result.update(final_event.payload)
-            result.setdefault("modality", final_event.modality)
-
-        if "text" not in result:
-            output_ids = thinker_out.get("output_ids")
-            if (
-                callable(getattr(tokenizer, "decode", None))
-                and isinstance(output_ids, list)
-                and output_ids
-            ):
-                result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
-                result.setdefault("modality", "text")
-
-        _attach_decode_final_metadata(result, state, thinker_out)
-        payload.data = result
-        return payload
-
-    return SimpleScheduler(_decode)
+    return create_ming_streaming_detokenize_scheduler(model_path)

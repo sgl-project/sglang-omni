@@ -76,6 +76,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+@pytest.mark.benchmark
 def test_two_round_conversation(server_process):
     """Two-round video conversation: location question then school question.
 
@@ -192,6 +193,7 @@ def test_two_round_conversation(server_process):
     assert health.status_code == 200, "Server unhealthy after round 2"
 
 
+@pytest.mark.benchmark
 def test_server_stability_after_request(server_process):
     """Verify the server process is still alive after the conversation."""
     proc, _ = server_process

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
-from sglang_omni.models.ming_omni.io import PipelineState, ThinkerOutput
+from sglang_omni.models.ming_omni.io import MingOmniPipelineState, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 
 if TYPE_CHECKING:
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def build_encoder_request(
-    state: PipelineState, *, stage_name: str
+    state: MingOmniPipelineState, *, stage_name: str
 ) -> EncoderRequestData:
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
@@ -35,7 +35,7 @@ def build_encoder_request(
 
 
 def apply_encoder_result(
-    state: PipelineState,
+    state: MingOmniPipelineState,
     *,
     stage_name: str,
     result: Any,
@@ -55,7 +55,7 @@ def apply_encoder_result(
 
 
 def build_thinker_request(
-    state: PipelineState,
+    state: MingOmniPipelineState,
     *,
     params: dict[str, Any],
 ) -> ARRequestData:
@@ -92,7 +92,7 @@ def build_thinker_request(
 
 
 def build_sglang_thinker_request(
-    state: PipelineState,
+    state: MingOmniPipelineState,
     *,
     params: dict[str, Any],
     tokenizer: Any,
@@ -167,7 +167,7 @@ def build_sglang_thinker_request(
 
 
 def apply_thinker_result(
-    state: PipelineState,
+    state: MingOmniPipelineState,
     *,
     stage_name: str,
     result: Any,

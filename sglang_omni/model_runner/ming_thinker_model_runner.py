@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""V1 multimodal prefill injection."""
+"""Multimodal prefill injection for Ming."""
 
 from __future__ import annotations
 
@@ -54,7 +54,9 @@ class MingThinkerModelRunner(ModelRunner):
             value = fallback
         return int(value) if value is not None else None
 
-    def prepare_prefill(self, forward_batch: Any, schedule_batch: Any, requests: list):
+    def custom_prefill_forward(
+        self, forward_batch: Any, schedule_batch: Any, requests: list
+    ):
         """Custom prefill for multimodal inputs."""
         del requests
         if not schedule_batch.forward_mode.is_extend():

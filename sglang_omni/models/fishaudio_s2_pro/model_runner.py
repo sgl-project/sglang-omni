@@ -8,6 +8,8 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
+from sglang_omni.sampling.seed import resolve_row_seed
 
 
 def collect_s2pro_step_outputs(
@@ -75,15 +77,22 @@ class FishS2ProModelRunner(ModelRunner):
         self._semantic_end_id = int(self.model._semantic_end_id)
         self._im_end_token_id = int(self.model._im_end_token_id)
 
-    def prepare_prefill(self, forward_batch, schedule_batch, requests):
+    def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
         self._sync_decode_state(requests)
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
         if input_embeds is not None:
             forward_batch.input_embeds = input_embeds
-        return None
 
-    def prepare_decode(self, forward_batch, schedule_batch, requests):
+    def before_decode(
+        self,
+        forward_batch,
+        schedule_batch,
+        requests,
+        *,
+        is_lookahead: bool = False,
+    ):
+        del is_lookahead
         del schedule_batch
         input_ids = forward_batch.input_ids
         batch_size = input_ids.shape[0]
@@ -105,7 +114,6 @@ class FishS2ProModelRunner(ModelRunner):
                     dtype=self.model._vq_codes.dtype,
                 )
             )
-        return None
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
@@ -126,6 +134,11 @@ class FishS2ProModelRunner(ModelRunner):
         self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
         self.model._ras_temperature[row_idx] = data.ras_temperature
         self.model._ras_top_p[row_idx] = data.ras_top_p
+        self.model._sampling_seeds[row_idx] = (
+            _NO_SEED if data.seed is None else resolve_row_seed(data.seed)
+        )
+        # semantic_history_count is the uncapped per-request AR step (pre-step).
+        self.model._step_count[row_idx] = int(data.semantic_history_count)
 
         history_len = self.model._rep_history_len
         history = data.semantic_history_tokens

@@ -169,6 +169,22 @@ def available_models() -> list[str]:
     )
 
 
+def _merge_omni_ci_home(cfg: dict) -> None:
+    omni_home = cfg.get("omni_ci_home")
+    if not omni_home:
+        return
+    auto = cfg.setdefault("auto_env", {})
+    auto.setdefault("OMNI_CI_HOME", omni_home)
+    auto.setdefault("XDG_CACHE_HOME", f"{omni_home}/.cache")
+    auto.setdefault("TORCHINDUCTOR_CACHE_DIR", f"{omni_home}/.torchinductor")
+
+
+def _apply_auto_env(cfg: dict) -> None:
+    _merge_omni_ci_home(cfg)
+    for key, value in cfg.setdefault("auto_env", {}).items():
+        os.environ[key] = str(value)
+
+
 def load_model_config(name: str) -> dict:
     p = model_dir(name) / "config.yaml"
     if not p.exists():
@@ -179,8 +195,7 @@ def load_model_config(name: str) -> dict:
     cfg.setdefault("name", name)
     cfg.setdefault("auto_env", {})
     cfg.setdefault("rows", [])
-    for k, v in cfg["auto_env"].items():
-        os.environ.setdefault(k, str(v))
+    _apply_auto_env(cfg)
     return cfg
 
 
@@ -438,7 +453,7 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         if not ok:
             errs.append(
                 f"HF model not cached: {mid} — "
-                f"`huggingface-cli download {mid}`"
+                f"`HF_ENDPOINT=https://hf-mirror.com huggingface-cli download {mid}`"
             )
     for ds in sorted(hf_datasets):
         ok = _hf_cached(py, ds, "dataset")
@@ -446,7 +461,8 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         if not ok:
             errs.append(
                 f"HF dataset not cached: {ds} — "
-                f"`huggingface-cli download --repo-type dataset {ds}`"
+                "`HF_ENDPOINT=https://hf-mirror.com "
+                f"huggingface-cli download --repo-type dataset {ds}`"
             )
 
     # Auxiliary scoring resources (ASR models, normalizer pkgs, repo-root symlinks).

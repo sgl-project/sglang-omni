@@ -109,7 +109,7 @@ class MingAudioEncoder(nn.Module):
 
     def _load_weights(self) -> None:
         """Load audio tower and projection weights from checkpoint."""
-        logger.info("Loading Ming audio encoder weights from %s", self._model_path)
+        logger.info(f"Loading Ming audio encoder weights from {self._model_path}")
         load_module(
             self.audio_tower,
             self._model_path,

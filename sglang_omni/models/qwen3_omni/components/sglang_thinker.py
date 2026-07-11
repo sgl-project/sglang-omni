@@ -21,6 +21,10 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
 from sglang.srt.utils import add_prefix, logger
 
+from sglang_omni.models.qwen3_omni.quantization import (
+    convert_fp8_weight_scale_inv_for_sglang,
+)
+
 
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
@@ -150,6 +154,9 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 param = params_dict.get(mapped)
                 if param is None:
                     continue
+                loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                    mapped, loaded_weight
+                )
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight, shard_id)
                 break
@@ -188,6 +195,9 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                         param = params_dict.get(mapped)
                         if param is None:
                             continue
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            mapped, loaded_weight
+                        )
                         weight_loader = getattr(
                             param, "weight_loader", default_weight_loader
                         )
@@ -206,6 +216,9 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                         continue
                     param = params_dict.get(name)
                     if param is not None:
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            name, loaded_weight
+                        )
                         weight_loader = getattr(
                             param, "weight_loader", default_weight_loader
                         )

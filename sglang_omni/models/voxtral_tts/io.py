@@ -7,9 +7,12 @@ from typing import Any
 
 import torch
 
+from sglang_omni.scheduling.pipeline_state import PipelineStateBase
+from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_typed_tensor
+
 
 @dataclass
-class VoxtralTTSState:
+class VoxtralTTSState(PipelineStateBase):
     """Per-request pipeline state for Voxtral TTS."""
 
     input_ids: list[int] | None = None
@@ -17,14 +20,11 @@ class VoxtralTTSState:
 
     max_new_tokens: int = 4096
 
-    # Generation output: list of [num_codebooks] tensors, one per frame
+    # Generation output: list of [num_codebooks] tensors, one per frame.
     audio_codes: Any | None = None
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
 
     # Vocoder output
     audio_samples: Any | None = None
-    sample_rate: int = 24000
 
     @staticmethod
     def _tensor_to_list(t: Any) -> Any:
@@ -40,11 +40,8 @@ class VoxtralTTSState:
             data["voice"] = self.voice
         data["max_new_tokens"] = self.max_new_tokens
         if self.audio_codes is not None:
-            data["audio_codes"] = self._tensor_to_list(self.audio_codes)
-        if self.prompt_tokens:
-            data["prompt_tokens"] = self.prompt_tokens
-        if self.completion_tokens:
-            data["completion_tokens"] = self.completion_tokens
+            data.update(encode_typed_tensor(self.audio_codes, key="audio_codes"))
+        self.append_usage_fields(data)
         if self.audio_samples is not None:
             data["audio_samples"] = self._tensor_to_list(self.audio_samples)
         data["sample_rate"] = self.sample_rate
@@ -52,16 +49,16 @@ class VoxtralTTSState:
 
     @classmethod
     def from_dict(cls, data: dict) -> VoxtralTTSState:
-        audio_codes = data.get("audio_codes")
-        if audio_codes is not None and isinstance(audio_codes, list):
-            audio_codes = torch.tensor(audio_codes)
         return cls(
             input_ids=data.get("input_ids"),
             voice=data.get("voice"),
             max_new_tokens=data.get("max_new_tokens", 4096),
-            audio_codes=audio_codes,
+            audio_codes=decode_typed_tensor(
+                data, key="audio_codes", legacy_key="audio_codes"
+            ),
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
+            engine_time_s=float(data.get("engine_time_s", 0.0)),
             audio_samples=data.get("audio_samples"),
             sample_rate=data.get("sample_rate", 24000),
         )

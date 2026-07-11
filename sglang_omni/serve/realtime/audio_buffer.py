@@ -11,6 +11,14 @@ import wave
 DEFAULT_MAX_BUFFER_BYTES = 60 * 16000 * 2
 
 
+class BufferOverflow(ValueError):
+    """Raised when a realtime input audio buffer exceeds its byte limit."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        super().__init__(f"Realtime audio buffer exceeded max_bytes={max_bytes}")
+
+
 class RealtimeAudioBuffer:
     """Append-only buffer of raw little-endian PCM16 bytes."""
 
