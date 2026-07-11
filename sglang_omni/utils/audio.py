@@ -18,6 +18,34 @@ import torchaudio
 _DEFAULT_REQUEST_TIMEOUT = 5
 
 
+def _is_riff_wav(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
+def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | None:
+    """Decode PCM/IEEE-float WAV bytes without torchaudio's decoder init.
+
+    Returns None for anything the pure-Python parser doesn't support
+    (e.g. 24-bit PCM, ADPCM), so the caller falls back to torchaudio.load.
+    Resampling stays on torchaudio.functional.resample: it applies a
+    windowed-sinc lowpass, which np.interp-style linear resampling lacks,
+    so downsampling would alias.
+    """
+    # Local import: utils sits below preprocessing in the layering.
+    from sglang_omni.preprocessing.audio import _parse_wav_bytes
+
+    try:
+        audio, sample_rate = _parse_wav_bytes(data)
+    except ValueError:
+        return None
+    if sample_rate == target_sample_rate:
+        return audio
+    resampled = torchaudio.functional.resample(
+        torch.from_numpy(audio), sample_rate, target_sample_rate
+    )
+    return resampled.numpy()
+
+
 def decode_audio_data_uri(value: str) -> bytes | None:
     if not value.startswith("data:"):
         return None
@@ -60,6 +88,13 @@ def load_audio(
             source = unquote(urlparse(source).path)
 
     if isinstance(source, bytes):
+        # Fast path for PCM/float WAV bytes: skips torchaudio.load's
+        # per-call decoder initialization (~6 ms). _parse_wav_bytes
+        # downmixes to mono unconditionally, so only valid when mono=True.
+        if mono and _is_riff_wav(source):
+            fast = _try_fast_wav_decode(source, target_sample_rate)
+            if fast is not None:
+                return fast
         audio, sample_rate = torchaudio.load(io.BytesIO(source))
     elif isinstance(source, str):
         audio, sample_rate = torchaudio.load(source)
