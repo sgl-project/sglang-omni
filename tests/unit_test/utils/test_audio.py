@@ -186,6 +186,8 @@ def test_load_audio_fast_path_handles_float32_wav() -> None:
 
     assert samples.shape == (1600,)
     assert samples.dtype == np.float32
+    assert samples.flags.writeable
+    samples[0] = 0
 
 
 def test_load_audio_fast_path_skips_torchaudio(monkeypatch) -> None:

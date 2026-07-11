@@ -31,6 +31,7 @@ def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | N
         audio, sample_rate = _parse_wav_bytes(data)
     except ValueError:
         return None
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
     if sample_rate == target_sample_rate:
         return audio
 
@@ -82,8 +83,8 @@ def load_audio(
             source = unquote(urlparse(source).path)
 
     if isinstance(source, bytes):
-        # Note (akazaakane): The pure-Python WAV parser avoids torchaudio decoder
-        # startup for common mono inputs without changing channel-preserving loads.
+        # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
+        # startup when mono=True without changing channel-preserving loads.
         if mono and _is_riff_wav(source):
             fast = _try_fast_wav_decode(source, target_sample_rate)
             if fast is not None:
