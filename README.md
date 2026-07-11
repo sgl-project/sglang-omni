@@ -44,7 +44,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 
 - **Omni chat and speech**: Run models such as [Qwen3-Omni](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_omni.html) and [Ming-Omni](https://sgl-project.github.io/sglang-omni/cookbook/ming_omni.html) with multimodal inputs, text/audio outputs, and thinker-talker generation pipelines.
 - **Speech generation**: Serve [Higgs Audio v3](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html), [MOSS-TTS](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts.html), [MOSS-TTS Local](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html), [Fish Speech S2-Pro](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_s2_pro.html), [Qwen3-TTS](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_tts.html), [Voxtral TTS](https://sgl-project.github.io/sglang-omni/cookbook/voxtral_tts.html), and related TTS systems through speech, batch speech, streaming speech, and uploaded-voice APIs.
-- **Audio transcription**: Serve [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html) through an OpenAI-compatible transcription path with documented serving and benchmarking flows.
+- **Audio transcription and diarization**: Serve [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html) and [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. MOSS-TD supports speaker-labelled, timestamped transcript segments with `response_format=verbose_json`.
 - **SGLang-Omni Router**: Serve multiple Omni servers behind one OpenAI-compatible endpoint, with health checks, readiness tracking, worker lifecycle control, and model-capability discovery across the worker pool. See the [Router guide](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html).
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/).
@@ -55,6 +55,7 @@ Additional model guides, including experimental and research-oriented paths, are
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
 - [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
 - [Qwen3-ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
+- [MOSS-Transcribe-Diarize cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html)
 - [Omni router](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html)
 - [Developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html)
 
