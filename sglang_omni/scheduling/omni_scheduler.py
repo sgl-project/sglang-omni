@@ -1842,12 +1842,45 @@ class OmniScheduler:
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
         out_cache_loc = batch.out_cache_loc
-        self._free_overrun_step_slots(
-            out_cache_loc, [i for i, d in enumerate(drop) if d]
-        )
-        batch.filter_batch(keep_indices=keep)
-        if out_cache_loc is not None:
-            batch.out_cache_loc = out_cache_loc[keep]
+        forward_mode = getattr(batch, "forward_mode", None)
+        if forward_mode is not None and forward_mode.is_extend():
+            # extend/mixed: out_cache_loc/input_ids are per token (req i owns
+            # extend_lens[i] consecutive slots) and filter_batch only reslices
+            # the per-request fields, so handle the per-token ones here.
+            lens = batch.extend_lens
+            starts = [0] * len(lens)
+            for i in range(1, len(lens)):
+                starts[i] = starts[i - 1] + lens[i - 1]
+            drop_tokens = [
+                t
+                for i, d in enumerate(drop)
+                if d
+                for t in range(starts[i], starts[i] + lens[i])
+            ]
+            keep_tokens = [
+                t for i in keep for t in range(starts[i], starts[i] + lens[i])
+            ]
+            input_ids = batch.input_ids
+            prefix_lens = batch.prefix_lens
+            extend_logprob_start_lens = batch.extend_logprob_start_lens
+            self._free_overrun_step_slots(out_cache_loc, drop_tokens)
+            batch.filter_batch(keep_indices=keep)
+            batch.input_ids = input_ids[keep_tokens]
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep_tokens]
+            batch.extend_lens = [lens[i] for i in keep]
+            batch.extend_num_tokens = sum(batch.extend_lens)
+            batch.prefix_lens = [prefix_lens[i] for i in keep]
+            batch.extend_logprob_start_lens = [
+                extend_logprob_start_lens[i] for i in keep
+            ]
+        else:
+            self._free_overrun_step_slots(
+                out_cache_loc, [i for i, d in enumerate(drop) if d]
+            )
+            batch.filter_batch(keep_indices=keep)
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:

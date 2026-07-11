@@ -911,3 +911,72 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
 
     assert failures == [(stranded_batch, RuntimeError, "drain boom")]
     assert s._async_pending is None
+
+
+# ---------------------------------------------------------------------------
+# _drop_stale_overrun on EXTEND/MIXED batches (#1023): out_cache_loc/input_ids
+# are per token (req i owns extend_lens[i] consecutive slots), not per request.
+# ---------------------------------------------------------------------------
+
+
+class _MixedBatch:
+    """Extend/mixed ScheduleBatch stub. filter_batch mirrors the real one:
+    per-request fields only, nulls out_cache_loc, leaves per-token fields and
+    the extend_* lists stale."""
+
+    def __init__(self, lens, done):
+        self.forward_mode = types.SimpleNamespace(
+            is_decode=lambda: False, is_extend=lambda: True
+        )
+        self.reqs = [types.SimpleNamespace(finished=lambda d=d: d) for d in done]
+        self.extend_lens = list(lens)
+        self.extend_num_tokens = sum(lens)
+        self.prefix_lens = [10 * (i + 1) for i in range(len(lens))]
+        self.extend_logprob_start_lens = [0] * len(lens)
+        self.out_cache_loc = torch.arange(100, 100 + sum(lens))
+        self.input_ids = torch.arange(sum(lens))
+
+    def filter_batch(self, keep_indices):
+        self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
+
+
+def _drop_stale_scheduler(freed):
+    s = OmniScheduler.__new__(OmniScheduler)
+    s.page_size = 1
+    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
+    s.token_to_kv_pool_allocator = types.SimpleNamespace(
+        free=lambda t: freed.extend(t.tolist())
+    )
+    return s
+
+
+def test_drop_stale_overrun_mixed_reslices_per_token():
+    # mixed batch: extend req (3 tokens) + two folded decode reqs (1 token
+    # each, mix_with_running tail); the middle one finished on the lagged
+    # resolve.
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
+    out = s._drop_stale_overrun(batch)
+    assert out is batch
+    assert freed == [103]  # the dropped req's token slot, nothing else
+    assert out.out_cache_loc.tolist() == [100, 101, 102, 104]
+    assert out.input_ids.tolist() == [0, 1, 2, 4]
+    assert out.extend_lens == [3, 1]
+    assert out.extend_num_tokens == 4
+    assert out.prefix_lens == [10, 30]
+
+
+def test_drop_stale_overrun_extend_multitoken_drop():
+    # pure extend batch where the dropped req owned several token slots
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[2, 3], done=[True, False])
+    out = s._drop_stale_overrun(batch)
+    assert freed == [100, 101]
+    assert out.out_cache_loc.tolist() == [102, 103, 104]
+    assert out.input_ids.tolist() == [2, 3, 4]
+    assert out.extend_lens == [3]
+    assert out.extend_num_tokens == 3
+    assert out.prefix_lens == [20]
