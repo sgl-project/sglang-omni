@@ -23,7 +23,7 @@ def _is_riff_wav(data: bytes) -> bool:
 
 
 def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | None:
-    # Note (gaoyang): Keep unsupported WAV encodings on torchaudio so the fast
+    # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
     from sglang_omni.preprocessing.audio import _parse_wav_bytes
 
