@@ -123,7 +123,7 @@ def _sine_wav_bytes(
     samples = np.sin(2 * np.pi * 440.0 * t)
     if sampwidth == 2:
         frames = (samples * 32767).astype("<i2")
-    elif sampwidth == 3:  # 24-bit PCM, unsupported by the fast path
+    elif sampwidth == 3:
         i32 = (samples * 8388607).astype("<i4")
         frames = np.zeros(num_samples * 3, dtype=np.uint8)
         raw = i32.astype("<i4").tobytes()
