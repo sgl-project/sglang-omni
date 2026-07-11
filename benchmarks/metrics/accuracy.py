@@ -5,17 +5,21 @@ from __future__ import annotations
 
 import re
 
-ANSWER_LETTERS = {"A": 0, "B": 1, "C": 2, "D": 3}
+ANSWER_LETTERS = {chr(ord("A") + i): i for i in range(10)}
 INDEX_TO_LETTER = {v: k for k, v in ANSWER_LETTERS.items()}
+_LETTER_RANGE = "A-J"
 
 # Patterns tried in order: first match wins
 _PATTERNS = [
     # Bare letter at start: "B", "B.", "B) ..." (not start of a word like "Because")
-    re.compile(r"^\s*([A-D])(?!\w)(?!\s+[a-z])", re.IGNORECASE),
+    re.compile(rf"^\s*([{_LETTER_RANGE}])(?!\w)(?!\s+[a-z])", re.IGNORECASE),
     # "The answer is B" / "answer: B"
-    re.compile(r"(?:answer|choice)\s*(?:is|:)\s*([A-D])\b", re.IGNORECASE),
+    re.compile(
+        rf"(?:answer|choice)\s*(?:is|:)\s*([{_LETTER_RANGE}])\b",
+        re.IGNORECASE,
+    ),
     # "Option B" / "option B"
-    re.compile(r"option\s+([A-D])\b", re.IGNORECASE),
+    re.compile(rf"option\s+([{_LETTER_RANGE}])\b", re.IGNORECASE),
 ]
 
 

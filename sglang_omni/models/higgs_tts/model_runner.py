@@ -101,7 +101,8 @@ class HiggsTTSModelRunner(ModelRunner):
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
         staging = self._decode_pack_gpu(n_real)
-        host_buf = self._next_host_staging(self.model._cg_collect_staging)
+        collect_staging = self.model._cg_collect_staging
+        host_buf = self._next_host_staging(collect_staging.shape, collect_staging.dtype)
         host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
         logprob_host = None
         if self._should_capture_rollout_logprobs(requests):

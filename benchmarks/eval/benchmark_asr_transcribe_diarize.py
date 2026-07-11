@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MOSS-Transcribe-Diarize eval.
+"""MOSS-Transcribe-Diarize benchmark.
 
 Evaluate the MOSS-Transcribe-Diarize model on the Movies800Time and AISHELL4
 datasets for multi-speaker dialog transcription. These two datasets are private
@@ -12,12 +12,18 @@ Author:
 
 Usage:
 
-    python -m benchmarks.eval.eval_transcribe_diarize \
+    python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
         --dataset movies800times \
         --max-concurrency 16 \
         --output-dir results/moss_transcribe_diarize_movies800times
 
-    python -m benchmarks.eval.eval_transcribe_diarize \
+    python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
+        --dataset movies800times \
+        --stream \
+        --max-concurrency 16 \
+        --output-dir results/moss_transcribe_diarize_movies800times_stream
+
+    python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
         --dataset aishell4_long \
         --max-concurrency 16 \
         --output-dir results/moss_transcribe_diarize_aishell4_long
@@ -232,6 +238,8 @@ def make_send_fn(
     model_path: str,
     language: str | None,
     max_new_tokens: int | None,
+    *,
+    stream: bool = False,
 ) -> SendFn:
     async def send_fn(
         session: aiohttp.ClientSession,
@@ -255,10 +263,17 @@ def make_send_fn(
                     model_path,
                     language,
                     max_new_tokens,
+                    stream=stream,
                 ),
+                headers=_request_headers(stream=stream),
             ) as response:
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
+                elif stream:
+                    result.text = await _consume_transcription_stream(
+                        response, result, start
+                    )
+                    result.is_success = True
                 else:
                     result.text = extract_prediction_text(await response.json())
                     result.is_success = True
@@ -278,6 +293,48 @@ def make_send_fn(
     return send_fn
 
 
+async def _consume_transcription_stream(
+    response: aiohttp.ClientResponse,
+    result: RequestResult,
+    start: float,
+) -> str:
+    """Read the SSE transcription stream, filling streaming latency metrics.
+
+    Records text_ttft_s on the first transcript.text.delta and the gaps
+    between subsequent deltas in inter_chunk_s. Returns the full text from
+    the terminal transcript.text.done event.
+    """
+    final_text: str | None = None
+    last_delta_t: float | None = None
+    seen_done = False
+    async for raw_line in response.content:
+        line = raw_line.decode("utf-8").strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[len("data: ") :]
+        if payload == "[DONE]":
+            seen_done = True
+            continue
+        event = json.loads(payload)
+        event_type = event.get("type")
+        if event_type == "transcript.text.delta":
+            now = time.perf_counter()
+            if result.text_ttft_s is None:
+                result.text_ttft_s = now - start
+            elif last_delta_t is not None:
+                result.inter_chunk_s.append(now - last_delta_t)
+            last_delta_t = now
+        elif event_type == "transcript.text.done":
+            final_text = event.get("text")
+        elif event_type == "error":
+            raise ValueError(f"Stream error event: {event.get('error')}")
+    if not isinstance(final_text, str):
+        raise ValueError("Stream ended without a transcript.text.done event")
+    if not seen_done:
+        raise ValueError("Stream ended without a [DONE] event")
+    return final_text.strip()
+
+
 async def run_eval(
     samples: list[Movies800Sample],
     *,
@@ -290,6 +347,7 @@ async def run_eval(
     disable_tqdm: bool,
     request_timeout_s: int,
     max_new_tokens: int | None = None,
+    stream: bool = False,
 ) -> tuple[list[RequestResult], float]:
     runner = BenchmarkRunner(
         RunConfig(
@@ -307,6 +365,7 @@ async def run_eval(
             model_path=model_path,
             language=language,
             max_new_tokens=max_new_tokens,
+            stream=stream,
         ),
     )
     return outputs, runner.wall_clock_s
@@ -419,6 +478,15 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         type=_positive_int,
         default=DEFAULT_MAX_NEW_TOKENS,
         help="Optional max_new_tokens forwarded to /v1/audio/transcriptions.",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Use SSE streaming transcription (stream=true). Fills the "
+            "text_ttft_* and inter_chunk_* speed metrics; accuracy metrics "
+            "are computed on the final transcript as usual."
+        ),
     )
     parser.add_argument(
         "--asr-results-file",
@@ -539,6 +607,7 @@ def _run_requests_and_save(
             disable_tqdm=args.disable_tqdm,
             request_timeout_s=args.request_timeout_s,
             max_new_tokens=args.max_new_tokens,
+            stream=args.stream,
         )
     )
     _save_asr_results(args, samples, outputs, wall_clock_s)
@@ -565,6 +634,7 @@ def _run_from_asr_results(args: argparse.Namespace) -> tuple[EvaluationPayload, 
         concurrency=int(config.get("concurrency", args.concurrency)),
         repo_id=str(config.get("repo_id", args.repo_id)),
         split=str(config.get("split", args.split)),
+        dataset=str(config.get("dataset", args.dataset)),
     )
     output_path = _save_payload(args, payload)
     return payload, output_path
@@ -624,6 +694,7 @@ def _build_payload(
         concurrency=args.concurrency,
         repo_id=args.repo_id,
         split=args.split,
+        dataset=args.dataset,
     )
 
 
@@ -910,10 +981,18 @@ def _request_form(
     model_path: str,
     language: str | None,
     max_new_tokens: int | None,
+    *,
+    stream: bool = False,
 ) -> aiohttp.FormData:
     form = aiohttp.FormData()
     form.add_field("model", model_path)
-    form.add_field("response_format", "verbose_json")
+    if stream:
+        # note (guozhihao): verbose_json cannot stream; the plain text carries the same
+        # speaker/timestamp markup, which the metrics normalizer handles.
+        form.add_field("response_format", "json")
+        form.add_field("stream", "true")
+    else:
+        form.add_field("response_format", "verbose_json")
     if language:
         form.add_field("language", language)
     if max_new_tokens is not None:
@@ -926,6 +1005,12 @@ def _request_form(
         or "application/octet-stream",
     )
     return form
+
+
+def _request_headers(*, stream: bool = False) -> dict[str, str] | None:
+    if not stream:
+        return None
+    return {"x-sglang-omni-route-stream": "true"}
 
 
 if __name__ == "__main__":

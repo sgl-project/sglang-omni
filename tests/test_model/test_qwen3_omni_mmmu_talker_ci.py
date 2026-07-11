@@ -28,6 +28,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
@@ -76,6 +77,15 @@ _MMMU_AUDIO_P95 = {
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
+
+MMMU_TALKER_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="mmmu-ci-50",
+    repo_id=DATASETS["mmmu-ci-50"],
+)
+MMMU_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="mmmu-ci-50 (talker output WER)",
+    repo_id=DATASETS["mmmu-ci-50"],
+)
 
 
 @dataclass
@@ -141,12 +151,15 @@ def test_mmmu_talker_accuracy_and_speed(
 ) -> None:
     """Run MMMU eval with audio and assert accuracy and speed meet thresholds."""
     summary = talker_eval_artifacts.summary
-    print_mmmu_accuracy_summary(summary, "qwen3-omni")
+    print_mmmu_accuracy_summary(
+        summary, "qwen3-omni", dataset=MMMU_TALKER_DATASET_LABEL
+    )
     print_speed_summary(
         talker_eval_artifacts.speed,
         "qwen3-omni",
         CONCURRENCY,
         title="MMMU Talker Speed",
+        dataset=MMMU_TALKER_DATASET_LABEL,
     )
 
     failed = summary.get("failed", 0)
@@ -190,7 +203,9 @@ def test_mmmu_talker_wer(
         asr_router_port=qwen3_asr_wer_router.port,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
-    print_wer_summary(wer["summary"], "qwen3-omni")
+    print_wer_summary(
+        wer["summary"], "qwen3-omni", dataset=MMMU_TALKER_WER_DATASET_LABEL
+    )
     persist_wer_in_benchmark_results(
         wer_eval_artifacts.audio_dir, wer, "mmmu_results.json"
     )

@@ -21,6 +21,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmsu import print_mmsu_summary
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
@@ -90,7 +91,15 @@ def test_mmsu_accuracy_and_speed(
     ) as router_guard:
         results = asyncio.run(run_mmsu(args))
 
-    print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
+    print_mmsu_summary(
+        results["accuracy"],
+        args.model,
+        speed_metrics=results["speed"],
+        dataset=format_benchmark_dataset_label(
+            dataset="mmsu-ci-2000",
+            repo_id=args.repo_id,
+        ),
+    )
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)

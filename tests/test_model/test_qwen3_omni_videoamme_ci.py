@@ -19,6 +19,7 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.test_model.omni_router_utils import (
@@ -68,16 +69,22 @@ def test_videoamme_accuracy_and_speed(
         results = asyncio.run(run_videoamme_eval(config))
 
     summary = results["summary"]
+    dataset_label = format_benchmark_dataset_label(
+        dataset="videoamme-ci-50",
+        repo_id=config.repo_id,
+    )
     print_videomme_accuracy_summary(
         summary,
         config.model,
         title="Video-AMME Accuracy",
+        dataset=dataset_label,
     )
     print_speed_summary(
         results["speed"],
         config.model,
         CONCURRENCY,
         title="Video-AMME Speed",
+        dataset=dataset_label,
     )
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)

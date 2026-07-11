@@ -6,6 +6,7 @@ import asyncio
 import sys
 import threading
 import types
+from collections import deque
 from queue import Queue
 from types import SimpleNamespace
 
@@ -577,6 +578,193 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     )
 
     assert calls == 3
+
+
+def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    calls = 0
+    data_uri = "data:audio/wav;base64,AAAA"
+
+    class FakePrompt:
+        def __init__(self, ref_text: str | None) -> None:
+            self.ref_text = ref_text
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            assert kwargs["ref_audio"] == data_uri
+            return [FakePrompt(kwargs["ref_text"])]
+
+        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+            return {
+                "ref_code": [torch.ones((1, 2), dtype=torch.long)],
+                "ref_spk_embedding": [torch.ones(4)],
+                "icl_mode": [True],
+            }
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+
+        def build_voice_clone_inputs(self, **kwargs):
+            assert kwargs["voice_clone_prompt"]["icl_mode"] == [True]
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_build_qwen3_tts_pad_embed",
+        lambda model: torch.zeros(4),
+    )
+    model = FakeModel()
+    wrapper = FakeWrapper()
+
+    def make_adhoc_payload(**tts_params) -> StagePayload:
+        params = {
+            "ref_audio": data_uri,
+            "ref_text": "reference",
+        }
+        params.update(tts_params)
+        return make_payload(inputs="target", tts_params=params)
+
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        make_adhoc_payload(),
+        model=model,
+        wrapper=wrapper,
+    )
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        make_adhoc_payload(),
+        model=model,
+        wrapper=wrapper,
+    )
+    assert calls == 1
+    assert cache.stats()["entries"] == 0
+
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        make_adhoc_payload(ref_text="different"),
+        model=model,
+        wrapper=wrapper,
+    )
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        make_adhoc_payload(x_vector_only_mode=True),
+        model=model,
+        wrapper=wrapper,
+    )
+    assert calls == 3
+
+
+def test_qwen3_tts_adhoc_reference_failure_does_not_poison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    data_uri = "data:audio/wav;base64,BBBB"
+
+    class FakePrompt:
+        ref_text = "reference"
+
+    class FakeWrapper:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create_voice_clone_prompt(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient")
+            return [FakePrompt()]
+
+        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+            del prompt_items
+            return {
+                "ref_code": [torch.ones((1, 2), dtype=torch.long)],
+                "ref_spk_embedding": [torch.ones(4)],
+                "icl_mode": [True],
+            }
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+
+        def build_voice_clone_inputs(self, **kwargs):
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_build_qwen3_tts_pad_embed",
+        lambda model: torch.zeros(4),
+    )
+
+    wrapper = FakeWrapper()
+    model = FakeModel()
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": data_uri, "ref_text": "reference"},
+    )
+
+    with pytest.raises(RuntimeError, match="transient"):
+        qwen3_request_builders._prepare_qwen3_tts_request(
+            payload,
+            model=model,
+            wrapper=wrapper,
+        )
+
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        payload,
+        model=model,
+        wrapper=wrapper,
+    )
+    assert wrapper.calls == 2
 
 
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
@@ -1268,7 +1456,7 @@ def test_qwen3_tts_preprocessing_abort_race_cleans_late_prepared_state(
     payload = make_payload(inputs="target")
     payload.request_id = request_id
     loop = asyncio.new_event_loop()
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def run_compute() -> None:
         try:
@@ -1280,7 +1468,7 @@ def test_qwen3_tts_preprocessing_abort_race_cleans_late_prepared_state(
                 ),
                 loop,
             )
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(exc)
 
     thread = threading.Thread(target=run_compute)
@@ -1316,6 +1504,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
             qwen3_request_builders.cleanup_prepared_qwen3_tts_request
         )
         scheduler._aborted_request_ids = set()
+        scheduler._aborted_request_id_order = deque()
         scheduler._pending_stream_chunks = {}
         scheduler._pending_stream_done = set()
         scheduler._deferred_request_payloads = {}

@@ -10,15 +10,15 @@ import torch
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-from sglang_omni.models.tts_streaming import (
-    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
-    resolve_initial_codec_chunk_frames,
-)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.scheduling.streaming_vocoder import (
+    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+    resolve_initial_codec_chunk_frames,
+)
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.codec_delay import reverse_delay_pattern
 

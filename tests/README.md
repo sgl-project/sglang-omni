@@ -68,7 +68,10 @@ tests/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_transcribe_diarize/
+    │   ├── test_encoder_cache.py
+    │   ├── test_pipeline.py
     │   ├── test_request_builders.py
+    │   ├── test_stream_output_builder.py
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
     │   └── test_pipeline.py
@@ -101,7 +104,8 @@ tests/
     ├── scheduling/
     │   ├── test_engine_factory.py
     │   ├── test_pipeline_state.py
-    │   └── test_reference_encoder.py
+    │   ├── test_reference_encoder.py
+    │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
     │   ├── test_streaming_vocoder.py

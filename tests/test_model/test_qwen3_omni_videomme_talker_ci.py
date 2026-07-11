@@ -32,6 +32,7 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
@@ -76,6 +77,15 @@ _VIDEOMME_TALKER_AUDIO_P95 = {
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
+
+VIDEOMME_TALKER_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="videomme-ci-50",
+    repo_id=DATASETS["videomme-ci-50"],
+)
+VIDEOMME_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="videomme-ci-50 (talker output WER)",
+    repo_id=DATASETS["videomme-ci-50"],
+)
 
 
 def _load_short_answer_samples() -> list[VideoMMESample]:
@@ -163,12 +173,15 @@ def test_videomme_talker_accuracy_and_speed(
 ) -> None:
     """Run Video-MME with Talker enabled and assert accuracy + speed."""
     summary = talker_eval_artifacts.summary
-    print_videomme_accuracy_summary(summary, "qwen3-omni")
+    print_videomme_accuracy_summary(
+        summary, "qwen3-omni", dataset=VIDEOMME_TALKER_DATASET_LABEL
+    )
     print_speed_summary(
         talker_eval_artifacts.speed,
         "qwen3-omni",
         CONCURRENCY,
         title="Video-MME Talker Speed",
+        dataset=VIDEOMME_TALKER_DATASET_LABEL,
     )
 
     accuracy = summary.get("accuracy")
@@ -206,7 +219,11 @@ def test_videomme_talker_wer(
         asr_router_port=qwen3_asr_wer_router.port,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
-    print_wer_summary(wer["summary"], "qwen3-omni")
+    print_wer_summary(
+        wer["summary"],
+        "qwen3-omni",
+        dataset=VIDEOMME_TALKER_WER_DATASET_LABEL,
+    )
     persist_wer_in_benchmark_results(
         wer_eval_artifacts.audio_dir, wer, "videomme_results.json"
     )

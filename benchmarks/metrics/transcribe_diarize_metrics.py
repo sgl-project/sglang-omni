@@ -11,7 +11,11 @@ from typing import TypedDict
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
+from benchmarks.metrics._format import (
+    SPEED_LABEL_WIDTH,
+    SPEED_LINE_WIDTH,
+    print_benchmark_dataset_line,
+)
 
 try:
     from rapidfuzz.distance import Levenshtein as _rapidfuzz_levenshtein
@@ -138,6 +142,7 @@ def print_diarization_accuracy_summary(
     diarization_metrics: Mapping[str, object],
     model_name: str,
     concurrency: int,
+    dataset: str | None = None,
 ) -> None:
     line_width = SPEED_LINE_WIDTH
     label_width = SPEED_LABEL_WIDTH
@@ -145,6 +150,7 @@ def print_diarization_accuracy_summary(
     print(f"{'ASR Accuracy Benchmark Result':^{line_width}}")
     print(f"{'=' * line_width}")
     print(f"  {'ASR model:':<{label_width}} {model_name}")
+    print_benchmark_dataset_line(label_width, dataset)
     print(f"  {'Concurrency:':<{label_width}} {concurrency}")
     print(
         f"  {'Evaluated / Total:':<{label_width}} "
@@ -195,13 +201,21 @@ def print_diarization_speed_summary(
     speed: Mapping[str, object],
     model_name: str,
     concurrency: int,
+    dataset: str | None = None,
 ) -> None:
     line_width = SPEED_LINE_WIDTH
     label_width = SPEED_LABEL_WIDTH
+    is_stream = speed.get("text_ttft_p95_s") is not None
+    title = (
+        "ASR Speed Benchmark Result (stream)"
+        if is_stream
+        else "ASR Speed Benchmark Result"
+    )
     print(f"\n{'=' * line_width}")
-    print(f"{'ASR Speed Benchmark Result':^{line_width}}")
+    print(f"{title:^{line_width}}")
     print(f"{'=' * line_width}")
     print(f"  {'ASR model:':<{label_width}} {model_name}")
+    print_benchmark_dataset_line(label_width, dataset)
     print(f"  {'Concurrency:':<{label_width}} {concurrency}")
     print(f"  {'Completed requests:':<{label_width}} {speed['completed_requests']}")
     print(f"  {'Failed requests:':<{label_width}} {speed['failed_requests']}")
@@ -224,6 +238,15 @@ def print_diarization_speed_summary(
         f"  {'Audio throughput (s/s):':<{label_width}} "
         f"{_format_decimal(_as_optional_number(speed, 'audio_throughput_s_per_s'), digits=3)}"
     )
+    if is_stream:
+        print(
+            f"  {'Text TTFT p95 (s):':<{label_width}} "
+            f"{_format_decimal(_as_optional_number(speed, 'text_ttft_p95_s'), digits=4)}"
+        )
+        print(
+            f"  {'Inter-chunk p95 (s):':<{label_width}} "
+            f"{_format_decimal(_as_optional_number(speed, 'inter_chunk_p95_s'), digits=4)}"
+        )
     print(f"{'=' * line_width}")
 
 

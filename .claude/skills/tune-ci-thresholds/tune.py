@@ -108,6 +108,8 @@ METRIC_SPECS = {
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
+    "text_ttft_p95_s":      dict(worst="max", label="Text TTFT p95 (s)",     digits=4, scale=1,   group="speed"),
+    "inter_chunk_p95_s":    dict(worst="max", label="Inter-chunk p95 (s)",   digits=4, scale=1,   group="speed"),
     "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
     "similarity_mean":      dict(worst="min", label="Speaker sim mean",      digits=4, scale=1,   group="similarity"),
     "utmos_mean":           dict(worst="min", label="UTMOS mean",            digits=4, scale=1,   group="utmos"),
@@ -212,6 +214,10 @@ def match_metric(name, nested):
         return "rtf_mean"
     if "RTF_P95" in name:
         return "rtf_p95"
+    if "TEXT_TTFT" in name and "P95" in name:
+        return "text_ttft_p95_s"
+    if "INTER_CHUNK" in name and "P95" in name:
+        return "inter_chunk_p95_s"
     return None
 
 
@@ -520,8 +526,9 @@ def _gpu_memory_used_mib():
 def _kill_calibration_gpu_processes(host: dict | None = None):
     """Match CI omni-post-stage cleanup between calibration runs.
 
-    When ``TUNE_GPU_EXCLUDE`` / host ``gpu_exclude`` is set (shared 8× H100 hosts),
-    cleanup is scoped to the calibration GPU pool only — never kill CI on excluded GPUs.
+    Cleanup is scoped to ``calibration_gpu_pool`` (respects ``TUNE_GPU_INCLUDE`` and
+    ``TUNE_GPU_EXCLUDE``). Never run global ``pkill`` when either is set — concurrent
+    calibration sessions on the same host must not kill each other's GPUs.
     """
     pool = calibration_gpu_pool(host)
     if not pool:
@@ -531,7 +538,7 @@ def _kill_calibration_gpu_processes(host: dict | None = None):
     env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, pool))
     if script.exists():
         subprocess.run(["bash", str(script)], capture_output=True, check=False, env=env)
-    if excluded_gpu_indices(host):
+    if excluded_gpu_indices(host) or included_gpu_indices(host):
         return
     for pattern in (
         "sgl-omni serve",
@@ -600,7 +607,7 @@ def _ensure_gpus_free(gpus_needed: int, timeout: int = _GPU_WAIT_TIMEOUT_S,
         waited += _GPU_WAIT_POLL_S
         if waited % 60 == 0:
             _kill_calibration_gpu_processes(host)
-    if not excluded_gpu_indices(host):
+    if not excluded_gpu_indices(host) and not included_gpu_indices(host):
         subprocess.run(["pkill", "-9", "-f", "sgl-omni"], check=False)
     time.sleep(5)
     ready, mem, busy = _ready_gpu_indices(gpus_needed, host)
@@ -943,13 +950,44 @@ def excluded_gpu_indices(host: dict | None = None) -> set[int]:
     return set()
 
 
+def included_gpu_indices(host: dict | None = None) -> set[int] | None:
+    """When set via ``TUNE_GPU_INCLUDE``, pin pick/cleanup to exactly these GPUs.
+
+    Used for concurrent calibration sessions on shared hosts (e.g. 0,1 vs 2,3).
+    """
+    raw = os.environ.get("TUNE_GPU_INCLUDE")
+    if not raw:
+        return None
+    included = _parse_gpu_index_list(raw)
+    excluded = excluded_gpu_indices(host)
+    pinned = included - excluded
+    if not pinned:
+        raise RuntimeError(
+            f"TUNE_GPU_INCLUDE={raw!r} empty after excluding {sorted(excluded)}"
+        )
+    return pinned
+
+
 def calibration_gpu_pool(host: dict | None = None) -> list[int]:
     excluded = excluded_gpu_indices(host)
-    return [i for i in all_gpu_indices() if i not in excluded]
+    pool = [i for i in all_gpu_indices() if i not in excluded]
+    pinned = included_gpu_indices(host)
+    if pinned is not None:
+        pool = [i for i in pool if i in pinned]
+    return pool
 
 
 def pick_free_gpus(n, host: dict | None = None):
     """Pick n GPUs with no compute app and memory <= _GPU_RETRY_MEM_MIB (2 GiB)."""
+    pinned = included_gpu_indices(host)
+    if pinned is not None and len(pinned) == n:
+        picked = sorted(pinned)
+        if _picked_gpus_under_limit(picked):
+            return picked, None
+        snap = _picked_gpus_mem_snapshot(picked)
+        return None, (
+            f"pinned GPU(s) {picked} not each <= {_GPU_RETRY_MEM_MIB} MiB: {snap}"
+        )
     ready, mem, busy = _ready_gpu_indices(n, host)
     all_idx = calibration_gpu_pool(host)
     if len(ready) >= n:
@@ -958,9 +996,10 @@ def pick_free_gpus(n, host: dict | None = None):
             snap = _picked_gpus_mem_snapshot(picked)
             return None, f"internal: picked GPUs exceed {_GPU_RETRY_MEM_MIB} MiB: {snap}"
         return picked, None
+    pin_msg = f" pinned={sorted(pinned)}" if pinned is not None else ""
     return None, (
         f"need {n} GPU(s) each <= {_GPU_RETRY_MEM_MIB} MiB (2 GiB); "
-        f"ready {len(ready)}/{len(all_idx)} mem={mem} busy={sorted(busy)}"
+        f"ready {len(ready)}/{len(all_idx)} mem={mem} busy={sorted(busy)}{pin_msg}"
     )
 
 
@@ -1119,10 +1158,12 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
         ready, _, _ = _ready_gpu_indices(1, cfg.get("_host"))
         free_count = len(ready)
         summary = gpu_summary(smi)
-        pool_note = f" pool={pool}" if excluded else ""
-        if busy or excluded:
+        pinned = sorted(included_gpu_indices(cfg.get("_host")) or [])
+        pool_note = f" pool={pool}" if (excluded or pinned) else ""
+        pin_note = f" pinned={pinned}" if pinned else ""
+        if busy or excluded or pinned:
             print(f"  GPUs: {summary} — {free_count}/{len(pool)} calibration-ready"
-                  f"{pool_note} (busy: {sorted(busy)}"
+                  f"{pool_note}{pin_note} (busy: {sorted(busy)}"
                   f"{f', excluded: {excluded}' if excluded else ''})")
         else:
             print(f"  GPUs: {summary} — {free_count}/{len(pool)} calibration-ready")
@@ -1175,11 +1216,16 @@ def _constants(tree):
 
 _SLACK_HELPER_CALLS = frozenset({"apply_wer_slack", "apply_mos_slack"})
 _SLACK_ENV_NAMES = frozenset({"THRESHOLD_SLACK_LOWER", "THRESHOLD_SLACK_HIGHER"})
+# Prefixed variants (e.g. AISHELL4_LONG_THRESHOLD_SLACK_LOWER) are matched by
+# suffix so a stage group can widen its slack without touching this module.
+_SLACK_ENV_SUFFIXES = ("THRESHOLD_SLACK_LOWER", "THRESHOLD_SLACK_HIGHER")
 
 
 def _expr_uses_slack(node: ast.AST) -> bool:
     for child in ast.walk(node):
-        if isinstance(child, ast.Name) and child.id in _SLACK_ENV_NAMES:
+        if isinstance(child, ast.Name) and (
+            child.id in _SLACK_ENV_NAMES or child.id.endswith(_SLACK_ENV_SUFFIXES)
+        ):
             return True
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             if child.func.id in _SLACK_HELPER_CALLS:
@@ -1614,6 +1660,11 @@ def discover(out, only, cfg):
                         preset_claimed, v_paths, v_default, counters,
                         slack_derived=slack_derived,
                     )
+                    effective_base = vcfg.get("stage_base_override") or base
+                    effective_variant = (
+                        None if vcfg.get("omit_variant_suffix") else vname
+                    )
+                    variant_ctx = vcfg.get("context_vars") or ctx
                     for g, metrics in v_groups.items():
                         if g in sc_by_group:
                             group_sc = _build_sample_counts(
@@ -1622,33 +1673,33 @@ def discover(out, only, cfg):
                         else:
                             group_sc = v_sc_default
                         key = _stage_key(
-                            base,
+                            effective_base,
                             g,
-                            variant=vname,
+                            variant=effective_variant,
                             calibration_preset=preset_name,
                         )
                         stages[key] = _stage_entry(
                             rel,
                             _stage_title(
-                                base,
+                                effective_base,
                                 g,
-                                variant=vname,
+                                variant=effective_variant,
                                 calibration_preset=preset_name,
                             ),
                             g,
                             preset_env,
-                            ctx,
+                            variant_ctx,
                             sha,
                             metrics,
                             group_sc,
-                            variant=vname,
+                            variant=effective_variant,
                             calibration_preset=preset_name,
                             gpus=preset_gpus,
                             hf_model_ids=preset_model_ids,
                             threshold_file=threshold_rel,
                             threshold_file_sha256=threshold_file_sha,
                             expected_samples=_expected_samples(
-                                tree, g, vname, ctx),
+                                tree, g, effective_variant, variant_ctx),
                         )
         else:
             # Single-source flow (one result-JSON tree per test file).

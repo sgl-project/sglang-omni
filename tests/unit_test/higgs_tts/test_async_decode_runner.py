@@ -135,9 +135,7 @@ def _patch_cpu_host_staging(monkeypatch):
     monkeypatch.setattr(
         HiggsTTSModelRunner,
         "_next_host_staging",
-        lambda self, device_staging: torch.empty(
-            device_staging.shape, dtype=device_staging.dtype, device="cpu"
-        ),
+        lambda self, shape, dtype: torch.empty(tuple(shape), dtype=dtype, device="cpu"),
     )
 
 

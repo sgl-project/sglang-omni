@@ -14,6 +14,9 @@ import typer
 from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.moss_transcribe_diarize.config import (
+    MossTranscribeDiarizePipelineConfig,
+)
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 
 
@@ -85,10 +88,26 @@ def test_decode_mode_cli_invalid_mode_rejected():
 
 def test_decode_mode_cli_rejects_unsupported_config():
     config = Qwen3TTSPipelineConfig(model_path="dummy")
-    with pytest.raises(typer.BadParameter, match="no async-decode-capable stage"):
+    with pytest.raises(
+        typer.BadParameter,
+        match="Higgs TTS, MOSS-TTS-Local, and MOSS-Transcribe-Diarize",
+    ):
         apply_decode_mode_cli_overrides(
             config, decode_mode="sync", async_lookahead_min_batch_size=None
         )
+
+
+def test_decode_mode_cli_applies_to_moss_transcribe_diarize_asr_stage():
+    # MOSS-TD's async-decode stage is named "asr", not "tts_engine": the CLI
+    # override matches stages by factory, so it must reach it all the same.
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="async", async_lookahead_min_batch_size=4
+    )
+    stage = next(s for s in config.stages if s.name == "asr")
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is True
+    assert args["async_decode_min_batch_size"] == 4
 
 
 def test_decode_mode_cli_absent_is_noop_without_tts_engine_stage():
@@ -116,7 +135,7 @@ def test_decode_mode_cli_absent_is_noop_without_tts_engine_stage():
     )
 
 
-def test_async_lookahead_min_batch_size_without_tts_engine_fails_fast():
+def test_async_lookahead_min_batch_size_without_supported_stage_fails_fast():
     config = PipelineConfig(
         model_path="dummy",
         stages=[
@@ -128,7 +147,7 @@ def test_async_lookahead_min_batch_size_without_tts_engine_fails_fast():
             )
         ],
     )
-    with pytest.raises(typer.BadParameter, match="no async-decode-capable stage"):
+    with pytest.raises(typer.BadParameter, match="supported factory"):
         apply_decode_mode_cli_overrides(
             config, decode_mode=None, async_lookahead_min_batch_size=4
         )

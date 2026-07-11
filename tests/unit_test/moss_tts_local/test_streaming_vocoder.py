@@ -32,10 +32,10 @@ from sglang_omni.models.moss_tts_local.streaming_vocoder import (
     MossTTSLocalStreamingVocoderScheduler,
     _CodecStreamSession,
 )
-from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 N_VQ = 4
 SAMPLES_PER_FRAME = 4
@@ -1121,35 +1121,25 @@ def test_decode_step_failure_fails_participants_only(monkeypatch) -> None:
 
 
 def test_stream_chunk_requires_metadata_contract(monkeypatch) -> None:
+    # note (Gaokai): base-owned scaffold errors are contract-tested in
+    # tests/unit_test/scheduling/test_streaming_vocoder.py; only the
+    # model-owned row-shape and n_vq checks belong here.
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
     row = _rows(1, seed=80)[0]
-    with pytest.raises(RuntimeError, match="missing metadata"):
-        scheduler.on_stream_chunk("req", _stream_item(row, None))
-    with pytest.raises(RuntimeError, match="stream"):
-        scheduler.on_stream_chunk(
-            "req2", _stream_item(row, {"modality": "audio_codes"})
-        )
-    with pytest.raises(ValueError, match="modality"):
-        scheduler.on_stream_chunk(
-            "req3", _stream_item(row, {"stream": True, "modality": "text"})
-        )
-    with pytest.raises(ValueError, match="channels"):
-        scheduler.on_stream_chunk(
-            "req4", _stream_item(torch.zeros(2, dtype=torch.long), _metadata())
-        )
-
-
-def test_is_streaming_payload(monkeypatch) -> None:
-    processor = FakeProcessor()
-    scheduler = _make_scheduler(monkeypatch, processor)
-    assert scheduler.is_streaming_payload(_terminal_payload(_rows(2, seed=90)))
-    non_stream = StagePayload(
-        request_id="req",
-        request=OmniRequest(inputs="", params={}),
-        data={},
+    scheduler.on_stream_chunk_batch(
+        [("req", _stream_item(torch.zeros(2, dtype=torch.long), _metadata()))]
     )
-    assert not scheduler.is_streaming_payload(non_stream)
+    scheduler.on_stream_chunk_batch([("req2", _stream_item(row, _metadata()))])
+    scheduler.on_stream_chunk_batch(
+        [("req2", _stream_item(row, _metadata(n_vq=N_VQ + 1)))]
+    )
+    errors = {m.request_id: m.data for m in _drain(scheduler) if m.type == "error"}
+    assert "channels" in str(errors["req"])
+    assert "n_vq changed" in str(errors["req2"])
+    # note (Gaokai): the serving path aborts a request whose chunk breaks the
+    # model contract, so neither request may keep stream state.
+    assert scheduler._stream_states == {}
 
 
 # --- CUDA-graph config + recapture / factory-capture / anti-storm lifecycle (CPU fakes) ---

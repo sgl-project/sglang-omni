@@ -10,7 +10,6 @@ import logging
 import os
 import queue
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
@@ -41,8 +40,12 @@ from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
+from sglang_omni.scheduling.reference_encoder import (
+    ReferenceEncodeHook,
+    ReferenceEncodeKey,
+    ReferenceEncodeService,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
@@ -381,172 +384,114 @@ class _BatchedReferenceEncoder:
         return results
 
 
-class CachedReferenceEncoder:
-    """Content-addressed LRU cache + single-flight dedup in front of _BatchedReferenceEncoder.
+@dataclass(frozen=True)
+class _MossLocalReferenceInput:
+    source_kind: str
+    source: str
+    raw: bytes | None = None
 
-    Every path (miss, hit, follower) returns an independent CPU long tensor, so
-    downstream sees one device/dtype regardless of cache temperature.
-    Stores codes as int32 on CPU (lossless for codebook values in [0, 1023]).
-    """
 
-    # Cadence for the periodic stats log; class attr so it is easy to tune.
-    LOG_INTERVAL_S = 60.0
-
+class _MossLocalReferenceEncodeHook(
+    ReferenceEncodeHook[_MossLocalReferenceInput, torch.Tensor, torch.Tensor]
+):
     def __init__(
         self,
         encoder: _BatchedReferenceEncoder,
         *,
-        max_items: int = 256,
-        max_bytes: int = 64 * 1024 * 1024,
+        n_vq: int,
     ) -> None:
-        # Fail fast on non-positive capacities: a negative max_items makes
-        # StageOutputCache evict from an empty dict and KeyError at request time.
-        if max_items < 1:
-            raise ValueError(f"ref_audio_cache_max_items must be >= 1, got {max_items}")
-        if max_bytes < 1:
-            raise ValueError(f"ref_audio_cache_max_bytes must be >= 1, got {max_bytes}")
         self._encoder = encoder
-        self._cache = StageOutputCache(
-            max_size=max_items,
-            max_bytes=max_bytes,
-            cache_device="cpu",
+        self._n_vq = int(n_vq)
+        self._encoder_config_hash = _hash_bytes(f"n_vq:{self._n_vq}".encode("utf-8"))
+
+    def normalize_input(self, raw_input: Any) -> _MossLocalReferenceInput:
+        if isinstance(raw_input, _MossLocalReferenceInput):
+            return raw_input
+        return _MossLocalReferenceInput("path", str(raw_input))
+
+    def cache_key(self, item: _MossLocalReferenceInput) -> ReferenceEncodeKey | None:
+        input_key = self._input_key(item)
+        if input_key is None:
+            return None
+        return ReferenceEncodeKey(
+            model_id="moss_tts_local",
+            model_revision="local_audio_tokenizer",
+            encoder_id="moss_tts_local_audio_tokenizer",
+            encoder_config_hash=self._encoder_config_hash,
+            artifact_kind="moss_tts_local_reference_codes",
+            input_key=input_key,
         )
-        self._lock = threading.Lock()
-        self._inflight: dict[str, concurrent.futures.Future] = {}
-        self._hits = 0
-        self._misses = 0
-        self._merged = 0
-        self._last_log_time: float = 0.0
+
+    def encode_one(self, item: _MossLocalReferenceInput) -> torch.Tensor:
+        if item.source_kind == "path":
+            return self._encoder.encode(item.source)
+        if item.source_kind == "data_uri":
+            raw = item.raw
+            if raw is None:
+                raw = _BatchedReferenceEncoder._data_uri_audio_bytes(item.source)
+            wav, sample_rate = _BatchedReferenceEncoder._decode_data_uri_audio(raw)
+            return self._encoder.encode_wav(wav, sample_rate)
+        raise TypeError(f"unknown MOSS-local reference source: {item.source_kind}")
+
+    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
+        return artifact.detach().to("cpu", dtype=torch.int32).clone()
+
+    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
+        return stored.detach().clone().to(torch.long)
+
+    def revalidate(
+        self,
+        item: _MossLocalReferenceInput,
+        key: ReferenceEncodeKey,
+    ) -> bool:
+        if item.source_kind != "path":
+            return True
+        return _reference_path_cache_key(item.source) == key.input_key
+
+    def _input_key(self, item: _MossLocalReferenceInput) -> str | None:
+        if item.source_kind == "path":
+            _BatchedReferenceEncoder._check_reference_duration(item.source)
+            return _reference_path_cache_key(item.source)
+        if item.source_kind == "data_uri":
+            raw = item.raw
+            if raw is None:
+                raw = _BatchedReferenceEncoder._data_uri_audio_bytes(item.source)
+            return f"bytes:{_hash_bytes(raw)}"
+        return None
+
+
+class _MossLocalReferenceEncoder:
+    def __init__(
+        self,
+        encoder: _BatchedReferenceEncoder,
+        *,
+        n_vq: int,
+        max_items: int | None = 256,
+        max_bytes: int | None = 64 * 1024 * 1024,
+    ) -> None:
+        self._service = ReferenceEncodeService(
+            _MossLocalReferenceEncodeHook(encoder, n_vq=n_vq),
+            max_items=max_items,
+            max_bytes=max_bytes,
+            timeout_s=_BatchedReferenceEncoder.ENCODE_TIMEOUT_S + 10,
+            log_prefix="MOSS-TTS Local ref cache",
+        )
 
     def encode(self, path: str) -> torch.Tensor:
-        path = str(path)
-        # Note(Jiaxin): duration gate runs first — a >100 s ref must never reach
-        # the cache or the inflight dict.
-        _BatchedReferenceEncoder._check_reference_duration(path)
-        # trust_stat left False (review feedback): keep the sentinel byte-read so a
-        # same-size+mtime+ctime overwrite cannot stale-hit. The flag stays available
-        # in reference_path_cache_key for deployments that guarantee immutable refs.
-        key = _reference_path_cache_key(path)
-        if key is None:
-            return self._encoder.encode(path)  # uncacheable (URL/missing) -> bypass
-        return self._cached_encode(
-            key,
-            lambda: self._encoder.encode(path),
-            desc=repr(path),
-            # TOCTOU re-stat: skip the put if the file changed during the encode.
-            revalidate=lambda: _reference_path_cache_key(path) == key,
-        )
-
-    def _cached_encode(
-        self, key: str, encode_fn, *, desc: str, revalidate=None
-    ) -> torch.Tensor:
-        """Single-flight skeleton shared by encode() and encode_data_uri().
-
-        All paths return an independent CPU long tensor. revalidate(), if given,
-        is evaluated outside the lock and gates the put (TOCTOU guard for file
-        paths).
-        """
-        leader_fut: concurrent.futures.Future | None = None
-        follower_fut: concurrent.futures.Future | None = None
-
-        with self._lock:
-            stored = self._cache.get(key)
-            if stored is not None:
-                self._hits += 1
-            elif key in self._inflight:
-                self._merged += 1
-                follower_fut = self._inflight[key]
-            else:
-                self._misses += 1
-                leader_fut = concurrent.futures.Future()
-                self._inflight[key] = leader_fut
-
-        if stored is not None:
-            # Note(Jiaxin): clone on hit so callers can't mutate the shared entry.
-            self._maybe_log()
-            return stored.clone().to(torch.long)
-
-        if follower_fut is not None:
-            # Note(Jiaxin): each follower raises a FRESH RuntimeError — sharing one
-            # exception instance lets concurrent re-raises corrupt its traceback
-            # (same lesson as _BatchedReferenceEncoder._worker).
-            timeout = _BatchedReferenceEncoder.ENCODE_TIMEOUT_S + 10
-            try:
-                stored = follower_fut.result(timeout=timeout)
-            except Exception as cause:
-                raise RuntimeError(
-                    f"reference encode failed for {desc}: {cause}"
-                ) from cause
-            return stored.clone().to(torch.long)
-
-        assert leader_fut is not None
-        try:
-            result = encode_fn()
-        except BaseException as exc:
-            with self._lock:
-                self._inflight.pop(key, None)
-            leader_fut.set_exception(exc)
-            raise
-
-        do_put = revalidate() if revalidate is not None else True
-        stored = result.detach().to("cpu", dtype=torch.int32)
-        with self._lock:
-            if do_put:
-                self._cache.put(key, stored)
-            self._inflight.pop(key, None)
-        leader_fut.set_result(stored)
-        self._maybe_log()
-        # CPU long like the hit path.
-        return stored.to(torch.long)
-
-    def _maybe_log(self) -> None:
-        now = time.monotonic()
-        if now - self._last_log_time < self.LOG_INTERVAL_S:
-            return
-        with self._lock:
-            if now - self._last_log_time < self.LOG_INTERVAL_S:
-                return
-            self._last_log_time = now
-            snapshot = (
-                self._hits,
-                self._misses,
-                self._merged,
-                len(self._cache._cache),
-                self._cache.current_bytes,
-            )
-        logger.info(
-            "MOSS-TTS Local ref cache: hits=%d misses=%d merged=%d entries=%d bytes=%d",
-            *snapshot,
+        return self._service.get_or_encode(
+            _MossLocalReferenceInput("path", str(path)),
+            desc=repr(str(path)),
         )
 
     def encode_data_uri(self, ref_audio: str) -> torch.Tensor:
-        """Cache-aware encode for data-URI refs through the same LRU + single-flight
-        as file paths (adds the duration check _reference_for_processor lacks).
-
-        Note(Jiaxin): file: and bytes: keyspaces never collide — the two decode
-        chains differ, so codes aren't guaranteed identical for the "same" audio.
-        """
         raw = _BatchedReferenceEncoder._data_uri_audio_bytes(ref_audio)
-        key = f"bytes:{_hash_bytes(raw)}"
+        return self._service.get_or_encode(
+            _MossLocalReferenceInput("data_uri", str(ref_audio), raw),
+            desc="data-URI",
+        )
 
-        def _encode() -> torch.Tensor:
-            # Note(Jiaxin): the duration check runs inside the leader (not before
-            # inflight registration like the file path) so concurrent same-payload
-            # requests share one sf.read of a potentially large decoded buffer.
-            wav, sample_rate = _BatchedReferenceEncoder._decode_data_uri_audio(raw)
-            return self._encoder.encode_wav(wav, sample_rate)
-
-        return self._cached_encode(key, _encode, desc="data-URI")
-
-    def stats(self) -> dict:
-        with self._lock:
-            return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "merged": self._merged,
-                "entries": len(self._cache._cache),
-                "bytes": self._cache.current_bytes,
-            }
+    def stats(self) -> dict[str, int]:
+        return self._service.stats()
 
 
 def create_preprocessing_executor(
@@ -563,7 +508,7 @@ def create_preprocessing_executor(
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
 ) -> SimpleScheduler:
     # MOSS_REF_AUDIO_CACHE=0 disables the cache at startup (ops kill switch / A-B
-    # toggle) without a config edit; unset => kwarg default.
+    # toggle) without a config edit; unset => kwarg/config default.
     env_toggle = os.environ.get("MOSS_REF_AUDIO_CACHE")
     if env_toggle is not None:
         ref_audio_cache = env_toggle.strip().lower() not in (
@@ -586,8 +531,9 @@ def create_preprocessing_executor(
         max_batch_wait_ms=encode_batch_wait_ms,
     )
     if ref_audio_cache:
-        reference_encoder = CachedReferenceEncoder(
+        reference_encoder = _MossLocalReferenceEncoder(
             reference_encoder,
+            n_vq=int(processor.model_config.n_vq),
             max_items=ref_audio_cache_max_items,
             max_bytes=ref_audio_cache_max_bytes,
         )

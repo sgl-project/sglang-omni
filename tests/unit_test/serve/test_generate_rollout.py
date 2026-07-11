@@ -13,6 +13,7 @@ from sglang_omni.client.types import (
     GenerateRequest,
     UsageInfo,
 )
+from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import _build_rollout_generate_request
 from sglang_omni.serve.protocol import RolloutGenerateRequest as RolloutRequest
@@ -411,6 +412,61 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     assert gen.sampling.max_new_tokens == 8
     assert gen.stream is False
     assert gen.extra_params["return_logprob"] is True
+
+
+def test_converter_omits_explicit_params_when_sampling_omitted() -> None:
+    req = RolloutRequest(prompt="hi", sampling_params={})
+
+    gen = _build_rollout_generate_request(req)
+
+    assert gen.sampling.temperature == 1.0
+    assert gen.sampling.top_p == 1.0
+    assert gen.sampling.top_k == -1
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
+
+
+def test_converter_preserves_explicit_rollout_sampling_default_values() -> None:
+    req = RolloutRequest(
+        prompt="hi",
+        sampling_params={"temperature": 1.0, "top_p": 1.0, "top_k": -1},
+    )
+
+    gen = _build_rollout_generate_request(req)
+
+    assert gen.sampling.temperature == 1.0
+    assert gen.sampling.top_p == 1.0
+    assert gen.sampling.top_k == -1
+    assert gen.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
+        "temperature",
+        "top_k",
+        "top_p",
+    ]
+
+
+def test_converter_does_not_mark_null_rollout_sampling_params_explicit() -> None:
+    req = RolloutRequest(
+        prompt="hi",
+        sampling_params={"temperature": None, "top_p": None, "top_k": None},
+    )
+
+    gen = _build_rollout_generate_request(req)
+
+    assert gen.sampling.temperature == 1.0
+    assert gen.sampling.top_p == 1.0
+    assert gen.sampling.top_k == -1
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen.metadata
+
+
+def test_converter_preserves_rollout_metadata() -> None:
+    req = RolloutRequest(
+        prompt="hi",
+        sampling_params={},
+        metadata={"rollout_id": 1},
+    )
+
+    gen = _build_rollout_generate_request(req)
+
+    assert gen.metadata == {"rollout_id": 1}
 
 
 def test_converter_preserves_prompt_as_raw_rollout_input() -> None:

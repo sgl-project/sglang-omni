@@ -10,6 +10,7 @@ from benchmarks.metrics._format import (
     ACCURACY_LABEL_WIDTH,
     ACCURACY_LINE_WIDTH,
     print_accuracy_breakdown,
+    print_benchmark_dataset_line,
 )
 
 if TYPE_CHECKING:
@@ -82,11 +83,13 @@ def print_videomme_accuracy_summary(
     model_name: str,
     *,
     title: str = "Video-MME Accuracy",
+    dataset: str | None = None,
 ) -> None:
     lw = ACCURACY_LABEL_WIDTH
     print(f"\n{'=' * ACCURACY_LINE_WIDTH}")
     print(f"  {title} — {model_name}")
     print(f"{'=' * ACCURACY_LINE_WIDTH}")
+    print_benchmark_dataset_line(lw, dataset)
     print(f"  {'Total samples:':<{lw}} {metrics['total_samples']}")
     print(f"  {'Correct:':<{lw}} {metrics['correct']}")
     print(

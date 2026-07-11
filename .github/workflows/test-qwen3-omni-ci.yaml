@@ -37,7 +37,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -78,7 +78,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -136,7 +136,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -181,7 +181,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -226,7 +226,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -272,7 +272,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -317,7 +317,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -362,7 +362,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -407,7 +407,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -454,7 +454,7 @@ jobs:
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci

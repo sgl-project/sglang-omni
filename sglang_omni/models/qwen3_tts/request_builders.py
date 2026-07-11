@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,11 +14,20 @@ import torch
 
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
+from sglang_omni.preprocessing.cache_key import (
+    reference_path_cache_key as _reference_path_cache_key,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
     new_random_sampling_seed,
+)
+from sglang_omni.scheduling.reference_encoder import (
+    ReferenceEncodeHook,
+    ReferenceEncodeKey,
+    ReferenceEncodeService,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.speaker_cache import (
@@ -127,6 +137,9 @@ class Qwen3TTSPreprocessingContext:
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, Qwen3TTSPreparedRequest] = {}
+_ADHOC_REFERENCE_SERVICE_ENTRY: (
+    tuple[tuple[int, int], ReferenceEncodeService] | None
+) = None
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
@@ -135,6 +148,7 @@ def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
+        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
@@ -145,9 +159,11 @@ def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
 def clear_qwen3_tts_preprocessing_context() -> None:
     """Clear Qwen3-TTS preprocessing globals, mainly for tests and reloads."""
 
+    global _ADHOC_REFERENCE_SERVICE_ENTRY
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
         _PREPROCESSING_CONTEXT = None
+        _ADHOC_REFERENCE_SERVICE_ENTRY = None
         _PREPARED_REQUESTS.clear()
 
 
@@ -546,6 +562,170 @@ def _qwen3_tts_voice_prompt_from_cache(
     return prompt, str(ref_text) if ref_text is not None else None
 
 
+@dataclass(frozen=True)
+class _Qwen3TTSAdhocReferenceInput:
+    ref_audio: Any
+    ref_text: str | None
+    x_vector_only_mode: bool
+
+
+class _Qwen3TTSAdhocReferenceHook(
+    ReferenceEncodeHook[
+        _Qwen3TTSAdhocReferenceInput,
+        tuple[dict[str, Any], str | None],
+        dict[str, Any],
+    ]
+):
+    def __init__(self, *, model: Any, wrapper: Any) -> None:
+        self._model = model
+        self._wrapper = wrapper
+        self._model_revision = _qwen3_tts_model_revision(model, wrapper)
+        self._encoder_config_hash = _qwen3_tts_encoder_config_hash(model, wrapper)
+
+    def normalize_input(self, raw_input: Any) -> _Qwen3TTSAdhocReferenceInput:
+        if isinstance(raw_input, _Qwen3TTSAdhocReferenceInput):
+            return raw_input
+        if not isinstance(raw_input, Qwen3TTSState):
+            raise TypeError("Qwen3-TTS ad-hoc reference input must be a state")
+        return _Qwen3TTSAdhocReferenceInput(
+            ref_audio=raw_input.ref_audio,
+            ref_text=raw_input.ref_text,
+            x_vector_only_mode=raw_input.x_vector_only_mode,
+        )
+
+    def cache_key(
+        self, item: _Qwen3TTSAdhocReferenceInput
+    ) -> ReferenceEncodeKey | None:
+        input_key = _qwen3_tts_ref_audio_input_key(item.ref_audio)
+        if input_key is None:
+            return None
+        options_key = json.dumps(
+            {
+                "ref_text": item.ref_text,
+                "x_vector_only_mode": bool(item.x_vector_only_mode),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return ReferenceEncodeKey(
+            model_id="qwen3_tts",
+            model_revision=self._model_revision,
+            encoder_id="qwen3_tts_voice_clone_prompt",
+            encoder_config_hash=self._encoder_config_hash,
+            artifact_kind="qwen3_tts_voice_clone_prompt_adhoc",
+            input_key=input_key,
+            options_key=options_key,
+        )
+
+    def encode_one(
+        self, item: _Qwen3TTSAdhocReferenceInput
+    ) -> tuple[dict[str, Any], str | None]:
+        with torch.no_grad():
+            prompt_items = self._wrapper.create_voice_clone_prompt(
+                ref_audio=item.ref_audio,
+                ref_text=item.ref_text,
+                x_vector_only_mode=item.x_vector_only_mode,
+            )
+        if len(prompt_items) != 1:
+            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
+        voice_clone_prompt = self._wrapper._prompt_items_to_voice_clone_prompt(
+            prompt_items
+        )
+        return voice_clone_prompt, prompt_items[0].ref_text
+
+    def store_artifact(self, artifact: tuple[dict[str, Any], str | None]) -> dict:
+        voice_clone_prompt, ref_text = artifact
+        return _cacheable_qwen3_tts_voice_prompt(
+            voice_clone_prompt,
+            ref_text=ref_text,
+        )
+
+    def load_artifact(
+        self, stored: dict[str, Any]
+    ) -> tuple[dict[str, Any], str | None]:
+        cached_prompt = _qwen3_tts_voice_prompt_from_cache(stored)
+        if cached_prompt is None:
+            raise RuntimeError("Qwen3-TTS ad-hoc reference cache entry is invalid")
+        return cached_prompt
+
+    def revalidate(
+        self,
+        item: _Qwen3TTSAdhocReferenceInput,
+        key: ReferenceEncodeKey,
+    ) -> bool:
+        current_key = _qwen3_tts_ref_audio_input_key(item.ref_audio)
+        return current_key == key.input_key
+
+
+def _qwen3_tts_ref_audio_input_key(ref_audio: Any) -> str | None:
+    if isinstance(ref_audio, str):
+        if ref_audio.startswith("data:"):
+            return f"data:{_hash_bytes(ref_audio.encode('utf-8'))}"
+        return _reference_path_cache_key(ref_audio, trust_stat=False)
+    if isinstance(ref_audio, bytes | bytearray | memoryview):
+        return f"bytes:{_hash_bytes(ref_audio)}"
+    if isinstance(ref_audio, dict):
+        data_uri = audio_data_uri_from_reference(ref_audio)
+        if data_uri is not None:
+            return f"data:{_hash_bytes(data_uri.encode('utf-8'))}"
+    return None
+
+
+def _qwen3_tts_model_revision(model: Any, wrapper: Any) -> str:
+    processor = getattr(wrapper, "processor", None)
+    candidates = (
+        getattr(model, "name_or_path", None),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+        getattr(getattr(model, "config", None), "name_or_path", None),
+        getattr(processor, "name_or_path", None),
+        getattr(processor, "_name_or_path", None),
+    )
+    for candidate in candidates:
+        if candidate:
+            return str(candidate)
+    return type(model).__module__ + "." + type(model).__qualname__
+
+
+def _qwen3_tts_encoder_config_hash(model: Any, wrapper: Any) -> str:
+    processor = getattr(wrapper, "processor", None)
+    parts = [
+        type(model).__module__ + "." + type(model).__qualname__,
+        type(wrapper).__module__ + "." + type(wrapper).__qualname__,
+        type(processor).__module__ + "." + type(processor).__qualname__,
+        str(getattr(processor, "name_or_path", "")),
+        str(getattr(processor, "_name_or_path", "")),
+    ]
+    return _hash_bytes("|".join(parts).encode("utf-8"))
+
+
+def _get_qwen3_tts_adhoc_reference_service_locked(
+    model: Any,
+    wrapper: Any,
+) -> ReferenceEncodeService:
+    global _ADHOC_REFERENCE_SERVICE_ENTRY
+    owner = (id(model), id(wrapper))
+    entry = _ADHOC_REFERENCE_SERVICE_ENTRY
+    if entry is None or entry[0] != owner:
+        service = ReferenceEncodeService(
+            _Qwen3TTSAdhocReferenceHook(model=model, wrapper=wrapper),
+            max_items=256,
+            max_bytes=64 * 1024 * 1024,
+            timeout_s=130.0,
+            log_prefix="Qwen3-TTS ad-hoc reference",
+        )
+        entry = (owner, service)
+        _ADHOC_REFERENCE_SERVICE_ENTRY = entry
+    return entry[1]
+
+
+def _get_qwen3_tts_adhoc_reference_service(
+    model: Any,
+    wrapper: Any,
+) -> ReferenceEncodeService:
+    with _PREPARED_REQUESTS_LOCK:
+        return _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
+
+
 def _normalized_model_type(model: Any) -> str:
     model_type = getattr(model, "tts_model_type", None)
     if model_type is None:
@@ -597,6 +777,12 @@ def _prepare_qwen3_tts_base_request(
     )
     if cached_prompt is not None:
         voice_clone_prompt, ref_text = cached_prompt
+    elif cache_key is None:
+        reference_service = _get_qwen3_tts_adhoc_reference_service(model, wrapper)
+        voice_clone_prompt, ref_text = reference_service.get_or_encode(
+            state,
+            desc="Qwen3-TTS ad-hoc reference",
+        )
     else:
         with torch.no_grad():
             prompt_items = wrapper.create_voice_clone_prompt(
@@ -608,14 +794,13 @@ def _prepare_qwen3_tts_base_request(
             raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
         voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
         ref_text = prompt_items[0].ref_text
-        if cache_key is not None:
-            speaker_cache.put(
-                cache_key,
-                _cacheable_qwen3_tts_voice_prompt(
-                    voice_clone_prompt,
-                    ref_text=ref_text,
-                ),
-            )
+        speaker_cache.put(
+            cache_key,
+            _cacheable_qwen3_tts_voice_prompt(
+                voice_clone_prompt,
+                ref_text=ref_text,
+            ),
+        )
 
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
     ref_id = (

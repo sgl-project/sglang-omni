@@ -24,6 +24,9 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.whisper import WhisperEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
+    WhisperEncoderCudaGraphRunner,
+)
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
@@ -87,6 +90,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self._encoder_cache: Optional[StageOutputCache] = None
+        self._encoder_graph_runner = None
 
     def init_encoder_cache(self, max_bytes: int) -> None:
         self._encoder_cache = (
@@ -104,6 +108,25 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
+
+    def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
+        """Capture per-chunk-count CUDA graphs for the Whisper encoder.
+
+        Called from the stage factory after the model is on-device and CUDA
+        graphs are enabled. input_feature_len is the fixed length of the
+        encoder's input_features time axis for one 30s window
+        (WhisperFeatureExtractor.nb_max_frames).
+        """
+        buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
+        if not buckets:
+            return
+        runner = WhisperEncoderCudaGraphRunner(
+            self.whisper_encoder,
+            num_mel_bins=int(self.config.audio_config.num_mel_bins),
+            input_feature_len=int(input_feature_len),
+        )
+        runner.capture(buckets)
+        self._encoder_graph_runner = runner
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
@@ -199,9 +222,14 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_len, device=device, dtype=torch.long
             )
-            features = self.whisper_encoder(
-                batched_features, encoder_position_ids, forward_batch
-            )
+            if self._encoder_graph_runner is not None:
+                features = self._encoder_graph_runner.run(
+                    batched_features, encoder_position_ids, forward_batch
+                )
+            else:
+                features = self.whisper_encoder(
+                    batched_features, encoder_position_ids, forward_batch
+                )
 
             adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
             merged = [

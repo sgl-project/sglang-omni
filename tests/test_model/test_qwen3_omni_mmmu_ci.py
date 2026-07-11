@@ -19,6 +19,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
 from tests.test_model.omni_router_utils import (
@@ -67,8 +68,14 @@ def test_mmmu_accuracy_and_speed(
 
     summary = results["summary"]
     speed = results["speed"]
-    print_mmmu_accuracy_summary(summary, config.model)
-    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Speed")
+    dataset_label = format_benchmark_dataset_label(
+        dataset="mmmu-ci-50",
+        repo_id=config.repo_id,
+    )
+    print_mmmu_accuracy_summary(summary, config.model, dataset=dataset_label)
+    print_speed_summary(
+        speed, config.model, CONCURRENCY, title="MMMU Speed", dataset=dataset_label
+    )
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)

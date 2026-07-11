@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 _FAILED_BATCH_RESULT = object()
 
+_ABORTED_REQUEST_ID_LIMIT = 10000
+_ABORTED_REQUEST_ID_RETAINED = 5000
+
 
 class _NoOpSender:
     """Stub for send_to_detokenizer — stream_output handles emission."""
@@ -370,6 +373,7 @@ class OmniScheduler:
 
         self._running = False
         self._aborted_request_ids: set[str] = set()
+        self._aborted_request_id_order: deque[str] = deque()
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
@@ -856,12 +860,13 @@ class OmniScheduler:
         the sync and async (resolve) paths. ``skip_rids`` suppresses emission
         for requests already finished in an earlier step (the lookahead
         overrun) — emitting their extra chunk would corrupt the downstream
-        vocoder's delayed-code stream."""
+        vocoder's delayed-code stream. Aborted requests are suppressed for the
+        same reason: an abort landing mid-step must not ship one more chunk."""
         if self._stream_output_builder is None:
             return
         for sched_req in sched_output.requests:
             rid = sched_req.request_id
-            if rid in skip_rids:
+            if rid in skip_rids or rid in self._aborted_request_ids:
                 continue
             req_output = mr_output.outputs[rid]
             emitted_any = False
@@ -966,6 +971,21 @@ class OmniScheduler:
                 continue
 
             rid = req.rid
+            if rid in self._aborted_request_ids:
+                # note (Gaokai): an abort landing mid-step finishes here via
+                # FINISH_ABORT; run the cleanup abort() deferred (callbacks are
+                # idempotent) and drop the stale terminal result so it cannot
+                # resurrect the request downstream.
+                if self._abort_callback is not None:
+                    try:
+                        self._abort_callback(rid)
+                    except Exception:
+                        logger.exception(
+                            "OmniScheduler: abort cleanup failed for %s", rid
+                        )
+                self._first_emit_done.discard(rid)
+                self._prefill_start_done.discard(rid)
+                continue
 
             # Build result payload from the Req
             data = req._omni_data
@@ -1060,7 +1080,18 @@ class OmniScheduler:
             else False
         )
         with self._request_admission_lock:
-            self._aborted_request_ids.add(request_id)
+            if request_id not in self._aborted_request_ids:
+                if len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
+                    # note (Gaokai): evict oldest-first so a still-quiescing
+                    # abort survives.
+                    while (
+                        len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_RETAINED
+                    ):
+                        self._aborted_request_ids.discard(
+                            self._aborted_request_id_order.popleft()
+                        )
+                self._aborted_request_ids.add(request_id)
+                self._aborted_request_id_order.append(request_id)
             pending = self._pending_request_builds.pop(request_id, None)
             if pending is not None:
                 pending[2].cancel()
@@ -1721,6 +1752,28 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
+    def _free_overrun_step_slots(self, out_cache_loc, drop_indices) -> None:
+        """Free the per-step decode KV slot for rows whose request finished or
+        retracted in a prior step (the lookahead overrun): ``prepare_for_decode``
+        allocated it but ``cache_finished_req`` truncates below it, so it leaks.
+
+        Only under RadixCache + page_size=1; ChunkCache/paged already free the slot
+        with the request, so compensating here would double-free — hence the gate.
+        """
+        if not drop_indices:
+            return
+        if self.page_size != 1 or self.server_args.disable_radix_cache:
+            return
+        if out_cache_loc is None:
+            logger.warning("overrun step-slot free skipped: out_cache_loc is None")
+            return
+        assert max(drop_indices) < out_cache_loc.numel(), (
+            f"overrun drop index {max(drop_indices)} out of range "
+            f"({out_cache_loc.numel()} step slots)"
+        )
+        idx = torch.tensor(drop_indices, dtype=torch.long, device=out_cache_loc.device)
+        self.token_to_kv_pool_allocator.free(out_cache_loc[idx])
+
     def _drop_stale_overrun(self, batch):
         """Drop reqs finished OR retracted by the just-completed drain from the
         stale fast-path batch, so run_batch does not forward/finalize them again
@@ -1736,7 +1789,13 @@ class OmniScheduler:
         if not any(drop):
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
+        out_cache_loc = batch.out_cache_loc
+        self._free_overrun_step_slots(
+            out_cache_loc, [i for i, d in enumerate(drop) if d]
+        )
         batch.filter_batch(keep_indices=keep)
+        if out_cache_loc is not None:
+            batch.out_cache_loc = out_cache_loc[keep]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:
@@ -1759,6 +1818,16 @@ class OmniScheduler:
                 self._resolve_pending_async()
                 time.sleep(0.001)
                 continue
+
+            if (
+                self._async_pending is not None
+                and self.is_mixed_chunk
+                and (
+                    self.chunked_req is not None
+                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                )
+            ):
+                self._resolve_pending_async()
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch

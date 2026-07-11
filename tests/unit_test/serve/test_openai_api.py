@@ -12,10 +12,16 @@ from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
+from sglang_omni.proto import (
+    EXPLICIT_GENERATION_PARAMS_KEY,
+    CompleteMessage,
+    OmniRequest,
+    StreamMessage,
+)
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _await_speech_response,
+    _build_chat_generate_request,
     _chat_stream,
     _speech_audio_response,
     build_transcription_generate_request,
@@ -605,6 +611,58 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
 
 
+def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
+    req = ChatCompletionRequest(
+        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.sampling.temperature == 1.0
+    assert gen_req.sampling.top_p == 1.0
+    assert gen_req.sampling.top_k == -1
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+
+
+def test_chat_request_preserves_explicit_default_sampling_values() -> None:
+    req = ChatCompletionRequest(
+        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=1.0,
+        top_p=1.0,
+        top_k=-1,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.sampling.temperature == 1.0
+    assert gen_req.sampling.top_p == 1.0
+    assert gen_req.sampling.top_k == -1
+    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
+        "temperature",
+        "top_k",
+        "top_p",
+    ]
+
+
+def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
+    req = ChatCompletionRequest(
+        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=None,
+        top_p=None,
+        top_k=None,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.sampling.temperature == 1.0
+    assert gen_req.sampling.top_p == 1.0
+    assert gen_req.sampling.top_k == -1
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+
+
 def test_speech_stream_defaults_to_raw_pcm() -> None:
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
@@ -860,8 +918,8 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.extra_params == {
         "task": "transcribe",
         "language": "en",
-        "temperature": 0.0,
     }
+    assert gen_req.sampling.temperature == 0.0
     omni_req = Client._build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.0
     assert gen_req.metadata == {"task": "asr"}
@@ -880,7 +938,8 @@ def test_transcription_request_passes_explicit_temperature() -> None:
         temperature=0.7,
     )
 
-    assert gen_req.extra_params["temperature"] == 0.7
+    assert gen_req.sampling.temperature == 0.7
+    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["temperature"]
     omni_req = Client._build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.7
 
@@ -898,7 +957,8 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
     )
 
     assert gen_req.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-    assert gen_req.extra_params["max_new_tokens"] == 4096
+    assert gen_req.sampling.max_new_tokens == 4096
+    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
     omni_req = Client._build_omni_request(gen_req)
     assert omni_req.params["max_new_tokens"] == 4096
 
@@ -946,7 +1006,50 @@ def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-    assert request.extra_params["max_new_tokens"] == 4096
+    assert request.sampling.max_new_tokens == 4096
+    assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
+
+
+def test_transcription_endpoint_uses_openai_temperature_default() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(transcription_client, model_name="openai/whisper-large-v3")
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "openai/whisper-large-v3"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert transcription_client.requests
+    request = transcription_client.requests[0]
+    assert request.sampling.temperature == 0.0
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
+
+
+def test_transcription_endpoint_marks_mtd_request_for_model_sampling_defaults() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert transcription_client.requests
+    request = transcription_client.requests[0]
+    assert request.sampling.temperature == 0.0
+    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
 
 
 class DiarizationTranscriptionClient:

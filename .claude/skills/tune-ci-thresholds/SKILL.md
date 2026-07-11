@@ -811,7 +811,7 @@ uses `--stages ALL`; targeted reruns use `multi_speaker` or `seedtts`.
 
 | Stage key | Group | What gets written | Test constant(s) |
 |-----------|-------|-------------------|------------------|
-| `multi_speaker_diarization` | diarization | Movies800Time CER / cpCER / DER / valid sample refs | `MOSS_TD_CER_*`, `MOSS_TD_CP_CER_*`, `MOSS_TD_DELTA_CER_*`, `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF`, `MOSS_TD_N_ABOVE_50_CER_MAX`, `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF` |
+| `multi_speaker_diarization` | diarization | Movies800Time CER / cpCER / DER / valid sample refs | `MOSS_TD_CER_*`, `MOSS_TD_CP_CER_*`, `MOSS_TD_DELTA_CER_*`, `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF`, `MOSS_TD_N_ABOVE_50_CER_REF`, `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF` |
 | `multi_speaker_speed` | speed | Movies800Time throughput + latency + RTF P95 refs | `MOSS_TD_THROUGHPUT_QPS_MIN`, `MOSS_TD_LATENCY_*`, `MOSS_TD_RTF_*` |
 | `aishell4_long_diarization` | diarization | AISHELL4 long-audio CER / cpCER / DER refs | `AISHELL4_LONG_CER_*`, `AISHELL4_LONG_CP_CER_*`, `AISHELL4_LONG_DELTA_CER_*`, `AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_*` |
 | `aishell4_long_speed` | speed | AISHELL4 long-audio throughput + latency + RTF refs | `AISHELL4_LONG_THROUGHPUT_*`, `AISHELL4_LONG_LATENCY_*`, `AISHELL4_LONG_RTF_*` |
@@ -825,12 +825,23 @@ Notes:
   **`MOSS_TD_AISHELL4_LONG_CI_SAMPLES`** AISHELL4 long-audio samples.
   CER/cpCER/DER metrics are already percentages in the JSON, so display scale
   is **1**, not 100. Movies800Time calibration writes the pre-slack reference
-  constants (`*_REF`) and raw count caps only; never write derived `*_MAX`
+  constants (`*_REF`) only — including `MOSS_TD_N_ABOVE_50_CER_REF`, from which
+  the test derives the integer count cap `MOSS_TD_N_ABOVE_50_CER_MAX` via
+  `math.ceil(REF * THRESHOLD_SLACK_LOWER)`; never write derived `*_MAX`
   literals whose RHS is `*_REF * THRESHOLD_SLACK_*`.
 - AISHELL4 long-audio thresholds start as report-only `None` constants in the
   CI test. Calibrate them from the DP=2 router CI shape using the
   `aishell4_long_diarization` and `aishell4_long_speed` stages; do not reuse
-  DP=1 local eval numbers.
+  DP=1 local eval numbers. Calibration writes the `AISHELL4_LONG_*_REF`
+  constants; the test derives the assertion `*_MAX` / `*_MIN` from the **wider**
+  `AISHELL4_LONG_THRESHOLD_SLACK_LOWER` (1.2) / `AISHELL4_LONG_THRESHOLD_SLACK_HIGHER`
+  (0.8), because the 20-sample AISHELL4 set is far noisier than the 800-sample
+  movies800 corpus (straggler-dominated wall clock, batch non-determinism).
+  **`AISHELL4_LONG_DELTA_CER_PERCENT_MAX` is report-only (`None`)**: delta_cer on
+  20 samples is a near-zero-magnitude diagnostic (observed CI spikes past 1.2%),
+  so it is logged but not asserted; its `*_REF` is still calibrated for
+  observability. The 800-sample `MOSS_TD_DELTA_CER_PERCENT_*` remains the real
+  speaker-attribution guard.
 - **DER (speaker-timestamp diarization error rate)** calibrates the reference
   constant `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF` (worst-of-N `max`); the
   test derives `MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_MAX` via the slack helper.
@@ -839,8 +850,10 @@ Notes:
 - **Partitioned CER (WER-style robustness)** reports global `cer_no_spk`, then
   `cer_no_spk_below_50_corpus` (corpus CER over samples with per-sample CER
   ≤ 50%) and `n_above_50_pct_cer` (count of catastrophic >50% CER samples).
-  Calibrate `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF` and cap
-  `MOSS_TD_N_ABOVE_50_CER_MAX`; the test derives the below-50 MAX via slack.
+  Calibrate `MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF` and
+  `MOSS_TD_N_ABOVE_50_CER_REF`; the test derives both the below-50 `*_MAX` and
+  the integer count cap `MOSS_TD_N_ABOVE_50_CER_MAX`
+  (`math.ceil(REF * THRESHOLD_SLACK_LOWER)`) via slack.
 - Stage 2 uses **`Qwen/Qwen3-ASR-1.7B`** and dataset
   **`zhaochenyang20/seed-tts-eval-arrow`**. Strict audit expects
   **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** samples.
@@ -1511,10 +1524,13 @@ weights checklist for agents).
        `*_UTMOS_*_REFERENCE`. Report percentages use 2 decimal places for
        readability only; similarity and UTMOS use raw scores (not %).
     - **`diarization`:** `write_value` = `worst_raw` from apply-plan, but only
-      when the source is a pre-slack reference (`*_REF`) or a raw count cap (for
-      example `MOSS_TD_N_ABOVE_50_CER_MAX`, `*_VALID_SAMPLES_MIN`). MOSS-TD
-      CER/cpCER values are already JSON percentages, so never round to display
-      digits and never multiply by `scale`.
+      when the source is a pre-slack reference (`*_REF`, including the integer
+      `MOSS_TD_N_ABOVE_50_CER_REF`) or a raw count cap (for example
+      `*_VALID_SAMPLES_MIN`). Never write a slack-derived `*_MAX` (e.g.
+      `MOSS_TD_N_ABOVE_50_CER_MAX` or any `AISHELL4_LONG_*_MAX`, which use the
+      wider `AISHELL4_LONG_THRESHOLD_SLACK_*`). MOSS-TD CER/cpCER values are
+      already JSON percentages, so never round to display digits and never
+      multiply by `scale`.
     - **`speed`:** use `write_value` from apply-plan (rounded unless that
       would tighten beyond `worst_raw`). Never re-round or multiply by
       `scale`; for MOSS-TD speed, write `*_REF`, not derived `*_MIN` / `*_MAX`.

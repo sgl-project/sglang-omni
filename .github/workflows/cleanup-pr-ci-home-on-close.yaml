@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
-      options: --rm -e NVIDIA_VISIBLE_DEVICES=6,7 -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
+      options: --rm -e NVIDIA_VISIBLE_DEVICES -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

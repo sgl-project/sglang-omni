@@ -23,6 +23,7 @@ from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,
     run_omni_seedtts_benchmark,
 )
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.omni_router_utils import (
@@ -101,6 +102,11 @@ VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
     QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX,
+)
+
+SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="seedtts-50",
+    repo_id=DATASETS["seedtts-50"],
 )
 
 
@@ -412,6 +418,7 @@ def test_voice_cloning_non_streaming(
             "qwen3-omni",
             CONCURRENCY,
             title="TTS Voice-Clone Speed",
+            dataset=SEEDTTS_50_DATASET_LABEL,
         )
         checks = MetricCheckCollector("Qwen3-Omni voice-cloning speed")
         assert_summary_metrics(speed_artifacts.summary, collector=checks)
@@ -467,7 +474,9 @@ def test_voice_cloning_wer(
         wer_audio_dir,
         asr_router_port=qwen3_asr_wer_router.port,
     )
-    print_wer_summary(results["summary"], "qwen3-omni")
+    print_wer_summary(
+        results["summary"], "qwen3-omni", dataset=SEEDTTS_50_DATASET_LABEL
+    )
     checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
     assert_wer_partitioned(
         results,

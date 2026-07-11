@@ -16,15 +16,8 @@ selected_gpu_ids() {
 # note (Yue Yin): kill orphan processes that hold /dev/nvidia* fds but are
 # invisible to nvidia-smi (e.g. multiprocessing.spawn workers after a crash).
 _kill_orphan_gpu_processes() {
-    local patterns=(
-        "multiprocessing.spawn"
-        "sglang_omni_router.serve"
-        "sgl-omni serve"
-        "stage_process"
-    )
-    for pattern in "${patterns[@]}"; do
-        pkill -9 -f "${pattern}" 2>/dev/null || true
-    done
+    # Do not global-pkill by pattern — concurrent calibration may share the host.
+    # Orphans are removed only when they hold /dev/nvidia* fds on selected GPUs.
     rm -f /tmp/sglang_omni_gpu_*_startup.lock
 
     local pid cmdline gpu_regex fd_target

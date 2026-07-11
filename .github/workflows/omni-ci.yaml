@@ -123,7 +123,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -295,7 +295,7 @@ jobs:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
         --rm
-        -e NVIDIA_VISIBLE_DEVICES=6,7
+        -e NVIDIA_VISIBLE_DEVICES
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface

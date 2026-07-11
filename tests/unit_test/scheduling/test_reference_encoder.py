@@ -204,6 +204,7 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
     assert all(str(error) == "boom" for error in errors)
     if hasattr(errors[0], "__notes__"):
         assert "Reference encode context: flaky" in errors[0].__notes__
+    assert len({id(error) for error in errors}) == len(errors)
     assert service.stats()["entries"] == 0
     result = service.get_or_encode("flaky")
     assert torch.equal(result, torch.tensor([9], dtype=torch.long))
