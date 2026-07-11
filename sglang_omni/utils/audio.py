@@ -32,6 +32,8 @@ def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | N
     except ValueError:
         return None
     audio = np.ascontiguousarray(audio, dtype=np.float32)
+    if not audio.flags.writeable:
+        audio = audio.copy()
     if sample_rate == target_sample_rate:
         return audio
 
