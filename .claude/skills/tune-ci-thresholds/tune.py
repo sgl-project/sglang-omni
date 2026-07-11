@@ -108,6 +108,8 @@ METRIC_SPECS = {
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
+    "text_ttft_p95_s":      dict(worst="max", label="Text TTFT p95 (s)",     digits=4, scale=1,   group="speed"),
+    "inter_chunk_p95_s":    dict(worst="max", label="Inter-chunk p95 (s)",   digits=4, scale=1,   group="speed"),
     "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
     "similarity_mean":      dict(worst="min", label="Speaker sim mean",      digits=4, scale=1,   group="similarity"),
     "utmos_mean":           dict(worst="min", label="UTMOS mean",            digits=4, scale=1,   group="utmos"),
@@ -212,6 +214,10 @@ def match_metric(name, nested):
         return "rtf_mean"
     if "RTF_P95" in name:
         return "rtf_p95"
+    if "TEXT_TTFT" in name and "P95" in name:
+        return "text_ttft_p95_s"
+    if "INTER_CHUNK" in name and "P95" in name:
+        return "inter_chunk_p95_s"
     return None
 
 
@@ -1654,6 +1660,11 @@ def discover(out, only, cfg):
                         preset_claimed, v_paths, v_default, counters,
                         slack_derived=slack_derived,
                     )
+                    effective_base = vcfg.get("stage_base_override") or base
+                    effective_variant = (
+                        None if vcfg.get("omit_variant_suffix") else vname
+                    )
+                    variant_ctx = vcfg.get("context_vars") or ctx
                     for g, metrics in v_groups.items():
                         if g in sc_by_group:
                             group_sc = _build_sample_counts(
@@ -1662,33 +1673,33 @@ def discover(out, only, cfg):
                         else:
                             group_sc = v_sc_default
                         key = _stage_key(
-                            base,
+                            effective_base,
                             g,
-                            variant=vname,
+                            variant=effective_variant,
                             calibration_preset=preset_name,
                         )
                         stages[key] = _stage_entry(
                             rel,
                             _stage_title(
-                                base,
+                                effective_base,
                                 g,
-                                variant=vname,
+                                variant=effective_variant,
                                 calibration_preset=preset_name,
                             ),
                             g,
                             preset_env,
-                            ctx,
+                            variant_ctx,
                             sha,
                             metrics,
                             group_sc,
-                            variant=vname,
+                            variant=effective_variant,
                             calibration_preset=preset_name,
                             gpus=preset_gpus,
                             hf_model_ids=preset_model_ids,
                             threshold_file=threshold_rel,
                             threshold_file_sha256=threshold_file_sha,
                             expected_samples=_expected_samples(
-                                tree, g, vname, ctx),
+                                tree, g, effective_variant, variant_ctx),
                         )
         else:
             # Single-source flow (one result-JSON tree per test file).

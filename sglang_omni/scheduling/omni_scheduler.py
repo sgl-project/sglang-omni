@@ -1758,10 +1758,13 @@ class OmniScheduler:
         if not any(drop):
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
+        out_cache_loc = batch.out_cache_loc
         self._free_overrun_step_slots(
-            batch.out_cache_loc, [i for i, d in enumerate(drop) if d]
+            out_cache_loc, [i for i, d in enumerate(drop) if d]
         )
         batch.filter_batch(keep_indices=keep)
+        if out_cache_loc is not None:
+            batch.out_cache_loc = out_cache_loc[keep]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:
@@ -1784,6 +1787,16 @@ class OmniScheduler:
                 self._resolve_pending_async()
                 time.sleep(0.001)
                 continue
+
+            if (
+                self._async_pending is not None
+                and self.is_mixed_chunk
+                and (
+                    self.chunked_req is not None
+                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                )
+            ):
+                self._resolve_pending_async()
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch

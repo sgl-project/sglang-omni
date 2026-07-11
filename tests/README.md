@@ -68,7 +68,10 @@ tests/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_transcribe_diarize/
+    │   ├── test_encoder_cache.py
+    │   ├── test_pipeline.py
     │   ├── test_request_builders.py
+    │   ├── test_stream_output_builder.py
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
     │   └── test_pipeline.py

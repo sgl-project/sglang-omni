@@ -75,6 +75,7 @@ Supported Models
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
    cookbook/qwen3_asr.md
+   cookbook/moss_transcribe_diarize.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
    cookbook/ming_omni.md

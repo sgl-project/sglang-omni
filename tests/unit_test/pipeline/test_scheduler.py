@@ -365,6 +365,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
         def filter_batch(self, keep_indices=None):
             captured["keep_indices"] = keep_indices
             self.reqs = [self.reqs[i] for i in keep_indices]
+            self.out_cache_loc = None
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.page_size = 1
@@ -379,6 +380,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     out = scheduler._drop_stale_overrun(FakeBatch([keep, retr]))
     assert captured["keep_indices"] == [0]
     assert [r.rid for r in out.reqs] == ["keep"]
+    assert out.out_cache_loc.tolist() == [100]
     assert freed == [101]
 
     # all dropped -> None so run_batch is skipped

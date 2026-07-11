@@ -7,8 +7,8 @@ multi_speaker_diarization:
   context_vars:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
-  test_file_sha256: 8b4274912b5085ecd2afdff5e4e463a1b057acc2e037bb6e5632caf51adfd9c7
-  last_discovered_at: 2026-07-07T00:23:58Z
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 800
   sample_counts:
     total:
@@ -126,8 +126,8 @@ multi_speaker_speed:
   context_vars:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
-  test_file_sha256: 8b4274912b5085ecd2afdff5e4e463a1b057acc2e037bb6e5632caf51adfd9c7
-  last_discovered_at: 2026-07-07T00:23:58Z
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 800
   sample_counts:
     total:
@@ -194,8 +194,8 @@ aishell4_long_diarization:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: 8b4274912b5085ecd2afdff5e4e463a1b057acc2e037bb6e5632caf51adfd9c7
-  last_discovered_at: 2026-07-07T00:23:58Z
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 20
   sample_counts:
     total:
@@ -211,7 +211,7 @@ aishell4_long_diarization:
       json_path: "diarization_metrics_percent.cer"
       worst: max
       display:
-        label: "AISHELL4 long CER (%)"
+        label: "CER (%)"
         scale: 1
         digits: 2
       status: OK
@@ -221,7 +221,7 @@ aishell4_long_diarization:
       json_path: "diarization_metrics_percent.cer_no_spk"
       worst: max
       display:
-        label: "AISHELL4 long CER no-spk (%)"
+        label: "CER no-spk (%)"
         scale: 1
         digits: 2
       status: OK
@@ -231,7 +231,7 @@ aishell4_long_diarization:
       json_path: "diarization_metrics_percent.cp_cer"
       worst: max
       display:
-        label: "AISHELL4 long cpCER (%)"
+        label: "cpCER (%)"
         scale: 1
         digits: 2
       status: OK
@@ -262,8 +262,8 @@ aishell4_long_speed:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: 8b4274912b5085ecd2afdff5e4e463a1b057acc2e037bb6e5632caf51adfd9c7
-  last_discovered_at: 2026-07-07T00:23:58Z
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 20
   sample_counts:
     total:
@@ -279,7 +279,7 @@ aishell4_long_speed:
       json_path: "speed.throughput_qps"
       worst: min
       display:
-        label: "AISHELL4 long throughput (req/s)"
+        label: "Throughput (req/s)"
         scale: 1
         digits: 3
       status: OK
@@ -289,7 +289,7 @@ aishell4_long_speed:
       json_path: "speed.latency_mean_s"
       worst: max
       display:
-        label: "AISHELL4 long latency mean (s)"
+        label: "Latency mean (s)"
         scale: 1
         digits: 3
       status: OK
@@ -299,7 +299,7 @@ aishell4_long_speed:
       json_path: "speed.latency_p95_s"
       worst: max
       display:
-        label: "AISHELL4 long latency p95 (s)"
+        label: "Latency p95 (s)"
         scale: 1
         digits: 3
       status: OK
@@ -309,7 +309,7 @@ aishell4_long_speed:
       json_path: "speed.rtf_mean"
       worst: max
       display:
-        label: "AISHELL4 long RTF mean"
+        label: "RTF mean"
         scale: 1
         digits: 4
       status: OK
@@ -319,7 +319,215 @@ aishell4_long_speed:
       json_path: "speed.rtf_p95"
       worst: max
       display:
-        label: "AISHELL4 long RTF p95"
+        label: "RTF p95"
+        scale: 1
+        digits: 4
+      status: OK
+multi_speaker_stream_diarization:
+  test: tests/test_model/test_asr_ci_multi_speaker.py
+  title: "MULTI SPEAKER STREAM Diarization"
+  group: diarization
+  extra_env: {}
+  context_vars:
+    - MOSS_TD_CI_SAMPLES
+  variant: "stream"
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
+  expected_samples: 800
+  sample_counts:
+    total:
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    cer_percent:
+      source: "MOSS_TD_STREAM_CER_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cer"
+      worst: max
+      display:
+        label: "CER (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    cer_no_spk_percent:
+      source: "MOSS_TD_STREAM_CER_NO_SPK_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cer_no_spk"
+      worst: max
+      display:
+        label: "CER no-spk (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    cer_no_spk_below_50_corpus:
+      source: "MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cer_no_spk_below_50_corpus"
+      worst: max
+      display:
+        label: "CER no-spk ≤50% corpus (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    n_above_50_pct_cer:
+      source: "MOSS_TD_STREAM_N_ABOVE_50_CER_MAX"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.n_above_50_pct_cer"
+      worst: max
+      display:
+        label: "Samples >50% CER"
+        scale: 1
+        digits: 0
+      status: OK
+    cp_cer_percent:
+      source: "MOSS_TD_STREAM_CP_CER_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cp_cer"
+      worst: max
+      display:
+        label: "cpCER (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    cer_no_spk_cp_valid_percent:
+      source: "MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cer_no_spk_cp_valid"
+      worst: max
+      display:
+        label: "CER no-spk cp-valid (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    delta_cer_percent:
+      source: "MOSS_TD_STREAM_DELTA_CER_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.delta_cer"
+      worst: max
+      display:
+        label: "Delta CER (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    speaker_timestamp_der_percent:
+      source: "MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.speaker_timestamp_der"
+      worst: max
+      display:
+        label: "Speaker-timestamp DER (%)"
+        scale: 1
+        digits: 2
+      status: OK
+    cer_valid_samples:
+      source: "MOSS_TD_STREAM_CER_VALID_SAMPLES_MIN"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cer_valid_samples"
+      worst: min
+      display:
+        label: "CER valid samples"
+        scale: 1
+        digits: 0
+      status: OK
+    cp_cer_valid_samples:
+      source: "MOSS_TD_STREAM_CP_CER_VALID_SAMPLES_MIN"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "diarization_metrics_percent.cp_cer_valid_samples"
+      worst: min
+      display:
+        label: "cpCER valid samples"
+        scale: 1
+        digits: 0
+      status: OK
+multi_speaker_stream_speed:
+  test: tests/test_model/test_asr_ci_multi_speaker.py
+  title: "MULTI SPEAKER STREAM Speed"
+  group: speed
+  extra_env: {}
+  context_vars:
+    - MOSS_TD_CI_SAMPLES
+  variant: "stream"
+  test_file_sha256: 6c6e1911902b7e3c5cb1729e4174d1d2fe1d2f10de4ccf9d630cd3f8ea15645f
+  last_discovered_at: 2026-07-08T14:32:29Z
+  expected_samples: 800
+  sample_counts:
+    total:
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    throughput_qps:
+      source: "MOSS_TD_STREAM_THROUGHPUT_QPS_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.throughput_qps"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_mean_s:
+      source: "MOSS_TD_STREAM_LATENCY_MEAN_S_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_p95_s:
+      source: "MOSS_TD_STREAM_LATENCY_P95_S_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.latency_p95_s"
+      worst: max
+      display:
+        label: "Latency p95 (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "MOSS_TD_STREAM_RTF_MEAN_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
+    rtf_p95:
+      source: "MOSS_TD_STREAM_RTF_P95_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.rtf_p95"
+      worst: max
+      display:
+        label: "RTF p95"
+        scale: 1
+        digits: 4
+      status: OK
+    text_ttft_p95_s:
+      source: "MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.text_ttft_p95_s"
+      worst: max
+      display:
+        label: "Text TTFT p95 (s)"
+        scale: 1
+        digits: 4
+      status: OK
+    inter_chunk_p95_s:
+      source: "MOSS_TD_STREAM_INTER_CHUNK_P95_S_REF"
+      json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+      json_path: "speed.inter_chunk_p95_s"
+      worst: max
+      display:
+        label: "Inter-chunk p95 (s)"
         scale: 1
         digits: 4
       status: OK
@@ -331,7 +539,7 @@ seedtts_wer:
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
   test_file_sha256: d13f9d994a9e349ad2d3e11004d4b4ea37eaeaa2a723213077c7034e749e5237
-  last_discovered_at: 2026-07-07T00:23:58Z
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 1088
   sample_counts:
     total:
@@ -369,7 +577,7 @@ seedtts_speed:
   context_vars:
     - SEEDTTS_ASR_CORRECTNESS_SAMPLES
   test_file_sha256: d13f9d994a9e349ad2d3e11004d4b4ea37eaeaa2a723213077c7034e749e5237
-  last_discovered_at: 2026-07-07T00:23:58Z
+  last_discovered_at: 2026-07-08T14:32:29Z
   expected_samples: 1088
   sample_counts:
     total:

@@ -16,6 +16,7 @@ from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
 )
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     make_moss_transcribe_diarize_scheduler_adapters,
+    make_moss_transcribe_diarize_stream_output_builder,
 )
 from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
@@ -29,6 +30,12 @@ from sglang_omni.scheduling.sglang_backend import (
     SGLangOutputProcessor,
     build_sglang_server_args,
 )
+
+# Note (yijiang): Dense buckets avoid CUDA-graph capture at padded sizes
+# we don't hit; pad-to-power-of-2 would tax a compute-bound encoder with
+# no cross-request batching yet.
+# Cap tuned to p99 audio duration ([1,8] covers up to ~4min)
+_DEFAULT_ENCODER_GRAPH_CHUNK_BUCKETS = list(range(1, 9))
 
 
 @contextmanager
@@ -94,8 +101,10 @@ def create_sglang_moss_transcribe_diarize_executor(
     # note (yichi): async on by default for MOSS-TD; --decode-mode sync to opt out.
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
+    encoder_graph_chunk_buckets: list[int] | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
+    stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
@@ -154,6 +163,13 @@ def create_sglang_moss_transcribe_diarize_executor(
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
+        buckets = (
+            encoder_graph_chunk_buckets
+            if encoder_graph_chunk_buckets is not None
+            else _DEFAULT_ENCODER_GRAPH_CHUNK_BUCKETS
+        )
+        input_feature_len = int(processor.feature_extractor.nb_max_frames)
+        model_worker.model_runner.model.init_encoder_graphs(buckets, input_feature_len)
 
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
     model_worker.model_runner.model.init_encoder_cache(encoder_cache_size_bytes)
@@ -168,6 +184,10 @@ def create_sglang_moss_transcribe_diarize_executor(
         tokenizer=tokenizer,
         max_new_tokens=resolved_max_new_tokens,
     )
+    stream_output_builder = make_moss_transcribe_diarize_stream_output_builder(
+        tokenizer=tokenizer,
+        min_emit_interval_s=stream_emit_interval_s,
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -181,6 +201,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         model_runner=ModelRunner(model_worker, output_proc),
         request_builder=request_builder,
         result_adapter=result_adapter,
+        stream_output_builder=stream_output_builder,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         request_build_max_workers=request_build_max_workers,

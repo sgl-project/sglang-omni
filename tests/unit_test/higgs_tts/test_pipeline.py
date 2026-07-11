@@ -8,7 +8,9 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+import typer
 
+from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -1463,3 +1465,49 @@ def test_higgs_audio_codec_encode_batch_input_normalisation() -> None:
         assert torch.equal(
             r, ref
         ), f"input format {i} produced different codes than encode_reference"
+
+
+def test_higgs_mem_fraction_role_to_stage_targets_tts_engine() -> None:
+    assert HiggsTtsPipelineConfig.mem_fraction_role_to_stage() == {
+        "talker": "tts_engine"
+    }
+
+
+def test_higgs_cli_mem_fraction_static_pins_tts_engine() -> None:
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.27,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.27
+
+
+def test_higgs_cli_talker_mem_fraction_static_pins_tts_engine() -> None:
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=0.3,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.3
+
+
+def test_higgs_cli_rejects_unsupported_thinker_mem_fraction() -> None:
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+
+    with pytest.raises(typer.BadParameter):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.3,
+            talker_mem_fraction_static=None,
+        )
