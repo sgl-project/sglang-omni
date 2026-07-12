@@ -121,7 +121,9 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert state.completion_tokens == 2
 
     payload = make_s2pro_payload(request_id="req-2")
-    request_builder, result_adapter = make_tts_scheduler_adapters(tokenizer=tokenizer)
+    request_builder, result_adapter, _ = make_tts_scheduler_adapters(
+        tokenizer=tokenizer
+    )
     adapted = request_builder(payload)
     adapted.output_codes = [torch.tensor([[100], [1], [2]], dtype=torch.long)]
     result_payload = result_adapter(adapted)
@@ -348,9 +350,10 @@ def _run_s2pro_engine_with_fake_buffers(
         context_length: int,
         **kwargs: object,
     ) -> SimpleNamespace:
-        del model_path, context_length
+        del model_path
         build_kwargs.update(kwargs)
         return SimpleNamespace(
+            context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             disable_cuda_graph=kwargs["disable_cuda_graph"],
@@ -414,26 +417,19 @@ def _run_s2pro_engine_with_fake_buffers(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    fake_fish_scheduler = ModuleType(
-        "sglang_omni.models.fishaudio_s2_pro.fish_scheduler"
-    )
+    from sglang_omni.scheduling import omni_scheduler
 
-    class _FakeFishScheduler:
+    class _FakeOmniScheduler:
         def __init__(self, **kwargs: object) -> None:
             self.__dict__.update(kwargs)
 
-    fake_fish_scheduler.FishScheduler = _FakeFishScheduler
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", _FakeOmniScheduler)
 
     fake_model_runner = ModuleType("sglang_omni.models.fishaudio_s2_pro.model_runner")
     fake_model_runner.FishS2ProModelRunner = lambda *args, **kwargs: SimpleNamespace(
         args=args, kwargs=kwargs
     )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.fishaudio_s2_pro.fish_scheduler",
-        fake_fish_scheduler,
-    )
     monkeypatch.setitem(
         sys.modules,
         "sglang_omni.models.fishaudio_s2_pro.model_runner",
@@ -462,6 +458,9 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     scheduler = result.scheduler
     build_kwargs = result.build_kwargs
 
+    # note (Gaokai): the Fish migration hinges on make_adapters() saving the
+    # third adapter and extra_scheduler_kwargs() passing it into OmniScheduler.
+    assert callable(scheduler.stream_output_builder)
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["max_running_requests"] == 64
     assert build_kwargs["cuda_graph_max_bs"] == 64

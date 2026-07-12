@@ -1175,6 +1175,18 @@ def serve(
             ),
         ),
     ] = None,
+    max_total_tokens: Annotated[
+        int | None,
+        typer.Option(
+            "--max-total-tokens",
+            "--max_total_tokens",
+            min=1,
+            help=(
+                "Cap the SGLang generation-stage KV pool to an exact token "
+                "count. Values above the profiled capacity do not increase it."
+            ),
+        ),
+    ] = None,
     cuda_graph_max_bs: Annotated[
         int | None,
         typer.Option(
@@ -1266,6 +1278,8 @@ def serve(
     generation_server_args_overrides: dict[str, object] = {}
     if max_running_requests is not None:
         generation_server_args_overrides["max_running_requests"] = max_running_requests
+    if max_total_tokens is not None:
+        generation_server_args_overrides["max_total_tokens"] = max_total_tokens
     if cuda_graph_max_bs is not None:
         generation_server_args_overrides["cuda_graph_max_bs"] = cuda_graph_max_bs
     if generation_server_args_overrides:
@@ -1275,7 +1289,7 @@ def serve(
         if generation_stage_name is None:
             _raise_unsupported_flag(
                 merged_config,
-                "--max-running-requests/--cuda-graph-max-bs",
+                "--max-running-requests/--max-total-tokens/--cuda-graph-max-bs",
             )
         _apply_stage_server_args_override(
             merged_config,

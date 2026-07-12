@@ -42,8 +42,6 @@ class S2ProState(PipelineStateBase):
     # -- From vocoder ------------------------------------------------------
     audio_samples: Any | None = None
 
-    # -- Helpers -----------------------------------------------------------
-
     @staticmethod
     def _tensor_to_list(t: Any) -> Any:
         if isinstance(t, torch.Tensor):

@@ -14,6 +14,79 @@ It transcribes speech, assigns speakers, and predicts timestamps in a single gen
 | Output | Speaker-labelled transcript with start/end timestamps |
 | Endpoint | `/v1/audio/transcriptions` |
 
+## Architecture and Optimization
+
+MOSS-TD (short for MOSS-Transcribe-Diarize) is served through SGLang-Omni for two reasons. First, SGLang-Omni's multi-stage pipeline is a natural fit — ASR follows the same encoder → prefill → decode pattern that the framework already orchestrates for TTS. Second, ASR is a category of multimodal-input models, and many of the optimizations we have built in SGLang-Omni (CUDA Graph capture, async decode, continuous batching, KV cache management) transfer directly to the ASR setting.
+
+### Inference Pipeline
+
+![ASR Pipeline](../_static/image/moss-td-asr-pipeline.svg)
+
+MOSS-TD follows the Audio LLM pattern: a Whisper encoder produces continuous embeddings, which are projected into a decoder-only LLM that autoregressively generates the transcript.
+
+1. **Encoder.** Waveform → log-mel spectrogram (80 bins) → 24-layer Whisper Transformer → 4× Time Merge (concatenate every 4 frames) → VQAdaptor MLP (4096→1024). The output is a sequence of continuous float vectors in the LLM's embedding space. (The "VQ" name is a misnomer — no vector quantization is involved.)
+2. **LLM Prefill.** The audio embeddings replace `<|audio_pad|>` tokens in the prompt. Qwen3 processes the full prompt in one parallel forward to build KV cache.
+3. **AR Decode.** Qwen3 generates text tokens (transcript with speaker labels and timestamps) one at a time until EOS.
+
+For long audio (up to ~90 min), the token sequence after encoding can reach tens of thousands of tokens. **Chunked Prefill** splits it into 4096-token chunks, processing one per scheduling step and interleaving decode steps for other requests between chunks. Stream output is suppressed during chunked prefill to avoid emitting intermediate states.
+
+### ASR vs TTS
+
+ASR and TTS share much of the same serving infrastructure in sglang-omni — both use `OmniScheduler` for scheduling, share CUDA Graph / KV Cache management / continuous batching, and are built on the same Qwen3 LLM backbone. The key differences lie in what they encode, what they generate, and how their pipelines are structured:
+
+| Dimension | ASR (MOSS-TD) | TTS (Higgs / MOSS-TTS) |
+|---|---|---|
+| Audio representation | Continuous features (mel spectrogram → encoder hidden states) | Discrete codec tokens (RVQ multi-codebook encoding) |
+| Data flow | Audio → text | Text → audio |
+| Decoder / Vocoder | Not needed — output is plain text | Vocoder required to reconstruct waveform from codec tokens |
+| Typical input length | Can be very long (MOSS-TD supports ~90 min) | Usually short (reference voice: a few seconds) |
+| Pipeline stages | Single stage (encoder + LLM) | Multi-stage (preprocessing → AR engine → vocoder) |
+| Streaming | Stream output (incremental text); streaming input is possible via cumulative chunking but not yet optimized — a new encoder architecture with native streaming in/out support is in development | Stream output (incremental audio) + streaming vocoder |
+
+These differences shape optimization priorities: ASR optimization focuses on the AR decode loop (which dominates latency) and long-sequence memory management, while TTS optimization additionally targets vocoder batching/streaming and multi-codebook generation strategies. For the full TTS optimization story, see [Optimizing TTS Inference](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md).
+
+### Where Time Is Spent
+
+AR Decode dominates at low concurrency, but at high concurrency decode gets amortized by batching and encoder share rises — especially for short audio.
+
+Profiling on a single H100 (CUDA Graph, bf16), showing the percentage breakdown across all three stages:
+
+| Audio length | Concurrency | Encoder | LLM Prefill | AR Decode |
+|---:|---:|---:|---:|---:|
+| 5 s | 1 | 8.9% | 14.7% | 76.4% |
+| 5 s | 4 | 20.0% | 22.3% | 57.7% |
+| 5 s | 16 | 38.2% | 29.7% | 32.1% |
+| 60 s | 1 | 4.0% | 2.1% | 94.0% |
+| 60 s | 4 | 5.0% | 4.6% | 90.4% |
+| 60 s | 16 | 13.7% | 9.5% | 76.8% |
+| 20 min | 1 | 4.7% | 0.8% | 94.5% |
+| 20 min | 4 | 9.2% | 1.9% | 88.9% |
+| 20 min | 16 | 11.6% | 2.6% | 85.7% |
+
+![Profiling Breakdown](../_static/image/moss-td-profiling.svg)
+
+At c=1 with longer audio, AR Decode takes 94%+ of total time — the leverage is almost entirely in the decode loop. At c=16 with short audio, encoder + prefill together account for 68%, making encoder-side optimizations (CUDA Graph capture, Torch Compile, caching) worthwhile.
+
+### Optimization Strategies
+
+![Optimization Overview](../_static/image/moss-td-optimization.svg)
+
+The optimization stack mirrors [what we built for TTS](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md), sharing the same core infrastructure with ASR-specific adaptations.
+
+**CUDA Graph.** The LLM decode step pads batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured CUDA graph, eliminating kernel launch overhead on every token. This is the single biggest optimization for AR Decode. Encoder CUDA Graph is also implemented — the Whisper encoder is a stateless function where only the chunk count varies across requests, so we bucket over chunk count and pad to the nearest captured bucket on replay — but this is not yet merged to main.
+
+**Async Decode.** Same one-step lookahead as TTS: launch the current decode step's GPU work, then resolve the previous step's host-side work (D2H copy, finish detection, result dispatch) in parallel. Falls back to synchronous mode at batch size 1, where the host work is too small to overlap. Two alternating pinned host buffers prevent read/write races between the GPU's async D2H write and the CPU's read. For the full mechanism and code pointers, see [Asynchronous Decode + Lookahead](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md#asynchronous-decode--lookahead) in the TTS optimization guide.
+
+**LRU Encoder Cache.** The Whisper encoder forward is deterministic for identical input audio — same waveform always produces the same embeddings. We exploit this with an LRU cache (max 64 entries, 4 GB budget) that stores encoder outputs on CPU, keyed by a content hash of the input waveform. On a cache hit the stored tensor is transferred back to GPU asynchronously, skipping the encoder entirely. On a miss the encoder runs normally and the result is moved to CPU for storage. The cache evicts by both entry count and total bytes, always dropping the least-recently-used entry first.
+
+Unlike TTS where the same reference voice is reused across many prompts (high hit rate), ASR inputs are typically unique in production. The cache is most useful for request retries, A/B testing with different decoding parameters, and development iteration.
+
+**Stream Output.** Emits transcript text incrementally during AR decode via SSE, so users see partial results as they are generated rather than waiting for the full sequence. Three mechanisms control when to emit:
+
+1. **Rate limiting** (default 50 ms): tokens accumulate in a per-request buffer and are flushed only when enough time has elapsed since the last emit. The very first token goes out immediately; EOS always triggers a flush regardless of timing.
+2. **Chunked prefill suppression**: during chunked prefill (prompt chunks still being processed), all emission is suppressed to prevent intermediate states from being misinterpreted as transcript output.
+3. **Incomplete UTF-8 handling**: accumulated tokens are decoded together. If the result ends with the Unicode replacement character (indicating an incomplete multi-byte sequence split across token boundaries), emission is held until the next token completes the sequence.
+
 ## Model Usage
 
 ### Launching Commands
