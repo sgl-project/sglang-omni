@@ -248,6 +248,8 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "aishell4_long_speed",
         "multi_speaker_diarization",
         "multi_speaker_speed",
+        "multi_speaker_stream_diarization",
+        "multi_speaker_stream_speed",
         "seedtts_wer",
         "seedtts_speed",
     }
@@ -269,6 +271,15 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     assert (
         stages["aishell4_long_speed"]["metrics"]["throughput_qps"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_aishell4_long_results.json"
+    )
+    assert stages["multi_speaker_stream_diarization"]["expected_samples"] == 800
+    assert (
+        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["source"]
+        == "MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF"
+    )
+    assert (
+        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["json_file"]
+        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
     )
     assert stages["seedtts_wer"]["test"] == "tests/test_model/test_asr_ci_seedtts.py"
     assert stages["seedtts_wer"]["expected_samples"] == 1088

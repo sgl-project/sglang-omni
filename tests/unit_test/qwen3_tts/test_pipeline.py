@@ -6,6 +6,7 @@ import asyncio
 import sys
 import threading
 import types
+from collections import deque
 from queue import Queue
 from types import SimpleNamespace
 
@@ -1503,6 +1504,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
             qwen3_request_builders.cleanup_prepared_qwen3_tts_request
         )
         scheduler._aborted_request_ids = set()
+        scheduler._aborted_request_id_order = deque()
         scheduler._pending_stream_chunks = {}
         scheduler._pending_stream_done = set()
         scheduler._deferred_request_payloads = {}

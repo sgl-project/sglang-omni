@@ -18,6 +18,31 @@ import torchaudio
 _DEFAULT_REQUEST_TIMEOUT = 5
 
 
+def _is_riff_wav(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
+def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | None:
+    # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
+    # path never narrows existing format coverage.
+    from sglang_omni.preprocessing.audio import _parse_wav_bytes
+
+    try:
+        audio, sample_rate = _parse_wav_bytes(data)
+    except ValueError:
+        return None
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
+    if not audio.flags.writeable:
+        audio = audio.copy()
+    if sample_rate == target_sample_rate:
+        return audio
+
+    resampled = torchaudio.functional.resample(
+        torch.from_numpy(audio), sample_rate, target_sample_rate
+    )
+    return resampled.numpy()
+
+
 def decode_audio_data_uri(value: str) -> bytes | None:
     if not value.startswith("data:"):
         return None
@@ -60,6 +85,12 @@ def load_audio(
             source = unquote(urlparse(source).path)
 
     if isinstance(source, bytes):
+        # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
+        # startup when mono=True without changing channel-preserving loads.
+        if mono and _is_riff_wav(source):
+            fast = _try_fast_wav_decode(source, target_sample_rate)
+            if fast is not None:
+                return fast
         audio, sample_rate = torchaudio.load(io.BytesIO(source))
     elif isinstance(source, str):
         audio, sample_rate = torchaudio.load(source)

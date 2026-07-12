@@ -70,6 +70,78 @@ metric_sources:
       latency_p95_s: "speed.latency_p95_s"
       rtf_mean: "speed.rtf_mean"
       rtf_p95: "speed.rtf_p95"
+    variants:
+      movies800:
+        stage_base_override: multi_speaker
+        omit_variant_suffix: true
+        constant_filter: "^MOSS_TD_(?!STREAM_|AISHELL4).*"
+        json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
+        sample_counts:
+          total: "summary.total_samples"
+          ok: "summary.evaluated"
+        paths:
+          cer_percent: "diarization_metrics_percent.cer"
+          cer_no_spk_percent: "diarization_metrics_percent.cer_no_spk"
+          cp_cer_percent: "diarization_metrics_percent.cp_cer"
+          cer_no_spk_cp_valid_percent: "diarization_metrics_percent.cer_no_spk_cp_valid"
+          delta_cer_percent: "diarization_metrics_percent.delta_cer"
+          speaker_timestamp_der_percent: "diarization_metrics_percent.speaker_timestamp_der"
+          cer_no_spk_below_50_corpus: "diarization_metrics_percent.cer_no_spk_below_50_corpus"
+          n_above_50_pct_cer: "diarization_metrics_percent.n_above_50_pct_cer"
+          cer_valid_samples: "diarization_metrics_percent.cer_valid_samples"
+          cp_cer_valid_samples: "diarization_metrics_percent.cp_cer_valid_samples"
+          throughput_qps: "speed.throughput_qps"
+          latency_mean_s: "speed.latency_mean_s"
+          latency_p95_s: "speed.latency_p95_s"
+          rtf_mean: "speed.rtf_mean"
+          rtf_p95: "speed.rtf_p95"
+      aishell4_long:
+        stage_base_override: aishell4_long
+        omit_variant_suffix: true
+        constant_filter: "^AISHELL4_LONG_"
+        context_vars:
+          - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
+        json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_aishell4_long_results.json"
+        sample_counts:
+          total: "summary.total_samples"
+          ok: "summary.evaluated"
+        paths:
+          cer_percent: "diarization_metrics_percent.cer"
+          cer_no_spk_percent: "diarization_metrics_percent.cer_no_spk"
+          cp_cer_percent: "diarization_metrics_percent.cp_cer"
+          delta_cer_percent: "diarization_metrics_percent.delta_cer"
+          speaker_timestamp_der_percent: "diarization_metrics_percent.speaker_timestamp_der"
+          throughput_qps: "speed.throughput_qps"
+          latency_mean_s: "speed.latency_mean_s"
+          latency_p95_s: "speed.latency_p95_s"
+          rtf_mean: "speed.rtf_mean"
+          rtf_p95: "speed.rtf_p95"
+      stream:
+        constant_filter: "^MOSS_TD_STREAM_"
+        context_vars:
+          - MOSS_TD_CI_SAMPLES
+        json_file: "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+        sample_counts:
+          total: "summary.total_samples"
+          ok: "summary.evaluated"
+        paths:
+          cer_percent: "diarization_metrics_percent.cer"
+          cer_no_spk_percent: "diarization_metrics_percent.cer_no_spk"
+          cp_cer_percent: "diarization_metrics_percent.cp_cer"
+          cer_no_spk_cp_valid_percent: "diarization_metrics_percent.cer_no_spk_cp_valid"
+          delta_cer_percent: "diarization_metrics_percent.delta_cer"
+          speaker_timestamp_der_percent: "diarization_metrics_percent.speaker_timestamp_der"
+          cer_no_spk_below_50_corpus: "diarization_metrics_percent.cer_no_spk_below_50_corpus"
+          n_above_50_pct_cer: "diarization_metrics_percent.n_above_50_pct_cer"
+          cer_valid_samples: "diarization_metrics_percent.cer_valid_samples"
+          cp_cer_valid_samples: "diarization_metrics_percent.cp_cer_valid_samples"
+          throughput_qps: "speed.throughput_qps"
+          latency_mean_s: "speed.latency_mean_s"
+          latency_p95_s: "speed.latency_p95_s"
+          rtf_mean: "speed.rtf_mean"
+          rtf_p95: "speed.rtf_p95"
+          text_ttft_p95_s: "speed.text_ttft_p95_s"
+          inter_chunk_p95_s: "speed.inter_chunk_p95_s"
   test_asr_ci_seedtts.py:
     json_file: "qwen3_asr_results.json"
     sample_counts:

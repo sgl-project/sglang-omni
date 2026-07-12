@@ -511,15 +511,27 @@ class _FakeBatch:
     def __init__(self, n):
         # real ScheduleBatch.reqs are Reqs with .finished(); none finish here
         self.reqs = [types.SimpleNamespace(finished=lambda: False) for _ in range(n)]
+        self.out_cache_loc = torch.arange(n)
 
     def copy(self):
         return self
+
+    def filter_batch(self, keep_indices):
+        self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
 
 
 def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
     s._admin_lock = threading.Lock()
     s._admin_queue = queue.Queue()
+    s.chunked_req = None
+    s.is_mixed_chunk = False
+    s.page_size = 1
+    s.running_batch = types.SimpleNamespace(batch_is_full=False)
+    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
+    s.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda _: None)
+    s.waiting_queue = []
     return s
 
 
@@ -603,6 +615,90 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
     assert events == ["sync", "launch", "resolve", "idle"]
 
 
+@pytest.mark.parametrize(
+    (
+        "is_mixed_chunk",
+        "batch_is_full",
+        "prefill_source",
+        "has_pending_at_schedule",
+    ),
+    [
+        pytest.param(True, False, "waiting", False, id="mixed-waiting-prefill"),
+        pytest.param(False, False, "waiting", True, id="non-mixed-prefill"),
+        pytest.param(True, True, "chunked", False, id="mixed-chunked-prefill"),
+    ],
+)
+def test_pending_decode_drain_order_for_prefill(
+    is_mixed_chunk,
+    batch_is_full,
+    prefill_source,
+    has_pending_at_schedule,
+):
+    events = []
+    pending_during_schedule = []
+    pending_batch = _FakeBatch(2)
+    pending = (pending_batch, "prev_sched", "prev_step")
+    s = _scaffold_async_loop(async_pending=pending)
+    s.is_mixed_chunk = is_mixed_chunk
+    s.running_batch.batch_is_full = batch_is_full
+    s.waiting_queue = [object()] if prefill_source == "waiting" else []
+    s.chunked_req = object() if prefill_source == "chunked" else None
+    s._batch_is_decode = lambda batch: False
+    s._resolve_and_process = lambda *args: events.append("resolve")
+    s.process_batch_result = lambda batch, result: None
+
+    def run_batch(batch):
+        events.append("prefill")
+        return object()
+
+    s.run_batch = run_batch
+
+    def get_next_batch_to_run():
+        events.append("schedule")
+        pending_during_schedule.append(s._async_pending)
+        s._running = False
+        return _FakeBatch(1)
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s._event_loop_async_decode()
+
+    expected_events = (
+        ["schedule", "resolve", "prefill"]
+        if has_pending_at_schedule
+        else ["resolve", "schedule", "prefill"]
+    )
+    assert events == expected_events
+    expected_pending = pending if has_pending_at_schedule else None
+    assert pending_during_schedule[0] is expected_pending
+
+
+def test_full_running_batch_keeps_lookahead_with_waiting_requests():
+    events = []
+    pending_batch = _FakeBatch(2)
+    pending = (pending_batch, "prev_sched", "prev_step")
+    s = _scaffold_async_loop(async_pending=pending)
+    s.is_mixed_chunk = True
+    s.running_batch.batch_is_full = True
+    s.waiting_queue = [object()]
+    s._resolve_and_process = lambda *args: events.append("resolve")
+
+    def launch(batch):
+        events.append("launch")
+        return "sched_output", "pending_step"
+
+    s._run_batch_launch = launch
+
+    def get_next_batch_to_run():
+        events.append(("schedule", s._async_pending is pending))
+        s._running = False
+        return _FakeBatch(2)
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s._event_loop_async_decode()
+
+    assert events == [("schedule", True), "launch", "resolve"]
+
+
 # ---------------------------------------------------------------------------
 # Stale-batch overrun regression: the fast-path `batch` is built (get_next_batch
 # _to_run, top of loop) BEFORE the in-flight lookahead step is drained. If the
@@ -630,7 +726,7 @@ class _DFBatch:
 
     def __init__(self, reqs):
         self.reqs = list(reqs)
-        self.out_cache_loc = None
+        self.out_cache_loc = torch.arange(100, 100 + len(reqs))
 
     def copy(self):
         return _DFBatch(self.reqs)
@@ -639,6 +735,7 @@ class _DFBatch:
         if keep_indices is None:
             keep_indices = [i for i, r in enumerate(self.reqs) if not r.finished()]
         self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
 
     def is_empty(self):
         return not self.reqs
@@ -670,9 +767,6 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     s.self_check_during_idle = lambda: None
     s.self_check_during_busy = lambda: None
     s._run_batch_launch = lambda b: ("sched_output", "pending_step")
-    # the drain's _drop_stale_overrun consults the step-slot free gate
-    s.page_size = 1
-    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
     # real drain helper -> exercises the real fast-path ordering under test
     s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
 

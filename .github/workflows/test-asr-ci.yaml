@@ -70,8 +70,11 @@ jobs:
           stage-label: ASR stage 1 (MOSS-TD multi-speaker)
           artifact-path-globs: |
             */moss_transcribe_diarize_results.json
+            */moss_transcribe_diarize_stream_results.json
           artifact-upload-name: asr-stage-multi-speaker-results
-          artifact-upload-path: /tmp/**/moss_transcribe_diarize_results.json
+          artifact-upload-path: |
+            /tmp/**/moss_transcribe_diarize_results.json
+            /tmp/**/moss_transcribe_diarize_stream_results.json
           summary-only: "true"
 
   stage-2-seedtts:
