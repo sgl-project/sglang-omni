@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 import time
+import zipfile
 from dataclasses import dataclass
 
 import httpx
 import jwt
 
-from .config import Settings
+from app.config import Settings
 
 
 class GitHubError(RuntimeError):
@@ -82,6 +85,23 @@ class GitHubClient:
             return None
         return response.json()
 
+    async def _request_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        installation_id: int | None,
+    ) -> bytes:
+        token = await self._installation_token(installation_id)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers(token),
+            )
+        self._raise_for_status(response)
+        return response.content
+
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code < 400:
             return
@@ -91,11 +111,13 @@ class GitHubClient:
         )
 
     async def get_pull(self, repo: str, pr_number: int, installation_id: int | None) -> dict:
-        return await self._request(
+        result = await self._request(
             "GET",
             f"/repos/{repo}/pulls/{pr_number}",
             installation_id=installation_id,
         )
+        assert isinstance(result, dict)
+        return result
 
     async def create_check_run(
         self,
@@ -173,3 +195,97 @@ class GitHubClient:
             installation_id=installation_id,
             json={"ref": ref, "inputs": inputs},
         )
+
+    async def find_workflow_run_by_dispatch_id(
+        self,
+        *,
+        repo: str,
+        installation_id: int | None,
+        dispatch_id: str,
+    ) -> int | None:
+        data = await self._request(
+            "GET",
+            f"/repos/{repo}/actions/runs",
+            installation_id=installation_id,
+            params={"per_page": 20},
+        )
+        if not isinstance(data, dict):
+            return None
+        for run in data.get("workflow_runs", []):
+            name = str(run.get("name") or "")
+            if dispatch_id in name:
+                return int(run["id"])
+        return None
+
+    async def get_scheduler_outputs(
+        self,
+        *,
+        repo: str,
+        installation_id: int | None,
+        workflow_run_id: int,
+        dispatch_id: str,
+    ) -> dict[str, str]:
+        data = await self._request(
+            "GET",
+            f"/repos/{repo}/actions/runs/{workflow_run_id}/artifacts",
+            installation_id=installation_id,
+            params={"name": dispatch_id, "per_page": 100},
+        )
+        if not isinstance(data, dict):
+            raise GitHubError("GitHub returned an invalid artifact listing")
+
+        matches = [
+            artifact
+            for artifact in data.get("artifacts", [])
+            if artifact.get("name") == dispatch_id and not artifact.get("expired", False)
+        ]
+        if len(matches) != 1:
+            raise GitHubError(
+                f"expected one scheduler output artifact for {dispatch_id}, found {len(matches)}"
+            )
+
+        archive = await self._request_bytes(
+            "GET",
+            f"/repos/{repo}/actions/artifacts/{int(matches[0]['id'])}/zip",
+            installation_id=installation_id,
+        )
+        if len(archive) > 256 * 1024:
+            raise GitHubError("scheduler output artifact exceeds 256 KiB compressed limit")
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                files = [
+                    info
+                    for info in bundle.infolist()
+                    if not info.is_dir() and info.filename.rsplit("/", 1)[-1] == "scheduler-outputs.json"
+                ]
+                if len(files) != 1:
+                    raise GitHubError(
+                        "scheduler output artifact must contain exactly one scheduler-outputs.json"
+                    )
+                if files[0].file_size > 64 * 1024:
+                    raise GitHubError("scheduler-outputs.json exceeds 64 KiB limit")
+                raw = bundle.read(files[0])
+        except zipfile.BadZipFile as exc:
+            raise GitHubError("scheduler output artifact is not a valid zip archive") from exc
+
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise GitHubError("scheduler-outputs.json is not valid UTF-8 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise GitHubError("unsupported scheduler output schema version")
+        outputs = payload.get("outputs")
+        if not isinstance(outputs, dict) or len(outputs) > 64:
+            raise GitHubError("scheduler outputs must be an object with at most 64 entries")
+
+        validated: dict[str, str] = {}
+        for key, value in outputs.items():
+            if not isinstance(key, str) or not key or len(key) > 128:
+                raise GitHubError("scheduler output names must be 1-128 character strings")
+            if not isinstance(value, str) or len(value.encode("utf-8")) > 16 * 1024:
+                raise GitHubError(
+                    f"scheduler output {key!r} must be a string no larger than 16 KiB"
+                )
+            validated[key] = value
+        return validated

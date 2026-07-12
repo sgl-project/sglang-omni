@@ -1,0 +1,1 @@
+"""Datastore and GitHub adapters."""

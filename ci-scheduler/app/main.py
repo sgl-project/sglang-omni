@@ -10,12 +10,11 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from .config import get_settings
-from .github import GitHubClient
-from .models import PullRequestState
-from .scheduler import CiScheduler
-from .stage_registry import StageRegistry
-from .store import QueueStore
+from adapters.github_client import GitHubClient
+from adapters.sqlite_store import SqliteQueueStore
+from app.config import get_settings
+from app.scheduler import CiScheduler, load_graphs
+from domain.models import PullRequestState
 
 
 def _resolve_path(path: Path) -> Path:
@@ -26,10 +25,13 @@ def _resolve_path(path: Path) -> Path:
 
 
 settings = get_settings()
-store = QueueStore(settings.database_path)
-registry = StageRegistry.load(_resolve_path(settings.stages_path))
+store = SqliteQueueStore(_resolve_path(settings.database_path))
+graphs = load_graphs(
+    _resolve_path(settings.workflows_dir),
+    roots=settings.scheduler_root_workflows,
+)
 github = GitHubClient(settings)
-scheduler = CiScheduler(settings=settings, store=store, registry=registry, github=github)
+scheduler = CiScheduler(settings=settings, store=store, github=github, graphs=graphs)
 
 app = FastAPI(title="sglang-omni CI Scheduler")
 
@@ -94,9 +96,7 @@ def _pr_state_from_api(repo: str, pr: dict[str, Any], installation_id: int | Non
 
 def _commenter_can_rerun(payload: dict[str, Any]) -> bool:
     association = (payload.get("comment") or {}).get("author_association")
-    if association in {"OWNER", "MEMBER", "COLLABORATOR"}:
-        return True
-    return False
+    return association in {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
 def _workflow_run_queue_item_id(payload: dict[str, Any]) -> int | None:
@@ -116,6 +116,8 @@ def _workflow_run_queue_item_id(payload: dict[str, Any]) -> int | None:
 def _status_from_workflow_conclusion(conclusion: str | None) -> str:
     if conclusion == "success":
         return "passed"
+    if conclusion == "skipped":
+        return "skipped"
     if conclusion == "timed_out":
         return "timed_out"
     if conclusion == "cancelled":
@@ -150,6 +152,10 @@ async def github_webhook(
         await _handle_workflow_run(payload)
         return {"handled": "workflow_run"}
 
+    if x_github_event == "workflow_job":
+        await _handle_workflow_job(payload)
+        return {"handled": "workflow_job"}
+
     return {"ignored": x_github_event}
 
 
@@ -165,7 +171,7 @@ async def stage_callback(
 
     if callback.status == "running":
         await scheduler.mark_running(callback.queue_item_id, callback.workflow_run_id)
-    elif callback.status in {"passed", "failed", "cancelled", "timed_out"}:
+    elif callback.status in {"passed", "failed", "cancelled", "timed_out", "skipped"}:
         await scheduler.mark_terminal(
             callback.queue_item_id,
             callback.status,
@@ -229,3 +235,16 @@ async def _handle_workflow_run(payload: dict[str, Any]) -> None:
         _status_from_workflow_conclusion(run.get("conclusion")),
         workflow_run_id=int(run["id"]) if run.get("id") else None,
     )
+
+
+async def _handle_workflow_job(payload: dict[str, Any]) -> None:
+    action = payload.get("action")
+    job = payload.get("workflow_job") or {}
+    if action != "in_progress":
+        return
+    run = payload.get("workflow_run") or {}
+    text = str(run.get("name") or "")
+    match = re.search(r"queue-item-(\d+)", text)
+    if not match:
+        return
+    await scheduler.mark_running(int(match.group(1)), int(run["id"]) if run.get("id") else None)

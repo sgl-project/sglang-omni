@@ -8,9 +8,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY scheduler_app ./scheduler_app
-COPY stages.json ./stages.json
+COPY domain ./domain
+COPY compiler ./compiler
+COPY adapters ./adapters
+COPY app ./app
 
 EXPOSE 8080
 
-CMD ["uvicorn", "scheduler_app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
