@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Pre-LM audio-encoder service for MOSS-Transcribe-Diarize.
 
 Encoding inside the LM forward stalls every running request at each prefill;
@@ -31,8 +30,6 @@ class BatchedAudioEncoderService:
         self._model = model
         self._device = next(model.whisper_encoder.parameters()).device
         self._stream = torch.cuda.Stream(device=self._device)
-        # Radix-warm traffic that the in-forward path would never encode pays
-        # a redundant encode here without this (stream text_ttft_p95 CI fail).
         self._cache = StageOutputCache(
             max_size=_CACHE_MAX_ENTRIES,
             max_bytes=_CACHE_MAX_BYTES,
