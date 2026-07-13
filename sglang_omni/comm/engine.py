@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from contextlib import suppress
 from typing import Any, Callable
 
@@ -11,8 +12,9 @@ import msgspec
 import torch
 
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataRef, TransportKind
+from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.comm.tensor_ref import TensorRef
 from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
@@ -169,6 +171,46 @@ class CommEngine:
         data_ref: DataRef,
     ) -> StagePayload:
         return await stage_io.read_payload(relay, request_id, data_ref)
+
+    async def publish_tensor_ref(
+        self,
+        *,
+        relay: Relay,
+        request_id: str,
+        tensor: torch.Tensor,
+        transport: TransportKind,
+        producer_stage: str,
+        consumer_stage: str,
+        path: str,
+    ) -> TensorRef:
+        object_id = (
+            f"{request_id}:tensor_ref:{producer_stage}:{consumer_stage}:"
+            f"{uuid.uuid4().hex}"
+        )
+        data_ref, op = await stage_io.write_tensor(
+            relay,
+            object_id,
+            tensor,
+            transport=transport,
+            kind=DataKind.TENSOR_REF,
+            request_id=request_id,
+            from_stage=producer_stage,
+            to_stage=consumer_stage,
+        )
+        self._register_pending(data_ref.object_id, [op])
+        self._arm_pending(data_ref.object_id)
+        return TensorRef(
+            request_id=request_id,
+            producer_stage=producer_stage,
+            consumer_stage=consumer_stage,
+            path=path,
+            nbytes=tensor.numel() * tensor.element_size(),
+            data_ref=data_ref,
+        )
+
+    async def read_tensor_ref(self, ref: TensorRef) -> torch.Tensor:
+        relay = self.relay(ref.data_ref.transport)
+        return await stage_io.read_tensor(relay, ref.data_ref)
 
     async def send_stream_chunk(
         self,

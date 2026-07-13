@@ -17,6 +17,7 @@ class TransportKind(str, Enum):
 
 class DataKind(str, Enum):
     STAGE_PAYLOAD = "stage_payload"
+    TENSOR_REF = "tensor_ref"
     STREAM_CHUNK = "stream_chunk"
     STREAM_METADATA_TENSOR = "stream_metadata_tensor"
     KV_PAGES = "kv_pages"
