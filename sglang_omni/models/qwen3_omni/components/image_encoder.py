@@ -86,6 +86,18 @@ def _optimize_patch_embed(visual: nn.Module) -> None:
     )
 
 
+def _unpack_visual_output(visual_out):
+    """Unpack visual forward output regardless of return type.
+
+    Supports two shapes that appear across transformers versions:
+    - Attribute access (newer):  object with ``pooler_output`` / ``deepstack_features``
+    - Tuple unpacking (older):  (pooler_output, deepstack_features)
+    """
+    if isinstance(visual_out, tuple):
+        return visual_out[0], visual_out[1]
+    return visual_out.pooler_output, visual_out.deepstack_features
+
+
 def _build_visual(
     model_path: str,
     *,
@@ -152,12 +164,9 @@ class Qwen3OmniImageEncoder(nn.Module):
         ):
             image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
             pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
-            # Note:(Chenchen Hong) transformers 5.6's Qwen3OmniMoeVisionEncoder
-            # returns BaseModelOutputWithDeepstackFeatures (pooler_output = merged
-            # image embeds, deepstack_features = multiscale) instead of a 2-tuple.
-            vision_outputs = self.visual(pixel_values, grid_thw=image_grid_thw)
-            image_embeds = vision_outputs.pooler_output
-            image_embeds_multiscale = vision_outputs.deepstack_features
+            image_embeds, image_embeds_multiscale = _unpack_visual_output(
+                self.visual(pixel_values, grid_thw=image_grid_thw)
+            )
             image_token_counts = image_grid_thw.prod(-1) // merge
             outputs.update(
                 {
@@ -175,9 +184,9 @@ class Qwen3OmniImageEncoder(nn.Module):
             pixel_values_videos = pixel_values_videos.to(
                 device=self._device, dtype=self.visual.dtype
             )
-            video_outputs = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
-            video_embeds = video_outputs.pooler_output
-            video_embeds_multiscale = video_outputs.deepstack_features
+            video_embeds, video_embeds_multiscale = _unpack_visual_output(
+                self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+            )
             video_token_counts = video_grid_thw.prod(-1) // merge
             outputs.update(
                 {

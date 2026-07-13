@@ -1192,6 +1192,7 @@ def _build_state_machine_scheduler(
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
     scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
     scheduler.waiting_queue = []
     scheduler._request_builder = request_builder_stub
     scheduler._request_admission_lock = threading.RLock()
@@ -1324,6 +1325,7 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     """
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
     scheduler._pending_stream_chunks = {}
     scheduler._pending_stream_done = set()
     scheduler._deferred_request_payloads = {}
@@ -1670,6 +1672,14 @@ def test_qwen_talker_load_weights_converts_fp8_scales_after_name_mapping() -> No
     direct_param = RecordingParam()
     talker = object.__new__(Qwen3OmniTalker)
     talker.config = SimpleNamespace(text_config=SimpleNamespace(num_experts=1))
+    # The FP8 weight_scale_inv reciprocal conversion is gated on the checkpoint's
+    # quantization config, resolved from root_config via get_weight_preprocessor.
+    talker.root_config = SimpleNamespace(
+        quantization_config={
+            "quant_method": "fp8",
+            "weight_block_size": [128, 128],
+        }
+    )
     talker._cached_params_dict = {
         "model.layers.0.self_attn.qkv_proj.weight_scale_inv": qkv_param,
         "model.layers.0.mlp.experts.w13_weight_scale_inv": expert_param,

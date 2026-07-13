@@ -9,6 +9,7 @@ which the stage runtime forwards to the Coordinator. Final result is emitted
 on ``new_request`` (the thinker's terminal payload via ``next``), preserving
 the existing non-streaming result shape.
 """
+
 from __future__ import annotations
 
 import logging
@@ -85,7 +86,7 @@ class StreamingDetokenizeScheduler:
             # the offending request — letting the exception escape `start()`
             # trips `Stage._handle_scheduler_crash`, which fails every
             # active request on the decode stage. Mirrors the
-            # SimpleScheduler / FishScheduler / Code2WavScheduler contract.
+            # SimpleScheduler / OmniScheduler / Code2WavScheduler contract.
             try:
                 if msg.type == "new_request":
                     self._on_new_request(msg.request_id, msg.data)

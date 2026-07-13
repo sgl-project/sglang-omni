@@ -1257,6 +1257,42 @@ def test_higgs_initial_chunk_resumes_after_followup_boundary() -> None:
     assert len(second_streams) == 1
 
 
+def test_higgs_stream_contract_change_rejects_chunk_without_buffering() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = _higgs_stream_payload("req", stream=True, delayed_rows=[[1, 2, 3]])
+    scheduler._on_streaming_new_request("req", payload)
+
+    row = torch.tensor([1, 2, 3], dtype=torch.long)
+    with pytest.raises(ValueError, match="num_codebooks changed for"):
+        scheduler._on_chunk("req", _higgs_stream_item(row, num_codebooks=4))
+    with pytest.raises(ValueError, match="codebook_size changed for"):
+        scheduler._on_chunk("req", _higgs_stream_item(row, codebook_size=21))
+    assert scheduler._stream_states["req"].delayed_rows == []
+
+
+def test_higgs_stream_contract_requires_integer_values() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = _higgs_stream_payload("req", stream=True, delayed_rows=[[1, 2, 3]])
+    scheduler._on_streaming_new_request("req", payload)
+
+    item = _higgs_stream_item(torch.tensor([1, 2, 3], dtype=torch.long))
+    item.metadata["num_codebooks"] = "three"
+    with pytest.raises(TypeError, match="must include integer"):
+        scheduler._on_chunk("req", item)
+    assert scheduler._stream_states["req"].delayed_rows == []
+
+
+def test_higgs_streaming_payload_missing_contract_fields_errors() -> None:
+    scheduler = HiggsStreamingVocoderScheduler(_FakeHiggsStreamingCodec())
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params={"stream": True}),
+        data={},
+    )
+    with pytest.raises(RuntimeError, match="is missing fields"):
+        scheduler._on_streaming_new_request("req", payload)
+
+
 def _drain_higgs_outbox(
     scheduler: HiggsStreamingVocoderScheduler,
 ) -> list:
