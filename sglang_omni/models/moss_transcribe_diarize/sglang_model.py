@@ -133,20 +133,24 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         self._encoder_graph_runner = runner
 
     def compile_encoder(self, chunk_buckets, input_feature_len: int) -> None:
-        """torch.compile(reduce-overhead) the Whisper encoder, warming one
-        specialization per chunk-count bucket.
+        """torch.compile the Whisper encoder, warming one specialization per
+        chunk-count bucket.
 
         Mutually exclusive with ``init_encoder_graphs``. ``dynamic=False``
         matches shape exactly, so an off-bucket chunk count or frame length --
-        or a bucket whose warmup fails -- falls back to eager.
+        or a bucket whose warmup fails -- falls back to eager. Default mode
+        only: reduce-overhead's cudagraph trees corrupt memory alongside the
+        decode CUDA graphs that always run in this process.
+
+        TODO(yichi): investigate whether reduce-overhead can coexist with the
+        decode CUDA graphs (e.g. cudagraph pool isolation or capture ordering)
+        and reclaim its kernel-launch savings.
         """
         buckets = sorted({int(b) for b in (chunk_buckets or []) if int(b) >= 1})
         if not buckets:
             return
         set_torch_compile_config()
-        self._compiled_encoder = torch.compile(
-            self.whisper_encoder, dynamic=False, mode="reduce-overhead"
-        )
+        self._compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
         self._compiled_input_feature_len = int(input_feature_len)
         p = next(self.whisper_encoder.parameters())
         frames = int(input_feature_len)
@@ -163,18 +167,13 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                         self._compiled_encoder(feats, pos, None)
                 except Exception as exc:
                     logger.warning(
-                        "MOSS-TD encoder torch.compile warmup failed for "
-                        "chunks=%d: %s; that chunk count will run eager",
-                        n,
-                        exc,
+                        f"MOSS-TD encoder torch.compile warmup failed for "
+                        f"chunks={n}: {exc}; that chunk count will run eager"
                     )
                     continue
                 warmed.append(n)
         self._compiled_chunk_buckets = frozenset(warmed)
-        logger.info(
-            "MOSS-TD encoder torch.compile(reduce-overhead) warmed buckets=%s",
-            warmed,
-        )
+        logger.info(f"MOSS-TD encoder torch.compile warmed buckets={warmed}")
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
