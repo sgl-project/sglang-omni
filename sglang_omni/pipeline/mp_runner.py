@@ -31,6 +31,7 @@ from sglang_omni.pipeline.runtime_config import (
     build_comm_config,
     prepare_pipeline_runtime,
 )
+from sglang_omni.pipeline.stage.tensor_ref import TensorRefPolicy
 from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
@@ -65,6 +66,11 @@ def _build_stage_groups(
         for target in scfg.stream_to:
             stream_receivers.add(target)
     stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
+    tensor_ref_consumer_stages = {
+        name_map.get(edge.consumer_stage, edge.consumer_stage)
+        for stage_cfg in stages_cfg
+        for edge in stage_cfg.tensor_ref_edges.values()
+    }
 
     nccl_port_counter = _NcclPortAllocator()
 
@@ -128,6 +134,11 @@ def _build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
+            tensor_ref_policies=_build_tensor_ref_policies(stage_cfg, name_map),
+            resolve_tensor_refs=(
+                name_map.get(stage_cfg.name, stage_cfg.name)
+                in tensor_ref_consumer_stages
+            ),
             name_map=name_map,
         )
         if tp_size == 1:
@@ -180,6 +191,22 @@ def _build_stage_groups(
     groups.extend(tp_groups)
 
     return groups
+
+
+def _build_tensor_ref_policies(
+    stage_cfg: StageConfig,
+    name_map: dict[str, str],
+) -> dict[str, TensorRefPolicy]:
+    """Compile declarative tensor-reference edges for one launched stage."""
+    policies: dict[str, TensorRefPolicy] = {}
+    for raw_target, edge in stage_cfg.tensor_ref_edges.items():
+        target = name_map.get(raw_target, raw_target)
+        policies[target] = TensorRefPolicy(
+            threshold_bytes=int(edge.threshold_mb * 1024 * 1024),
+            consumer_stage=name_map.get(edge.consumer_stage, edge.consumer_stage),
+            paths=tuple(edge.paths),
+        )
+    return policies
 
 
 def _resolve_same_process_targets(

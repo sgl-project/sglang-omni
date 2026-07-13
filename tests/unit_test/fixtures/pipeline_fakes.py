@@ -31,6 +31,7 @@ class FakeOp:
     def __init__(self, metadata: dict[str, Any], log: EventLog | None = None):
         self._metadata = metadata
         self.log = log or EventLog()
+        self.acked = False
         self.waited = False
         self.failed: BaseException | None = None
 
@@ -46,10 +47,12 @@ class FakeOp:
             raise self.failed
 
     def mark_receiver_done(self) -> None:
+        self.acked = True
         self.log.append("op_ack", self._metadata.get("key"))
 
     def mark_receiver_failed(self, exc: BaseException) -> None:
         self.failed = exc
+        self.log.append("op_fail", self._metadata.get("key"), str(exc))
 
 
 class FakeRelay:
@@ -57,6 +60,9 @@ class FakeRelay:
         self.device = device
         self.log = log or EventLog()
         self.storage: dict[str, torch.Tensor] = {}
+        self.ops: list[FakeOp] = []
+        self.receiver_ids: list[str | None] = []
+        self.get_calls = 0
         self.cleaned: list[str] = []
         self.closed = False
         self.fail_get: BaseException | None = None
@@ -68,15 +74,18 @@ class FakeRelay:
         dst_rank: int | None = None,
         receiver_id: str | None = None,
     ) -> FakeOp:
-        del dst_rank, receiver_id
+        del dst_rank
+        self.receiver_ids.append(receiver_id)
         key = str(request_id)
         stored = tensor.detach().clone()
         self.storage[key] = stored
         self.log.append("relay_put", key, int(stored.numel()))
-        return FakeOp(
+        op = FakeOp(
             {"transfer_info": {"size": int(stored.numel())}, "key": key},
             self.log,
         )
+        self.ops.append(op)
+        return op
 
     async def get_async(
         self,
@@ -84,6 +93,7 @@ class FakeRelay:
         dest_tensor: torch.Tensor,
         request_id: str | None = None,
     ) -> FakeOp:
+        self.get_calls += 1
         if self.fail_get is not None:
             raise self.fail_get
         key = str(metadata.get("key", request_id))
@@ -99,6 +109,15 @@ class FakeRelay:
     def close(self) -> None:
         self.closed = True
         self.log.append("relay_close")
+
+
+async def wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> None:
+    """Yield to background tasks until a test-visible condition becomes true."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError("condition was not met")
+        await asyncio.sleep(0)
 
 
 class DestructiveFakeRelay(FakeRelay):

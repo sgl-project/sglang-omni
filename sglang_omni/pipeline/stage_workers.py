@@ -21,6 +21,7 @@ from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage.tensor_ref import TensorRefPolicy
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
@@ -90,6 +91,8 @@ class StageLaunchConfig:
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
     disable_direct_cuda_ipc_payload: bool = False
+    tensor_ref_policies: dict[str, TensorRefPolicy] = field(default_factory=dict)
+    resolve_tensor_refs: bool = False
 
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
@@ -759,6 +762,8 @@ def _construct_stage(
         local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
+        tensor_ref_policies=spec.tensor_ref_policies,
+        resolve_tensor_refs=spec.resolve_tensor_refs,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
     )

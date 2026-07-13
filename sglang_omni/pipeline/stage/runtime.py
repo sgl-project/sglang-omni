@@ -23,8 +23,10 @@ from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.comm.tensor_ref import TensorRef, collect_tensor_refs, is_tensor_ref
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.pipeline.stage.tensor_ref import TensorRefPolicy
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -98,6 +100,8 @@ class Stage:
         local_dispatcher: Any | None = None,
         can_accept_stream_before_payload: bool = False,
         disable_direct_cuda_ipc_payload: bool = False,
+        tensor_ref_policies: dict[str, TensorRefPolicy] | None = None,
+        resolve_tensor_refs: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
     ):
@@ -116,6 +120,8 @@ class Stage:
         self._local_dispatcher = local_dispatcher
         self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
+        self._tensor_ref_policies = tensor_ref_policies or {}
+        self._resolve_tensor_refs = resolve_tensor_refs
         self._tp_fanout = tp_fanout
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
@@ -143,6 +149,7 @@ class Stage:
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
+        self._unresolved_tensor_refs: dict[str, dict[str, TensorRef]] = {}
         self._receive_tasks: set[asyncio.Task] = set()
         self._receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
         self._scheduler_thread: threading.Thread | None = None
@@ -333,6 +340,9 @@ class Stage:
                 completion,
             )
         )
+        self._track_receive_task(task, label)
+
+    def _track_receive_task(self, task: asyncio.Task, label: str) -> None:
         self._receive_tasks.add(task)
         task.add_done_callback(self._receive_tasks.discard)
         task.add_done_callback(lambda done: self._on_background_task_done(done, label))
@@ -401,6 +411,15 @@ class Stage:
                     request_id,
                 )
                 await self._wait_for_receive_predecessor(predecessor)
+                with suppress(Exception):
+                    header = stage_io.deserialize_direct_cuda_ipc_payload_header(
+                        msg.data_ref
+                    )
+                    await self._send_tensor_ref_acks(
+                        collect_tensor_refs(header.data),
+                        success=False,
+                        error=_error_text(exc),
+                    )
                 await self._send_failure(
                     request_id, f"direct IPC payload deserialize failed: {exc}"
                 )
@@ -501,6 +520,7 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
+        self._remember_tensor_refs(request_id, payload)
         merged = self.input_handler.receive(request_id, from_stage, payload)
         if merged is not None:
             _emit_event(
@@ -677,14 +697,36 @@ class Stage:
 
     async def _discard_payload_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
-            imported = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
-            del imported
+            try:
+                payload = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
+            except Exception as exc:
+                logger.debug(
+                    "Stage %s: failed to drain aborted direct IPC payload for %s",
+                    self.name,
+                    msg.request_id,
+                    exc_info=True,
+                )
+                with suppress(Exception):
+                    header = stage_io.deserialize_direct_cuda_ipc_payload_header(
+                        msg.data_ref
+                    )
+                    await self._send_tensor_ref_acks(
+                        collect_tensor_refs(header.data),
+                        success=False,
+                        error=_error_text(exc),
+                    )
+            else:
+                await self._send_tensor_ref_acks(
+                    collect_tensor_refs(payload.data),
+                    success=False,
+                    error="request aborted",
+                )
             return
         request_id = msg.request_id
         data_ref = self._data_ref_from_message(msg)
         relay = self._comm.relay(data_ref.transport)
         try:
-            await self._comm.read_payload(
+            payload = await self._comm.read_payload(
                 relay=relay,
                 request_id=request_id,
                 data_ref=data_ref,
@@ -699,9 +741,21 @@ class Stage:
             await self._send_data_ack(
                 msg, data_ref, success=False, error=_error_text(exc)
             )
+            with suppress(Exception):
+                header = stage_io.deserialize_payload_header(data_ref)
+                await self._send_tensor_ref_acks(
+                    collect_tensor_refs(header.data),
+                    success=False,
+                    error=_error_text(exc),
+                )
             self._comm.cleanup(request_id)
             return
         await self._send_data_ack(msg, data_ref, success=True)
+        await self._send_tensor_ref_acks(
+            collect_tensor_refs(payload.data),
+            success=False,
+            error="request aborted",
+        )
 
     async def _discard_stream_chunk_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_stream_chunk_ref(msg.data_ref):
@@ -798,6 +852,8 @@ class Stage:
 
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
+        if self._resolve_tensor_refs and request_id in self._unresolved_tensor_refs:
+            payload = await self._materialize_tensor_refs(request_id, payload)
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -812,6 +868,173 @@ class Stage:
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )
+
+    async def _externalize_tensor_refs(
+        self, payload: StagePayload, target: str
+    ) -> tuple[StagePayload, dict[str, int] | None]:
+        policy = self._tensor_ref_policies.get(target)
+        if policy is None:
+            return payload, None
+        transport, relay = self._comm.router.relay_for(policy.consumer_stage)
+        published_refs: list[TensorRef] = []
+
+        async def _visit(value: Any, path: str = "") -> Any:
+            if is_tensor_ref(value):
+                return value
+            if isinstance(value, torch.Tensor):
+                nbytes = value.numel() * value.element_size()
+                if not policy.should_externalize(path, nbytes):
+                    return value
+                ref = await self._comm.publish_tensor_ref(
+                    relay=relay,
+                    request_id=payload.request_id,
+                    tensor=value,
+                    transport=transport,
+                    producer_stage=self.name,
+                    consumer_stage=policy.consumer_stage,
+                    path=path,
+                )
+                published_refs.append(ref)
+                return ref.to_dict()
+            if isinstance(value, dict):
+                items: dict[Any, Any] = {}
+                changed = False
+                for key, item in value.items():
+                    externalized = await _visit(item, f"{path}.{key}" if path else key)
+                    changed = changed or externalized is not item
+                    items[key] = externalized
+                return items if changed else value
+            if isinstance(value, (list, tuple)):
+                items = []
+                changed = False
+                for idx, item in enumerate(value):
+                    externalized = await _visit(item, f"{path}[{idx}]")
+                    changed = changed or externalized is not item
+                    items.append(externalized)
+                return type(value)(items) if changed else value
+            return value
+
+        data = await _visit(payload.data)
+        if data is payload.data:
+            return payload, None
+        stats = {
+            "tensor_ref_count": len(published_refs),
+            "tensor_ref_bytes": sum(ref.nbytes for ref in published_refs),
+        }
+        return (
+            StagePayload(
+                request_id=payload.request_id,
+                request=payload.request,
+                data=data,
+            ),
+            stats,
+        )
+
+    def _remember_tensor_refs(self, request_id: str, payload: Any) -> None:
+        refs = [
+            ref
+            for ref in collect_tensor_refs(getattr(payload, "data", payload))
+            if ref.consumer_stage == self.name
+        ]
+        if refs:
+            tracked = self._unresolved_tensor_refs.setdefault(request_id, {})
+            tracked.update({ref.data_ref.object_id: ref for ref in refs})
+
+    async def _materialize_tensor_refs(
+        self, request_id: str, payload: StagePayload
+    ) -> StagePayload:
+        materialized: dict[str, torch.Tensor] = {}
+
+        async def _visit(value: Any) -> Any:
+            if is_tensor_ref(value):
+                ref = TensorRef.from_dict(value)
+                if ref.consumer_stage != self.name:
+                    return value
+                cached = materialized.get(ref.data_ref.object_id)
+                if cached is not None:
+                    return cached
+                try:
+                    tensor = await self._comm.read_tensor_ref(ref)
+                except Exception as exc:
+                    await self._send_tensor_ref_ack(
+                        ref, success=False, error=_error_text(exc)
+                    )
+                    raise
+                materialized[ref.data_ref.object_id] = tensor
+                await self._send_tensor_ref_ack(ref, success=True)
+                self._unresolved_tensor_refs.get(request_id, {}).pop(
+                    ref.data_ref.object_id, None
+                )
+                return tensor
+            if isinstance(value, dict):
+                items: dict[Any, Any] = {}
+                changed = False
+                for key, item in value.items():
+                    resolved = await _visit(item)
+                    changed = changed or resolved is not item
+                    items[key] = resolved
+                return items if changed else value
+            if isinstance(value, (list, tuple)):
+                items = []
+                changed = False
+                for item in value:
+                    resolved = await _visit(item)
+                    changed = changed or resolved is not item
+                    items.append(resolved)
+                return type(value)(items) if changed else value
+            return value
+
+        data = await _visit(payload.data)
+        if data is payload.data:
+            return payload
+        return StagePayload(
+            request_id=payload.request_id,
+            request=payload.request,
+            data=data,
+        )
+
+    async def _send_tensor_ref_ack(
+        self, ref: TensorRef, *, success: bool, error: str | None = None
+    ) -> None:
+        endpoint = self.endpoints.get(ref.producer_stage)
+        if endpoint is None:
+            raise RuntimeError(
+                f"Stage {self.name}: no endpoint configured for tensor_ref producer "
+                f"{ref.producer_stage!r}"
+            )
+        await self.control_plane.send_to_stage(
+            ref.producer_stage,
+            endpoint,
+            DataAckMessage(
+                request_id=ref.request_id,
+                from_stage=self.name,
+                to_stage=ref.producer_stage,
+                object_id=ref.data_ref.object_id,
+                success=success,
+                error=error,
+            ),
+        )
+
+    async def _fail_tensor_refs(self, request_id: str, error: str) -> None:
+        refs = list(self._unresolved_tensor_refs.pop(request_id, {}).values())
+        await self._send_tensor_ref_acks(refs, success=False, error=error)
+
+    async def _send_tensor_ref_acks(
+        self,
+        refs: list[TensorRef],
+        *,
+        success: bool,
+        error: str | None = None,
+    ) -> None:
+        seen: set[str] = set()
+        for ref in refs:
+            if ref.consumer_stage != self.name:
+                continue
+            if ref.data_ref.object_id in seen:
+                continue
+            seen.add(ref.data_ref.object_id)
+            with suppress(Exception):
+                await self._send_tensor_ref_ack(ref, success=success, error=error)
 
     async def _on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
@@ -1129,6 +1352,10 @@ class Stage:
             )
             return
 
+        projected_payload, tensor_ref_stats = await self._externalize_tensor_refs(
+            projected_payload, target
+        )
+
         same_gpu_target = self._comm.router.is_same_gpu_target(target)
         if (
             not self._disable_direct_cuda_ipc_payload
@@ -1157,7 +1384,9 @@ class Stage:
                     request_id=request_id,
                     stage=self.name,
                     event_name="stage_hop_sent",
-                    metadata={"to_stage": target, "transport": "torch_cuda_ipc"},
+                    metadata=self._payload_hop_metadata(
+                        target, "torch_cuda_ipc", tensor_ref_stats
+                    ),
                 )
                 return
 
@@ -1178,8 +1407,21 @@ class Stage:
             request_id=request_id,
             stage=self.name,
             event_name="stage_hop_sent",
-            metadata={"to_stage": target, "transport": transport_kind.value},
+            metadata=self._payload_hop_metadata(
+                target, transport_kind.value, tensor_ref_stats
+            ),
         )
+
+    @staticmethod
+    def _payload_hop_metadata(
+        target: str,
+        transport: str,
+        tensor_ref_stats: dict[str, int] | None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"to_stage": target, "transport": transport}
+        if tensor_ref_stats is not None:
+            metadata.update(tensor_ref_stats)
+        return metadata
 
     @staticmethod
     def _is_isolated_projected_payload(
@@ -1485,6 +1727,7 @@ class Stage:
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         self._record_aborted_request_id(request_id)
+        await self._fail_tensor_refs(request_id, error)
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
@@ -1511,6 +1754,7 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
+        self._unresolved_tensor_refs.pop(request_id, None)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:
@@ -1556,9 +1800,18 @@ class Stage:
 
     def _on_abort(self, request_id: str) -> None:
         self._record_aborted_request_id(request_id)
+        refs = list(self._unresolved_tensor_refs.pop(request_id, {}).values())
+        if refs:
+            self._track_receive_task(
+                asyncio.create_task(self._ack_aborted_tensor_refs(refs)),
+                f"tensor refs abort {request_id}",
+            )
         self._comm.cleanup(request_id)
         self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
+
+    async def _ack_aborted_tensor_refs(self, refs: list[TensorRef]) -> None:
+        await self._send_tensor_ref_acks(refs, success=False, error="request aborted")
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id

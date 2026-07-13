@@ -27,6 +27,28 @@ class CommConfig(BaseModel):
     mooncake_device_name: str = ""
 
 
+class TensorRefEdgeConfig(BaseModel):
+    """Explicit lazy tensor handoff policy for one outgoing stage edge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    consumer_stage: str
+    threshold_mb: float = 2.0
+    paths: tuple[str, ...]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.threshold_mb < 0:
+            raise ValueError("tensor_ref_edges threshold_mb must be non-negative")
+        self.consumer_stage = self.consumer_stage.strip()
+        if not self.consumer_stage:
+            raise ValueError("tensor_ref_edges consumer_stage must not be empty")
+        if not self.paths:
+            raise ValueError("tensor_ref_edges paths must not be empty")
+        self.paths = tuple(path.strip() for path in self.paths)
+        if any(not path for path in self.paths):
+            raise ValueError("tensor_ref_edges paths must not contain empty values")
+
+
 class EndpointsConfig(BaseModel):
     """Endpoint allocation settings."""
 
@@ -181,6 +203,9 @@ class StageConfig(BaseModel):
 
     # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
+
+    # --- Lazy tensor handoff ---
+    tensor_ref_edges: dict[str, TensorRefEdgeConfig] = Field(default_factory=dict)
 
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
@@ -385,6 +410,23 @@ class PipelineConfig(BaseModel):
                 if t not in names:
                     raise ValueError(
                         f"Stage {s.name!r} project_payload references unknown stage {t!r}"
+                    )
+            route_targets = set(_target_list(s.next)) | set(s.stream_to)
+            for target, tensor_ref in s.tensor_ref_edges.items():
+                if target not in names:
+                    raise ValueError(
+                        f"Stage {s.name!r} tensor_ref_edges references unknown "
+                        f"target stage {target!r}"
+                    )
+                if target not in route_targets:
+                    raise ValueError(
+                        f"Stage {s.name!r} tensor_ref_edges target {target!r} is not "
+                        "a declared next or stream_to target"
+                    )
+                if tensor_ref.consumer_stage not in names:
+                    raise ValueError(
+                        f"Stage {s.name!r} tensor_ref_edges target {target!r} has "
+                        f"unknown consumer_stage {tensor_ref.consumer_stage!r}"
                     )
 
         for stage_name in self.runtime_overrides:

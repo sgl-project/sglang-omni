@@ -175,24 +175,7 @@ def is_direct_cuda_ipc_payload_ref(value: Any) -> bool:
 
 
 def deserialize_direct_cuda_ipc_payload(data_ref: dict[str, Any]) -> StagePayload:
-    if data_ref.get("_type") != _DIRECT_CUDA_IPC_PAYLOAD_TYPE:
-        raise ValueError("data_ref is not a direct CUDA IPC payload")
-    if data_ref.get("version") != 1:
-        raise ValueError(
-            f"unsupported direct CUDA IPC payload version {data_ref.get('version')!r}"
-        )
-    header_bytes = data_ref.get("header")
-    if not isinstance(header_bytes, bytes):
-        raise TypeError(
-            "direct CUDA IPC payload header must be bytes, got "
-            f"{type(header_bytes).__name__}"
-        )
-    header = pickle.loads(header_bytes)
-    if not isinstance(header, StagePayload):
-        raise TypeError(
-            "direct CUDA IPC payload header must decode to StagePayload, got "
-            f"{type(header).__name__}"
-        )
+    header = deserialize_direct_cuda_ipc_payload_header(data_ref)
     raw_tensors = data_ref.get("tensors")
     if not isinstance(raw_tensors, list):
         raise TypeError(
@@ -234,6 +217,30 @@ def deserialize_direct_cuda_ipc_payload(data_ref: dict[str, Any]) -> StagePayloa
         request=header.request,
         data=restore_tensors(header.data, tensors),
     )
+
+
+def deserialize_direct_cuda_ipc_payload_header(
+    data_ref: dict[str, Any]
+) -> StagePayload:
+    if data_ref.get("_type") != _DIRECT_CUDA_IPC_PAYLOAD_TYPE:
+        raise ValueError("data_ref is not a direct CUDA IPC payload")
+    if data_ref.get("version") != 1:
+        raise ValueError(
+            f"unsupported direct CUDA IPC payload version {data_ref.get('version')!r}"
+        )
+    header_bytes = data_ref.get("header")
+    if not isinstance(header_bytes, bytes):
+        raise TypeError(
+            "direct CUDA IPC payload header must be bytes, got "
+            f"{type(header_bytes).__name__}"
+        )
+    header = pickle.loads(header_bytes)
+    if not isinstance(header, StagePayload):
+        raise TypeError(
+            "direct CUDA IPC payload header must decode to StagePayload, got "
+            f"{type(header).__name__}"
+        )
+    return header
 
 
 def serialize_direct_cuda_ipc_stream_chunk(
@@ -334,11 +341,7 @@ async def read_payload(
     request_id: str,
     data_ref: DataRef,
 ) -> StagePayload:
-    if data_ref.kind is not DataKind.STAGE_PAYLOAD:
-        raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
-    if data_ref.header is None:
-        raise ValueError("stage_payload data_ref is missing header")
-    header = pickle.loads(base64.b64decode(data_ref.header))
+    header = deserialize_payload_header(data_ref)
     transfer_buf = await _read_transfer_buffer(relay, request_id, data_ref)
     tensors = {
         entry.path: _restore_tensor_device(
@@ -355,6 +358,20 @@ async def read_payload(
         request=header.request,
         data=restore_tensors(header.data, tensors),
     )
+
+
+def deserialize_payload_header(data_ref: DataRef) -> StagePayload:
+    if data_ref.kind is not DataKind.STAGE_PAYLOAD:
+        raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
+    if data_ref.header is None:
+        raise ValueError("stage_payload data_ref is missing header")
+    header = pickle.loads(base64.b64decode(data_ref.header))
+    if not isinstance(header, StagePayload):
+        raise TypeError(
+            "stage_payload data_ref header must decode to StagePayload, got "
+            f"{type(header).__name__}"
+        )
+    return header
 
 
 async def write_tensor(

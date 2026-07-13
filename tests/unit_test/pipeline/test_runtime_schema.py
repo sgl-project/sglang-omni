@@ -11,6 +11,7 @@ from sglang_omni.config import (
     StageConfig,
     StageResourceConfig,
     StageRuntimeConfig,
+    TensorRefEdgeConfig,
 )
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
@@ -103,3 +104,90 @@ def test_pipeline_accepts_placement_config() -> None:
 def test_invalid_placement_limit_raises() -> None:
     with pytest.raises(ValueError, match="max_total_gpu_memory_fraction_per_gpu"):
         PlacementConfig(max_total_gpu_memory_fraction_per_gpu=1.1)
+
+
+def test_tensor_ref_edge_must_be_declared_route_target() -> None:
+    with pytest.raises(ValueError, match="not a declared next or stream_to target"):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                _stage(
+                    name="source",
+                    next="sink",
+                    terminal=False,
+                    tensor_ref_edges={
+                        "consumer": TensorRefEdgeConfig(
+                            consumer_stage="consumer",
+                            paths=("embeds",),
+                        )
+                    },
+                ),
+                _stage(name="sink"),
+                _stage(name="consumer"),
+            ],
+        )
+
+
+def test_tensor_ref_edge_allows_direct_forwarder_and_later_consumer() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                name="source",
+                next="forwarder",
+                terminal=False,
+                tensor_ref_edges={
+                    "forwarder": TensorRefEdgeConfig(
+                        consumer_stage="consumer",
+                        paths=("embeds",),
+                    )
+                },
+            ),
+            _stage(name="forwarder", next="consumer", terminal=False),
+            _stage(name="consumer"),
+        ],
+    )
+
+    assert config.stages[0].tensor_ref_edges["forwarder"].consumer_stage == "consumer"
+
+
+def test_tensor_ref_edge_target_must_exist() -> None:
+    with pytest.raises(ValueError, match="references unknown target stage"):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                _stage(
+                    name="source",
+                    next="sink",
+                    terminal=False,
+                    tensor_ref_edges={
+                        "missing": TensorRefEdgeConfig(
+                            consumer_stage="sink",
+                            paths=("embeds",),
+                        )
+                    },
+                ),
+                _stage(name="sink"),
+            ],
+        )
+
+
+def test_tensor_ref_edge_consumer_must_exist() -> None:
+    with pytest.raises(ValueError, match="unknown consumer_stage"):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                _stage(
+                    name="source",
+                    next="sink",
+                    terminal=False,
+                    tensor_ref_edges={
+                        "sink": TensorRefEdgeConfig(
+                            consumer_stage="missing",
+                            paths=("embeds",),
+                        )
+                    },
+                ),
+                _stage(name="sink"),
+            ],
+        )

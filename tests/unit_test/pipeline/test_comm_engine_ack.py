@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 import torch
@@ -13,89 +12,16 @@ from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.proto import DataAckMessage, DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeRelay,
     RecordingStageControlPlane,
     make_stage_payload,
+    wait_until,
 )
-
-
-class _AckedOp:
-    def __init__(self, metadata: dict[str, Any]) -> None:
-        self._metadata = metadata
-        self.acked = False
-        self.waited = False
-        self.failed: BaseException | None = None
-
-    @property
-    def metadata(self) -> dict[str, Any]:
-        return self._metadata
-
-    def mark_receiver_done(self) -> None:
-        self.acked = True
-
-    def mark_receiver_failed(self, exc: BaseException) -> None:
-        self.failed = exc
-
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        del timeout
-        self.waited = True
-        if self.failed is not None:
-            raise self.failed
-        if not self.acked:
-            raise RuntimeError("waited before receiver ack")
-
-
-class _AckedRelay:
-    device = "cpu"
-
-    def __init__(self) -> None:
-        self.storage: dict[str, torch.Tensor] = {}
-        self.ops: list[_AckedOp] = []
-        self.receiver_ids: list[str | None] = []
-
-    async def put_async(
-        self,
-        tensor: torch.Tensor,
-        request_id: str | None = None,
-        dst_rank: int | None = None,
-        receiver_id: str | None = None,
-    ) -> _AckedOp:
-        del dst_rank
-        self.receiver_ids.append(receiver_id)
-        key = str(request_id)
-        self.storage[key] = tensor.detach().clone()
-        op = _AckedOp({"transfer_info": {"size": int(tensor.numel())}, "key": key})
-        self.ops.append(op)
-        return op
-
-    async def get_async(
-        self,
-        metadata: dict[str, Any],
-        dest_tensor: torch.Tensor,
-        request_id: str | None = None,
-    ) -> _AckedOp:
-        key = str(metadata.get("key", request_id))
-        stored = self.storage[key]
-        dest_tensor.reshape(-1)[: stored.numel()].copy_(stored.reshape(-1))
-        return _AckedOp(metadata)
-
-    def cleanup(self, request_id: str) -> None:
-        del request_id
-
-    def close(self) -> None:
-        pass
-
-
-async def _wait_until(predicate, timeout: float = 1.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            raise TimeoutError("condition was not met")
-        await asyncio.sleep(0)
 
 
 def test_comm_engine_releases_sender_op_after_data_ack() -> None:
     async def _run() -> None:
-        relay = _AckedRelay()
+        relay = FakeRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -135,7 +61,7 @@ def test_comm_engine_releases_sender_op_after_data_ack() -> None:
                 object_id=data_ref.object_id,
             )
         )
-        await _wait_until(lambda: op.waited)
+        await wait_until(lambda: op.waited)
         assert op.acked
 
     asyncio.run(_run())
@@ -163,7 +89,7 @@ def test_comm_engine_ignores_unknown_data_ack() -> None:
 
 def test_comm_engine_ignores_duplicate_data_ack() -> None:
     async def _run() -> None:
-        relay = _AckedRelay()
+        relay = FakeRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -194,7 +120,7 @@ def test_comm_engine_ignores_duplicate_data_ack() -> None:
         )
 
         engine.ack_transfer(ack)
-        await _wait_until(lambda: relay.ops[0].waited)
+        await wait_until(lambda: relay.ops[0].waited)
 
         engine.ack_transfer(ack)
 
