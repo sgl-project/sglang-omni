@@ -68,10 +68,10 @@ class HiggsAudio3Config(PretrainedConfig):
             text_config = Qwen3Config(**text_config)
         elif text_config is None:
             text_config = Qwen3Config()
-        # The checkpoint's text_config claims tie_word_embeddings=True, but
-        # it ships a distinct audio_decoder_proj.text_lm_head whose weights
-        # differ from embed_tokens (finetuned apart). Force untied so the
-        # LLM allocates a real lm_head param for load_weights to fill.
+        # note (zhudian): the checkpoint claims tie_word_embeddings=True yet
+        # ships a distinct audio_decoder_proj.text_lm_head whose weights differ
+        # from embed_tokens, so force untied — otherwise the LM has no lm_head
+        # param for load_weights to fill and transcripts silently degrade.
         text_config.tie_word_embeddings = False
         self.text_config = text_config
 

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """StagePayload <-> SGLang request adapters for Higgs-Audio-v3-STT.
 
-Like Qwen3-ASR, higgs is a causal LM ingesting audio as multimodal
-embeddings — but the audio front end differs: the waveform is split into
-fixed 4 s chunks, each chunk gets its own mel spectrogram (padded to the
-longest chunk in the clip) and contributes ``(mel-1)//2//2 -> conv``
-audio tokens (12.5/s). All chunks' embeddings form one contiguous span
+Audio is split into fixed 4 s chunks whose embeddings form one contiguous span
 between ``<|audio_bos|>`` and ``<|audio_eos|>`` in the ChatML prompt.
 """
 
@@ -40,14 +36,14 @@ _AUDIO_BOS = "<|audio_bos|>"
 _AUDIO_PAD = "<|AUDIO|>"
 _AUDIO_EOS = "<|audio_eos|>"
 
-# The reference transcribe.py prompt (lowercase, no punctuation output).
 DEFAULT_TRANSCRIBE_PROMPT = (
     "Transcribe the speech. Output only the spoken words in lowercase "
     "with no punctuation."
 )
-# Empty think block: the transcript starts immediately (enable_thinking=False
-# in the reference pipeline).
-_THINK_SUFFIX = "<think>\n\n</think>\n\n"
+# note (zhudian): appended only when thinking is disabled — the empty block
+# forces the transcript to start immediately. The checkpoint's transcribe.py and
+# model card default to thinking enabled, so that is the default here too.
+_THINK_DISABLE_SUFFIX = "<think>\n\n</think>\n\n"
 
 
 @dataclass
@@ -78,6 +74,8 @@ def make_higgs_audio_asr_scheduler_adapters(
     tokenizer: Any,
     feature_extractor: Any,
     max_new_tokens: int,
+    vocab_size: int,
+    enable_thinking: bool = True,
     chunk_size_seconds: float = 4.0,
 ) -> tuple[
     Callable[[StagePayload], HiggsAudioASRRequestData], Callable[[Any], StagePayload]
@@ -90,21 +88,25 @@ def make_higgs_audio_asr_scheduler_adapters(
         int(tokenizer.convert_tokens_to_ids("<|im_end|>")),
         int(tokenizer.convert_tokens_to_ids("<|endoftext|>")),
     ]
-    vocab_size = int(tokenizer.vocab_size)
+    think_open_id = int(tokenizer.convert_tokens_to_ids("<think>"))
+    think_close_id = int(tokenizer.convert_tokens_to_ids("</think>"))
     chunk_samples = int(chunk_size_seconds * _SAMPLE_RATE)
 
     def _encode(text: str) -> list[int]:
         return list(tokenizer.encode(text, add_special_tokens=False))
 
-    def _build_prompt_ids(num_audio_tokens: int, user_prompt: str) -> list[int]:
+    def _build_prompt_ids(
+        num_audio_tokens: int, user_prompt: str, thinking: bool
+    ) -> list[int]:
         prompt = (
             f"<|im_start|>user\n"
             f"{user_prompt}"
             f"{_AUDIO_BOS}{_AUDIO_PAD * num_audio_tokens}{_AUDIO_EOS}"
             f"<|im_end|>\n"
             f"<|im_start|>assistant\n"
-            f"{_THINK_SUFFIX}"
         )
+        if not thinking:
+            prompt += _THINK_DISABLE_SUFFIX
         return _encode(prompt)
 
     def request_builder(payload: StagePayload) -> HiggsAudioASRRequestData:
@@ -117,8 +119,6 @@ def make_higgs_audio_asr_scheduler_adapters(
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
         fingerprint = audio_fingerprint(audio)
 
-        # Fixed 4 s chunking (the reference pipeline's non-VAD path); each
-        # chunk gets its own mel, padded to the longest chunk in the clip.
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         chunks = [
             audio[i : i + chunk_samples]
@@ -147,7 +147,8 @@ def make_higgs_audio_asr_scheduler_adapters(
         )
 
         user_prompt = str(params.get("prompt") or DEFAULT_TRANSCRIBE_PROMPT)
-        input_ids = _build_prompt_ids(num_audio_tokens, user_prompt)
+        thinking = bool(params.get("enable_thinking", enable_thinking))
+        input_ids = _build_prompt_ids(num_audio_tokens, user_prompt, thinking)
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -157,10 +158,10 @@ def make_higgs_audio_asr_scheduler_adapters(
                 "feature_attention_mask": feature_attention_mask,
             },
         )
-        # general_mm_embed_routine locates audio positions by matching the
-        # item's pad_value against input_ids; the omni scheduler does not
-        # run pad_input_ids, so scatter the pad_value ourselves and record
-        # the (inclusive) placeholder span.
+        # note (zhudian): general_mm_embed_routine locates audio positions by
+        # matching pad_value against input_ids, and the omni scheduler skips
+        # pad_input_ids, so scatter pad_value ourselves and record the inclusive
+        # placeholder span.
         audio_item.set_pad_value()
         audio_start = input_ids.index(audio_pad_token_id)
         input_ids = [
@@ -175,7 +176,6 @@ def make_higgs_audio_asr_scheduler_adapters(
         )
         mm_inputs.audio_token_id = audio_pad_token_id
 
-        # Reference eval decodes greedily; temperature 0 is fine for higgs.
         temperature = float(params.get("temperature") or 0.0)
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         sampling_params = SamplingParams(
@@ -212,16 +212,24 @@ def make_higgs_audio_asr_scheduler_adapters(
     def result_adapter(data: HiggsAudioASRRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
+        # note (zhudian): resolve think blocks at token level (byte-level BPE
+        # decode->re-split is not identity for all whitespace/Unicode). A closed
+        # block => transcript is what follows </think>; an unclosed <think>
+        # (max_new_tokens truncation) => the content after <think> is the
+        # transcript, matching the reference transcribe.py.
+        if think_close_id in output_ids:
+            transcript_ids = output_ids[
+                len(output_ids) - output_ids[::-1].index(think_close_id) :
+            ]
+        elif think_open_id in output_ids:
+            transcript_ids = output_ids[output_ids.index(think_open_id) + 1 :]
+        else:
+            transcript_ids = output_ids
         text = tokenizer.decode(
-            output_ids,
+            transcript_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
-        )
-        # The prompt forces an empty think block, but strip a stray one if
-        # the model opens its own anyway.
-        if "</think>" in text:
-            text = text.split("</think>", 1)[1]
-        text = text.strip()
+        ).strip()
 
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0

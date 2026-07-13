@@ -67,6 +67,8 @@ tests/
     ├── qwen3_asr/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── higgs_audio_asr/
+    │   └── test_pipeline.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
     │   ├── test_pipeline.py
@@ -306,6 +308,12 @@ that happened to contain an older version of the test.
     request builder paths
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
+- `unit_test/higgs_audio_asr/`: Higgs-Audio-v3-STT unit tests:
+  - pipeline config registration and stage factory defaults (incl. the
+    thinking-enabled default matching the checkpoint's documented behavior)
+  - per-chunk audio token length formula
+  - audio-tower attention masking: a padded partial chunk batched with a
+    longer one yields the same embeddings as run alone (padding isolation).
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio

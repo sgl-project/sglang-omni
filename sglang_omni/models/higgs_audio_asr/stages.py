@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
-from transformers import AutoFeatureExtractor, AutoTokenizer
+from transformers import AutoConfig, AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.higgs_audio_asr.request_builders import (
@@ -43,12 +43,18 @@ def create_sglang_higgs_audio_asr_executor(
     enable_torch_compile: bool = False,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
+    enable_thinking: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     feature_extractor = AutoFeatureExtractor.from_pretrained(_WHISPER_PROCESSOR_ID)
+    # note (zhudian): the LM output dim (text_config.vocab_size) exceeds the
+    # tokenizer's base vocab, so added tokens like <think> would be flagged
+    # invalid/NaN if sized from the tokenizer.
+    hf_config = AutoConfig.from_pretrained(model_path)
+    lm_vocab_size = int(hf_config.text_config.vocab_size)
 
     defaults: dict[str, Any] = {
         "disable_cuda_graph": False,
@@ -104,6 +110,8 @@ def create_sglang_higgs_audio_asr_executor(
         tokenizer=tokenizer,
         feature_extractor=feature_extractor,
         max_new_tokens=max_new_tokens,
+        vocab_size=lm_vocab_size,
+        enable_thinking=enable_thinking,
     )
 
     return OmniScheduler(
