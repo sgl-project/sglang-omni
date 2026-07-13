@@ -53,6 +53,11 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "tts_engine",
         "vocoder",
     ]
+    assert [stage.process for stage in config.stages] == [
+        "preprocessing",
+        "pipeline",
+        "pipeline",
+    ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -89,6 +94,49 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     assert prompt["vq_mask_tokens"].sum().item() == 2
     assert torch.equal(prompt["vq_parts"][0], torch.tensor([[0, 1], [10, 11]]))
     assert any("<|speaker:alice|>target" in text for text in tokenizer.encoded_texts)
+
+
+@pytest.mark.parametrize(
+    "cpu_count,expected_intraop_threads",
+    [(4, 1), (32, 4), (224, 8)],
+)
+def test_fish_preprocessing_uses_bounded_cpu_threads(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_count: int,
+    expected_intraop_threads: int,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setattr(
+        stages.os,
+        "sched_getaffinity",
+        lambda _pid: set(range(cpu_count)),
+        raising=False,
+    )
+    configured_threads: list[int] = []
+    monkeypatch.setattr(stages.torch, "set_num_threads", configured_threads.append)
+
+    intraop_threads = stages._configure_preprocessing_threads(worker_count=8)
+
+    assert configured_threads == [expected_intraop_threads]
+    assert intraop_threads == expected_intraop_threads
+
+
+def test_fish_preprocessing_preserves_operator_thread_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    monkeypatch.setattr(stages.torch, "get_num_threads", lambda: 3)
+    configured_threads: list[int] = []
+    monkeypatch.setattr(stages.torch, "set_num_threads", configured_threads.append)
+
+    intraop_threads = stages._configure_preprocessing_threads(worker_count=8)
+
+    assert configured_threads == []
+    assert intraop_threads == 3
 
 
 def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> None:
