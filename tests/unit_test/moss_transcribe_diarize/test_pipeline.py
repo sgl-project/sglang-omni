@@ -138,6 +138,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "init_device_graphs": 0,
         "compile_encoder": [],
         "init_encoder_graphs": [],
+        "generation_overrides": [],
     }
     model = SimpleNamespace(
         compile_encoder=lambda buckets, feat_len: calls["compile_encoder"].append(
@@ -170,7 +171,13 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     )
     monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
     monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
-    monkeypatch.setattr(stages, "build_generation_batch_overrides", lambda **k: {})
+    def _build_generation_batch_overrides(**kwargs):
+        calls["generation_overrides"].append(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        stages, "build_generation_batch_overrides", _build_generation_batch_overrides
+    )
     monkeypatch.setattr(stages, "build_sglang_server_args", lambda *a, **k: object())
     monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **k: None)
     monkeypatch.setattr(
@@ -205,6 +212,31 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert len(calls["compile_encoder"]) == 1
     assert calls["init_encoder_graphs"] == []
     assert calls["init_device_graphs"] == 1
+
+
+def test_factory_configures_supported_eager_xpu_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_factory_env(monkeypatch, want_cuda_graph=False)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        device="xpu:0",
+        enable_async_decode=True,
+        encoder_torch_compile=False,
+    )
+
+    [generation] = calls["generation_overrides"]
+    assert generation["disable_overlap_schedule"] is True
+    assert generation["server_args_overrides"] == {
+        "device": "xpu",
+        "attention_backend": "intel_xpu",
+        "page_size": 128,
+        "disable_cuda_graph": True,
+    }
+    assert calls["init_device_graphs"] == 0
+    assert calls["compile_encoder"] == []
+    assert calls["init_encoder_graphs"] == []
 
 
 def _repo_not_found(url: str) -> RepositoryNotFoundError:

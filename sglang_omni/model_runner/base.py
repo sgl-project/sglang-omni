@@ -80,7 +80,10 @@ class ModelRunner:
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
-        self.device = torch.device(f"cuda:{tp_worker.gpu_id}")
+        # SGLang already resolves the concrete device from ServerArgs. Reuse
+        # it here so non-CUDA backends (notably Intel XPU) do not get forced
+        # back onto an unavailable CUDA device by the Omni wrapper.
+        self.device = torch.device(tp_worker.model_runner.device)
         self.model = tp_worker.model_runner.model
 
         # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.

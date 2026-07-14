@@ -11,6 +11,18 @@ import torch
 from sglang_omni.model_runner.base import ModelRunner
 
 
+def test_model_runner_normalizes_sglang_device_string() -> None:
+    model = object()
+    tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(device="xpu:0", model=model)
+    )
+
+    runner = ModelRunner(tp_worker, output_processor=object())
+
+    assert runner.device == torch.device("xpu:0")
+    assert runner.model is model
+
+
 def _install_fake_forward_batch_module(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in [
         "sglang",

@@ -110,6 +110,57 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
+### Intel XPU
+
+The MOSS stage also supports SGLang's Intel XPU backend. The XPU path uses
+synchronous eager decode because CUDA graphs, the encoder graph runner, and
+Omni's async lookahead are CUDA-specific. It selects the `intel_xpu` attention
+backend and page size 128, which is supported by the non-MLA XPU decode kernel.
+
+The reproducible image build currently pins the mutually compatible versions:
+
+| Component | Version / revision |
+|---|---|
+| SGLang | `0.5.12.post1` (`5a15cde8`) |
+| PyTorch XPU | `2.11.0+xpu` |
+| `sgl-kernel-xpu` | `pt2.11` (`2fcb0449`) |
+| Transformers | `5.6.0` |
+
+Build the general SGLang XPU base and the Omni runtime with three compile jobs:
+
+```bash
+BUILD_JOBS=3 bash scripts/build_xpu_images.sh
+```
+
+Three jobs is the validated setting for a host with 26 GiB RAM. The kernel
+build is memory intensive; increasing it to 12 caused host OOM in testing.
+
+Run MOSS on one XPU:
+
+```bash
+VIDEO_GID="$(stat -c '%g' /dev/dri/card0)"
+RENDER_GID="$(stat -c '%g' /dev/dri/renderD128)"
+docker run --rm --ipc=host --network=host \
+  --device=/dev/dri:/dev/dri \
+  --group-add "$VIDEO_GID" \
+  --group-add "$RENDER_GID" \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  -e MODEL_PATH=OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  -e MAX_RUNNING_REQUESTS=3 \
+  -e MEM_FRACTION_STATIC=0.70 \
+  -e MAX_NEW_TOKENS=11500 \
+  sglang-omni-xpu:0.1.0-moss
+```
+
+On a 24 GiB Intel Arc Pro B60, a 1031.88-second PCM recording completed at
+concurrency 1 in 297.7 seconds with the official diarization prompt and an
+11,500-token output budget. At `mem_fraction_static=0.70`, concurrency 2
+completed two content-distinct copies in 332.0 seconds (6.22 audio-seconds per
+wall-second) with 19,369 MiB peak device memory. A four-request run completed
+without OOM but scheduled only three long prefills concurrently; the queued
+request increased wall time to 611.1 seconds, so three active long requests is
+the practical limit for this device and workload.
+
 ### Sending Requests
 
 Use `response_format=verbose_json` when you need parsed speaker segments. `json` returns the raw transcript text only.

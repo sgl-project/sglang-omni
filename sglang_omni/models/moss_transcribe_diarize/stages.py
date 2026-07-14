@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -36,6 +37,8 @@ from sglang_omni.scheduling.sglang_backend import (
 # no cross-request batching yet.
 # Cap tuned to p99 audio duration ([1,8] covers up to ~4min)
 _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -108,6 +111,33 @@ def create_sglang_moss_transcribe_diarize_executor(
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
 ):
+    device_type = device.split(":", 1)[0]
+    server_args_overrides = dict(server_args_overrides or {})
+    if device_type == "xpu":
+        # SGLang's XPU backend supports eager execution today, while Omni's
+        # async lookahead and encoder graph runner are CUDA-specific. Keep the
+        # portable MOSS path synchronous/eager and let the Intel attention
+        # backend own KV-cache execution.
+        enable_async_decode = False
+        server_args_overrides.update(
+            {
+                "device": "xpu",
+                "attention_backend": "intel_xpu",
+                # SGLang 0.5.12's non-MLA Intel XPU backend only ships
+                # decode kernels for page sizes 64 and 128. Use the backend's
+                # own fallback value explicitly so logs and KV-cache sizing
+                # describe the configuration that actually runs.
+                "page_size": 128,
+                "disable_cuda_graph": True,
+            }
+        )
+        logger.info(
+            "MOSS-Transcribe-Diarize XPU mode: synchronous eager decode, "
+            "intel_xpu attention backend, page_size=128"
+        )
+    elif device_type != "cuda":
+        raise ValueError(f"Unsupported MOSS-Transcribe-Diarize device: {device!r}")
+
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     with _missing_additional_chat_templates_compat():

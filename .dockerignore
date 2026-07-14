@@ -7,3 +7,9 @@ __pycache__/
 .mypy_cache/
 .cache/
 results/
+.github/
+benchmarks/
+docs/
+examples/
+test/
+tests/
