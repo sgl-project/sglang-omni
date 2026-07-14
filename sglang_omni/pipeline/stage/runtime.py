@@ -1366,6 +1366,8 @@ class Stage:
                 direct_ref = stage_io.serialize_direct_cuda_ipc_payload(
                     projected_payload
                 )
+            except ValueError:
+                pass
             except RuntimeError as exc:
                 if "received from another process" not in str(exc):
                     raise

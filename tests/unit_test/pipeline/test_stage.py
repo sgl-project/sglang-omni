@@ -1064,6 +1064,47 @@ def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) ->
     asyncio.run(_run())
 
 
+def test_stage_uses_relay_when_direct_cuda_payload_header_is_oversized(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
+    monkeypatch.setattr(
+        stage_io,
+        "extract_cuda_tensors",
+        lambda data: (data, {"gpu": torch.ones(1)}),
+    )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="mm_aggregate",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"talker_ar": "inproc://talker"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"talker_ar"},
+            stage_gpu_ids={"talker_ar": (0,)},
+        )
+
+        payload = make_stage_payload(
+            request_id="req-oversized-header",
+            data={"metadata": b"x" * 70_000, "tensor": torch.ones(1)},
+        )
+        await sender._send_to_stage("req-oversized-header", "talker_ar", payload)
+
+        target, endpoint, msg = control_plane.sent_to_stage[0]
+        assert target == "talker_ar"
+        assert endpoint == "inproc://talker"
+        assert msg.data_ref["_type"] == "DataRef"
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
 def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
     payload = make_stage_payload(request_id="req-direct", data={"answer": 7})
     monkeypatch.setattr(
