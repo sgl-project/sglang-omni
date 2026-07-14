@@ -77,7 +77,7 @@ RUN --mount=type=cache,id=sglang-xpu-pip,target=/root/.cache/pip \
     && cd /sgl-workspace \
     && rm -rf sgl-kernel-xpu
 
-FROM xpu-base AS runtime
+FROM xpu-base AS runtime-build
 
 COPY --from=kernel-builder /wheelhouse/ /tmp/sgl-kernel-wheels/
 
@@ -101,4 +101,62 @@ RUN --mount=type=cache,id=sglang-xpu-pip,target=/root/.cache/pip \
     && cd /sgl-workspace \
     && rm -rf sglang
 
-CMD ["bash", "-c", "source /opt/intel/oneapi/setvars.sh --force && exec bash"]
+# Only these compiler runtime libraries are referenced by the prebuilt SYCL
+# extension. Copying the complete oneAPI development tree would add >8 GB.
+RUN mkdir -p /opt/xpu-runtime-libs \
+    && cp -a \
+        /opt/intel/oneapi/compiler/2025.3/lib/libsycl.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libur_loader.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libur_adapter_level_zero.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libur_adapter_level_zero_v2.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libur_adapter_opencl.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libimf.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libsvml.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libirng.so* \
+        /opt/intel/oneapi/compiler/2025.3/lib/libintlc.so* \
+        /opt/intel/oneapi/umf/1.0/lib/libumf.so* \
+        /opt/intel/oneapi/tcm/1.4/lib/libhwloc.so* \
+        /opt/xpu-runtime-libs/
+
+FROM ubuntu:noble AS runtime
+
+ARG SGLANG_COMMIT=5a15cde858ea09b77116212a39356f2fc51b8584
+
+LABEL org.opencontainers.image.source="https://github.com/sgl-project/sglang" \
+      org.opencontainers.image.revision="${SGLANG_COMMIT}" \
+      qofe.runtime="xpu"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH="/opt/venv/bin:${PATH}" \
+    VIRTUAL_ENV=/opt/venv \
+    LD_LIBRARY_PATH="/opt/xpu-runtime-libs"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        build-essential \
+        python3.12 \
+        python3.12-dev \
+        software-properties-common \
+    && add-apt-repository -y ppa:kobuk-team/intel-graphics \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        intel-media-va-driver-non-free \
+        intel-ocloc \
+        intel-opencl-icd \
+        libmfx-gen1 \
+        libva2 \
+        libvpl2 \
+        libze-dev \
+        libze-intel-gpu1 \
+        libze1 \
+    && apt-get purge -y --auto-remove software-properties-common \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=runtime-build /opt/venv /opt/venv
+COPY --from=runtime-build /opt/xpu-runtime-libs /opt/xpu-runtime-libs
+
+WORKDIR /workspace
+
+CMD ["bash"]

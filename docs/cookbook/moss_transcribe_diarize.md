@@ -134,6 +134,11 @@ BUILD_JOBS=3 bash scripts/build_xpu_images.sh
 
 Three jobs is the validated setting for a host with 26 GiB RAM. The kernel
 build is memory intensive; increasing it to 12 caused host OOM in testing.
+The multi-stage runtime keeps the small compiler and Level Zero header set
+needed by Triton's first-request JIT, but drops the complete oneAPI development
+tree. On the test host, `docker image ls` reports 15.4 GB for both the shared
+base and the final Omni tag (3.67 GB of content reported by `docker inspect`),
+down from 27 GB for the original development-based image.
 
 Run MOSS on one XPU:
 
