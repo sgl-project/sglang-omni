@@ -6,8 +6,8 @@ mmmu_accuracy:
   extra_env: {}
   context_vars:
     - CONCURRENCY
-  test_file_sha256: 04db988540250d5410d5895cd0a225a9df0206bcbc821e9e6d52105a4d018cce
-  last_discovered_at: 2026-07-11T07:29:25Z
+  test_file_sha256: 076246df352b7e1ed18669ca2939f88e956d23111b76e446e8fb0dcb2ebf1fa0
+  last_discovered_at: 2026-07-14T20:32:38Z
   expected_samples: 50
   sample_counts:
     total:
@@ -34,8 +34,8 @@ mmmu_speed:
   extra_env: {}
   context_vars:
     - CONCURRENCY
-  test_file_sha256: 04db988540250d5410d5895cd0a225a9df0206bcbc821e9e6d52105a4d018cce
-  last_discovered_at: 2026-07-11T07:29:25Z
+  test_file_sha256: 076246df352b7e1ed18669ca2939f88e956d23111b76e446e8fb0dcb2ebf1fa0
+  last_discovered_at: 2026-07-14T20:32:38Z
   expected_samples: 50
   sample_counts:
     total:
@@ -84,8 +84,8 @@ mmmu_talker_accuracy:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: a1013724eedade0ff03284d00ae4d3c93ca69180faebaddb7770bbaae02cf560
-  last_discovered_at: 2026-07-11T07:29:25Z
+  test_file_sha256: c59dcb6e1be3de451c1d1a28c08230b7dd53dec6cb4d8c617db30a44c5dbd90e
+  last_discovered_at: 2026-07-14T20:32:38Z
   expected_samples: 20
   sample_counts:
     total:
@@ -114,8 +114,8 @@ mmmu_talker_wer:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: a1013724eedade0ff03284d00ae4d3c93ca69180faebaddb7770bbaae02cf560
-  last_discovered_at: 2026-07-11T07:29:25Z
+  test_file_sha256: c59dcb6e1be3de451c1d1a28c08230b7dd53dec6cb4d8c617db30a44c5dbd90e
+  last_discovered_at: 2026-07-14T20:32:38Z
   expected_samples: 20
   sample_counts:
     total:
@@ -154,8 +154,8 @@ mmmu_talker_speed:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: a1013724eedade0ff03284d00ae4d3c93ca69180faebaddb7770bbaae02cf560
-  last_discovered_at: 2026-07-11T07:29:25Z
+  test_file_sha256: c59dcb6e1be3de451c1d1a28c08230b7dd53dec6cb4d8c617db30a44c5dbd90e
+  last_discovered_at: 2026-07-14T20:32:38Z
   expected_samples: 20
   sample_counts:
     total:
