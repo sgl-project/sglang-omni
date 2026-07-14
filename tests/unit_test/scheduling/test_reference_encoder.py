@@ -237,6 +237,15 @@ def test_lru_eviction_respects_max_bytes() -> None:
     assert service.stats()["evictions"] >= 1
 
 
+def test_constructor_rejects_nonpositive_capacity() -> None:
+    with pytest.raises(ValueError, match="max_items"):
+        ReferenceEncodeService(_TensorHook(), max_items=0)
+    with pytest.raises(ValueError, match="max_items"):
+        ReferenceEncodeService(_TensorHook(), max_items=-1)
+    with pytest.raises(ValueError, match="max_bytes"):
+        ReferenceEncodeService(_TensorHook(), max_items=16, max_bytes=0)
+
+
 def test_revalidate_false_returns_but_does_not_cache() -> None:
     class _NoCacheHook(_TensorHook):
         def revalidate(self, item: str, key: ReferenceEncodeKey) -> bool:

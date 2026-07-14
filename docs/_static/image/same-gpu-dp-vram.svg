@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="470" viewBox="0 0 920 470" font-family="'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif">
+  <rect width="920" height="470" fill="#f4f6f9"/>
+  <rect x="12" y="12" width="896" height="446" rx="16" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="40" y="52" font-size="20" font-weight="700" fill="#171b24">The VRAM view: what DP costs, and what it buys</text>
+  <rect x="636" y="36" width="244" height="26" rx="13" fill="none" stroke="#12a394"/>
+  <text x="758" y="53" font-size="12.5" fill="#12a394" text-anchor="middle">Reader: why replicate weights?</text>
+
+  <g transform="translate(56,40)">
+    <text x="20" y="40" font-size="12.5" fill="#5f6a79">One 80 GB H100 · schematic, not to scale</text>
+
+    <text x="20" y="78" font-size="13" fill="#171b24" font-weight="700">1 replica</text>
+    <rect x="140" y="60" width="600" height="34" rx="6" fill="#eef1f5" stroke="#d7dce4"/>
+    <rect x="140" y="60" width="52"  height="34" rx="6" fill="#5b6b9a"/>
+    <rect x="192" y="60" width="330" height="34" fill="#deae54"/>
+    <text x="166" y="82" font-size="11" fill="#ffffff" text-anchor="middle">W</text>
+    <text x="357" y="82" font-size="12" fill="#4a3a12" text-anchor="middle">KV Cache (large)</text>
+    <text x="632" y="82" font-size="12" fill="#5f6a79" text-anchor="middle">free</text>
+    <text x="140" y="118" font-size="12" fill="#5f6a79">GPU compute used</text>
+    <rect x="270" y="106" width="300" height="14" rx="7" fill="#ccd3dd"/>
+    <rect x="270" y="106" width="87"  height="14" rx="7" fill="#12a394"/>
+    <text x="580" y="117" font-size="12" fill="#171b24">≈29%</text>
+
+    <text x="20" y="176" font-size="13" fill="#171b24" font-weight="700">3 replicas</text>
+    <rect x="140" y="158" width="600" height="34" rx="6" fill="#eef1f5" stroke="#d7dce4"/>
+    <rect x="140" y="158" width="52" height="34" rx="6" fill="#5b6b9a"/>
+    <rect x="192" y="158" width="52" height="34" fill="#5b6b9a"/>
+    <rect x="244" y="158" width="52" height="34" fill="#5b6b9a"/>
+    <rect x="296" y="158" width="128" height="34" fill="#deae54"/>
+    <rect x="424" y="158" width="86"  height="34" fill="#deae54"/>
+    <rect x="510" y="158" width="54"  height="34" fill="#deae54"/>
+    <text x="218" y="180" font-size="11" fill="#ffffff" text-anchor="middle">W ×3</text>
+    <text x="360" y="180" font-size="11" fill="#4a3a12" text-anchor="middle">KV 1</text>
+    <text x="467" y="180" font-size="11" fill="#4a3a12" text-anchor="middle">KV 2</text>
+    <text x="537" y="180" font-size="10" fill="#4a3a12" text-anchor="middle">KV 3</text>
+    <text x="652" y="180" font-size="12" fill="#5f6a79" text-anchor="middle">free</text>
+    <text x="296" y="210" font-size="11.5" fill="#5f6a79">per-replica KV tokens: 97,503 · 53,149 · 20,961</text>
+    <text x="140" y="238" font-size="12" fill="#5f6a79">GPU compute used</text>
+    <rect x="270" y="226" width="300" height="14" rx="7" fill="#ccd3dd"/>
+    <rect x="270" y="226" width="195" height="14" rx="7" fill="#12a394"/>
+    <text x="580" y="237" font-size="12" fill="#171b24">higher</text>
+
+    <line x1="20" y1="258" x2="740" y2="258" stroke="#d7dce4"/>
+    <text x="20" y="280" font-size="13" fill="#171b24">DP <tspan fill="#5f6a79">does not save VRAM</tspan>: it copies weights ×N and splits the KV pool, reclaiming the idle compute above.</text>
+  </g>
+
+  <g transform="translate(40,356)" font-size="12.5" fill="#5f6a79">
+    <rect x="0" y="0" width="13" height="13" rx="3" fill="#5b6b9a"/>
+    <text x="19" y="11">weights (replicated)</text>
+    <rect x="164" y="0" width="13" height="13" rx="3" fill="#deae54"/>
+    <text x="183" y="11">KV Cache (split, smaller each)</text>
+    <rect x="404" y="0" width="13" height="13" rx="3" fill="#12a394"/>
+    <text x="423" y="11">compute used</text>
+    <rect x="524" y="0" width="13" height="13" rx="3" fill="#ccd3dd"/>
+    <text x="543" y="11">idle</text>
+  </g>
+  <text x="40" y="392" font-size="13" fill="#5f6a79">A small model's weights are a modest slice of an 80 GB card, so two or three full replicas fit; each KV pool then gets smaller.</text>
+  <text x="40" y="414" font-size="13" fill="#5f6a79">It pays only when a tuned single replica was already leaving the GPU idle. On a compute-bound model</text>
+  <text x="40" y="436" font-size="13" fill="#5f6a79">(for example MOSS-TTS-Local at ≈81% util) the extra weight copies buy nothing.</text>
+</svg>

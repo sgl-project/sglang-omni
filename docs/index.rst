@@ -88,7 +88,7 @@ Supported Models
    basic_usage/qwen3_omni.md
    basic_usage/tts.md
    basic_usage/omni_router.md
-   basic_usage/same_gpu_dp.md
+   basic_usage/mps_dp.md
 
 
 .. toctree::

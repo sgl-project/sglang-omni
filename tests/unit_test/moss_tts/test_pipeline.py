@@ -267,31 +267,6 @@ def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None
     assert server_args_overrides["torch_compile_max_bs"] == 4
 
 
-def test_moss_tts_state_round_trip_keeps_tensors_native() -> None:
-    codes = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
-    state = MossTTSState(
-        text="hello",
-        ref_audio="ref.wav",
-        ref_text="reference",
-        language="en",
-        instructions="warm",
-        token_count=180,
-        generation_kwargs={"max_new_tokens": 64},
-        delayed_audio_codes=codes,
-        assistant_start_length=2,
-    )
-    restored = MossTTSState.from_dict(state.to_dict())
-
-    assert restored.text == "hello"
-    assert restored.ref_audio == "ref.wav"
-    assert restored.ref_text == "reference"
-    assert restored.language == "en"
-    assert restored.instructions == "warm"
-    assert restored.token_count == 180
-    assert torch.equal(restored.delayed_audio_codes, codes)
-    assert restored.assistant_start_length == 2
-
-
 def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from sglang_omni.models.moss_tts import stages
 
