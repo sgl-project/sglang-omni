@@ -11,6 +11,7 @@ import os
 import queue
 import threading
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, TypeAlias
 
 import torch
@@ -506,6 +507,7 @@ def create_preprocessing_executor(
     ref_audio_cache: bool = True,
     ref_audio_cache_max_items: int = 8192,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
+    inline_prepared_request: bool = False,
 ) -> SimpleScheduler:
     # MOSS_REF_AUDIO_CACHE=0 disables the cache at startup (ops kill switch / A-B
     # toggle) without a config edit; unset => kwarg/config default.
@@ -544,7 +546,10 @@ def create_preprocessing_executor(
     # unlike MOSS Delay the audio tokenizer must live on the GPU; threads
     # release the GIL during the codec forward, keeping the AR engine fed.
     return SimpleScheduler(
-        preprocess_moss_tts_local_payload,
+        partial(
+            preprocess_moss_tts_local_payload,
+            inline_prepared_request=inline_prepared_request,
+        ),
         abort_callback=cleanup_prepared_moss_tts_local_request,
         max_concurrency=max_concurrency,
     )
@@ -561,6 +566,8 @@ def create_sglang_tts_engine_executor(
     async_decode_min_batch_size: int = 2,
     total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
+    stream_chunk_frames: int = 25,
+    initial_chunk_frames: int = 1,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
@@ -571,6 +578,8 @@ def create_sglang_tts_engine_executor(
         async_decode_min_batch_size=async_decode_min_batch_size,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         codec_mem_reserve=codec_mem_reserve,
+        stream_chunk_frames=stream_chunk_frames,
+        initial_chunk_frames=initial_chunk_frames,
     ).build(
         model_path,
         device=device,

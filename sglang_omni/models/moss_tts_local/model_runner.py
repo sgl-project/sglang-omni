@@ -12,6 +12,10 @@ from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
 from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.streaming_vocoder import (
+    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+    resolve_initial_codec_chunk_frames,
+)
 from sglang_omni.scheduling.types import RequestOutput
 
 
@@ -28,11 +32,28 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     _outbox: Any | None = None
     _vocoder_target = "vocoder"
+    _stream_chunk_frames = 25
+    _default_initial_chunk_frames = 1
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: Any,
+        *,
+        stream_chunk_frames: int = 25,
+        initial_chunk_frames: int = 1,
+    ):
         super().__init__(tp_worker, output_processor)
         self._outbox: Any | None = None
         self._vocoder_target = "vocoder"
+        if stream_chunk_frames < 1:
+            raise ValueError(
+                f"stream_chunk_frames must be >= 1, got {stream_chunk_frames}"
+            )
+        self._stream_chunk_frames = int(stream_chunk_frames)
+        self._default_initial_chunk_frames = max(
+            0, min(int(initial_chunk_frames), self._stream_chunk_frames)
+        )
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self._outbox = outbox
@@ -619,7 +640,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local journal/batch alignment broken: "
                 f"{journal.rids} != {expected_rids}"
             )
-        rows_cpu: torch.Tensor | None = None
+        stream_flushes: list[tuple[str, Any, list[torch.Tensor]]] = []
         for i, sched_req in enumerate(expected_reqs):
             # Overrun: a request finished or retracted in a PRIOR step is still
             # in this lagged resolve batch; its wasted frame must not reach
@@ -635,9 +656,17 @@ class MossTTSLocalModelRunner(ModelRunner):
                 except AttributeError:
                     is_retracted = False
                 if (callable(finished_fn) and finished_fn()) or bool(is_retracted):
+                    pending_rows = getattr(sched_req.data, "stream_pending_rows", None)
+                    if pending_rows:
+                        pending_rows.clear()
                     continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
+                pending_rows = getattr(sched_req.data, "stream_pending_rows", None)
+                if pending_rows and self._outbox is not None:
+                    stream_flushes.append(
+                        (sched_req.request_id, sched_req.data, list(pending_rows))
+                    )
                 continue
             sched_req.data.output_rows.append(journal.rows[i])
             stream_metadata = getattr(sched_req.data, "stream_metadata", None)
@@ -645,15 +674,54 @@ class MossTTSLocalModelRunner(ModelRunner):
                 continue
             if self._outbox is None:
                 continue
-            if rows_cpu is None:
-                # One D2H per step regardless of how many requests stream.
-                rows_cpu = journal.rows.detach().to("cpu", torch.long)
+            pending_rows = sched_req.data.stream_pending_rows
+            pending_rows.append(journal.rows[i])
+            if len(pending_rows) >= self._stream_flush_threshold(sched_req.data):
+                stream_flushes.append(
+                    (sched_req.request_id, sched_req.data, list(pending_rows))
+                )
+
+        self._flush_stream_rows(stream_flushes)
+
+    def _stream_flush_threshold(self, data: Any) -> int:
+        if data.stream_first_chunk_sent:
+            return self._stream_chunk_frames
+        metadata = data.stream_metadata
+        if metadata.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+            initial_frames = resolve_initial_codec_chunk_frames(
+                metadata,
+                steady_chunk_frames=self._stream_chunk_frames,
+            )
+        else:
+            initial_frames = self._default_initial_chunk_frames
+        return initial_frames or self._stream_chunk_frames
+
+    def _flush_stream_rows(
+        self, flushes: list[tuple[str, Any, list[torch.Tensor]]]
+    ) -> None:
+        if not flushes or self._outbox is None:
+            return
+        lengths = [len(rows) for _, _, rows in flushes]
+        rows_cpu = (
+            torch.stack(
+                [row for _, _, rows in flushes for row in rows],
+                dim=0,
+            )
+            .detach()
+            .to("cpu", torch.long)
+        )
+        offset = 0
+        for (request_id, data, _), length in zip(flushes, lengths):
+            chunk = rows_cpu[offset : offset + length]
+            offset += length
+            data.stream_pending_rows.clear()
+            data.stream_first_chunk_sent = True
             self._outbox.put(
                 OutgoingMessage(
-                    request_id=sched_req.request_id,
+                    request_id=request_id,
                     type="stream",
                     target=self._vocoder_target,
-                    data=rows_cpu[i].clone(),
-                    metadata=stream_metadata,
+                    data=chunk,
+                    metadata=data.stream_metadata,
                 )
             )

@@ -411,19 +411,24 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id
         codes = codes.to(dtype=torch.long)
         n_vq = state.n_vq if state.n_vq is not None else self._n_vq
-        if codes.ndim != 1 or int(codes.shape[0]) < n_vq + 1:
-            raise ValueError(
-                f"MOSS-TTS Local stream chunk must be a 1-D row with at least "
-                f"{n_vq + 1} channels (text + codes), got {tuple(codes.shape)}"
-            )
-        # Row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
-        return codes[1 : 1 + n_vq]
+        if codes.ndim == 1 and int(codes.shape[0]) >= n_vq + 1:
+            return codes[1 : 1 + n_vq]
+        if codes.ndim == 2 and int(codes.shape[1]) >= n_vq + 1:
+            return codes[:, 1 : 1 + n_vq]
+        raise ValueError(
+            "MOSS-TTS Local stream chunk must be a row or row batch with "
+            f"at least {n_vq + 1} channels (text + codes), got "
+            f"{tuple(codes.shape)}"
+        )
 
     def ingest(
         self, request_id: str, state: _LocalStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
-        state.pending.append(codes)
+        if codes.ndim == 1:
+            state.pending.append(codes)
+        else:
+            state.pending.extend(codes.unbind(0))
         self._ensure_slot(state)
 
     def decode_delta(

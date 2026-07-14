@@ -23,11 +23,15 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         async_decode_min_batch_size: int,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
+        stream_chunk_frames: int = 25,
+        initial_chunk_frames: int = 1,
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
+        self.stream_chunk_frames = int(stream_chunk_frames)
+        self.initial_chunk_frames = int(initial_chunk_frames)
         self.memory_budget = moss_local_stages._ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
@@ -123,7 +127,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "sglang_omni.models.moss_tts_local.model_runner"
         )
 
-        return model_runner_mod.MossTTSLocalModelRunner(model_worker, output_proc)
+        return model_runner_mod.MossTTSLocalModelRunner(
+            model_worker,
+            output_proc,
+            stream_chunk_frames=self.stream_chunk_frames,
+            initial_chunk_frames=self.initial_chunk_frames,
+        )
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         return request_builders.make_moss_tts_local_scheduler_adapters(model=model)

@@ -62,6 +62,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
+    stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
+    stream_first_chunk_sent: bool = False
 
 
 @dataclass
@@ -110,6 +112,29 @@ def pop_prepared_moss_tts_local_request(
     marker = data.get(_MOSS_TTS_LOCAL_PREPARED_MARKER)
     if marker is None:
         return None
+    if isinstance(marker, dict):
+        input_ids_list = marker.get("input_ids_list")
+        prompt_rows = marker.get("prompt_rows")
+        if (
+            str(marker.get("request_id")) != str(payload.request_id)
+            or not isinstance(input_ids_list, list)
+            or not isinstance(prompt_rows, torch.Tensor)
+            or prompt_rows.ndim != 2
+            or len(input_ids_list) != int(prompt_rows.shape[0])
+        ):
+            raise RuntimeError(
+                "MOSS-TTS Local inline preprocessing state is invalid for "
+                f"payload {payload.request_id!r}"
+            )
+        state = MossTTSLocalState.from_dict(data)
+        normalized_ids = [int(token_id) for token_id in input_ids_list]
+        return MossTTSLocalPreparedRequest(
+            state=state,
+            input_ids_list=normalized_ids,
+            input_ids=torch.tensor(normalized_ids, dtype=torch.long),
+            prompt_rows=prompt_rows.to(dtype=torch.long, device="cpu"),
+            gen_kwargs=dict(state.generation_kwargs),
+        )
     prepared = _QUEUE.pop(str(marker))
     if prepared is None:
         raise RuntimeError(
@@ -273,7 +298,9 @@ def _prepare_moss_tts_local_request(
     )
 
 
-def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
+def preprocess_moss_tts_local_payload(
+    payload: StagePayload, *, inline_prepared_request: bool = False
+) -> StagePayload:
     """Run prompt/reference preprocessing outside the AR scheduler."""
 
     rid = str(payload.request_id)
@@ -300,7 +327,16 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
 
     data = prepared.state.to_dict()
     if published:
-        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+        if inline_prepared_request:
+            prepared = _QUEUE.pop(rid)
+            if prepared is not None:
+                data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = {
+                    "request_id": payload.request_id,
+                    "input_ids_list": prepared.input_ids_list,
+                    "prompt_rows": prepared.prompt_rows,
+                }
+        else:
+            data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )

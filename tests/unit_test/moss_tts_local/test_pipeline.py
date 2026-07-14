@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import struct
 import sys
 import types
@@ -404,9 +405,13 @@ def test_pipeline_stage_wiring():
     assert tts_engine_runtime.resources.total_gpu_memory_fraction == pytest.approx(0.90)
     assert tts_engine_runtime.sglang_server_args.mem_fraction_static is None
     assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.15)
+    assert stages["tts_engine"].factory_args["stream_chunk_frames"] == 25
+    assert stages["tts_engine"].factory_args["initial_chunk_frames"] == 1
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
+    assert stages["vocoder"].factory_args["stream_chunk_frames"] == 25
+    assert stages["vocoder"].factory_args["initial_chunk_frames"] == 1
 
     placement = build_stage_placement_plan(config)
     assert placement.stages["tts_engine"].gpu_ids == (0,)
@@ -426,12 +431,36 @@ def test_pipeline_stage_wiring():
 
     split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
     split_stages = {stage.name: stage for stage in split.stages}
+    assert split_stages["preprocessing"].process == "codec"
+    assert split_stages["preprocessing"].gpu == 1
     assert split_stages["preprocessing"].factory_args["device"] == "cuda:1"
+    assert split_stages["preprocessing"].factory_args["inline_prepared_request"]
+    assert split_stages["tts_engine"].process == "tts_engine"
     assert split_stages["tts_engine"].gpu == 0
     split_runtime = split_stages["tts_engine"].runtime
     assert split_runtime.resources.total_gpu_memory_fraction is None
     assert split_runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)
+    assert split_stages["vocoder"].process == "codec"
+    assert split_stages["vocoder"].gpu == 1
     assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
+
+
+def test_pipeline_config_syncs_stream_transport_with_vocoder_chunks():
+    stages = MossTTSLocalPipelineConfig(
+        model_path="OpenMOSS-Team/moss-local-test"
+    ).stages
+    vocoder = next(stage for stage in stages if stage.name == "vocoder")
+    vocoder.factory_args["stream_chunk_frames"] = 7
+    vocoder.factory_args["initial_chunk_frames"] = 3
+
+    config = MossTTSLocalPipelineConfig(
+        model_path="OpenMOSS-Team/moss-local-test",
+        stages=stages,
+    )
+    configured = {stage.name: stage for stage in config.stages}
+
+    assert configured["tts_engine"].factory_args["stream_chunk_frames"] == 7
+    assert configured["tts_engine"].factory_args["initial_chunk_frames"] == 3
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():
@@ -877,6 +906,30 @@ def test_preprocess_and_result_adapter():
         assert result.data["prompt_tokens"] == prepared.prompt_rows.shape[0]
     finally:
         clear_moss_tts_local_preprocessing_context()
+
+
+def test_inline_preprocessing_handoff_survives_process_boundary():
+    from sglang_omni.models.moss_tts_local.request_builders import (
+        pop_prepared_moss_tts_local_request,
+    )
+
+    set_moss_tts_local_preprocessing_context(processor=_FakeProcessor())
+    payload = preprocess_moss_tts_local_payload(
+        _payload(), inline_prepared_request=True
+    )
+    marker = payload.data["_moss_tts_local_prepared_request"]
+    assert isinstance(marker, dict)
+
+    # An AR worker in another process has an empty process-local handoff queue.
+    clear_moss_tts_local_preprocessing_context()
+    prepared = pop_prepared_moss_tts_local_request(payload)
+
+    assert prepared is not None
+    assert prepared.input_ids.device.type == "cpu"
+    assert prepared.prompt_rows.device.type == "cpu"
+    assert prepared.input_ids_list == prepared.input_ids.tolist()
+    assert len(prepared.input_ids_list) == prepared.prompt_rows.shape[0]
+    assert prepared.state.text == "hello"
 
 
 def test_result_adapter_empty_generation():
@@ -1664,6 +1717,84 @@ def test_post_process_outputs_skips_chunked_rows():
 
     assert req_a.data.output_rows == [], "chunked row must not be appended"
     assert len(req_b.data.output_rows) == 1, "normal row must be appended"
+
+
+def test_post_process_batches_stream_rows_on_vocoder_boundaries():
+    pytest.importorskip("sglang")
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = types.SimpleNamespace(
+        config=types.SimpleNamespace(audio_end_token_id=151670)
+    )
+    runner._outbox = queue.Queue()
+    runner._vocoder_target = "vocoder"
+    runner._stream_chunk_frames = 3
+    runner._default_initial_chunk_frames = 2
+
+    data = types.SimpleNamespace(
+        req=types.SimpleNamespace(
+            is_chunked=0,
+            is_retracted=False,
+            finished=lambda: False,
+        ),
+        output_rows=[],
+        stream_metadata={
+            "stream": True,
+            "initial_codec_chunk_frames": 1,
+        },
+        stream_pending_rows=[],
+        stream_first_chunk_sent=False,
+    )
+    sched_req = types.SimpleNamespace(request_id="rid", data=data)
+    sched_output = types.SimpleNamespace(requests=[sched_req])
+
+    def resolve_step(step: int, token: int = 1000) -> torch.Tensor:
+        row = torch.arange(N_VQ + 1, dtype=torch.long) + step * 100
+        result = types.SimpleNamespace(
+            moss_journal=MossTTSLocalDecodeJournal(
+                rids=["rid"], pool_rows=[0], rows=row.unsqueeze(0)
+            )
+        )
+        runner.post_process_outputs(
+            result,
+            sched_output,
+            {"rid": types.SimpleNamespace(data=token)},
+        )
+        return row
+
+    first = resolve_step(1)
+    first_message = runner._outbox.get_nowait()
+    assert first_message.request_id == "rid"
+    assert first_message.target == "vocoder"
+    assert first_message.data.shape == (1, N_VQ + 1)
+    torch.testing.assert_close(first_message.data, first.unsqueeze(0))
+
+    followup = [resolve_step(step) for step in (2, 3)]
+    with pytest.raises(queue.Empty):
+        runner._outbox.get_nowait()
+    followup.append(resolve_step(4))
+    followup_message = runner._outbox.get_nowait()
+    assert followup_message.data.shape == (3, N_VQ + 1)
+    torch.testing.assert_close(followup_message.data, torch.stack(followup))
+
+    tail = resolve_step(5)
+    with pytest.raises(queue.Empty):
+        runner._outbox.get_nowait()
+    resolve_step(6, token=151670)
+    tail_message = runner._outbox.get_nowait()
+    assert tail_message.data.shape == (1, N_VQ + 1)
+    torch.testing.assert_close(tail_message.data, tail.unsqueeze(0))
+    assert len(data.output_rows) == 5
+    assert data.stream_pending_rows == []
+
+    data.stream_first_chunk_sent = False
+    data.stream_metadata = {"stream": True, "initial_codec_chunk_frames": 0}
+    assert runner._stream_flush_threshold(data) == 3
+    data.stream_metadata = {"stream": True}
+    assert runner._stream_flush_threshold(data) == 2
 
 
 def test_finalize_skip_rids_selects_chunked_rows():

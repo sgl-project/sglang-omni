@@ -309,6 +309,24 @@ def _run_stream(
     return _drain(scheduler)
 
 
+def test_stream_accepts_batched_code_rows(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(monkeypatch, processor, stream_chunk_frames=10)
+    rows = _rows(23, seed=17)
+    metadata = _metadata()
+
+    for chunk_id, chunk in enumerate((rows[:1], rows[1:11], rows[11:])):
+        scheduler._on_chunk("req", _stream_item(chunk, metadata, chunk_id))
+    scheduler._on_done("req")
+    scheduler._on_streaming_new_request("req", _terminal_payload(rows))
+
+    messages = _drain(scheduler)
+    np.testing.assert_array_equal(
+        _concat_stream_audio(messages, "req"),
+        reference_waveform(rows[:, 1:]).numpy(),
+    )
+
+
 def _decode_audio(data: dict[str, Any]) -> np.ndarray:
     assert data["audio_waveform_dtype"] == "float32"
     array = np.frombuffer(data["audio_waveform"], dtype=np.float32)

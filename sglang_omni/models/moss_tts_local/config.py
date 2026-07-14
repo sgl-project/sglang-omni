@@ -24,9 +24,14 @@ _COLOCATED_CODEC_MEM_RESERVE = 0.15
 _AR_MEM_FRACTION_STATIC = 0.85
 _REF_AUDIO_CACHE_MAX_ITEMS = 8192
 _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_DEFAULT_STREAM_CHUNK_FRAMES = 25
+_DEFAULT_INITIAL_CHUNK_FRAMES = 1
 
 
 def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
+    codec_process = "pipeline" if colocated else "codec"
+    tts_engine_process = "pipeline" if colocated else "tts_engine"
+    codec_gpu = 0 if colocated else 1
     tts_engine_runtime = StageRuntimeConfig(
         resources=StageResourceConfig(
             total_gpu_memory_fraction=(
@@ -37,22 +42,29 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             mem_fraction_static=None if colocated else _AR_MEM_FRACTION_STATIC
         ),
     )
-    tts_engine_args: dict[str, Any] = {"dtype": "bfloat16"}
+    tts_engine_args: dict[str, Any] = {
+        "dtype": "bfloat16",
+        "stream_chunk_frames": _DEFAULT_STREAM_CHUNK_FRAMES,
+        "initial_chunk_frames": _DEFAULT_INITIAL_CHUNK_FRAMES,
+    }
+    preprocessing_args: dict[str, Any] = {"device": codec_device}
     if colocated:
         tts_engine_args["codec_mem_reserve"] = _COLOCATED_CODEC_MEM_RESERVE
+    else:
+        preprocessing_args["inline_prepared_request"] = True
 
     return [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process=codec_process,
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={"device": codec_device},
-            gpu=0,
+            factory_args=preprocessing_args,
+            gpu=codec_gpu,
             next="tts_engine",
         ),
         StageConfig(
             name="tts_engine",
-            process="pipeline",
+            process=tts_engine_process,
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args=tts_engine_args,
             runtime=tts_engine_runtime,
@@ -62,10 +74,14 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
         ),
         StageConfig(
             name="vocoder",
-            process="pipeline",
+            process=codec_process,
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"device": codec_device},
-            gpu=0,
+            factory_args={
+                "device": codec_device,
+                "stream_chunk_frames": _DEFAULT_STREAM_CHUNK_FRAMES,
+                "initial_chunk_frames": _DEFAULT_INITIAL_CHUNK_FRAMES,
+            },
+            gpu=codec_gpu,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
@@ -153,6 +169,31 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                 stage.factory_args.setdefault(
                     "cuda_graph_min_free_gb", self.cuda_graph_min_free_gb
                 )
+        vocoder = next(
+            (
+                stage
+                for stage in self.stages
+                if stage.factory.endswith("create_vocoder_executor")
+            ),
+            None,
+        )
+        tts_engine = next(
+            (
+                stage
+                for stage in self.stages
+                if stage.factory.endswith("create_sglang_tts_engine_executor")
+            ),
+            None,
+        )
+        if vocoder is not None and tts_engine is not None:
+            stream_chunk_frames = vocoder.factory_args.setdefault(
+                "stream_chunk_frames", _DEFAULT_STREAM_CHUNK_FRAMES
+            )
+            initial_chunk_frames = vocoder.factory_args.setdefault(
+                "initial_chunk_frames", _DEFAULT_INITIAL_CHUNK_FRAMES
+            )
+            tts_engine.factory_args["stream_chunk_frames"] = stream_chunk_frames
+            tts_engine.factory_args["initial_chunk_frames"] = initial_chunk_frames
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
@@ -167,7 +208,7 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
 
 
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
-    """Two-GPU variant that places codec work on the second visible GPU."""
+    """Two-process variant that places codec work on the second visible GPU."""
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)
