@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="430" viewBox="0 0 920 430" font-family="'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif">
+  <rect width="920" height="430" fill="#f4f6f9"/>
+  <rect x="12" y="12" width="896" height="406" rx="16" fill="#ffffff" stroke="#e3e7ee"/>
+  <text x="40" y="56" font-size="20" font-weight="700" fill="#171b24">The bottleneck is the host, not the GPU</text>
+  <rect x="676" y="38" width="204" height="26" rx="13" fill="none" stroke="#12a394"/>
+  <text x="778" y="55" font-size="12.5" fill="#12a394" text-anchor="middle">Reader: CPU or GPU?</text>
+
+  <g transform="translate(48,64)">
+    <text x="0" y="56" font-size="13" fill="#5f6a79">CPU</text>
+    <text x="0" y="166" font-size="13" fill="#5f6a79">GPU</text>
+    <rect x="72" y="140" width="620" height="40" rx="7" fill="#ccd3dd"/>
+    <rect x="72"  y="44" width="124" height="40" rx="6" fill="#d5883a"/>
+    <rect x="232" y="44" width="124" height="40" rx="6" fill="#d5883a"/>
+    <rect x="392" y="44" width="124" height="40" rx="6" fill="#d5883a"/>
+    <rect x="552" y="44" width="124" height="40" rx="6" fill="#d5883a"/>
+    <rect x="192" y="140" width="16" height="40" rx="3" fill="#12a394"/>
+    <rect x="352" y="140" width="16" height="40" rx="3" fill="#12a394"/>
+    <rect x="512" y="140" width="16" height="40" rx="3" fill="#12a394"/>
+    <rect x="672" y="140" width="16" height="40" rx="3" fill="#12a394"/>
+    <path d="M196 84 L196 136" stroke="#5f6a79" stroke-width="1.4" marker-end="url(#a1)"/>
+    <path d="M356 84 L356 136" stroke="#5f6a79" stroke-width="1.4" marker-end="url(#a1)"/>
+    <path d="M516 84 L516 136" stroke="#5f6a79" stroke-width="1.4" marker-end="url(#a1)"/>
+    <path d="M676 84 L676 136" stroke="#5f6a79" stroke-width="1.4" marker-end="url(#a1)"/>
+    <text x="290" y="165" font-size="12" fill="#5f6a79" text-anchor="middle">idle · waiting on host</text>
+    <line x1="72" y1="200" x2="692" y2="200" stroke="#d7dce4"/>
+    <text x="72" y="218" font-size="12.5" fill="#5f6a79">GPU idle ≈71% between kernels · <tspan font-weight="700" fill="#171b24">SM Active ≈29%</tspan></text>
+    <text x="72" y="240" font-size="12.5" fill="#5f6a79">cut GPU clock ×0.455 → throughput ×0.90      ·      cut host CPU to ¼ → throughput ×0.31</text>
+  </g>
+
+  <g transform="translate(40,332)" font-size="12.5" fill="#5f6a79">
+    <rect x="0" y="0" width="13" height="13" rx="3" fill="#d5883a"/>
+    <text x="19" y="11">CPU busy (serial host work)</text>
+    <rect x="224" y="0" width="13" height="13" rx="3" fill="#12a394"/>
+    <text x="243" y="11">GPU kernel (≈3μs)</text>
+    <rect x="392" y="0" width="13" height="13" rx="3" fill="#ccd3dd"/>
+    <text x="411" y="11">GPU idle</text>
+  </g>
+  <text x="40" y="374" font-size="13" fill="#5f6a79">Each request's host work (scheduling, detok, sampling, output sync, stage handoff) runs serially in one process.</text>
+  <text x="40" y="398" font-size="13" fill="#5f6a79">Cutting GPU compute barely moves throughput; cutting host CPU drops it hard. The limit is the host (CPU) side.</text>
+
+  <defs><marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="3.2" orient="auto"><path d="M0 0 L6 3.2 L0 6 z" fill="#5f6a79"/></marker></defs>
+</svg>

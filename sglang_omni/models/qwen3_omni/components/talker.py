@@ -23,9 +23,7 @@ from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
 )
-from sglang_omni.models.qwen3_omni.quantization import (
-    convert_fp8_weight_scale_inv_for_sglang,
-)
+from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -35,6 +33,7 @@ from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
+    MRotaryEmbedding,
     QuantizationConfig,
     ReplicatedLinear,
     RMSNorm,
@@ -837,7 +836,10 @@ class Qwen3OmniTalker(nn.Module):
     ):
         super().__init__()
         if not isinstance(config, Qwen3OmniMoeTalkerConfig):
+            self.root_config = config
             config = Qwen3OmniMoeTalkerConfig(**config.talker_config.to_dict())
+        else:
+            self.root_config = config
         self.config = config
 
         # Projection MLPs (thinker hidden -> talker hidden)
@@ -861,6 +863,12 @@ class Qwen3OmniTalker(nn.Module):
             config.text_config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
+        )
+        # True only if the backbone uses MRotaryEmbedding (3D positions).
+        # Otherwise it uses a plain RotaryEmbedding that needs 1D positions.
+        self._uses_mrope = any(
+            isinstance(layer.self_attn.rotary_emb, MRotaryEmbedding)
+            for layer in self.model.layers
         )
         self.codec_head = ReplicatedLinear(
             config.text_config.hidden_size,
@@ -1174,8 +1182,12 @@ class Qwen3OmniTalker(nn.Module):
             else:
                 input_embeds = self.prepare_input_embeds(thinker_embeds=input_embeds)
 
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
+        # Use 3D mrope_positions only when the backbone is mrope; the plain
+        # RotaryEmbedding path needs the 1D positions instead.
+        if self._uses_mrope and forward_batch.mrope_positions is not None:
+            positions = forward_batch.mrope_positions.contiguous()
+        else:
+            positions = forward_batch.positions
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -1670,6 +1682,10 @@ class Qwen3OmniTalker(nn.Module):
             num_experts=self.config.text_config.num_experts,
         )
 
+        preprocess_weight = get_weight_preprocessor(
+            self.root_config, fp8_scale_inverted=True
+        )
+
         for name, loaded_weight in weights:
             # Support both monolithic (talker.xxx) and split (xxx) checkpoints
             if name.startswith("talker."):
@@ -1684,9 +1700,7 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
-                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                            mapped, loaded_weight
-                        )
+                        loaded_weight = preprocess_weight(mapped, loaded_weight)
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
@@ -1699,9 +1713,7 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
-                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                            mapped, loaded_weight
-                        )
+                        loaded_weight = preprocess_weight(mapped, loaded_weight)
                         param.weight_loader(
                             param,
                             loaded_weight,
@@ -1717,7 +1729,5 @@ class Qwen3OmniTalker(nn.Module):
             # 3. Direct parameter loading
             param = params_dict.get(name)
             if param is not None:
-                loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                    name, loaded_weight
-                )
+                loaded_weight = preprocess_weight(name, loaded_weight)
                 param.weight_loader(param, loaded_weight)
