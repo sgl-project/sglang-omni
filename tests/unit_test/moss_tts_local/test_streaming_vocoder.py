@@ -385,6 +385,16 @@ def test_stream_concatenates_to_offline_decode(monkeypatch) -> None:
     }
 
 
+def test_default_session_preserves_batch_width_for_streaming_lanes(monkeypatch) -> None:
+    scheduler = _make_scheduler(monkeypatch, FakeProcessor())
+    session = scheduler._ensure_session()
+
+    assert scheduler._max_batch_size == 8
+    assert scheduler._stream_slots == 15
+    assert session._offline_slots == 1
+    assert session._batch_size == 16
+
+
 def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
     """Factory default first chunk is 1 (aligned with the serve-layer streaming default),
     while the coalescing join floor stays 5; the two are independent knobs.
@@ -448,6 +458,7 @@ def test_batched_coalescing_matches_offline_decode(monkeypatch) -> None:
     scheduler = _make_scheduler(
         monkeypatch,
         processor,
+        stream_slots=8,
         stream_chunk_frames=10,
         initial_chunk_frames=5,
     )
@@ -463,9 +474,9 @@ def test_batched_coalescing_matches_offline_decode(monkeypatch) -> None:
         for m in messages
         if m.type == "stream"
     ]
-    # Coalescing 8 queued chunks before the first pump widens the first chunk past
-    # initial=5 (to 8); the per-chunk path emits [5, 10, 8]. Total frames + PCM identical.
-    assert sizes == [8, 10, 5]
+    # One row per request is consumed in each pump, preserving the configured
+    # first-chunk boundary even when this request has a backlog.
+    assert sizes == [5, 10, 8]
     assert sum(sizes) == 23
 
     audio = _concat_stream_audio(messages, "req")
@@ -483,6 +494,7 @@ def test_batched_step_capped_at_chunk_frames(monkeypatch) -> None:
         initial_chunk_frames=5,
     )
     assert scheduler._stream_chunk_batch_max == 16
+    scheduler._stream_chunk_batch_distinct_requests = False
     rows = _rows(16, seed=3)
     messages = _run_stream_batched(scheduler, rows)
 
@@ -1027,6 +1039,45 @@ def test_offline_lane_waves_split_across_slots(monkeypatch) -> None:
         np.testing.assert_array_equal(
             _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
         )
+
+
+def test_mixed_offline_batch_borrows_idle_stream_slots(monkeypatch) -> None:
+    processor = FakeProcessor()
+    codec = processor.audio_tokenizer
+    scheduler = _make_scheduler(
+        monkeypatch,
+        processor,
+        stream_slots=3,
+        max_batch_size=2,
+        stream_chunk_frames=3,
+        initial_chunk_frames=3,
+    )
+
+    for request_id, seed in (("hold-a", 80), ("hold-b", 81)):
+        scheduler._on_chunk(
+            request_id, _stream_item(_rows(1, seed=seed)[0], _metadata())
+        )
+    assert codec.frame_calls == 0
+
+    offline_rows = [_rows(2, seed=82), _rows(2, seed=83)]
+    results = scheduler._vocode_batch(
+        [
+            _offline_payload(offline_rows[0], "offline-a"),
+            _offline_payload(offline_rows[1], "offline-b"),
+        ]
+    )
+    assert codec.frame_calls == 1
+    for rows, result in zip(offline_rows, results):
+        np.testing.assert_array_equal(
+            _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
+        )
+
+    rows = _rows(2, seed=84)
+    messages = _run_stream(scheduler, rows, request_id="borrowed-slot-stream")
+    np.testing.assert_array_equal(
+        _concat_stream_audio(messages, "borrowed-slot-stream"),
+        reference_waveform(rows[:, 1:]).numpy(),
+    )
 
 
 def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
