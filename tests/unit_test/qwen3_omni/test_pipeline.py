@@ -250,7 +250,7 @@ def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     assert state.engine_outputs["thinker"] is thinker_out
 
 
-def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
+def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None:
     # Miles RL rollout sends pre-tokenized input_ids; they must reach the thinker
     # directly (no chat template / re-tokenize), with encoders skipped.
     from sglang_omni.models.qwen3_omni.components.preprocessor import (
@@ -266,7 +266,17 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     pre = object.__new__(Qwen3OmniPreprocessor)
     pre.max_seq_len = None
     payload = SimpleNamespace(
-        request=SimpleNamespace(params={"max_new_tokens": 16}),
+        request=OmniRequest(
+            inputs=[5, 6, 7],
+            params={"max_new_tokens": 16},
+            metadata={
+                "audios": ["raw-audio"],
+                "images": ["raw-image"],
+                "videos": ["raw-video"],
+                "output_modalities": ["text"],
+                "trace": "keep",
+            },
+        ),
         request_id="r1",
         data=None,
     )
@@ -278,6 +288,12 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     assert state.prompt["attention_mask"].tolist() == [1, 1, 1]
     assert state.encoder_inputs["image_encoder"]["_skip"] is True
     assert state.encoder_inputs["audio_encoder"]["_skip"] is True
+    assert out.request.inputs is None
+    assert out.request.params == {"max_new_tokens": 16}
+    assert out.request.metadata == {
+        "output_modalities": ["text"],
+        "trace": "keep",
+    }
 
 
 def test_qwen_preprocessor_retries_without_special_token_compat(
