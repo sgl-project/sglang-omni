@@ -609,7 +609,10 @@ class SpeechWebSocketSession:
     async def teardown(self) -> None:
         self.closed = True
         await self._abort_active_request()
-        if self.websocket.client_state == WebSocketState.CONNECTED:
+        if (
+            self.websocket.application_state == WebSocketState.CONNECTED
+            and self.websocket.client_state == WebSocketState.CONNECTED
+        ):
             await self.websocket.close()
 
 
