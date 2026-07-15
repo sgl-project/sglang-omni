@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 import pytest
@@ -98,13 +99,14 @@ def _fault_client(model_name: str) -> Client:
 class SuccessfulSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
         self.sample_rate = sample_rate
+        self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
     async def generate(self, request: Any, request_id: str | None = None):
-        del request
+        self.generate_requests.append(request)
         yield GenerateChunk(
             request_id=request_id or "speech-1",
             modality="audio",
@@ -401,6 +403,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
         json={
             "model": model_name,
             "input": "hello",
+            "voice": "default",
             "stream": False,
             "response_format": "wav",
         },
@@ -416,7 +419,9 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "tts",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },
@@ -434,16 +439,52 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "response_format": "wav"},
+        json={
+            "input": "hello",
+            "response_format": "wav",
+        },
     )
 
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert speech_client.speech_requests[0].model == "tts"
+    assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_endpoint_accepts_seedtts_reference_payload_without_voice(
+    stream: bool,
+) -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="served-model"))
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "seedtts",
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "response_format": "pcm" if stream else "wav",
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == 200
+    request = (
+        speech_client.generate_requests[0]
+        if stream
+        else speech_client.speech_requests[0]
+    )
+    assert request.model == "seedtts"
+    assert request.metadata["tts_params"]["voice"] == "default"
 
 
 def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
@@ -489,7 +530,13 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -502,7 +549,13 @@ def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -651,7 +704,9 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -674,7 +729,9 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "s2-pro",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -737,7 +794,9 @@ def test_speech_stream_rejects_non_pcm_response_format() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },
