@@ -34,8 +34,11 @@ _MAX_PREPROCESSING_INTRAOP_THREADS = 8
 
 
 def _configure_preprocessing_threads(worker_count: int) -> int:
-    if "OMP_NUM_THREADS" in os.environ:
-        return torch.get_num_threads()
+    override = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if override.isdigit() and int(override) >= 1:
+        requested = int(override)
+        torch.set_num_threads(requested)
+        return requested
 
     cpu_count = (
         len(os.sched_getaffinity(0))
