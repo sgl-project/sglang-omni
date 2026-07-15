@@ -84,7 +84,7 @@ class GenerateRequest:
 
     model: str | None = None
 
-    prompt: str | None = None
+    prompt: str | dict[str, Any] | None = None
     prompt_token_ids: list[int] | None = None
     messages: list[Message] | None = None
 
