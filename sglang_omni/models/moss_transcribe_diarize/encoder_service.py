@@ -35,6 +35,7 @@ class BatchedAudioEncoderService:
             max_bytes=_CACHE_MAX_BYTES,
             cache_device="cpu",
         )
+        self._cache_lock = threading.Lock()
         self._queue: queue.Queue[tuple[Any, concurrent.futures.Future]] = queue.Queue()
         self._batch_count = 0
         self._item_count = 0
@@ -45,7 +46,11 @@ class BatchedAudioEncoderService:
 
     def encode_item(self, item: Any) -> None:
         """Blocks until item.precomputed_embeddings is attached."""
-        cached = self._cache.get(str(item.hash)) if item.hash is not None else None
+        if item.hash is not None:
+            with self._cache_lock:
+                cached = self._cache.get(str(item.hash))
+        else:
+            cached = None
         if cached is not None:
             item.precomputed_embeddings = cached.to(self._device, non_blocking=True)
             item.feature = None
@@ -72,9 +77,8 @@ class BatchedAudioEncoderService:
                 self._encode_batch(items)
             except Exception:
                 logger.exception(
-                    "MOSS-TD batched audio encode failed for %d items; "
-                    "retrying per item",
-                    len(items),
+                    f"MOSS-TD batched audio encode failed for {len(items)} "
+                    f"items; retrying per item"
                 )
                 for item, future in batch:
                     try:
@@ -89,12 +93,10 @@ class BatchedAudioEncoderService:
             self._item_count += len(items)
             if self._batch_count % 50 == 1:
                 logger.info(
-                    "MOSS-TD pre-LM encoder stage: %d batches, %d items "
-                    "(avg %.2f items/batch, last batch: %d)",
-                    self._batch_count,
-                    self._item_count,
-                    self._item_count / self._batch_count,
-                    len(items),
+                    f"MOSS-TD pre-LM encoder stage: {self._batch_count} batches, "
+                    f"{self._item_count} items (avg "
+                    f"{self._item_count / self._batch_count:.2f} items/batch, "
+                    f"last batch: {len(items)})"
                 )
 
     def _encode_batch(self, items: list[Any]) -> None:
@@ -113,6 +115,7 @@ class BatchedAudioEncoderService:
                 item.precomputed_embeddings = part.contiguous()
                 item.feature = None
         self._stream.synchronize()
-        for item in items:
-            if item.hash is not None:
-                self._cache.put(str(item.hash), item.precomputed_embeddings)
+        with self._cache_lock:
+            for item in items:
+                if item.hash is not None:
+                    self._cache.put(str(item.hash), item.precomputed_embeddings)
