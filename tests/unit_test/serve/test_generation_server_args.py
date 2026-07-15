@@ -19,8 +19,11 @@ from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 
+TEST_MAX_TOTAL_TOKENS = 82000
+
 GENERATION_SERVER_ARGS = {
     "max_running_requests": 64,
+    "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
     "cuda_graph_max_bs": 64,
 }
 
@@ -121,11 +124,19 @@ def test_generation_server_args_explicit_override_reaches_generation_stage(
     config = HiggsTtsPipelineConfig(model_path="dummy")
     from_model_path.return_value = _DummyManager(config)
 
-    serve(**_serve_kwargs(max_running_requests=32))
+    serve(
+        **_serve_kwargs(
+            max_running_requests=32,
+            max_total_tokens=TEST_MAX_TOTAL_TOKENS,
+        )
+    )
 
     launched_config = launch_server.call_args.args[0]
     overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
-    assert overrides == {"max_running_requests": 32}
+    assert overrides == {
+        "max_running_requests": 32,
+        "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
+    }
 
 
 @patch("sglang_omni.cli.serve.launch_server")

@@ -6,6 +6,8 @@ import inspect
 from types import SimpleNamespace
 from typing import Any
 
+TEST_MAX_TOTAL_TOKENS = 82000
+
 
 def test_tts_engine_builder_import_is_cpu_only() -> None:
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
@@ -210,6 +212,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "cuda_graph_max_bs": 8,
             "torch_compile_max_bs": 8,
             "mem_fraction_static": 0.7,
+            "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
             "max_running_requests": 2,
         },
     )
@@ -237,6 +240,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert build_kwargs["cuda_graph_max_bs"] == 8
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
+    assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
     assert infrastructure_saw_graph_disabled == [True]
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False

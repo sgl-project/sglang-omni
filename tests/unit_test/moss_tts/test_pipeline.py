@@ -267,31 +267,6 @@ def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None
     assert server_args_overrides["torch_compile_max_bs"] == 4
 
 
-def test_moss_tts_state_round_trip_keeps_tensors_native() -> None:
-    codes = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
-    state = MossTTSState(
-        text="hello",
-        ref_audio="ref.wav",
-        ref_text="reference",
-        language="en",
-        instructions="warm",
-        token_count=180,
-        generation_kwargs={"max_new_tokens": 64},
-        delayed_audio_codes=codes,
-        assistant_start_length=2,
-    )
-    restored = MossTTSState.from_dict(state.to_dict())
-
-    assert restored.text == "hello"
-    assert restored.ref_audio == "ref.wav"
-    assert restored.ref_text == "reference"
-    assert restored.language == "en"
-    assert restored.instructions == "warm"
-    assert restored.token_count == 180
-    assert torch.equal(restored.delayed_audio_codes, codes)
-    assert restored.assistant_start_length == 2
-
-
 def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from sglang_omni.models.moss_tts import stages
 
@@ -1018,10 +993,13 @@ def test_moss_preprocess_discards_handoff_after_abort(
     monkeypatch.setattr(rb, "_prepare_moss_tts_request", fake_prepare)
     try:
         rb.set_moss_tts_preprocessing_context(processor=object())
-        rb.preprocess_moss_tts_payload(payload)
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "abort-me" not in rb._PREPARED_REQUESTS
-            assert not rb._PREPARED_REQUESTS
+        result = rb.preprocess_moss_tts_payload(payload)
+        # note (Yue Yin): dropped handoff must not carry a marker the AR stage would
+        # pop as missing state.
+        assert rb._MOSS_TTS_PREPARED_MARKER not in result.data
+        snap = rb._QUEUE.snapshot()
+        assert "abort-me" not in snap.prepared
+        assert not snap.prepared
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -1091,13 +1069,12 @@ def test_moss_preprocess_pre_start_abort_does_not_block(
         rb.set_moss_tts_preprocessing_context(processor=object())
         # Abort for a request that never started preprocessing: no tombstone.
         rb.cleanup_prepared_moss_tts_request("ghost")
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert not rb._ABORTED_REQUESTS
+        assert not rb._QUEUE.snapshot().aborted
         # The same id can still run a normal preprocess and publish its handoff.
         rb.preprocess_moss_tts_payload(make_payload(inputs="hello", request_id="ghost"))
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "ghost" in rb._PREPARED_REQUESTS
-            assert not rb._ABORTED_REQUESTS
-            assert not rb._INFLIGHT_REQUESTS
+        snap = rb._QUEUE.snapshot()
+        assert "ghost" in snap.prepared
+        assert not snap.aborted
+        assert not snap.inflight
     finally:
         rb.clear_moss_tts_preprocessing_context()

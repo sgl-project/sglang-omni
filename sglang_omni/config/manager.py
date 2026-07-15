@@ -88,13 +88,14 @@ class ConfigManager:
             current = cfg_copy
             keys = key.split(".")
             for k in keys[:-1]:
-                # if k is an digit, treat it as an index
-                if k.isdigit():
-                    k = int(k)
-                current = current[k]
+                current = _resolve_child(current, k)
 
             # update the value
-            current[keys[-1]] = value
+            last_key = keys[-1]
+            if isinstance(current, list):
+                current[_resolve_list_index(current, last_key)] = value
+            else:
+                current[last_key] = value
 
         _sync_stage_parallelism_aliases(cfg_copy, set(extra_args))
 
@@ -207,10 +208,13 @@ def _sync_stage_parallelism_aliases(
     for index, stage in enumerate(stages):
         if not isinstance(stage, dict):
             continue
-        tp_size_key = f"stages.{index}.tp_size"
-        parallelism_key = f"stages.{index}.parallelism.tp"
-        has_tp_size_override = tp_size_key in override_keys
-        has_parallelism_override = parallelism_key in override_keys
+        stage_keys = (str(index), stage["name"])
+        has_tp_size_override = any(
+            f"stages.{key}.tp_size" in override_keys for key in stage_keys
+        )
+        has_parallelism_override = any(
+            f"stages.{key}.parallelism.tp" in override_keys for key in stage_keys
+        )
         if has_tp_size_override == has_parallelism_override:
             continue
 
@@ -220,6 +224,36 @@ def _sync_stage_parallelism_aliases(
             stage["parallelism"] = parallelism
         else:
             stage["tp_size"] = stage["parallelism"]["tp"]
+
+
+def _resolve_list_index(items: list[Any], key: str) -> int:
+    """Resolve a dotted-path segment to a list index.
+
+    Supports numeric indices (e.g. ``stages.4.tp_size``) as well as stage names
+    (e.g. ``stages.thinker.runtime``) when the list contains mappings with a
+    ``name`` field.
+    """
+    if key.isdigit():
+        return int(key)
+
+    for index, item in enumerate(items):
+        if isinstance(item, dict) and item.get("name") == key:
+            return index
+
+    available = [
+        item["name"] for item in items if isinstance(item, dict) and "name" in item
+    ]
+    raise KeyError(
+        f"Could not resolve list element {key!r}; expected an integer index "
+        f"or one of the named entries {available}"
+    )
+
+
+def _resolve_child(current: Any, key: str) -> Any:
+    """Traverse one segment of a dotted config path."""
+    if isinstance(current, list):
+        return current[_resolve_list_index(current, key)]
+    return current[key]
 
 
 def _convert_scalar(value: Any) -> Any:

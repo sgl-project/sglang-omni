@@ -61,19 +61,19 @@ MMMU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-MMMU_AUDIO_MIN_ACCURACY = 0.7
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.2387
+MMMU_AUDIO_MIN_ACCURACY = 0.70
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.2349
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
-MMMU_AUDIO_N_ABOVE_50_MAX = 8.0
+MMMU_AUDIO_N_ABOVE_50_MAX = 6
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.609,
-        "output_tok_per_req_s": 6.4,
-        "latency_mean_s": 21.573,
-        "rtf_mean": 0.5456,
+        "throughput_qps": 0.608,
+        "output_tok_per_req_s": 6.7,
+        "latency_mean_s": 20.901,
+        "rtf_mean": 0.5203,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

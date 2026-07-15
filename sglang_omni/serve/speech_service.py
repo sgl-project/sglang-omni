@@ -16,9 +16,9 @@ from pydantic import ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
-from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
     SUPPORTED_TTS_LANGUAGES,
@@ -144,7 +144,10 @@ class SpeechRequestValidator:
         self._validate_batch_defaults(request)
         return request
 
-    def validate_raw_speech_fields(self, payload: dict[str, Any]) -> None:
+    def validate_raw_speech_fields(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
         """Validate speech fields before Pydantic can coerce JSON values."""
 
         self._validate_raw_payload(payload)
@@ -154,7 +157,10 @@ class SpeechRequestValidator:
 
         return self.prepare_generation_request(self._parse_raw_request(payload))
 
-    def _parse_raw_request(self, payload: Any) -> CreateSpeechRequest:
+    def _parse_raw_request(
+        self,
+        payload: Any,
+    ) -> CreateSpeechRequest:
         if not isinstance(payload, dict):
             raise bad_request("speech request body must be a JSON object")
         self._validate_raw_payload(payload)

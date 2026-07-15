@@ -104,7 +104,7 @@ Common `params` fields:
 | `speaker_max_uploaded` | Expected server-side uploaded-speaker cap. |
 | `voice_cache_pressure_voice_count` | Number of unique uploaded voices for cache-pressure stages. |
 | `voice_speaker_cap_count` | Upload-attempt budget for speaker-cap stages. |
-| `file_ref_audio` | Optional `file://` reference audio URI sent to the target service. Required for full speech reference coverage. The target service must be launched with an allowed-local-media path that contains this file. |
+| `file_ref_audio` | Optional file URI sent to the target service. Required for full speech reference coverage. The target service must be launched with an allowed-local-media path that contains this file. |
 | `file_ref_text` | Optional transcript for `file_ref_audio`. Defaults to the SeedTTS reference text. |
 
 Load-stage fields:
@@ -130,7 +130,7 @@ Load-stage fields:
 | `speech` | `POST /v1/audio/speech` with response formats, task types, language handling, speed bounds, reference audio, SDK compatibility, and malformed-request classification. |
 | `speech_stream` | `POST /v1/audio/speech` with raw PCM streaming and streaming error cases. |
 | `batch` | `POST /v1/audio/speech/batch` with 1-32 item batches, per-item overrides, item-level success/error records, and oversized batch rejection. |
-| `voices` | `GET`, `POST`, and `DELETE /v1/audio/voices` with upload formats, metadata, overwrite, delete, speaker-cap, cleanup, race, and cache-pressure behavior. |
+| `voices` | `GET`, `POST`, and `DELETE /v1/audio/voices` with upload formats, metadata, overwrite, delete, named voice reuse through speech and batch synthesis, speaker-cap, cleanup, race, and cache-pressure behavior. |
 | `websocket` | `/v1/audio/speech/stream` with session configuration, incremental text input, binary audio frames, event ordering, client disconnect, malformed JSON, and missing-config errors. |
 
 Voice cache-pressure scenarios require `GET /v1/audio/voices` to expose a
@@ -157,9 +157,10 @@ Malformed HTTP requests must return a structured JSON error body:
 }
 ```
 
-Missing resources must use the same shape with `type: "NotFoundError"` and
-`code: 404`. The missing-voice `DELETE /v1/audio/voices/{name}` contract is a
-voice-management response instead of the generic error envelope:
+Missing voice-management resources use the same shape with `type:
+"NotFoundError"` and `code: 404`. The missing-voice
+`DELETE /v1/audio/voices/{name}` contract is a voice-management response
+instead of the generic error envelope:
 
 ```json
 {
@@ -183,9 +184,11 @@ python -m benchmarks.eval.benchmark_tts_serving \
   --out results/tts_serving/stress
 ```
 
-The example spec uses `http://127.0.0.1:8000` and the Higgs TTS model id.
-Edit `base_url`, `model_name`, and `auth.api_key_env` for a different target or
-authenticated deployment.
+The checked-in spec targets a Higgs TTS service through the `base_url` and
+`model_name` fields in `examples/stress.json`. It also sends a reference clip
+from `docs/_static/audio`, so launch the target service from the repo root with
+`--allowed-local-media-path docs/_static/audio`. Update the spec fields, and
+`auth.api_key_env` when needed, for a different target.
 
 ## Docker
 
@@ -221,16 +224,16 @@ The matrix is deterministic for a given spec seed. It covers:
 - malformed speech requests that must return the structured error envelope
 - multilingual and adversarial text payloads
 - batch speech creation and item-level result validation
-- uploaded-voice list, upload, overwrite, delete, metadata, speaker-cap, and
-  upload/delete race contracts
+- uploaded-voice list, upload, overwrite, delete, metadata, named speech and
+  batch reuse, speaker-cap, and upload/delete race contracts
 - voice cache pressure traffic with observable cache counters
 - WebSocket speech-stream setup, event order, audio events, and error cases
 
 Voice scenarios are stateful. Successful standalone uploads verify uploaded
 metadata with `GET /v1/audio/voices`, delete the created voice, and list again
-to prove cleanup. Lifecycle delete also requires a structured 404 when a
-deleted voice is used for synthesis. Repeated runs should not consume
-persistent speaker slots or change later baselines.
+to prove cleanup. Lifecycle delete also verifies that using the deleted voice
+for synthesis returns a structured `400 BadRequestError`. Repeated runs should
+not consume persistent speaker slots or change later baselines.
 
 Compressed response formats are decoded through `ffmpeg` before validation.
 The benchmark checks decoded PCM duration and non-zero signal so container

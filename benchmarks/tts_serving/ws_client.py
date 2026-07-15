@@ -26,17 +26,21 @@ from benchmarks.tts_serving.urls import websocket_url
 
 WS_CONTROL_EVENT_TYPES = {
     "session.created",
+    "session.configured",
     "session.updated",
     "response.created",
     "input.ack",
 }
 UNSUPPORTED_WS_STATUSES = UNSUPPORTED_HTTP_STATUSES
+SUPPORTED_WS_RESPONSE_FORMATS = {"wav", "pcm", "mp3", "flac", "aac", "opus"}
+SUPPORTED_WS_SPLIT_GRANULARITIES = {"sentence", "clause"}
 
 
 @dataclass
 class WebSocketAudioState:
     active_sentence_duration_s: float = 0.0
     active_sentence_has_signal: bool = False
+    active_sentence_binary_frames: int = 0
 
 
 async def run_ws_scenario(
@@ -75,6 +79,7 @@ async def run_ws_scenario(
             )
         else:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "http_error"
         result.error_type = exc.__class__.__name__
@@ -82,12 +87,14 @@ async def run_ws_scenario(
             result.error = str(exc)
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         result.status = "transport_error"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "transport_error"
         result.error = str(exc)
     except Exception as exc:
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "client_error"
@@ -143,8 +150,19 @@ async def _run_ws_script(
                 )
                 if not matched:
                     return
+            elif action_type == "expect_audio_until_session_done":
+                matched = await _expect_audio_until_session_done(
+                    ws,
+                    result,
+                    audio_state,
+                    min_binary_frames=int(action.get("min_binary_frames", 1)),
+                    expect_success=expect_success,
+                )
+                if not matched:
+                    return
             else:
                 result.status = "failed"
+                result.success = False
                 result.capability = "fail"
                 result.error = f"unknown WebSocket benchmark action: {action_type}"
                 return
@@ -202,6 +220,7 @@ async def _expect_next_event(
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "transport_error"
             result.error = str(ws.exception())
@@ -232,6 +251,7 @@ async def _expect_audio_until_done(
                 result,
                 audio_state,
                 expect_success=expect_success,
+                min_binary_frames_per_sentence=min_binary_frames,
             )
             if result.status in {"failed", "expected_error"}:
                 return event_type == "error"
@@ -259,6 +279,68 @@ async def _expect_audio_until_done(
             return False
         if msg.type == aiohttp.WSMsgType.ERROR:
             result.status = "failed"
+            result.success = False
+            result.capability = "fail"
+            result.error_class = "transport_error"
+            result.error = str(ws.exception())
+            return False
+        _mark_ws_protocol_error(result, f"unexpected WebSocket frame type: {msg.type}")
+        return False
+
+
+async def _expect_audio_until_session_done(
+    ws: aiohttp.ClientWebSocketResponse,
+    result: ScenarioResult,
+    audio_state: WebSocketAudioState,
+    *,
+    min_binary_frames: int,
+    expect_success: bool,
+) -> bool:
+    binary_frames = 0
+    while True:
+        msg = await ws.receive()
+        if msg.type == aiohttp.WSMsgType.BINARY:
+            if not _record_binary_audio(msg.data, result, audio_state):
+                return False
+            binary_frames += 1
+            continue
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            event_type = _merge_text_event(
+                msg.data,
+                result,
+                audio_state,
+                expect_success=expect_success,
+                min_binary_frames_per_sentence=1,
+            )
+            if result.status in {"failed", "expected_error"}:
+                return event_type == "error"
+            if event_type in WS_CONTROL_EVENT_TYPES:
+                continue
+            if event_type in {"audio.start", "audio.done"}:
+                continue
+            if event_type == "session.done":
+                if binary_frames < min_binary_frames:
+                    _mark_ws_protocol_error(
+                        result,
+                        "session completed before the required binary frames "
+                        f"(expected>={min_binary_frames}, "
+                        f"observed={binary_frames})",
+                    )
+                    return False
+                return True
+            _mark_ws_protocol_error(
+                result,
+                "received WebSocket event "
+                f"{event_type!r} while streaming binary audio until session.done",
+            )
+            return False
+        if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
+            result.ws_close_reason = "server_closed"
+            _mark_ws_protocol_error(result, "WebSocket closed before session.done")
+            return False
+        if msg.type == aiohttp.WSMsgType.ERROR:
+            result.status = "failed"
+            result.success = False
             result.capability = "fail"
             result.error_class = "transport_error"
             result.error = str(ws.exception())
@@ -273,11 +355,13 @@ def _merge_text_event(
     audio_state: WebSocketAudioState,
     *,
     expect_success: bool = True,
+    min_binary_frames_per_sentence: int = 0,
 ) -> str | None:
     try:
         event = json.loads(data)
     except json.JSONDecodeError as exc:
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_type = exc.__class__.__name__
         result.error_class = "protocol_error"
@@ -285,6 +369,7 @@ def _merge_text_event(
         return "error"
     if not isinstance(event, dict):
         result.status = "failed"
+        result.success = False
         result.capability = "fail"
         result.error_class = "protocol_error"
         result.error = "WebSocket event is not a JSON object"
@@ -300,12 +385,20 @@ def _merge_text_event(
             )
             return "error"
         result.status = "failed" if expect_success else "expected_error"
+        result.success = False
         result.capability = "fail" if expect_success else "pass"
         result.error_class = (
             "server_error_event" if expect_success else "expected_client_error"
         )
         result.error = data
         return "error"
+    if event_type == "session.configured":
+        if not _is_valid_session_configured(event):
+            _mark_ws_protocol_error(
+                result,
+                f"invalid session.configured event: {data}",
+            )
+        return event_type
     if event_type in WS_CONTROL_EVENT_TYPES:
         return event_type
 
@@ -324,6 +417,7 @@ def _merge_text_event(
         result.ws_active_sample_rate = event["sample_rate"]
         audio_state.active_sentence_duration_s = 0.0
         audio_state.active_sentence_has_signal = False
+        audio_state.active_sentence_binary_frames = 0
         result.status = "ok"
         result.capability = "pass"
         return event_type
@@ -333,6 +427,7 @@ def _merge_text_event(
             return event_type
         if event.get("error") is True:
             result.status = "failed" if expect_success else "expected_error"
+            result.success = False
             result.capability = "fail" if expect_success else "pass"
             result.error_class = (
                 "server_error_event" if expect_success else "expected_client_error"
@@ -357,6 +452,14 @@ def _merge_text_event(
                 "audio.done total_bytes must be positive for successful audio",
             )
             return event_type
+        if audio_state.active_sentence_binary_frames < min_binary_frames_per_sentence:
+            _mark_ws_protocol_error(
+                result,
+                "audio.done arrived before the required binary frames for the sentence "
+                f"(expected>={min_binary_frames_per_sentence}, "
+                f"observed={audio_state.active_sentence_binary_frames})",
+            )
+            return event_type
         if not audio_state.active_sentence_has_signal:
             _mark_ws_protocol_error(
                 result,
@@ -370,6 +473,7 @@ def _merge_text_event(
         result.ws_active_sample_rate = None
         audio_state.active_sentence_duration_s = 0.0
         audio_state.active_sentence_has_signal = False
+        audio_state.active_sentence_binary_frames = 0
         result.status = "ok"
         result.capability = "pass"
         return event_type
@@ -405,6 +509,18 @@ def _is_valid_ws_error_event(event: dict) -> bool:
     return any(
         isinstance(event.get(key), (dict, str)) and bool(event[key])
         for key in ("error", "message", "code")
+    )
+
+
+def _is_valid_session_configured(event: dict) -> bool:
+    return (
+        isinstance(event.get("session_id"), str)
+        and bool(event["session_id"])
+        and isinstance(event.get("response_format"), str)
+        and event["response_format"] in SUPPORTED_WS_RESPONSE_FORMATS
+        and isinstance(event.get("stream_audio"), bool)
+        and isinstance(event.get("split_granularity"), str)
+        and event["split_granularity"] in SUPPORTED_WS_SPLIT_GRANULARITIES
     )
 
 
@@ -467,6 +583,7 @@ def _record_binary_audio(
     result.audio_bytes += len(data)
     result.ws_active_sentence_bytes += len(data)
     result.response_bytes += len(data)
+    audio_state.active_sentence_binary_frames += 1
     audio_state.active_sentence_duration_s += validation.duration_s
     audio_state.active_sentence_has_signal = (
         audio_state.active_sentence_has_signal or any(data)

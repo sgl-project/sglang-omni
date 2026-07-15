@@ -112,38 +112,14 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
-        return request_builders.make_tts_scheduler_adapters(tokenizer=self.tokenizer)
-
-    def make_scheduler(
-        self,
-        *,
-        model_worker: Any,
-        tree_cache: Any,
-        req_to_token_pool: Any,
-        token_to_kv_pool_allocator: Any,
-        server_args: Any,
-        model_config: Any,
-        prefill_manager: Any,
-        decode_manager: Any,
-        model_runner: Any,
-        request_builder: Any,
-        result_adapter: Any,
-    ) -> Any:
-        del model_worker, model_config
-        fish_scheduler_mod = importlib.import_module(
-            "sglang_omni.models.fishaudio_s2_pro.fish_scheduler"
+        request_builder, result_adapter, self._stream_output_builder = (
+            request_builders.make_tts_scheduler_adapters(
+                tokenizer=self.tokenizer,
+                max_new_tokens_cap=self.max_new_tokens,
+                context_length=self.context_length,
+            )
         )
+        return request_builder, result_adapter
 
-        return fish_scheduler_mod.FishScheduler(
-            tree_cache=tree_cache,
-            req_to_token_pool=req_to_token_pool,
-            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-            prefill_manager=prefill_manager,
-            decode_manager=decode_manager,
-            server_args=server_args,
-            model_runner=model_runner,
-            request_builder=request_builder,
-            result_adapter=result_adapter,
-            im_end_token_id=self.adapter.eos_token_ids[0],
-            max_new_tokens=self.max_new_tokens,
-        )
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        return {"stream_output_builder": self._stream_output_builder}

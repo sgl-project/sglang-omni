@@ -260,14 +260,31 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
+# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack --
+# on the #932 fast path deepstack would arrive as a ref the talker must never touch. #934
+_TALKER_UNUSED_MODEL_INPUT_KEYS = (
+    "image_deepstack_visual_embeds",
+    "video_deepstack_visual_embeds",
+    "deepstack_visual_embeds",
+)
+
+
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
+    thinker_inputs = (
+        dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
+    )
+    model_inputs = thinker_inputs.get("model_inputs")
+    if isinstance(model_inputs, dict):
+        thinker_inputs["model_inputs"] = {
+            k: v
+            for k, v in model_inputs.items()
+            if k not in _TALKER_UNUSED_MODEL_INPUT_KEYS
+        }
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
-        thinker_inputs=(
-            dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
-        ),
+        thinker_inputs=thinker_inputs,
     )
     return _payload_with_state(payload, projected)
 
