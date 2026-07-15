@@ -1080,6 +1080,83 @@ def test_mixed_offline_batch_borrows_idle_stream_slots(monkeypatch) -> None:
     )
 
 
+def test_offline_borrowed_slot_is_leased_and_reset_after_failure(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(
+        monkeypatch,
+        processor,
+        stream_slots=2,
+        max_batch_size=2,
+        stream_chunk_frames=3,
+        initial_chunk_frames=3,
+    )
+    scheduler._on_chunk("held", _stream_item(_rows(1, seed=85)[0], _metadata()))
+    session = scheduler._ensure_session()
+    borrowed_slot = session._free_stream_slots[-1]
+    original_step = session.step
+
+    def fail_after_step(slot_codes):
+        assert borrowed_slot not in session._free_stream_slots
+        original_step(slot_codes)
+        raise RuntimeError("injected offline decode failure")
+
+    monkeypatch.setattr(session, "step", fail_after_step)
+    offline_codes = [
+        rows[:, 1:].transpose(0, 1).contiguous()
+        for rows in (_rows(2, seed=86), _rows(2, seed=87))
+    ]
+    with pytest.raises(RuntimeError, match="injected offline decode failure"):
+        session.decode_offline(offline_codes, max_step_frames=3, max_batch_size=2)
+
+    monkeypatch.setattr(session, "step", original_step)
+    assert session._free_stream_slots == [borrowed_slot]
+    rows = _rows(2, seed=88)
+    messages = _run_stream(scheduler, rows, request_id="after-failure")
+    np.testing.assert_array_equal(
+        _concat_stream_audio(messages, "after-failure"),
+        reference_waveform(rows[:, 1:]).numpy(),
+    )
+
+
+def test_offline_borrowed_slot_is_quarantined_without_masking_failure(
+    monkeypatch,
+) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(
+        monkeypatch,
+        processor,
+        stream_slots=2,
+        max_batch_size=2,
+    )
+    session = scheduler._ensure_session()
+    borrowed_slot = session._free_stream_slots[-1]
+    original_step = session.step
+    original_reset = session._reset_slots
+    reset_calls = 0
+
+    def fail_after_step(slot_codes):
+        original_step(slot_codes)
+        raise ValueError("injected decode failure")
+
+    def fail_cleanup_reset(slots):
+        nonlocal reset_calls
+        reset_calls += 1
+        if reset_calls == 2:
+            raise RuntimeError("injected reset failure")
+        original_reset(slots)
+
+    monkeypatch.setattr(session, "step", fail_after_step)
+    monkeypatch.setattr(session, "_reset_slots", fail_cleanup_reset)
+    offline_codes = [
+        rows[:, 1:].transpose(0, 1).contiguous()
+        for rows in (_rows(2, seed=89), _rows(2, seed=90))
+    ]
+    with pytest.raises(ValueError, match="injected decode failure"):
+        session.decode_offline(offline_codes, max_step_frames=3, max_batch_size=2)
+
+    assert borrowed_slot not in session._free_stream_slots
+
+
 def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)

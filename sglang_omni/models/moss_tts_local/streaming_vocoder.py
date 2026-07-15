@@ -51,6 +51,7 @@ class _CodecStreamSession:
         self._n_vq = int(n_vq)
         self._device = next(codec.parameters()).device
         self._free_stream_slots = list(range(self._stream_slots))
+        self._stream_slots_in_use: set[int] = set()
         self._closed = False
         self._cg_runner: Any | None = None
         # Capture is attempted at most once per session; a low-VRAM skip must not re-probe per step.
@@ -115,12 +116,17 @@ class _CodecStreamSession:
     def acquire(self) -> int | None:
         if not self._free_stream_slots:
             return None
-        return self._free_stream_slots.pop()
+        slot = self._free_stream_slots.pop()
+        self._stream_slots_in_use.add(slot)
+        return slot
 
     def release(self, slot: int) -> None:
         if self._closed:
             return
+        if slot not in self._stream_slots_in_use:
+            raise RuntimeError(f"MOSS vocoder stream slot {slot} is not leased")
         self._reset_slots([slot])
+        self._stream_slots_in_use.remove(slot)
         self._free_stream_slots.append(slot)
 
     def close(self) -> None:
@@ -152,14 +158,19 @@ class _CodecStreamSession:
             self._batch_size, dtype=torch.bool, device=self._device
         )
         reset_mask[slots] = True
+        reset_states = 0
 
         def _reset(module: Any) -> None:
+            nonlocal reset_states
             state = getattr(module, "_streaming_state", None)
             if state is not None:
                 state.reset(reset_mask.to(state.device))
+                reset_states += 1
 
         with torch.no_grad():
             self._codec.apply(_reset)
+        if reset_states == 0:
+            raise RuntimeError("MOSS vocoder session has no resettable streaming state")
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         """Advance participating slots by one uniform-length step. ``slot_codes`` maps slot -> ``[n_vq, T]`` (same T); returns slot -> ``[channels, samples]`` float32 CPU audio."""
@@ -237,11 +248,21 @@ class _CodecStreamSession:
     ) -> list[torch.Tensor]:
         """Decode complete utterances ``[n_vq, T]`` through offline slots in the
         persistent codec session."""
+        if not codes_list:
+            return []
         wavs: list[torch.Tensor] = []
         reserved = list(range(self._stream_slots, self._batch_size))
-        borrowed = list(self._free_stream_slots)
+        requested_wave_size = min(max(int(max_batch_size), 1), len(codes_list))
+        borrow_count = min(
+            max(requested_wave_size - len(reserved), 0),
+            len(self._free_stream_slots),
+        )
+        borrowed = self._free_stream_slots[-borrow_count:] if borrow_count else []
+        if borrowed:
+            del self._free_stream_slots[-borrow_count:]
         available = reserved + borrowed
-        wave_size = min(max(int(max_batch_size), 1), len(available))
+        wave_size = min(requested_wave_size, len(available))
+        decode_succeeded = False
         try:
             for wave_start in range(0, len(codes_list), wave_size):
                 wave = codes_list[wave_start : wave_start + wave_size]
@@ -272,9 +293,21 @@ class _CodecStreamSession:
                             cursors[i] += step_t
                 for item_chunks in chunks:
                     wavs.append(torch.cat(item_chunks, dim=-1))
+            decode_succeeded = True
         finally:
             if borrowed:
-                self._reset_slots(borrowed)
+                try:
+                    self._reset_slots(borrowed)
+                except Exception:
+                    logger.exception(
+                        "MOSS vocoder failed to reset borrowed stream slots %s; "
+                        "quarantining them",
+                        borrowed,
+                    )
+                    if decode_succeeded:
+                        raise
+                else:
+                    self._free_stream_slots.extend(borrowed)
         return wavs
 
 
