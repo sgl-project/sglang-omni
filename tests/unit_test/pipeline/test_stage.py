@@ -1121,6 +1121,27 @@ def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     assert [entry["path"] for entry in ref["tensors"]] == ["gpu"]
 
 
+def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> None:
+    payload = make_stage_payload(
+        data={"gpu": "placeholder"},
+        inputs={"header": "x" * (128 * 1024)},
+    )
+    tensor = object()
+    monkeypatch.setattr(
+        stage_io,
+        "extract_cuda_tensors",
+        lambda data: ({"gpu": {"_tensor_placeholder": "gpu"}}, {"gpu": tensor}),
+    )
+    monkeypatch.setattr(stage_io, "_ipc_pickle", lambda value: b"cuda-handle")
+
+    ref = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(ref["header"])
+
+    assert len(ref["header"]) > 128 * 1024
+    assert header.request.inputs == payload.request.inputs
+    assert ref["tensors"] == [{"path": "gpu", "tensor_bytes": b"cuda-handle"}]
+
+
 def test_direct_cuda_ipc_payload_rejects_cpu_only_payloads() -> None:
     payload = make_stage_payload(data={"x": torch.ones(1)})
 

@@ -40,7 +40,7 @@ _TORCH_DTYPES: dict[str, torch.dtype] = {
 
 _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE = "TorchCudaIpcStreamChunk"
 _DIRECT_CUDA_IPC_PAYLOAD_TYPE = "TorchCudaIpcPayload"
-_IPC_INLINE_CPU_BYTES_LIMIT = 64 * 1024
+_DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT = 64 * 1024
 
 
 def relay_device(relay: Relay) -> str:
@@ -128,7 +128,7 @@ def should_use_direct_cuda_ipc_stream_chunk(
     if _contains_cpu_tensor(data) or _contains_cpu_tensor(metadata):
         return False
     inline_size = _inline_cpu_pickle_size(data) + _inline_cpu_pickle_size(metadata)
-    return inline_size <= _IPC_INLINE_CPU_BYTES_LIMIT
+    return inline_size <= _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT
 
 
 def payload_has_cuda_tensor(payload: Any) -> bool:
@@ -152,11 +152,6 @@ def serialize_direct_cuda_ipc_payload(payload: StagePayload) -> dict[str, Any]:
         data=data_without_tensors,
     )
     header_bytes = pickle.dumps(header)
-    if len(header_bytes) > _IPC_INLINE_CPU_BYTES_LIMIT:
-        raise ValueError(
-            "direct CUDA IPC payload header exceeds inline limit: "
-            f"{len(header_bytes)} > {_IPC_INLINE_CPU_BYTES_LIMIT} bytes"
-        )
     return {
         "_type": _DIRECT_CUDA_IPC_PAYLOAD_TYPE,
         "version": 1,
@@ -662,7 +657,7 @@ def _inline_cpu_pickle_size(obj: Any, seen: set[int] | None = None) -> int:
         return 0
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
-        return 0 if obj.is_cuda else _IPC_INLINE_CPU_BYTES_LIMIT + 1
+        return 0 if obj.is_cuda else _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT + 1
     if isinstance(obj, dict):
         return sum(
             _inline_cpu_pickle_size(key, seen) + _inline_cpu_pickle_size(value, seen)
@@ -678,7 +673,7 @@ def _inline_cpu_pickle_size(obj: Any, seen: set[int] | None = None) -> int:
     try:
         return len(pickle.dumps(obj))
     except Exception:
-        return _IPC_INLINE_CPU_BYTES_LIMIT + 1
+        return _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT + 1
 
 
 def _ipc_pickle(obj: Any) -> bytes:
