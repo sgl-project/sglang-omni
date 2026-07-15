@@ -71,10 +71,10 @@ def test_comm_router_uses_shm_for_cuda_payloads_to_cpu_targets() -> None:
     assert router.outbound_payload("decode", payload) is TransportKind.SHM
 
 
-def test_comm_router_identifies_same_gpu_targets() -> None:
+def test_comm_router_admits_compatible_direct_cuda_ipc_namespace() -> None:
     router = CommRouter(
         stage_name="talker_ar",
-        gpu_id=0,
+        gpu_id=1,
         placement_gpu_id=1,
         same_process_targets={"local_code2wav"},
         gpu_stage_names={"same_code2wav", "cross_code2wav", "tp_decode"},
@@ -87,10 +87,24 @@ def test_comm_router_identifies_same_gpu_targets() -> None:
         comm_config={},
     )
 
-    assert router.is_same_gpu_target("same_code2wav")
-    assert not router.is_same_gpu_target("cross_code2wav")
-    assert not router.is_same_gpu_target("tp_decode")
-    assert not router.is_same_gpu_target("local_code2wav")
+    assert router.can_use_direct_cuda_ipc("same_code2wav")
+    assert not router.can_use_direct_cuda_ipc("cross_code2wav")
+    assert not router.can_use_direct_cuda_ipc("tp_decode")
+    assert not router.can_use_direct_cuda_ipc("local_code2wav")
+
+
+def test_comm_router_rejects_narrowed_direct_cuda_ipc_namespace() -> None:
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        placement_gpu_id=2,
+        same_process_targets=set(),
+        gpu_stage_names={"talker"},
+        stage_gpu_ids={"talker": (2,)},
+        comm_config={},
+    )
+
+    assert not router.can_use_direct_cuda_ipc("talker")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

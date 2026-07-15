@@ -41,6 +41,14 @@ class CommRouter:
             for name, gpu_ids in (stage_gpu_ids or {}).items()
         }
         self.remote_stage_names = set(remote_stage_names or ())
+        self._direct_cuda_ipc_targets = frozenset(
+            name
+            for name, gpu_ids in self.stage_gpu_ids.items()
+            if self.gpu_id == self.placement_gpu_id
+            and gpu_ids == (self.placement_gpu_id,)
+            and name not in self.same_process_targets
+            and name not in self.remote_stage_names
+        )
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
         self._relays: dict[TransportKind, Relay] = {}
@@ -52,13 +60,8 @@ class CommRouter:
     def is_local_object(self, target: str) -> bool:
         return target in self.same_process_targets
 
-    def is_same_gpu_target(self, target: str) -> bool:
-        if self.placement_gpu_id is None or target in self.same_process_targets:
-            return False
-        target_gpu_ids = self.stage_gpu_ids.get(target)
-        if target_gpu_ids is None:
-            return False
-        return len(target_gpu_ids) == 1 and target_gpu_ids[0] == self.placement_gpu_id
+    def can_use_direct_cuda_ipc(self, target: str) -> bool:
+        return target in self._direct_cuda_ipc_targets
 
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:

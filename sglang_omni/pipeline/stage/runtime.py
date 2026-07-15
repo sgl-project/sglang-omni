@@ -1129,10 +1129,10 @@ class Stage:
             )
             return
 
-        same_gpu_target = self._comm.router.is_same_gpu_target(target)
+        can_use_direct_cuda_ipc = self._comm.router.can_use_direct_cuda_ipc(target)
         if (
             not self._disable_direct_cuda_ipc_payload
-            and same_gpu_target
+            and can_use_direct_cuda_ipc
             and stage_io.payload_has_cuda_tensor(projected_payload)
         ):
             try:
@@ -1336,7 +1336,7 @@ class Stage:
                 "relay-backed stream chunks must be torch.Tensor, got "
                 f"{type(data).__name__}"
             )
-        if data.is_cuda and self._comm.router.is_same_gpu_target(target):
+        if data.is_cuda and self._comm.router.can_use_direct_cuda_ipc(target):
             direct_ref = stage_io.serialize_direct_cuda_ipc_stream_chunk(data, metadata)
             _emit_event(
                 request_id=request_id,
