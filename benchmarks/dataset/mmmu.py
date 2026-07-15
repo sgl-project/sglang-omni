@@ -54,7 +54,7 @@ class MMMUSample:
     question: str
     options: list[str]
     answer: str
-    images: list[Image.Image]
+    image_data_uris: tuple[str, ...]
     subject: str
     prompt: str
     all_choices: list[str] = field(default_factory=list)
@@ -217,7 +217,7 @@ def _dataset_to_samples(
                 question=question,
                 options=options,
                 answer=answer,
-                images=images,
+                image_data_uris=tuple(image_to_data_uri(image) for image in images),
                 subject=subject,
                 prompt=prompt,
                 all_choices=all_choices,

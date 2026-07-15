@@ -24,6 +24,7 @@ from transformers.utils.hub import cached_file
 # ---------------------------------------------------------------------------
 
 _CONFIG_MODEL_TYPE_TO_ARCH = {
+    "fish_qwen3_omni": "FishQwen3OmniForCausalLM",
     "moss_tts_delay": "MossTTSDelayModel",
     "moss_tts_delay_with_codec": "MossTTSDelayWithCodec",
     "moss_tts_local": "MossTTSLocalModel",

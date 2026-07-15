@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request/result helpers for Fish Audio S2-Pro TTS."""
+
 from __future__ import annotations
 
+import hashlib
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,6 +12,7 @@ import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _S2PRO_GRAPH_TOP_K = 30
@@ -19,7 +23,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     """S2-Pro per-request state."""
 
     vq_mask_tokens: Any = None
-    vq_parts: list | None = None
+    vq_parts: list[torch.Tensor] | None = None
     num_codebooks: int = 10
     codebook_size: int = 4096
     output_codes: list[torch.Tensor] = field(default_factory=list)
@@ -38,6 +42,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     last_codebook_values: Any = None
     latest_stream_code_chunk: torch.Tensor | None = None
     finish_reason: str | None = None
+    engine_start_s: float = 0.0
 
     def __post_init__(self) -> None:
         validate_s2pro_top_k(self.top_k)
@@ -50,6 +55,20 @@ def validate_s2pro_top_k(top_k: int) -> None:
         raise ValueError(
             f"S2-Pro top_k must be -1 or between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
         )
+
+
+def _ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
+    # note (Gaokai): only cb0 of the ref VQ codes becomes prompt token ids;
+    # cb1..N ride in as embeddings, so extra_key must hash all codebooks to keep
+    # same-cb0 prompts from sharing radix KV across different reference audio.
+    if not vq_parts:
+        return None
+    digest = hashlib.blake2b(digest_size=16)
+    for part in vq_parts:
+        codes = part.detach().to(device="cpu", dtype=torch.int32).contiguous()
+        digest.update(str(tuple(codes.shape)).encode())
+        digest.update(codes.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def build_sglang_tts_request(
@@ -83,6 +102,11 @@ def build_sglang_tts_request(
 
     adapter = S2ProTokenizerAdapter(tokenizer)
     im_end_token_id = int(adapter.eos_token_ids[0])
+    # note (Gaokai): the semantic tokens live in the added vocab
+    # (151678..155773 > tokenizer.vocab_size); Req must carry the full width or
+    # upstream check_finished's vocab-boundary guard kills every request on its
+    # first sampled code.
+    vocab_size = len(tokenizer)
 
     sampling_params = SamplingParams(
         max_new_tokens=state.max_new_tokens,
@@ -93,15 +117,16 @@ def build_sglang_tts_request(
         stop_token_ids=[im_end_token_id],
     )
     sampling_params.normalize(tokenizer)
-    sampling_params.verify(tokenizer.vocab_size)
+    sampling_params.verify(vocab_size)
 
     req = Req(
         rid=request_id,
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
-        vocab_size=tokenizer.vocab_size,
+        vocab_size=vocab_size,
         eos_token_ids={im_end_token_id},
+        extra_key=_ref_vq_fingerprint(vq_parts),
     )
     req.tokenizer = tokenizer
     req._codec_suppress_tokens = None
@@ -127,26 +152,44 @@ def build_sglang_tts_request(
 
 
 def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
-    assert result.output_codes, (
-        "apply_tts_result expects non-empty output_codes; "
-        "FishScheduler.emit_finished must filter immediate-EOS cases"
-    )
+    if not result.output_codes:
+        raise ValueError(
+            f"Request {result.req.rid}: S2-Pro generated no audio codec tokens"
+        )
     state.output_codes = torch.cat(result.output_codes, dim=1)
     state.completion_tokens = state.output_codes.shape[1]
     state.prompt_tokens = len(result.input_ids) if result.input_ids is not None else 0
     state.finish_reason = result.finish_reason or "stop"
 
 
-def make_tts_scheduler_adapters(*, tokenizer: Any):
+def make_tts_scheduler_adapters(
+    *,
+    tokenizer: Any,
+    max_new_tokens_cap: int | None = None,
+    context_length: int | None = None,
+):
     """Build model-specific StagePayload <-> scheduler adapters for Fish TTS."""
 
     def request_builder(payload: StagePayload) -> S2ProSGLangRequestData:
         state = S2ProState.from_dict(payload.data)
+        if max_new_tokens_cap is not None:
+            state.max_new_tokens = min(
+                int(state.max_new_tokens), int(max_new_tokens_cap)
+            )
+        if context_length is not None:
+            # note (Gaokai): clamp instead of letting the scheduler's
+            # KV-capacity check reject: long-prompt requests kept being served
+            # under FishScheduler because generation stops at im_end early.
+            state.max_new_tokens = min(
+                int(state.max_new_tokens),
+                max(int(context_length) - 1 - len(state.input_ids), 1),
+            )
         req_data = build_sglang_tts_request(
             state,
             tokenizer=tokenizer,
             request_id=payload.request_id,
         )
+        req_data.engine_start_s = time.perf_counter()
         req_data.stage_payload = payload
         return req_data
 
@@ -154,10 +197,32 @@ def make_tts_scheduler_adapters(*, tokenizer: Any):
         payload = data.stage_payload
         state = S2ProState.from_dict(payload.data)
         apply_tts_result(state, data)
+        if data.engine_start_s:
+            state.engine_time_s = time.perf_counter() - data.engine_start_s
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
             data=state.to_dict(),
         )
 
-    return request_builder, result_adapter
+    def stream_output_builder(
+        request_id: str, data: S2ProSGLangRequestData, req_output: Any
+    ) -> list[OutgoingMessage]:
+        del req_output
+        if not data.stage_payload.request.params.get("stream"):
+            return []
+        codes = data.latest_stream_code_chunk
+        if codes is None:
+            return []
+        data.latest_stream_code_chunk = None
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=codes,
+                target="vocoder",
+                metadata={"modality": "audio_codes"},
+            )
+        ]
+
+    return request_builder, result_adapter, stream_output_builder

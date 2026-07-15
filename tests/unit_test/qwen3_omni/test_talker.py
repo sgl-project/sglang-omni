@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
+import sglang_omni.models.qwen3_omni.components.talker as talker_module
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
@@ -356,6 +360,366 @@ def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
 
     assert sampled.shape == (1, 2)
     assert sampled.tolist() == [[2, 0]]
+
+
+def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> None:
+    """Keeps lazy predictor graph capture scoped to this thread."""
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "sglang_omni"
+        / "models"
+        / "qwen3_omni"
+        / "components"
+        / "talker.py"
+    )
+    tree = ast.parse(source.read_text())
+    graph_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "graph"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "cuda"
+    ]
+
+    assert graph_calls
+    assert any(
+        any(
+            keyword.arg == "capture_error_mode"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "thread_local"
+            for keyword in call.keywords
+        )
+        for call in graph_calls
+    )
+
+
+class _FakePredictorLmHead(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = nn.Linear(8, 16, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor):
+        return self.proj(hidden_states), None
+
+
+def _build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
+    torch.manual_seed(0)
+    talker = object.__new__(Qwen3OmniTalker)
+    talker.training = False
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._predictor_input_buffer = torch.zeros(4, 5, 8, device=device)
+    talker._output_codes = torch.zeros(4, 4, dtype=torch.long, device=device)
+    talker._output_embeds = torch.zeros(4, 8, device=device)
+    talker._predictor_decode_graphs = {}
+    talker._predictor_decode_graph_disabled = set()
+    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
+    layer0_embedding = nn.Embedding(16, 8).to(device)
+    talker.get_input_embeddings = lambda: layer0_embedding
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(
+            codec_embedding=nn.ModuleList(
+                [nn.Embedding(16, 8).to(device) for _ in range(3)]
+            )
+        ),
+        lm_head=nn.ModuleList([_FakePredictorLmHead().to(device) for _ in range(3)]),
+    )
+
+    def fake_forward_one_token(
+        *,
+        token_embeds: torch.Tensor,
+        batch_size: int,
+        cache_len: int,
+    ) -> torch.Tensor:
+        return token_embeds[:batch_size] + float(cache_len + 1)
+
+    talker._predictor_forward_one_token = fake_forward_one_token
+    return talker
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
+)
+def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Live exact batch sizes should reuse bounded predictor graph buckets."""
+
+    class RecordingPredictorDecodeGraph:
+        def __init__(
+            self,
+            model: Qwen3OmniTalker,
+            batch_size: int,
+            code_dtype: torch.dtype,
+        ) -> None:
+            self.batch_size = batch_size
+            self.code_dtype = code_dtype
+            self.hidden_size = model._predictor_input_buffer.shape[-1]
+            self.dtype = model._predictor_input_buffer.dtype
+
+        def replay(
+            self,
+            layer0_codes: torch.Tensor,
+            talker_hidden: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            live_batch_size = layer0_codes.shape[0]
+            assert live_batch_size <= self.batch_size
+            assert talker_hidden.shape[0] == live_batch_size
+            return (
+                torch.zeros(
+                    live_batch_size,
+                    4,
+                    1,
+                    dtype=torch.long,
+                    device=layer0_codes.device,
+                ),
+                torch.zeros(
+                    live_batch_size,
+                    1,
+                    self.hidden_size,
+                    dtype=self.dtype,
+                    device=talker_hidden.device,
+                ),
+            )
+
+    monkeypatch.setattr(
+        talker_module,
+        "_PredictorDecodeGraph",
+        RecordingPredictorDecodeGraph,
+    )
+
+    device = torch.device("cuda")
+    talker = _build_fake_predictor_graph_talker(device)
+    layer0_codes = torch.tensor([[1], [7], [3]], dtype=torch.int, device=device)
+    talker_hidden = torch.randn(3, 1, 8, device=device)
+
+    result_codes, result_embeds = talker.code_predictor_forward(
+        layer0_codes,
+        talker_hidden,
+    )
+
+    assert result_codes.shape == (3, 4, 1)
+    assert result_embeds.shape == (3, 1, 8)
+    assert (4, torch.int) in talker._predictor_decode_graphs
+    assert (3, torch.int) not in talker._predictor_decode_graphs
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
+)
+def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPatch):
+    """Default graph replay matches eager predictor outputs for single-token decode."""
+    monkeypatch.setattr(
+        talker_module,
+        "get_global_server_args",
+        lambda: SimpleNamespace(max_running_requests=4),
+    )
+
+    device = torch.device("cuda")
+    talker = _build_fake_predictor_graph_talker(device)
+    layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
+    talker_hidden = torch.randn(2, 1, 8, device=device)
+
+    with torch.no_grad():
+        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+            layer0_codes,
+            talker_hidden,
+        )
+        eager_codes = eager_codes.clone()
+        eager_embeds = eager_embeds.clone()
+
+        graph_codes, graph_embeds = talker.code_predictor_forward(
+            layer0_codes,
+            talker_hidden,
+        )
+        torch.cuda.synchronize()
+
+    assert (2, torch.int) in talker._predictor_decode_graphs
+    torch.testing.assert_close(graph_codes, eager_codes)
+    torch.testing.assert_close(graph_embeds, eager_embeds)
+
+
+class _TupleLinear(nn.Module):
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(in_features, out_features, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor):
+        return self.proj(hidden_states), None
+
+
+class _IdentityRotary(nn.Module):
+    def forward(
+        self,
+        positions: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        fused_set_kv_buffer_arg=None,
+    ):
+        del positions, fused_set_kv_buffer_arg
+        return q, k
+
+
+def _build_real_step_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
+    torch.manual_seed(1)
+    hidden_size = 8
+    num_heads = 2
+    num_kv_heads = 1
+    head_dim = 4
+    num_code_groups = 4
+    vocab_size = 16
+    max_batch_size = 4
+    predictor_len = num_code_groups + 1
+
+    talker = object.__new__(Qwen3OmniTalker)
+    talker.training = False
+    talker.config = SimpleNamespace(num_code_groups=num_code_groups)
+    talker._predictor_input_buffer = torch.zeros(
+        max_batch_size,
+        predictor_len,
+        hidden_size,
+        device=device,
+    )
+    talker._output_codes = torch.zeros(
+        max_batch_size,
+        num_code_groups,
+        dtype=torch.long,
+        device=device,
+    )
+    talker._output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
+    talker._predictor_positions = torch.arange(
+        predictor_len,
+        device=device,
+        dtype=torch.long,
+    )
+    talker._predictor_k_cache = torch.zeros(
+        1,
+        max_batch_size,
+        num_kv_heads,
+        predictor_len,
+        head_dim,
+        device=device,
+    )
+    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
+    talker._predictor_decode_graphs = {}
+    talker._predictor_decode_graph_disabled = set()
+
+    layer = SimpleNamespace(
+        input_layernorm=nn.Identity(),
+        post_attention_layernorm=nn.Identity(),
+        mlp=nn.Linear(hidden_size, hidden_size, bias=False).to(device),
+    )
+    layer.self_attn = SimpleNamespace(
+        q_size=num_heads * head_dim,
+        kv_size=num_kv_heads * head_dim,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        q_norm=nn.Identity(),
+        k_norm=nn.Identity(),
+        alt_stream=None,
+        qkv_proj=_TupleLinear(
+            hidden_size, (num_heads + 2 * num_kv_heads) * head_dim
+        ).to(device),
+        o_proj=_TupleLinear(num_heads * head_dim, hidden_size).to(device),
+        rotary_emb=_IdentityRotary(),
+    )
+    talker.code_predictor = SimpleNamespace(
+        model=SimpleNamespace(
+            layers=[layer],
+            norm=nn.Identity(),
+            codec_embedding=nn.ModuleList(
+                [nn.Embedding(vocab_size, hidden_size).to(device) for _ in range(3)]
+            ),
+        ),
+        lm_head=nn.ModuleList(
+            [_TupleLinear(hidden_size, vocab_size).to(device) for _ in range(3)]
+        ),
+    )
+    layer0_embedding = nn.Embedding(vocab_size, hidden_size).to(device)
+    talker.get_input_embeddings = lambda: layer0_embedding
+    return talker
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
+)
+def test_qwen_predictor_decode_graph_covers_real_incremental_step(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Graph replay should exercise the real predictor step and KV cache path."""
+    monkeypatch.setattr(
+        talker_module,
+        "apply_qk_norm",
+        lambda q, k, **_: (q, k),
+    )
+
+    device = torch.device("cuda")
+    talker = _build_real_step_predictor_graph_talker(device)
+    layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
+    talker_hidden = torch.randn(2, 1, 8, device=device)
+
+    with torch.no_grad():
+        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+            layer0_codes,
+            talker_hidden,
+        )
+        eager_codes = eager_codes.clone()
+        eager_embeds = eager_embeds.clone()
+
+        graph_codes, graph_embeds = talker.code_predictor_forward(
+            layer0_codes,
+            talker_hidden,
+        )
+        torch.cuda.synchronize()
+
+    assert (2, torch.int) in talker._predictor_decode_graphs
+    torch.testing.assert_close(graph_codes, eager_codes)
+    torch.testing.assert_close(graph_embeds, eager_embeds)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="requires two visible CUDA devices",
+)
+def test_qwen_predictor_decode_graph_uses_tensor_device_when_current_device_differs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Graph capture follows predictor tensors, not the process-current device."""
+    monkeypatch.setattr(
+        talker_module,
+        "get_global_server_args",
+        lambda: SimpleNamespace(max_running_requests=4),
+    )
+
+    torch.cuda.set_device(0)
+    device = torch.device("cuda:1")
+    talker = _build_fake_predictor_graph_talker(device)
+    layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
+    talker_hidden = torch.randn(2, 1, 8, device=device)
+
+    with torch.no_grad():
+        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+            layer0_codes,
+            talker_hidden,
+        )
+        eager_codes = eager_codes.clone()
+        eager_embeds = eager_embeds.clone()
+
+        torch.cuda.set_device(0)
+        assert torch.cuda.current_device() == 0
+        graph_codes, graph_embeds = talker.code_predictor_forward(
+            layer0_codes,
+            talker_hidden,
+        )
+        torch.cuda.synchronize(device)
+
+    assert torch.cuda.current_device() == 0
+    assert (2, torch.int) in talker._predictor_decode_graphs
+    torch.testing.assert_close(graph_codes, eager_codes)
+    torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
 def _build_assistant_part_for_n_chunks(n: int) -> dict[str, torch.Tensor]:
@@ -828,6 +1192,7 @@ def _build_state_machine_scheduler(
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
     scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
     scheduler.waiting_queue = []
     scheduler._request_builder = request_builder_stub
     scheduler._request_admission_lock = threading.RLock()
@@ -960,6 +1325,7 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     """
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
     scheduler._pending_stream_chunks = {}
     scheduler._pending_stream_done = set()
     scheduler._deferred_request_payloads = {}
@@ -1306,6 +1672,14 @@ def test_qwen_talker_load_weights_converts_fp8_scales_after_name_mapping() -> No
     direct_param = RecordingParam()
     talker = object.__new__(Qwen3OmniTalker)
     talker.config = SimpleNamespace(text_config=SimpleNamespace(num_experts=1))
+    # The FP8 weight_scale_inv reciprocal conversion is gated on the checkpoint's
+    # quantization config, resolved from root_config via get_weight_preprocessor.
+    talker.root_config = SimpleNamespace(
+        quantization_config={
+            "quant_method": "fp8",
+            "weight_block_size": [128, 128],
+        }
+    )
     talker._cached_params_dict = {
         "model.layers.0.self_attn.qkv_proj.weight_scale_inv": qkv_param,
         "model.layers.0.mlp.experts.w13_weight_scale_inv": expert_param,

@@ -70,7 +70,7 @@ gpus_per_test:
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
 # Per-test extra env vars. Key is the test filename (basename).
-# FP8 Thinker TP=2 (stage 11): GPU 1 co-locates thinker rank-1 + talker +
+# FP8 Thinker TP=2 CI stage: GPU 1 co-locates thinker rank-1 + talker +
 # code2wav; expandable_segments reduces allocator fragmentation (issue #765),
 # matching the CI workflow env. NOTE: the relay also needs CAP_SYS_PTRACE, which
 # must be granted when the container is started (--cap-add=SYS_PTRACE) — env
@@ -93,6 +93,8 @@ stage_base_strip_suffix: "_ci"
 # dotted path.
 metric_sources:
   test_qwen3_omni_mmmu_ci.py:
+    # Full CI dataset; CONCURRENCY controls fan-out, not sample scope.
+    expected_samples: 50
     json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
     sample_counts:
       total: "summary.total_samples"
@@ -116,6 +118,8 @@ metric_sources:
       latency_mean_s: "speed.latency_mean_s"
       rtf_mean: "speed.rtf_mean"
   test_qwen3_omni_mmsu_ci.py:
+    # Full CI dataset; CONCURRENCY controls fan-out, not sample scope.
+    expected_samples: 2000
     json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
     sample_counts:
       total: "summary.total_samples"

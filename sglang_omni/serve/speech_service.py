@@ -16,9 +16,9 @@ from pydantic import ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
-from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
     SUPPORTED_TTS_LANGUAGES,

@@ -73,7 +73,13 @@ class _ReferenceAttention(_FakeAttention):
         positions = torch.arange(max_seqlen, device=x.device, dtype=torch.long)
         valid_k = positions.view(1, 1, max_seqlen) < input_lengths.view(-1, 1, 1)
         delta = positions.view(1, max_seqlen, 1) - positions.view(1, 1, max_seqlen)
-        attn_bias = (delta >= 0) & (delta < int(self.context))
+        attn_bias = torch.ones(
+            (1, max_seqlen, max_seqlen), device=x.device, dtype=torch.bool
+        )
+        if self.causal:
+            attn_bias = attn_bias & (delta >= 0)
+        if self.context is not None:
+            attn_bias = attn_bias & (delta < int(self.context))
         attn_bias = (attn_bias & valid_k)[:, None, :, :]
         out = F.scaled_dot_product_attention(q, k, v, attn_bias, dropout_p=0.0)
         valid_q = positions.view(1, max_seqlen) < input_lengths.view(-1, 1)
@@ -207,11 +213,25 @@ def test_projected_transformer_sdpa_path_does_not_reenter_source_stage() -> None
     assert torch.equal(out_lengths, lengths)
 
 
+def test_projected_transformer_shares_packed_rope_cache_across_layers() -> None:
+    source = _FallbackProjectedStage()
+    source.transformer.layers.append(_FakeLayer(6))
+
+    wrapper = MossTTSLocalProjectedTransformer(source)
+    caches = [
+        layer.self_attn._packed_rope_cache for layer in wrapper.transformer.layers
+    ]
+
+    assert len(caches) == 2
+    assert caches[0] is caches[1]
+
+
 def test_projected_transformer_uses_sglang_packed_flash_path() -> None:
     source = _FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
+    source.transformer.layers[0].self_attn.context = None
     wrapper = MossTTSLocalProjectedTransformer(source)
     attn = wrapper.transformer.layers[0].self_attn
     attn._can_run_packed_flash = lambda _: True  # type: ignore[method-assign]
@@ -245,7 +265,7 @@ def test_projected_transformer_uses_sglang_packed_flash_path() -> None:
     assert cu_k.tolist() == [0, 4, 7]
     assert max_q == 4
     assert max_k == 4
-    assert window_size == (source.transformer.layers[0].self_attn.context - 1, 0)
+    assert window_size == (-1, -1)
     assert out.shape == (2, 7, 4)
     assert torch.equal(out_lengths, lengths)
 
@@ -256,6 +276,7 @@ def test_packed_flash_unavailable_uses_source_attention(monkeypatch) -> None:
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
+    source.transformer.layers[0].self_attn.context = None
     wrapper = MossTTSLocalProjectedTransformer(source)
     x = torch.randn(2, 3, 4)
     lengths = torch.tensor([4, 3])
@@ -268,11 +289,64 @@ def test_packed_flash_unavailable_uses_source_attention(monkeypatch) -> None:
     assert torch.equal(out_lengths, lengths)
 
 
+def test_local_causal_flash_plan_chunks_queries_and_overlaps_keys() -> None:
+    cu_seqlens = torch.tensor([0, 320, 577], dtype=torch.int32)
+
+    plan = vocoder_decoder._build_local_causal_flash_plan(
+        cu_seqlens,
+        context=125,
+    )
+
+    assert plan.cu_seqlens_q.tolist() == [0, 128, 256, 320, 448, 576, 577]
+    assert plan.cu_seqlens_k.tolist() == [0, 128, 380, 568, 696, 948, 1073]
+    expected_kv_indices = torch.cat(
+        [
+            torch.arange(0, 128),
+            torch.arange(4, 256),
+            torch.arange(132, 320),
+            torch.arange(320, 448),
+            torch.arange(324, 576),
+            torch.arange(452, 577),
+        ]
+    )
+    assert torch.equal(plan.kv_indices, expected_kv_indices)
+    assert plan.max_seqlen_q == 128
+    assert plan.max_seqlen_k == 252
+    assert plan.context == 125
+
+
+def test_local_causal_flash_plan_skips_identity_kv_gather() -> None:
+    cu_seqlens = torch.tensor([0, 80, 180], dtype=torch.int32)
+
+    plan = vocoder_decoder._build_local_causal_flash_plan(
+        cu_seqlens,
+        context=125,
+    )
+
+    assert plan.kv_indices is None
+
+
+def test_local_causal_attention_keeps_packed_flash_cuda() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+
+    source = _FakeAttention(hidden_size=6).to(device="cuda", dtype=torch.bfloat16)
+    source.attention_implementation = "flash_attention_2"
+    source.causal = True
+    source.context = 4
+    attn = MossTTSLocalAttention(source)
+    attn._flash_attn_varlen = lambda *_, **__: torch.empty(0, device="cuda")
+    x = torch.empty(1, 6, device="cuda", dtype=torch.bfloat16)
+
+    assert attn._can_run_packed_flash(x)
+
+
 def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) -> None:
     source = _FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
+    source.transformer.layers[0].self_attn.context = None
     wrapper = MossTTSLocalProjectedTransformer(source)
     attn = wrapper.transformer.layers[0].self_attn
     attn._can_run_packed_flash = lambda _: True  # type: ignore[method-assign]
@@ -342,6 +416,7 @@ def test_projected_transformer_uses_single_unpadded_pack_fast_path(
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
+    source.transformer.layers[0].self_attn.context = None
     wrapper = MossTTSLocalProjectedTransformer(source)
     attn = wrapper.transformer.layers[0].self_attn
     attn._can_run_packed_flash = lambda _: True  # type: ignore[method-assign]
@@ -409,6 +484,7 @@ def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
+    source.transformer.layers[0].self_attn.context = None
     wrapper = MossTTSLocalProjectedTransformer(source)
     attn = wrapper.transformer.layers[0].self_attn
     attn._can_run_packed_flash = lambda _: True  # type: ignore[method-assign]
@@ -458,6 +534,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
         device=device, dtype=torch.bfloat16
     )
     source.attention_implementation = "flash_attention_2"
+    source.context = None
     wrapper = MossTTSLocalAttention(source)
     x = torch.randn(2, 6, 128, device=device, dtype=torch.bfloat16)
     input_lengths = torch.tensor([6, 4], device=device)
@@ -473,6 +550,45 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     )
     flash_out = vocoder_decoder._unpack_packed_sequence(
         packed_out, valid_mask, batch_size=2, max_seqlen=6
+    )
+    sdpa_out = source(x, input_lengths=input_lengths)
+
+    torch.testing.assert_close(flash_out, sdpa_out, atol=4e-2, rtol=3e-2)
+
+
+def test_sglang_chunked_local_flash_matches_sdpa_reference_cuda() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    if vocoder_decoder.flash_attn_varlen_func is None:
+        pytest.skip("requires SGLang flash_attn_varlen_func")
+
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    source = _ReferenceAttention(hidden_size=128, num_heads=2).to(
+        device=device, dtype=torch.bfloat16
+    )
+    source.attention_implementation = "flash_attention_2"
+    source.context = 400
+    wrapper = MossTTSLocalAttention(source)
+    x = torch.randn(2, 1024, 128, device=device, dtype=torch.bfloat16)
+    input_lengths = torch.tensor([1024, 701], device=device)
+
+    packed_x, valid_mask, cu_seqlens, position_ids = (
+        vocoder_decoder._pack_padded_sequence(x, input_lengths)
+    )
+    local_flash_plan = vocoder_decoder._build_local_causal_flash_plan(
+        cu_seqlens,
+        context=400,
+    )
+    packed_out = wrapper(
+        packed_x,
+        cu_seqlens=cu_seqlens,
+        max_seqlen=1024,
+        position_ids=position_ids,
+        local_flash_plan=local_flash_plan,
+    )
+    flash_out = vocoder_decoder._unpack_packed_sequence(
+        packed_out, valid_mask, batch_size=2, max_seqlen=1024
     )
     sdpa_out = source(x, input_lengths=input_lengths)
 

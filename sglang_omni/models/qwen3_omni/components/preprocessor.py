@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,41 @@ def _combine_cache_keys(*keys: str | None) -> str | None:
     if not parts:
         return None
     return "|".join(parts)
+
+
+# Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
+_QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
+    "image_token",
+    "audio_token",
+    "video_token",
+    "vision_bos_token",
+    "vision_eos_token",
+    "audio_bos_token",
+    "audio_eos_token",
+)
+
+
+def _extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
+    """Rebuild ``extra_special_tokens`` for tokenizer_config exported by transformers 5.x.
+
+    transformers 5.x writes the multimodal special tokens (``image_token`` etc.)
+    as top-level keys in ``tokenizer_config.json`` instead of under the
+    ``extra_special_tokens`` dict that transformers 4.x expects.
+    """
+    config_path = Path(model_dir) / "tokenizer_config.json"
+    if not config_path.is_file():
+        return {}
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if "extra_special_tokens" in config:
+        return {}
+    return {
+        key: config[key]
+        for key in _QWEN3_OMNI_SPECIAL_TOKEN_KEYS
+        if isinstance(config.get(key), str)
+    }
 
 
 def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
@@ -153,7 +189,31 @@ class Qwen3OmniPreprocessor:
             int(video_total_pixels) if video_total_pixels is not None else None
         )
         self.model_dir = _resolve_local_model_dir(model_path)
+        # Only override ``extra_special_tokens`` when the checkpoint omits them
+        # (transformers 5.x layout). Passing an empty dict would clobber the
+        # tokens a transformers 4.x checkpoint already declares in its config.
+        extra_special_tokens = _extra_special_tokens_compat(self.model_dir)
+        compat_kwargs = (
+            {"extra_special_tokens": extra_special_tokens}
+            if extra_special_tokens
+            else {}
+        )
         try:
+            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
+                self.model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+                **compat_kwargs,
+            )
+        except TypeError:
+            if not compat_kwargs:
+                raise
+            logger.warning(
+                "Qwen3OmniMoeProcessor.from_pretrained() rejected "
+                "extra_special_tokens compat kwargs for %s; retrying without "
+                "them",
+                self.model_dir,
+            )
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
                 self.model_dir,
                 trust_remote_code=True,

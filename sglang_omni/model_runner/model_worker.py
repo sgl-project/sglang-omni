@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from sglang_omni.quantization import (
+    needs_quant_config_normalization,
+    normalize_quant_config,
+    resolve_quant_config,
+)
+
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
@@ -117,6 +123,11 @@ class ModelWorker:
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
 
     def _configure_backend_policy(self) -> None:
+        # Apply Omni-specific quantization adapters (stage-local checkpoint name
+        # normalization) before SGLang builds its quant config, then run the
+        # model_worker backend policy.
+        _apply_omni_quantization_adapters(self.model_config)
+
         effective_quantization = _apply_model_worker_backend_policy(
             self.server_args,
             self.model_config,
@@ -500,30 +511,13 @@ def _model_config_has_moe(model_config: ModelConfig) -> bool:
 
 
 def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
-    quant_config = _get_hf_quantization_config(model_config)
-    if quant_config is None:
+    quant_dict = resolve_quant_config(getattr(model_config, "hf_config", None))
+    if quant_dict is None:
         return False
-    quant_method = _get_config_value(quant_config, "quant_method")
-    weight_block_size = _get_config_value(quant_config, "weight_block_size")
     return (
-        _normalize_quantization(quant_method) == "fp8" and weight_block_size is not None
+        _normalize_quantization(quant_dict.get("quant_method")) == "fp8"
+        and quant_dict.get("weight_block_size") is not None
     )
-
-
-def _get_hf_quantization_config(model_config: ModelConfig) -> object | None:
-    hf_config = getattr(model_config, "hf_config", None)
-    quant_config = getattr(hf_config, "quantization_config", None)
-    if quant_config is not None:
-        return quant_config
-
-    hf_text_config = getattr(model_config, "hf_text_config", None)
-    return getattr(hf_text_config, "quantization_config", None)
-
-
-def _get_config_value(config: object, key: str) -> object | None:
-    if isinstance(config, dict):
-        return config.get(key)
-    return getattr(config, key, None)
 
 
 def _is_h20_device() -> bool:
@@ -551,6 +545,22 @@ def _is_fp8_cutlass_moe_supported() -> bool:
     return bool(
         cutlass_fp8_supported() and (is_sm90_supported() or is_sm100_supported())
     )
+
+
+def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
+    """Apply Omni-specific quantization adapters before SGLang builds its config.
+
+    SGLang owns detection, config parsing, layer construction, and post-load
+    hooks. The only Omni-specific step needed here is stage-local checkpoint
+    name normalization for methods whose per-block quant names are matched
+    against runtime module names, currently AutoRound.
+    """
+    quant_dict = resolve_quant_config(getattr(model_config, "hf_config", None))
+    if quant_dict is None:
+        return
+
+    if needs_quant_config_normalization(quant_dict):
+        normalize_quant_config(model_config)
 
 
 def _initialize_model_worker_backend_globals(

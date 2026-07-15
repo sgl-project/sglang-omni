@@ -45,28 +45,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0123
+HIGGS_VC_WER_MAX_CORPUS = 0.0103
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0131
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0107
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.590424118042
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1453
+HIGGS_VC_SIMILARITY_MEAN_MIN = 65.79954902648926
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1637
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 _HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.508,
-        "output_tok_per_req_s": 149.2,
-        "latency_mean_s": 0.908,
-        "rtf_mean": 0.213,
+        "throughput_qps": 18.189,
+        "output_tok_per_req_s": 146.4,
+        "latency_mean_s": 0.874,
+        "rtf_mean": 0.2129,
     }
 }
 
 _HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.83,
-        "latency_mean_s": 0.892,
-        "rtf_mean": 0.2056,
+        "throughput_qps": 17.312,
+        "latency_mean_s": 0.918,
+        "rtf_mean": 0.2167,
     }
 }
 
@@ -79,28 +79,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0257
+MOSS_VC_WER_MAX_CORPUS = 0.0249
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0246
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0237
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 63.716178512573244
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.955
+MOSS_VC_SIMILARITY_MEAN_MIN = 64.11675895690918
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9534
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 _MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 12.117,
-        "output_tok_per_req_s": 83.5,
-        "latency_mean_s": 1.315,
-        "rtf_mean": 0.3115,
+        "throughput_qps": 11.972,
+        "output_tok_per_req_s": 71.3,
+        "latency_mean_s": 1.331,
+        "rtf_mean": 0.3141,
     }
 }
 
 _MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 9.728,
-        "latency_mean_s": 1.636,
-        "rtf_mean": 0.3809,
+        "throughput_qps": 9.792,
+        "latency_mean_s": 1.625,
+        "rtf_mean": 0.3788,
     }
 }
 
