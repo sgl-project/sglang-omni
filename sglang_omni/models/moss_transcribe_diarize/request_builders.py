@@ -311,11 +311,10 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         req._codec_suppress_tokens = None
 
         logger.debug(
-            "[moss-td] prompt_tokens=%d audio_tokens=%d chunks=%d duration=%.3fs",
-            len(padded_input_ids),
-            sum(end - start + 1 for start, end in offsets),
-            int(audio_feature_lengths.numel()),
-            audio_duration_s,
+            f"[moss-td] prompt_tokens={len(padded_input_ids)} "
+            f"audio_tokens={sum(end - start + 1 for start, end in offsets)} "
+            f"chunks={int(audio_feature_lengths.numel())} "
+            f"duration={audio_duration_s:.3f}s"
         )
 
         return MossTranscribeDiarizeRequestData(
