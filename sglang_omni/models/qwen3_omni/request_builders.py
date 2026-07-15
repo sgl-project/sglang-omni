@@ -260,7 +260,7 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
-# The talker prefill uses image, video, and audio embeddings, but not deepstack.
+# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
 _TALKER_UNUSED_MODEL_INPUT_KEYS = (
     "image_deepstack_visual_embeds",
     "video_deepstack_visual_embeds",
