@@ -83,6 +83,7 @@ class SGLModelRunner(ModelRunner):
 
         sglang_omni_models = {
             "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
+            "CosyVoice3ForCausalLM": "sglang_omni.models.cosyvoice3.sglang_model:CosyVoice3LM",
             "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
             "HiggsMultimodalQwen3ForConditionalGeneration": "sglang_omni.models.higgs_tts.model:HiggsTTSModel",

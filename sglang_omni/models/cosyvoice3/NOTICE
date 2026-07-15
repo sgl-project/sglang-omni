@@ -1,0 +1,125 @@
+# NOTICE — vendored third-party code in `sglang_omni/models/cosyvoice3/`
+
+sglang-omni is licensed under Apache-2.0. This package (CosyVoice3 day-0 support)
+vendors model / inference code from two upstream projects. Their license headers
+are preserved in-file, and the required attribution is reproduced below.
+
+The model used is `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`.
+
+## Vendored upstreams
+
+### CosyVoice  →  `cosyvoice/`
+- Source: https://github.com/FunAudioLLM/CosyVoice
+- License: Apache License, Version 2.0
+- Copyright: Alibaba Inc.
+- Vendored at commit `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc` (2026-05-25).
+
+The DiT conditional-flow-matching backbone under `cosyvoice/flow/DiT/`
+(`dit.py`, `modules.py`) derives from F5-TTS
+(https://github.com/SWivid/F5-TTS, MIT, Copyright (c) 2024 Yushen Chen); CosyVoice
+redistributes it under Apache-2.0. Because that code carries F5's MIT terms, F5's
+copyright and permission notice travel with it — see the MIT text reproduced below,
+which applies verbatim to both F5-TTS (Copyright (c) 2024 Yushen Chen) and Matcha-TTS.
+(The upstream Whisper-derived multilingual tiktoken tokenizer path was removed as
+unused; see the LOCAL MODIFICATION note in `cosyvoice/tokenizer/tokenizer.py`.)
+
+### Matcha-TTS  →  `matcha/`
+- Source: https://github.com/shivammehta25/Matcha-TTS
+- License: MIT
+- Copyright (c) 2023 Shivam Mehta
+- Vendored at commit `dd9105b34bf2be2230f4aa1e4769fb586a3c824e` (2024-02-27).
+
+MIT requires its copyright and permission notice to travel with the source. The same MIT
+text below governs both Matcha-TTS and the F5-TTS-derived DiT backbone noted above:
+
+```
+Copyright (c) 2023 Shivam Mehta (Matcha-TTS)
+Copyright (c) 2024 Yushen Chen (F5-TTS)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Why the code is vendored
+
+sglang-omni drives the CosyVoice3 TTS pipeline through its own stages (see the
+hand-written glue in the package root: `stages.py`, `model_runner.py`,
+`request_builders.py`, etc.). The model / flow (DiT CFM) / HiFT-vocoder / frontend /
+tokenizer code is vendored so the package is self-contained and does not depend on an
+external CosyVoice install.
+
+The autoregressive speech LM is **not** vendored — it is reimplemented natively in
+`sglang_model.py` to run on the sglang engine.
+
+## What was pruned from upstream
+
+To keep only the inference path actually exercised by sglang-omni, large parts of the
+upstream trees were not vendored. Only the modules reachable from the frontend import
+and the sliced flow/HiFT instantiation graph are included; the entire training, CLI,
+serving, dataset, and evaluation scaffolding is left out. Notable removals include:
+
+- CosyVoice cli orchestration — `cosyvoice/cli/model.py` and `cosyvoice/cli/cosyvoice.py`
+  (the pipeline is driven by sglang-omni stages, not the CosyVoice cli).
+- Training / serving / data scaffolding — `cosyvoice/bin/*`, `cosyvoice/dataset/*`, and
+  training-only code such as `cosyvoice/transformer/label_smoothing_loss.py`.
+- The non-DiT (CosyVoice1/2) flow path — `cosyvoice/flow/decoder.py`,
+  `cosyvoice/flow/length_regulator.py`, `cosyvoice/transformer/decoder.py`,
+  `cosyvoice/transformer/decoder_layer.py`, `cosyvoice/transformer/encoder.py`.
+- The HiFi-GAN training discriminator (only the generator is vendored).
+- The dead vendored LM — `cosyvoice/llm/llm.py` (replaced by the native
+  `sglang_model.py`).
+- From Matcha-TTS, only `BASECFM` (flow_matching.py), `mel_spectrogram` (utils/audio.py),
+  and the pylogger are vendored; the Decoder/Transformer components and the rest of the
+  package are not.
+
+This list is representative, not exhaustive.
+
+## What was modified locally
+
+Additionally, every vendored file had its intra-package imports rewritten from
+`from cosyvoice…` / `from matcha…` to the full
+`sglang_omni.models.cosyvoice3.cosyvoice…` / `sglang_omni.models.cosyvoice3.matcha…`
+path — a mechanical, non-semantic change applied uniformly across the tree and so
+not individually annotated.
+
+All other local divergence from upstream is also marked in-file with a
+`# LOCAL MODIFICATION (sglang-omni): …` comment:
+
+- `cosyvoice/cli/frontend.py` — `CosyVoiceFrontEnd.__init__` accepts an explicit
+  `device` (from sglang-omni stage placement) instead of always taking the default
+  CUDA device, and pins the ORT CUDA provider to that device id.
+- `cosyvoice/utils/class_utils.py` — removed the `get_model_type()` helper (it
+  dispatched to `cosyvoice.cli.model`, which is not vendored); only the
+  `COSYVOICE_*_CLASSES` registries are kept.
+- `cosyvoice/utils/file_utils.py` — removed the import-time
+  `logging.basicConfig(level=DEBUG)` call (a vendored module must not reconfigure the
+  process-wide root logger).
+- `cosyvoice/utils/onnx.py` — disabled the import-time ONNX `EmbeddingExtractor`
+  (upstream eagerly read a generic `onnx_path` env var and built an online
+  speaker-embedding extractor); the sglang-omni pipeline supplies speech tokens and
+  the campplus x-vector via the frontend, so `onnx_path` is pinned to `None` and
+  nothing is constructed at import.
+- `matcha/utils/pylogger.py` — rewritten without the `lightning` dependency.
+- `matcha/models/components/flow_matching.py` — kept only `BASECFM`; removed upstream's
+  `CFM(BASECFM)` subclass and its `matcha.models.components.decoder` import (CosyVoice3
+  uses its own DiT CFM), so the Matcha `decoder.py` / `transformer.py` modules are unused
+  and not vendored.
+
+The vendored `matcha/` package `__init__.py` files are kept empty (namespace markers only);
+they are not annotated individually. `matcha/utils/audio.py` is vendored as upstream (no local
+change) — the pipeline uses only its `mel_spectrogram`.
