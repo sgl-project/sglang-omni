@@ -75,6 +75,112 @@ class SGLModelRunner(ModelRunner):
             server_args=server_args,
         )
 
+    # ------------------------------------------------------------------
+    # Same-GPU weight sharing (SGLANG_OMNI_WEIGHT_SHARE=leader|follower:<dir>)
+    # ------------------------------------------------------------------
+    def load_model(self):
+        """Load weights, honoring the same-GPU weight-share role, if any.
+
+        Leader: normal checkpoint load, then publish CUDA-IPC handles for all
+        parameters/buffers. Follower: wait for the leader's handle file, build
+        the module tree with dummy weights (no checkpoint I/O), then alias
+        every parameter/buffer onto the leader's storage. Both paths finish
+        inside ``load_model``, i.e. strictly before KV-pool profiling
+        (``initialize()`` → ``init_memory_pool``), warmup forwards, and CUDA
+        graph capture.
+        """
+        from sglang_omni.utils import ipc_weights
+
+        ws = ipc_weights.get_weight_share_config()
+        self._weight_share_config = ws
+        self._weight_share_record = None
+        if ws is None:
+            return super().load_model()
+
+        # TP/PP ranks are separate processes inheriting the env var and their
+        # shards share names/shapes/dtypes across ranks, so the handle file
+        # would collide and followers would silently attach another rank's
+        # shard. Refuse until the handle path is rank-qualified.
+        if getattr(self.server_args, "tp_size", 1) > 1 or (
+            getattr(self.server_args, "pp_size", 1) > 1
+        ):
+            raise ipc_weights.WeightShareError(
+                "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1"
+            )
+
+        if ws.role == "leader":
+            super().load_model()
+            self._weight_share_record = ipc_weights.leader_export(
+                self.model, ws.dir_path
+            )
+            return
+
+        # Follower: wait for the leader BEFORE allocating dummy weights so we
+        # never hold a full transient dummy-weight copy while blocked. The
+        # exact handle file name needs the constructed model's class, so this
+        # pre-wait polls for any export in the directory; follower_attach
+        # below still waits on (and validates) the engine's own file.
+        import torch
+
+        ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
+        original_load_format = self.server_args.load_format
+        self.server_args.load_format = "dummy"
+        try:
+            super().load_model()
+        finally:
+            self.server_args.load_format = original_load_format
+        self._weight_share_record = ipc_weights.follower_attach(
+            self.model,
+            ws.dir_path,
+            timeout_s=ws.attach_timeout_s,
+        )
+        # Return the dropped dummy-weight blocks to the driver so KV-pool
+        # profiling (and later replicas) see the freed memory.
+        torch.cuda.empty_cache()
+
+    def init_device_graphs(self):
+        """Re-verify shared-storage identity right before any graph capture.
+
+        Followers: catches any load-path step that re-created a parameter
+        after attach (would silently serve dummy weights). Leader: catches a
+        post-export ``.data`` rebind (would silently orphan the followers).
+        """
+        record = getattr(self, "_weight_share_record", None)
+        if record is not None:
+            from sglang_omni.utils import ipc_weights
+
+            ipc_weights.verify_attachment(self.model, record)
+        return super().init_device_graphs()
+
+    def _weight_update_blocked_reason(self) -> str | None:
+        ws = getattr(self, "_weight_share_config", None)
+        if ws is None:
+            return None
+        return (
+            f"weight updates are disabled while same-GPU weight sharing is "
+            f"active (role={ws.role}): replicas alias the leader's storage, "
+            "so an in-place update would corrupt every replica; restart the "
+            "whole replica group with new weights instead"
+        )
+
+    def update_weights_from_disk(self, *args, **kwargs):
+        reason = self._weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason
+        return super().update_weights_from_disk(*args, **kwargs)
+
+    def update_weights_from_tensor(self, *args, **kwargs):
+        reason = self._weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason
+        return super().update_weights_from_tensor(*args, **kwargs)
+
+    def update_weights_from_distributed(self, *args, **kwargs):
+        reason = self._weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason
+        return super().update_weights_from_distributed(*args, **kwargs)
+
     def _register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
         import importlib
