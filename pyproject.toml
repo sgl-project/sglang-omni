@@ -99,4 +99,4 @@ include = ["sglang_omni*"]
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
-"sglang_omni.models.higgs_tts" = ["_vendored/*.json"]
+"sglang_omni.models.higgs_tts" = ["configs/*.json"]

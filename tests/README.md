@@ -390,6 +390,7 @@ that happened to contain an older version of the test.
 
 - `unit_test/higgs_tts/`: Higgs TTS unit tests:
   - OmniScheduler-backed AR stage factory wiring
+  - upstream Transformers codec binding and bundled-config state-dict structure
   - sampler-driven finish handling for eager and CUDA-graph paths
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
