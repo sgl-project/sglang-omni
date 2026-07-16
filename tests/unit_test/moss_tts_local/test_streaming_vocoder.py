@@ -503,12 +503,11 @@ def test_batched_step_capped_at_chunk_frames(monkeypatch) -> None:
         for m in messages
         if m.type == "stream"
     ]
-    # With cap=stream_slots=16, the first pump sees all 16 queued chunks. Each streaming
-    # step is capped at stream_chunk_frames=10 (the CUDA-graph capture ceiling), so the
-    # same pump emits 10 frames and re-pumps the remaining 6. If the drain cap fell back
-    # to max_batch_size=4, the boundaries would be [8, 8] instead.
+    # With cap=stream_slots=16, the first pump sees all 16 queued chunks. It
+    # preserves the 5-frame initial boundary, then caps the steady step at
+    # stream_chunk_frames=10 before draining the final frame.
     assert max(sizes) <= 10
-    assert sizes == [10, 6]
+    assert sizes == [5, 10, 1]
     audio = _concat_stream_audio(messages, "req")
     np.testing.assert_array_equal(audio, reference_waveform(rows[:, 1:]).numpy())
 
@@ -845,6 +844,57 @@ def test_slot_reuse_after_release(monkeypatch) -> None:
     np.testing.assert_array_equal(
         _concat_stream_audio(messages_c, "c"),
         reference_waveform(rows_c[:, 1:]).numpy(),
+    )
+
+
+def test_slot_reacquisition_preserves_initial_chunk_boundary(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(
+        monkeypatch,
+        processor,
+        stream_slots=1,
+        stream_chunk_frames=6,
+        initial_chunk_frames=1,
+    )
+    metadata = _metadata()
+    hold_rows = _rows(1, seed=22)
+    starved_rows = _rows(4, seed=23)
+
+    scheduler._on_chunk("hold", _stream_item(hold_rows[0], metadata))
+    _drain(scheduler)
+    for index, row in enumerate(starved_rows[:3]):
+        scheduler._on_chunk("starved", _stream_item(row, metadata, index))
+    assert not [
+        msg
+        for msg in _drain(scheduler)
+        if msg.type == "stream" and msg.request_id == "starved"
+    ]
+
+    scheduler._on_done("hold")
+    scheduler._on_streaming_new_request(
+        "hold", _terminal_payload(hold_rows, request_id="hold")
+    )
+    _drain(scheduler)
+
+    scheduler._on_chunk(
+        "starved", _stream_item(starved_rows[3], metadata, len(starved_rows) - 1)
+    )
+    messages = _drain(scheduler)
+    first_chunk_sizes = [
+        _decode_audio(msg.data).shape[1] // SAMPLES_PER_FRAME
+        for msg in messages
+        if msg.type == "stream" and msg.request_id == "starved"
+    ]
+    assert first_chunk_sizes == [1]
+
+    scheduler._on_done("starved")
+    scheduler._on_streaming_new_request(
+        "starved", _terminal_payload(starved_rows, request_id="starved")
+    )
+    messages += _drain(scheduler)
+    np.testing.assert_array_equal(
+        _concat_stream_audio(messages, "starved"),
+        reference_waveform(starved_rows[:, 1:]).numpy(),
     )
 
 

@@ -578,13 +578,15 @@ class MossTTSLocalStreamingVocoderScheduler(
     def build_step_plan(
         self, participants: list[tuple[str, _LocalStreamState]]
     ) -> _CoalescedStepPlan:
-        """Uniform step capped at the steady chunk size (= CUDA-graph capture
-        ceiling) so coalesced backlogs stay on the graphed fast path; the base
-        pump loop re-pumps any remainder."""
+        """Uniform step capped at the steady chunk size and any un-emitted
+        participant's first-chunk threshold; the base pump re-pumps remainder."""
         step_t = min(
             min(len(state.pending) for _, state in participants),
             self._stream_chunk_frames,
         )
+        for request_id, state in participants:
+            if not self._stream_has_emitted(request_id):
+                step_t = min(step_t, state.threshold)
         return _CoalescedStepPlan(
             step_t=step_t,
             slot_codes={
