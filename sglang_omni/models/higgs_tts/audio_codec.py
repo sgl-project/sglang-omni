@@ -1,8 +1,8 @@
-"""Thin facade over the vendored Higgs Audio V2 tokenizer.
+"""Thin facade over Transformers' Higgs Audio V2 tokenizer.
 
 The codec weights are bundled inside the Higgs TTS checkpoint under the
-prefix ``tied.embedding.modality_embeddings.0.model.*`` (1584 tensors;
-acoustic_encoder, acoustic_decoder, quantizer, semantic_model, etc.).
+prefix ``tied.embedding.modality_embeddings.0.model.*`` (acoustic encoder,
+acoustic decoder, quantizer, semantic model, etc.).
 :meth:`HiggsAudioCodec.from_pretrained` extracts those keys directly from
 the TTS ``model.safetensors`` so a single checkpoint serves both the AR
 engine and the codec.
@@ -20,11 +20,7 @@ import torch.nn.functional as F
 import torchaudio
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
-
-from sglang_omni.models.higgs_tts._vendored.higgs_audio_v2_tokenizer_hf import (
-    HiggsAudioV2TokenizerConfig,
-    HiggsAudioV2TokenizerModel,
-)
+from transformers import HiggsAudioV2TokenizerConfig, HiggsAudioV2TokenizerModel
 
 WaveformInput = torch.Tensor | np.ndarray
 
@@ -35,8 +31,8 @@ _CODEC_IN_TTS_CKPT_PREFIX = "tied.embedding.modality_embeddings.0.model."
 # https://huggingface.co/bosonai/higgs-audio-v2-tokenizer/blob/main/config.json).
 _BUNDLED_CODEC_CONFIG_PATH = os.path.join(
     os.path.dirname(__file__),
-    "_vendored",
-    "higgs_audio_v2_tokenizer_config.json",
+    "configs",
+    "higgs_audio_v2_tokenizer.json",
 )
 
 
@@ -125,8 +121,8 @@ class HiggsAudioCodec:
 
         Codec weights are bundled inside the TTS ``model.safetensors`` under
         the ``tied.embedding.modality_embeddings.0.model.*`` prefix; we use
-        the bundled vendored config for the codec architecture and load the
-        585 codec tensors out of the TTS shards directly.
+        the bundled codec config for the codec architecture and load the codec
+        tensors out of the TTS shards directly.
 
         ``dtype`` defaults to fp32; decode ConvTranspose is unstable in bf16
         — opt in only if you've validated quality at your sample rate.
@@ -134,11 +130,7 @@ class HiggsAudioCodec:
         device = torch.device(device)
         ckpt_dir = _resolve_ckpt_dir(model_path)
 
-        with open(_BUNDLED_CODEC_CONFIG_PATH) as f:
-            cfg_dict = json.load(f)
-        for k in ("architectures", "torch_dtype", "transformers_version"):
-            cfg_dict.pop(k, None)
-        config = HiggsAudioV2TokenizerConfig(**cfg_dict)
+        config = HiggsAudioV2TokenizerConfig.from_json_file(_BUNDLED_CODEC_CONFIG_PATH)
         model = HiggsAudioV2TokenizerModel(config).to(dtype=dtype).eval()
 
         state = _load_codec_state_dict(ckpt_dir)
@@ -154,7 +146,8 @@ class HiggsAudioCodec:
         if len(missing) > len(state) // 2:
             raise RuntimeError(
                 f"Codec weight load is too sparse: {len(missing)} missing / "
-                f"{len(state)} loaded; vendored config may be out of sync."
+                f"{len(state)} loaded; bundled codec config may be incompatible "
+                "with the installed Transformers version."
             )
         model = model.to(device=device)
         for p in model.parameters():
