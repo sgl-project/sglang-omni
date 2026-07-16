@@ -35,7 +35,6 @@ class BatchedAudioEncoderService:
             max_bytes=_CACHE_MAX_BYTES,
             cache_device="cpu",
         )
-        self._cache_lock = threading.Lock()
         self._queue: queue.Queue[tuple[Any, concurrent.futures.Future]] = queue.Queue()
         self._batch_count = 0
         self._item_count = 0
@@ -47,8 +46,7 @@ class BatchedAudioEncoderService:
     def encode_item(self, item: Any) -> None:
         """Blocks until item.precomputed_embeddings is attached."""
         if item.hash is not None:
-            with self._cache_lock:
-                cached = self._cache.get(str(item.hash))
+            cached = self._cache.get(str(item.hash))
         else:
             cached = None
         if cached is not None:
@@ -115,7 +113,6 @@ class BatchedAudioEncoderService:
                 item.precomputed_embeddings = part.contiguous()
                 item.feature = None
         self._stream.synchronize()
-        with self._cache_lock:
-            for item in items:
-                if item.hash is not None:
-                    self._cache.put(str(item.hash), item.precomputed_embeddings)
+        for item in items:
+            if item.hash is not None:
+                self._cache.put(str(item.hash), item.precomputed_embeddings)
