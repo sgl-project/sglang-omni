@@ -27,6 +27,12 @@
 #     set it here or in CONFIG's generation-stage server arguments. The environment
 #     value takes precedence when both are set.
 #   MF: optional explicit --mem-fraction-static override (unset = pipeline default).
+#   WEIGHT_SHARE (0): 1 = replicas share one copy of the AR backbone weights
+#     over CUDA IPC. Replica 0 is the weight LEADER (loads the checkpoint and
+#     publishes IPC handles under $state/ipc_weights); replicas 1..N-1 attach
+#     zero-copy instead of loading their own copy. The leader owns the shared
+#     storage: if replica 0 dies, followers hold dangling mappings — always
+#     bring the whole run down and restart it together (down + up).
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -309,6 +315,8 @@ up() {
   local config=${CONFIG:-} model=${MODEL:-bosonai/higgs-tts-3-4b}
   local model_name=${MODEL_NAME:-}
   local gpu=${GPU_ID:-0} n=${N:-3} base_port=${BASE_PORT:-8801} mf=${MF:-}
+  local weight_share=${WEIGHT_SHARE:-0}
+  [[ "$weight_share" =~ ^[01]$ ]] || die "WEIGHT_SHARE must be 0 or 1, got '$weight_share'"
   [[ "$gpu" =~ ^[0-9]+$ ]] || die "GPU_ID must be a non-negative integer, got '$gpu'"
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "N must be a positive integer, got '$n'"
   [[ "$base_port" =~ ^[1-9][0-9]*$ ]] \
@@ -405,7 +413,9 @@ up() {
     echo "mem_fraction_static_cli_override=${mf:-none}"
     echo "base_port=$base_port"; echo "core_blocks=$CORE_BLOCKS"
     echo "max_total_tokens=${expected_max_total_tokens:-auto/profiled}"
+    echo "weight_share=$weight_share"
   } > "$state/manifest"
+  if [ "$weight_share" = 1 ]; then mkdir -p "$state/ipc_weights"; fi
 
   export CUDA_MPS_PIPE_DIRECTORY=$state/mps/pipe CUDA_MPS_LOG_DIRECTORY=$state/mps/log
   local mps_launch_status=0
@@ -430,15 +440,30 @@ up() {
   pid_is_live "$control_pid" \
     || die "MPS control daemon PID $control_pid exited during startup"
 
-  local pid leader_start log resolved_tokens
+  local pid leader_start log resolved_tokens ws_env
   for ((i=0; i<n; i++)); do
     port=$((base_port+i))
     log=$state/logs/replica_$i.log
+    # Weight sharing: replica 0 leads (loads + exports IPC handles); later
+    # replicas attach. The sequential health gate below already guarantees the
+    # leader has exported (export completes during model load, well before
+    # /health turns 200) by the time any follower boots, so followers never
+    # block on the handle file in this launcher. Empty value = feature off.
+    ws_env=""
+    if [ "$weight_share" = 1 ]; then
+      if [ "$i" = 0 ]; then ws_env="leader:$state/ipc_weights"
+      else ws_env="follower:$state/ipc_weights"; fi
+    fi
     # Note (jiaxin): concurrent colocated launches raced on CUDA-graph capture and
     # memory profiling in testing, so replicas start sequentially behind a health
     # gate; setsid gives each replica its own process group so teardown can signal
     # exactly this run's process trees.
+    # Config-file models (multi-stage pipelines like Qwen3-Omni) can't be
+    # expressed as --model-path; MODEL_CONFIG switches the serve invocation.
+    local model_args=(--model-path "$model" --model-name "$model_name")
+    [ -n "${MODEL_CONFIG:-}" ] && model_args=(--config "$MODEL_CONFIG")
     CUDA_VISIBLE_DEVICES="$uuid" \
+    SGLANG_OMNI_WEIGHT_SHARE="$ws_env" \
     setsid numactl --cpunodebind="$node" --membind="$node" -C "${blocks[$i]}" \
       "${serve_cmd[@]}" "${source_args[@]}" "${model_name_args[@]}" \
         "${mem_args[@]}" "${extra_args[@]}" \
@@ -483,7 +508,10 @@ up() {
     exit 1
   fi
   trap - EXIT
-  echo "up: $n replicas on GPU $gpu; token cap ${expected_max_total_tokens:-auto/profiled}; state: $state"
+  echo "up: $n replicas on GPU $gpu; token cap ${expected_max_total_tokens:-auto/profiled}; weight_share=$weight_share; state: $state"
+  if [ "$weight_share" = 1 ]; then
+    echo "weight sharing is ON: replica 0 owns the shared weights — never restart replicas individually; use down + up"
+  fi
   echo "tear down with: bash $0 down $run"
 }
 

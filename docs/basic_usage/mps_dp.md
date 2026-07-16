@@ -85,6 +85,24 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
 
+## Shared weights across replicas (experimental)
+
+By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
+
+```bash
+WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
+  bash examples/mps_dp/launch.sh up
+```
+
+Replica 0 is the weight **leader**: it loads the checkpoint normally and publishes CUDA-IPC handles for every backbone parameter and buffer to `$state/ipc_weights/` (atomic write; the machinery is sglang's `MultiprocessingSerializer` / `monkey_patch_torch_reductions`, the same lineage as `update_weights_from_tensor`). Replicas 1..N-1 are **followers**: they build the module tree with `load_format=dummy` (no checkpoint I/O), then alias every parameter/buffer onto the leader's storage before KV profiling, warmup, and CUDA-graph capture. KV cache, CUDA graphs, and sampler state remain private per replica. The plumbing is the `SGLANG_OMNI_WEIGHT_SHARE=leader:<dir> | follower:<dir>` environment variable; unset means today's independent-copy behavior.
+
+What this buys: N-1 fewer weight copies (15.2 GiB at DP3), which can fund a fourth replica at the same KV cap or a larger per-replica KV budget; followers also skip checkpoint I/O at startup. Two operational rules:
+
+- **Restart together.** The leader owns the shared allocations; CUDA IPC mappings die with the exporting process. If replica 0 exits, bring the whole run down (`down`) and start a new run. Never restart replicas individually.
+- **No weight updates.** In-place weight updates (`update_weights_from_disk/tensor/distributed`) are rejected while sharing is active — an update through one replica would corrupt all of them. Redeploy the run to change weights.
+
+A follower transiently allocates its dummy weight copy before the alias step frees it, so peak follower boot memory briefly includes one extra weight copy; this fits whenever the steady-state configuration fits, because the follower's KV pool (allocated after the free) is larger than the transient.
+
 ## How We Found This
 
 This recipe grew out of the serving profiling in [#907](https://github.com/sgl-project/sglang-omni/issues/907). Our profiling found substantial unused GPU capacity across several omni serving workloads, with strong host-dispatch-bound evidence in the tested ASR setup. From there we ran same-GPU DP experiments on [Higgs](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html) and [Moss](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html) TTS models.
