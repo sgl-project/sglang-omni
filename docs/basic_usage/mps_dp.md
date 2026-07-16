@@ -74,7 +74,7 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 | DP2 + MPS, 2 x c64 | 31.5 to 37.7 qps | 1.4 to 1.7x |
 | DP3 + MPS, 3 x c64 | 39.9 to 46.9 qps | 1.8 to 2.1x |
 
-These commands and the token cap are from an 80 GB H100 with Higgs and are not fixed recommendations for other GPUs. On an H200 you would re-determine the replica count, common feasible token cap, CPU allocation, and saturation concurrency for that card. H200 may fit a larger KV budget or additional replicas, but this guide does not prescribe unverified values: repeat the sizing and saturation procedure and inspect every replica's actual allocation.
+These commands and the token cap are from an 80 GB H100 with Higgs and are not fixed recommendations for other GPUs. For H200, a validated reference configuration is given in the [H200 case study](#case-study-on-h200-with-higgs-tts-model) below. On other cards, repeat the sizing and saturation procedure and inspect every replica's actual allocation rather than reusing these values.
 
 
 ## How We Found This
@@ -157,9 +157,32 @@ nsys profile --gpu-metrics-devices $GPU_ID --gpu-metrics-set gh100 \
 
 Low SM activity at the tuned single replica's peak may indicate reclaimable headroom; confirm it with a controlled DP comparison before relying on it. If SM activity is already near the ceiling, stop here.
 
+## Case Study on H200 with Higgs TTS Model
+
+One H200 141 GB SXM (driver 590.48.01 / CUDA 13), sglang-omni `1618b7c`, sglang `0.5.12.post1`, `bosonai/higgs-tts-3-4b` (snapshot `7556c17e`), seed-tts-eval EN voice clone via `/v1/chat/completions`, default `max_running_requests=64` / `cuda_graph_max_bs=64`, `--max-total-tokens 100000` for every condition including the single-replica baseline, 32 NUMA-local server cores split per replica, one closed-loop client per replica (conc 96) on disjoint physical cores, fresh servers and a fresh MPS daemon per rep, 2 reps per condition, device-level SM Active % from 60 s `nsys --gpu-metrics` windows (the same-card DP profiling tooling). Because the client path, concurrency, and KV pinning differ from the H100 case study above, absolute qps is not comparable between the two studies; compare the ratios.
+
+| Configuration | Nominal throughput | SM Active | Relative to single |
+|---|---:|---:|---:|
+| Single c96 | 50.2 to 50.8 qps | 20% | 1.0x |
+| DP2 + MPS, 2 x c96 | 93.2 to 93.9 qps | 39 to 40% | 1.9x |
+| DP3 + MPS, 3 x c96 | 129.6 to 132.1 qps | 56% | 2.6x |
+| DP4 + MPS, 4 x c96 | 157.6 to 159.7 qps | 69 to 70% | 3.2x |
+| DP5 + MPS, 5 x c96 | 177.6 to 180.7 qps | 79% | 3.6x |
+| DP6 + MPS, 6 x c96 (`--mem-fraction-static 0.95`) | 190.7 to 191.4 qps | 86% | 3.8x |
+
+Without MPS the same sweep plateaus at 1.65 to 1.77x from DP3 through DP5 (SM Active 33 to 36%): time-slicing recovers only part of the idle, and MPS remains the unlock at every depth.
+
+**Stability.** A fresh DP5+MPS stack held 30 minutes of sustained saturation (5 clients x conc 96) at 176.4 qps aggregate with zero request errors, zero `MpsRpc`/CUDA-error lines in any replica log, per-replica throughput drift within +/-1.7%, and a clean teardown; five consecutive up/down cycles (fresh MPS daemon each) completed 5/5. Under sustained load each replica settles ~0.6 GB above its fresh-start footprint; account for that when sizing.
+
+**Equal-KV capacity.** Each replica at the 100000-token cap occupies 22.84 GB fresh (weights 7.60 + KV 13.74 + CUDA graph 0.29 + runtime). The largest common `--max-total-tokens` validated to start with every replica resolving the full cap, at the default mem fraction: **400000 for DP2, 250000 for DP3, 170000 for DP4, 130000 for DP5, 80000 for DP6** (DP6 also starts at 100000 with `--mem-fraction-static 0.95`). These are startup-validated ceilings, not tuned recommendations; every throughput row above ran at 100000.
+
+**Recommended deployment.** The validated H200 Higgs configuration is `N=5` with `MAX_TOTAL_TOKENS=100000`, launched exactly as in the Deploy section. DP6 is the measured ceiling, not the operating point: it adds only +6% over DP5, needs `--mem-fraction-static 0.95` to fit, and leaves only ~3.3 GB of VRAM fresh — the ~0.6 GB per-replica warm-up growth alone consumes nearly all of it, so DP6 has no safety margin for production serving.
+
+The detailed experimental process is in the issue [#1066](https://github.com/sgl-project/sglang-omni/issues/1066).
+
 ## Limits and next steps
 
-1. **Generality is not fully validated.** Beyond the pinned H100 Higgs case study, we also ran related experiments on H200 and used SGLang to serve Qwen3-4B directly; both lines of work largely confirmed the same-GPU DP gains. Space and time limit how completely we can present those results here, and the measurements are not yet as polished as we would like. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.
+1. **Generality is not fully validated.** The pinned case studies now cover H100 and H200 with Higgs; we also used SGLang to serve Qwen3-4B directly, which likewise confirmed the same-GPU DP gains. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.
 
 2. **KV sizing is hardware- and workload-specific.** The launcher enforces equal per-replica KV capacity through a common `--max-total-tokens`. A sizing procedure that generalizes across models, runtimes, and GPU configurations still requires further study.
 
