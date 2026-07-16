@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -53,6 +55,11 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "tts_engine",
         "vocoder",
     ]
+    assert [stage.process for stage in config.stages] == [
+        "preprocessing",
+        "pipeline",
+        "pipeline",
+    ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -89,6 +96,83 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     assert prompt["vq_mask_tokens"].sum().item() == 2
     assert torch.equal(prompt["vq_parts"][0], torch.tensor([[0, 1], [10, 11]]))
     assert any("<|speaker:alice|>target" in text for text in tokenizer.encoded_texts)
+
+
+@pytest.mark.parametrize(
+    "cpu_count,expected_intraop_threads",
+    [(4, 1), (32, 4), (224, 8)],
+)
+def test_fish_preprocessing_uses_bounded_cpu_threads(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_count: int,
+    expected_intraop_threads: int,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setattr(
+        stages.os,
+        "sched_getaffinity",
+        lambda _pid: set(range(cpu_count)),
+        raising=False,
+    )
+    configured_threads: list[int] = []
+    monkeypatch.setattr(stages.torch, "set_num_threads", configured_threads.append)
+
+    intraop_threads = stages._configure_preprocessing_threads(worker_count=8)
+
+    assert configured_threads == [expected_intraop_threads]
+    assert intraop_threads == expected_intraop_threads
+
+
+def _run_configure_preprocessing_threads(
+    env_overrides: dict[str, str], *, worker_count: int = 8
+) -> tuple[int, int, int]:
+    """Run ``_configure_preprocessing_threads`` in a fresh interpreter and return
+    ``(returned_value, real_get_num_threads, cap)``."""
+    snippet = (
+        "import torch\n"
+        "from sglang_omni.models.fishaudio_s2_pro.stages import (\n"
+        "    _configure_preprocessing_threads as configure,\n"
+        "    _MAX_PREPROCESSING_INTRAOP_THREADS as cap,\n"
+        ")\n"
+        f"returned = configure({worker_count})\n"
+        "print(returned, torch.get_num_threads(), cap)\n"
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")
+    }
+    env.update(env_overrides)
+    stdout = subprocess.check_output(
+        [sys.executable, "-c", snippet], env=env, text=True
+    )
+    returned, effective, cap = (int(token) for token in stdout.split()[-3:])
+    return returned, effective, cap
+
+
+@pytest.mark.parametrize(
+    "env_overrides,expected",
+    [
+        ({"OMP_NUM_THREADS": "3"}, 3),
+        ({"OMP_NUM_THREADS": "3", "MKL_NUM_THREADS": "5"}, 3),
+        ({"OMP_NUM_THREADS": "0"}, "bounded"),
+        ({"OMP_NUM_THREADS": ""}, "bounded"),
+        ({}, "bounded"),
+    ],
+)
+def test_fish_preprocessing_thread_bound_holds_in_real_process(
+    env_overrides: dict[str, str], expected: object
+) -> None:
+    """Effective torch intra-op pool matches the returned value and stays bounded;
+    an explicit OMP override wins over MKL. Verified in a real subprocess."""
+    returned, effective, cap = _run_configure_preprocessing_threads(env_overrides)
+    assert returned == effective
+    if expected == "bounded":
+        assert 1 <= effective <= cap
+    else:
+        assert effective == expected
 
 
 def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> None:
