@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
@@ -89,7 +88,7 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
 
     monkeypatch.setattr(
         request_builders,
-        "load_audio",
+        "_load_audio",
         lambda source: np.zeros(1600 * 3, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
@@ -99,7 +98,9 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
     )
     payload = StagePayload(
         request_id="req-fun-asr",
-        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"}, params={"max_new_tokens": 32}
+        ),
         data={},
     )
 
@@ -134,7 +135,7 @@ def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:
 
     monkeypatch.setattr(
         request_builders,
-        "load_audio",
+        "_load_audio",
         lambda source: np.zeros(1600, dtype=np.float32),
     )
     captured = {}
@@ -192,3 +193,94 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
         "skip_special_tokens": True,
         "clean_up_tokenization_spaces": False,
     }
+
+
+def test_fun_asr_load_audio_uses_shared_audio_utility(monkeypatch) -> None:
+    calls = []
+    expected = np.zeros(1600, dtype=np.float32)
+
+    def _shared(source, **kwargs):
+        calls.append((source, kwargs))
+        return expected
+
+    monkeypatch.setattr(request_builders, "_shared_load_audio", _shared)
+
+    actual = request_builders._load_audio(b"wav")
+
+    assert actual is expected
+    assert calls == [
+        (
+            b"wav",
+            {"source_name": "Fun-ASR", "target_sample_rate": 16000},
+        )
+    ]
+
+
+def test_fun_asr_request_builder_scales_default_token_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: np.zeros(16000 * 3, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-budget",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.req.sampling_params.max_new_tokens == 20
+    assert data.max_new_tokens == 20
+
+
+def test_fun_asr_request_builder_rejects_audio_over_vad_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: np.zeros(16000 * 30 + 1, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-too-long",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match=r"30(?:\.0)? seconds.*VAD"):
+        request_builder(payload)
+
+
+def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-token-cap",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"},
+            params={"max_new_tokens": 201},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match=r"max_new_tokens.*200"):
+        request_builder(payload)

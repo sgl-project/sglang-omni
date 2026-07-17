@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
-import hashlib
-import io
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -23,6 +20,8 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int
+from sglang_omni.utils.audio import load_audio as _shared_load_audio
 
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
@@ -30,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
 _AUDIO_PAD = "<|object_ref_start|>"
+_MAX_AUDIO_DURATION_S = 30.0
+_MAX_GENERATION_TOKENS_AT_MAX_DURATION = 200
+_MIN_GENERATION_TOKENS = 16
 
 
 @dataclass
@@ -55,37 +57,39 @@ def _audio_source_from_payload(payload: StagePayload) -> Any:
     return inputs
 
 
-def load_audio(source: Any) -> np.ndarray:
-    """Load audio as a 1-D float32 numpy waveform at 16 kHz mono."""
-    import torchaudio
-
-    if isinstance(source, memoryview):
-        source = source.tobytes()
-    if isinstance(source, bytearray):
-        source = bytes(source)
-
-    if isinstance(source, bytes):
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
-    elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
-    else:
-        raise ValueError(f"Unsupported Fun-ASR audio input: {type(source).__name__}")
-
-    if audio.ndim == 2 and audio.shape[0] > 1:
-        audio = audio.mean(dim=0, keepdim=True)
-    audio = audio.squeeze(0).to(torch.float32)
-    if sample_rate != _SAMPLE_RATE:
-        audio = torchaudio.functional.resample(audio, sample_rate, _SAMPLE_RATE)
-    return audio.cpu().numpy()
+def _load_audio(source: Any) -> np.ndarray:
+    return _shared_load_audio(
+        source,
+        source_name="Fun-ASR",
+        target_sample_rate=_SAMPLE_RATE,
+    )
 
 
-def _audio_fingerprint(audio: np.ndarray) -> str:
-    contiguous = np.ascontiguousarray(audio, dtype=np.float32)
-    return hashlib.blake2b(contiguous.tobytes(), digest_size=16).hexdigest()
+def _default_token_budget(audio_duration_s: float, max_new_tokens: int) -> int:
+    proportional = math.ceil(
+        audio_duration_s
+        / _MAX_AUDIO_DURATION_S
+        * _MAX_GENERATION_TOKENS_AT_MAX_DURATION
+    )
+    return min(max_new_tokens, max(_MIN_GENERATION_TOKENS, proportional))
 
 
-def _audio_fingerprint_int(fingerprint: str) -> int:
-    return int(fingerprint[:16], 16)
+def _request_token_budget(
+    params: dict[str, Any], audio_duration_s: float, max_new_tokens: int
+) -> int:
+    explicit = params.get("max_new_tokens")
+    if explicit is None:
+        return _default_token_budget(audio_duration_s, max_new_tokens)
+
+    try:
+        requested = int(explicit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_new_tokens must be an integer") from exc
+    if requested < 1 or requested > max_new_tokens:
+        raise ValueError(
+            f"max_new_tokens must be between 1 and {max_new_tokens}, got {requested}"
+        )
+    return requested
 
 
 def _decode_token_ids(
@@ -145,15 +149,15 @@ def make_fun_asr_scheduler_adapters(
 ]:
     if feature_extractor is None:
         raise ValueError("Fun-ASR processor is missing a feature_extractor")
+    max_new_tokens = int(max_new_tokens)
+    if max_new_tokens < 1:
+        raise ValueError("max_new_tokens must be at least 1")
 
     audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
 
     def _build_prompt_ids(num_audio_tokens: int, prompt_text: str) -> list[int]:
-        # ChatML per chat_template.jinja: system + user(text then N×audio
-        # placeholder) + assistant header. No <|audio_start|>/<|audio_end|>
-        # wrappers — the HF template emits <|object_ref_start|> bare.
         prompt = (
             f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
             f"<|im_start|>user\n"
@@ -165,9 +169,14 @@ def make_fun_asr_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> FunASRRequestData:
         params = payload.request.params or {}
-        audio = load_audio(_audio_source_from_payload(payload))
+        audio = _load_audio(_audio_source_from_payload(payload))
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
-        fingerprint = _audio_fingerprint(audio)
+        if audio_duration_s > _MAX_AUDIO_DURATION_S:
+            raise ValueError(
+                "Fun-ASR accepts audio up to 30.0 seconds because its official "
+                "VAD segment limit is 30 seconds; split longer audio before inference."
+            )
+        fingerprint = audio_fingerprint(audio)
 
         extracted = feature_extractor(
             audio,
@@ -198,7 +207,7 @@ def make_fun_asr_scheduler_adapters(
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
-            hash=_audio_fingerprint_int(fingerprint),
+            hash=audio_fingerprint_int(fingerprint),
             feature=features,
             model_specific_data={
                 "feature_attention_mask": feature_attention_mask,
@@ -230,7 +239,9 @@ def make_fun_asr_scheduler_adapters(
         mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
 
         temperature = float(params.get("temperature") or 0.0)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        request_max_new_tokens = _request_token_budget(
+            params, audio_duration_s, max_new_tokens
+        )
         logger.debug(
             f"[fun-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"
@@ -295,6 +306,5 @@ def make_fun_asr_scheduler_adapters(
 
 __all__ = [
     "FunASRRequestData",
-    "load_audio",
     "make_fun_asr_scheduler_adapters",
 ]

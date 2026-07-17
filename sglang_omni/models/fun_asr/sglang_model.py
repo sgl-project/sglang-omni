@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
@@ -24,16 +22,12 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.utils import add_prefix
+from transformers.activations import ACT2FN
 
 from .configuration_fun_asr import FunAsrNanoConfig
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Positional encoding (funasr SinusoidalPositionEncoder, verbatim)
-# ---------------------------------------------------------------------------
 
 
 class SinusoidalPositionEncoder(nn.Module):
@@ -51,11 +45,6 @@ class SinusoidalPositionEncoder(nn.Module):
         return x + encoding
 
 
-# ---------------------------------------------------------------------------
-# SANM self-attention (funasr MultiHeadedAttentionSANM, verbatim)
-# ---------------------------------------------------------------------------
-
-
 class MultiHeadedAttentionSANM(nn.Module):
 
     def __init__(
@@ -64,55 +53,57 @@ class MultiHeadedAttentionSANM(nn.Module):
         in_feat: int,
         n_feat: int,
         dropout_rate: float,
-        kernel_size: int,
-        sanm_shfit: int = 0,
     ) -> None:
         super().__init__()
         assert n_feat % n_head == 0
         self.d_k = n_feat // n_head
         self.h = n_head
-        self.linear_out = nn.Linear(n_feat, n_feat)
-        self.linear_q_k_v = nn.Linear(in_feat, n_feat * 3)
-        self.fsmn_block = nn.Conv1d(
-            n_feat, n_feat, kernel_size, stride=1, padding=0, groups=n_feat, bias=False
-        )
-        left_padding = (kernel_size - 1) // 2
-        if sanm_shfit > 0:
-            left_padding = left_padding + sanm_shfit
-        right_padding = kernel_size - 1 - left_padding
-        self.pad_fn = nn.ConstantPad1d((left_padding, right_padding), 0.0)
+        self.q_proj = nn.Linear(in_feat, n_feat)
+        self.k_proj = nn.Linear(in_feat, n_feat)
+        self.v_proj = nn.Linear(in_feat, n_feat)
+        self.out_proj = nn.Linear(n_feat, n_feat)
         self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward_fsmn(self, v: torch.Tensor) -> torch.Tensor:
-        x = v.transpose(1, 2)  # (b, d, t)
-        x = self.pad_fn(x)
-        x = self.fsmn_block(x)
-        x = x.transpose(1, 2)  # (b, t, d)
-        x = x + v  # residual
-        x = self.dropout(x)
-        return x
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, t, d = x.size()
-        q_k_v = self.linear_q_k_v(x)
-        q, k, v = torch.split(q_k_v, int(self.h * self.d_k), dim=-1)
+        b, t, _ = x.size()
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)  # (b, h, t, dk)
         k_h = k.view(b, t, self.h, self.d_k).transpose(1, 2)
         v_h = v.view(b, t, self.h, self.d_k).transpose(1, 2)
 
-        fsmn_memory = self.forward_fsmn(v)
         q_h = q_h * (self.d_k**-0.5)
         scores = torch.matmul(q_h, k_h.transpose(-2, -1))  # (b, h, t, t)
         attn = torch.softmax(scores, dim=-1)
         p_attn = self.dropout(attn)
         x = torch.matmul(p_attn, v_h)  # (b, h, t, dk)
         x = x.transpose(1, 2).contiguous().view(b, -1, self.h * self.d_k)
-        return self.linear_out(x) + fsmn_memory
+        return self.out_proj(x)
 
 
-# ---------------------------------------------------------------------------
-# Encoder layer (funasr EncoderLayerSANM, verbatim)
-# ---------------------------------------------------------------------------
+class FunAsrNanoFSMN(nn.Module):
+
+    def __init__(self, size: int, kernel_size: int, dropout_rate: float) -> None:
+        super().__init__()
+        self.conv = nn.Conv1d(
+            size,
+            size,
+            kernel_size,
+            stride=1,
+            padding=0,
+            groups=size,
+            bias=False,
+        )
+        left_padding = (kernel_size - 1) // 2
+        right_padding = kernel_size - 1 - left_padding
+        self.pad = nn.ConstantPad1d((left_padding, right_padding), 0.0)
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, value_states: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.conv(self.pad(value_states.transpose(1, 2)))
+        hidden_states = hidden_states.transpose(1, 2) + value_states
+        return self.dropout(hidden_states)
 
 
 class EncoderLayerSANM(nn.Module):
@@ -121,45 +112,44 @@ class EncoderLayerSANM(nn.Module):
         self,
         in_size: int,
         size: int,
-        self_attn: MultiHeadedAttentionSANM,
-        feed_forward: "PositionwiseFeedForward",
+        attention_heads: int,
+        linear_units: int,
+        kernel_size: int,
         dropout_rate: float,
+        attention_dropout_rate: float,
+        activation_dropout_rate: float,
+        activation_function: str,
     ) -> None:
         super().__init__()
-        self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.norm1 = nn.LayerNorm(in_size, eps=1e-5)
-        self.norm2 = nn.LayerNorm(size, eps=1e-5)
+        self.self_attn = MultiHeadedAttentionSANM(
+            attention_heads, in_size, size, attention_dropout_rate
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(in_size, eps=1e-5)
+        self.final_layer_norm = nn.LayerNorm(size, eps=1e-5)
+        self.fc1 = nn.Linear(size, linear_units)
+        self.fc2 = nn.Linear(linear_units, size)
+        self.fsmn = FunAsrNanoFSMN(size, kernel_size, attention_dropout_rate)
         self.dropout = nn.Dropout(dropout_rate)
+        self.activation_dropout = nn.Dropout(activation_dropout_rate)
+        self.activation = ACT2FN[activation_function]
         self.in_size = in_size
         self.size = size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = self.norm1(x)
+        x = self.self_attn_layer_norm(x)
+        value_states = self.self_attn.v_proj(x)
+        x = self.dropout(self.self_attn(x) + self.fsmn(value_states))
         if self.in_size == self.size:
-            x = residual + self.dropout(self.self_attn(x))
-        else:
-            # Input projection block (560→512): no residual on attention.
-            x = self.dropout(self.self_attn(x))
+            x = residual + x
         residual = x
-        x = self.norm2(x)
-        x = residual + self.dropout(self.feed_forward(x))
+        x = self.final_layer_norm(x)
+        x = self.activation_dropout(self.activation(self.fc1(x)))
+        x = residual + self.dropout(self.fc2(x))
+        if x.dtype == torch.float16:
+            clamp_value = torch.finfo(x.dtype).max - 1000
+            x = torch.clamp(x, min=-clamp_value, max=clamp_value)
         return x
-
-
-class PositionwiseFeedForward(nn.Module):
-    """funasr PositionwiseFeedForward: w_2(relu(w_1(x)))."""
-
-    def __init__(self, idim: int, hidden_units: int, dropout_rate: float) -> None:
-        super().__init__()
-        self.w_1 = nn.Linear(idim, hidden_units)
-        self.w_2 = nn.Linear(hidden_units, idim)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.activation = nn.ReLU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w_2(self.dropout(self.activation(self.w_1(x))))
 
 
 class FunAsrNanoAudioEncoder(nn.Module):
@@ -173,89 +163,52 @@ class FunAsrNanoAudioEncoder(nn.Module):
         num_blocks: int = 50,
         tp_blocks: int = 20,
         kernel_size: int = 11,
-        sanm_shfit: int = 0,
         dropout_rate: float = 0.1,
         attention_dropout_rate: float = 0.1,
+        activation_dropout_rate: float = 0.1,
+        activation_function: str = "relu",
     ) -> None:
         super().__init__()
         self._output_size = output_size
         self.embed = SinusoidalPositionEncoder()
 
-        def make_attn(in_feat: int) -> MultiHeadedAttentionSANM:
-            return MultiHeadedAttentionSANM(
-                attention_heads,
-                in_feat,
+        def make_layer(in_size: int) -> EncoderLayerSANM:
+            return EncoderLayerSANM(
+                in_size,
                 output_size,
-                attention_dropout_rate,
+                attention_heads,
+                linear_units,
                 kernel_size,
-                sanm_shfit,
+                dropout_rate,
+                attention_dropout_rate,
+                activation_dropout_rate,
+                activation_function,
             )
 
-        def make_ffn() -> PositionwiseFeedForward:
-            return PositionwiseFeedForward(output_size, linear_units, dropout_rate)
-
-        # encoders0: 1 block, in_size=input_size (560) → output_size (512).
-        self.encoders0 = nn.ModuleList(
-            [
-                EncoderLayerSANM(
-                    input_size,
-                    output_size,
-                    make_attn(input_size),
-                    make_ffn(),
-                    dropout_rate,
-                )
-                for _ in range(1)
-            ]
+        self.stem = make_layer(input_size)
+        self.layers = nn.ModuleList(
+            [make_layer(output_size) for _ in range(num_blocks - 1)]
         )
-        # encoders: num_blocks-1 blocks, 512 → 512.
-        self.encoders = nn.ModuleList(
-            [
-                EncoderLayerSANM(
-                    output_size,
-                    output_size,
-                    make_attn(output_size),
-                    make_ffn(),
-                    dropout_rate,
-                )
-                for _ in range(num_blocks - 1)
-            ]
+        self.layer_norm = nn.LayerNorm(output_size, eps=1e-5)
+        self.timestamp_prediction_layers = nn.ModuleList(
+            [make_layer(output_size) for _ in range(tp_blocks)]
         )
-        self.tp_encoders = nn.ModuleList(
-            [
-                EncoderLayerSANM(
-                    output_size,
-                    output_size,
-                    make_attn(output_size),
-                    make_ffn(),
-                    dropout_rate,
-                )
-                for _ in range(tp_blocks)
-            ]
-        )
-        self.after_norm = nn.LayerNorm(output_size, eps=1e-5)
-        self.tp_norm = nn.LayerNorm(output_size, eps=1e-5)
+        self.timestamp_prediction_layer_norm = nn.LayerNorm(output_size, eps=1e-5)
 
     def output_size(self) -> int:
         return self._output_size
 
     def forward(self, xs: torch.Tensor) -> torch.Tensor:
-        # xs: [B, T, input_size]. Scale by sqrt(output_size) then add sinusoidal PE.
         xs = xs * (self._output_size**0.5)
         xs = self.embed(xs)
-        for layer in self.encoders0:
+        xs = self.stem(xs)
+        for layer in self.layers:
             xs = layer(xs)
-        for layer in self.encoders:
+        xs = self.layer_norm(xs)
+        for layer in self.timestamp_prediction_layers:
             xs = layer(xs)
-        xs = self.after_norm(xs)
-        for layer in self.tp_encoders:
-            xs = layer(xs)
-        xs = self.tp_norm(xs)
+        xs = self.timestamp_prediction_layer_norm(xs)
         return xs
-
-
-# ---------------------------------------------------------------------------
-# Adaptor (funasr Transformer adaptor, downsample_rate=1)
-# ---------------------------------------------------------------------------
 
 
 class MultiHeadedAttention(nn.Module):
@@ -270,24 +223,24 @@ class MultiHeadedAttention(nn.Module):
         assert n_feat % n_head == 0
         self.d_k = n_feat // n_head
         self.h = n_head
-        self.linear_q = nn.Linear(n_feat, n_feat)
-        self.linear_k = nn.Linear(n_feat, n_feat)
-        self.linear_v = nn.Linear(n_feat, n_feat)
-        self.linear_out = nn.Linear(n_feat, n_feat)
+        self.q_proj = nn.Linear(n_feat, n_feat)
+        self.k_proj = nn.Linear(n_feat, n_feat)
+        self.v_proj = nn.Linear(n_feat, n_feat)
+        self.out_proj = nn.Linear(n_feat, n_feat)
         self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, t, d = x.size()
-        q_h = self.linear_q(x).view(b, t, self.h, self.d_k).transpose(1, 2)
-        k_h = self.linear_k(x).view(b, t, self.h, self.d_k).transpose(1, 2)
-        v_h = self.linear_v(x).view(b, t, self.h, self.d_k).transpose(1, 2)
+        q_h = self.q_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
+        k_h = self.k_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
+        v_h = self.v_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
         q_h = q_h * (self.d_k**-0.5)
         scores = torch.matmul(q_h, k_h.transpose(-2, -1))
         attn = torch.softmax(scores, dim=-1)
         p_attn = self.dropout(attn)
         x = torch.matmul(p_attn, v_h)
         x = x.transpose(1, 2).contiguous().view(b, -1, self.h * self.d_k)
-        return self.linear_out(x)
+        return self.out_proj(x)
 
 
 class AdaptorEncoderLayer(nn.Module):
@@ -296,23 +249,26 @@ class AdaptorEncoderLayer(nn.Module):
         self,
         size: int,
         self_attn: MultiHeadedAttention,
-        feed_forward: PositionwiseFeedForward,
+        feed_forward_dim: int,
         dropout_rate: float,
+        activation_function: str,
     ) -> None:
         super().__init__()
         self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.norm1 = nn.LayerNorm(size, eps=1e-5)
-        self.norm2 = nn.LayerNorm(size, eps=1e-5)
+        self.self_attn_layer_norm = nn.LayerNorm(size, eps=1e-5)
+        self.final_layer_norm = nn.LayerNorm(size, eps=1e-5)
+        self.fc1 = nn.Linear(size, feed_forward_dim)
+        self.fc2 = nn.Linear(feed_forward_dim, size)
+        self.activation = ACT2FN[activation_function]
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = self.norm1(x)
+        x = self.self_attn_layer_norm(x)
         x = residual + self.dropout(self.self_attn(x))
         residual = x
-        x = self.norm2(x)
-        x = residual + self.dropout(self.feed_forward(x))
+        x = self.final_layer_norm(x)
+        x = residual + self.dropout(self.fc2(self.activation(self.fc1(x))))
         return x
 
 
@@ -325,16 +281,15 @@ class FunAsrNanoAdaptor(nn.Module):
         ffn_dim: int = 2048,
         num_layers: int = 2,
         attention_heads: int = 8,
-        downsample_rate: int = 1,
         dropout_rate: float = 0.0,
+        activation_function: str = "relu",
     ) -> None:
         super().__init__()
         self.encoder_dim = encoder_dim
         self.llm_dim = llm_dim
-        self.k = downsample_rate
-        self.linear1 = nn.Linear(encoder_dim * self.k, ffn_dim)
-        self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(ffn_dim, llm_dim)
+        self.linear_1 = nn.Linear(encoder_dim, ffn_dim)
+        self.act = ACT2FN[activation_function]
+        self.linear_2 = nn.Linear(ffn_dim, llm_dim)
 
         ffn_hidden = llm_dim // 4
         self.blocks = nn.ModuleList(
@@ -342,23 +297,21 @@ class FunAsrNanoAdaptor(nn.Module):
                 AdaptorEncoderLayer(
                     llm_dim,
                     MultiHeadedAttention(attention_heads, llm_dim, dropout_rate),
-                    PositionwiseFeedForward(llm_dim, ffn_hidden, dropout_rate),
+                    ffn_hidden,
                     dropout_rate,
+                    activation_function,
                 )
                 for _ in range(num_layers)
             ]
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.linear1(x)
-        x = self.relu(x)
-        x = self.linear2(x)
+        x = self.linear_1(x)
+        x = self.act(x)
+        x = self.linear_2(x)
         for block in self.blocks:
             x = block(x)
         return x
-
-
-# Final Model
 
 
 class FunAsrNanoForConditionalGeneration(nn.Module):
@@ -388,29 +341,29 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
-        enc_cfg = config.audio_encoder_config
-        adp_cfg = config.adaptor_config
+        enc_cfg = config.encoder_config
 
-        self.audio_encoder = FunAsrNanoAudioEncoder(
+        self.audio_tower = FunAsrNanoAudioEncoder(
             input_size=enc_cfg.input_size,
-            output_size=enc_cfg.output_size,
-            attention_heads=enc_cfg.attention_heads,
-            linear_units=enc_cfg.linear_units,
-            num_blocks=enc_cfg.num_blocks,
-            tp_blocks=enc_cfg.tp_blocks,
+            output_size=enc_cfg.d_model,
+            attention_heads=enc_cfg.encoder_attention_heads,
+            linear_units=enc_cfg.encoder_ffn_dim,
+            num_blocks=enc_cfg.encoder_layers,
+            tp_blocks=enc_cfg.num_timestamp_prediction_blocks,
             kernel_size=enc_cfg.kernel_size,
-            sanm_shfit=enc_cfg.sanm_shift,
-            dropout_rate=enc_cfg.dropout_rate,
-            attention_dropout_rate=enc_cfg.attention_dropout_rate,
+            dropout_rate=enc_cfg.dropout,
+            attention_dropout_rate=enc_cfg.attention_dropout,
+            activation_dropout_rate=enc_cfg.activation_dropout,
+            activation_function=enc_cfg.activation_function,
         )
-        self.audio_adaptor = FunAsrNanoAdaptor(
-            encoder_dim=adp_cfg.encoder_dim,
-            llm_dim=adp_cfg.llm_dim,
-            ffn_dim=adp_cfg.ffn_dim,
-            num_layers=adp_cfg.num_layers,
-            attention_heads=adp_cfg.attention_heads,
-            downsample_rate=adp_cfg.downsample_rate,
-            dropout_rate=adp_cfg.dropout_rate,
+        self.multi_modal_projector = FunAsrNanoAdaptor(
+            encoder_dim=enc_cfg.d_model,
+            llm_dim=config.text_config.hidden_size,
+            ffn_dim=config.adaptor_intermediate_size,
+            num_layers=config.adaptor_num_hidden_layers,
+            attention_heads=config.adaptor_num_attention_heads,
+            dropout_rate=0.0,
+            activation_function=config.activation_function,
         )
         self.language_model = Qwen3ForCausalLM(
             config.text_config,
@@ -424,8 +377,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
 
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
 
-        device = next(self.audio_encoder.parameters()).device
-        dtype = next(self.audio_encoder.parameters()).dtype
+        device = next(self.audio_tower.parameters()).device
+        dtype = next(self.audio_tower.parameters()).dtype
 
         embeddings: List[torch.Tensor] = []
         for item in items:
@@ -439,8 +392,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                 feature = feature[:, :, :valid]
             # [1, 560, T] → [1, T, 560] (encoder expects [B, T, D]).
             xs = feature.permute(0, 2, 1).contiguous()
-            enc_out = self.audio_encoder(xs)  # [1, T, 512]
-            adp_out = self.audio_adaptor(enc_out)  # [1, T, 1024]
+            enc_out = self.audio_tower(xs)  # [1, T, 512]
+            adp_out = self.multi_modal_projector(enc_out)  # [1, T, 1024]
             t_lfr = adp_out.shape[1]
             num_tokens = int(fun_asr_low_frame_rate_length(t_lfr))
             num_tokens = max(num_tokens, 1)
@@ -478,6 +431,7 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
 
         for name, loaded_weight in weights:
+            checkpoint_name = name
             if "rotary_emb.inv_freq" in name:
                 continue
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
@@ -488,14 +442,20 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             ):
                 continue
 
-            if name.startswith("model.audio_encoder."):
-                name = name.replace("model.audio_encoder.", "audio_encoder.", 1)
+            strict_multimodal = False
+            if name.startswith("model.audio_tower."):
+                name = name.replace("model.", "", 1)
                 is_llm = False
-            elif name.startswith("model.audio_adaptor."):
-                name = name.replace("model.audio_adaptor.", "audio_adaptor.", 1)
+                strict_multimodal = True
+            elif name.startswith("model.multi_modal_projector."):
+                name = name.replace("model.", "", 1)
                 is_llm = False
+                strict_multimodal = True
             elif name.startswith("model.language_model."):
                 name = name.replace("model.language_model.", "language_model.model.", 1)
+                is_llm = True
+            elif name == "lm_head.weight":
+                name = "language_model.lm_head.weight"
                 is_llm = True
             else:
                 is_llm = False
@@ -521,6 +481,11 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             if name.endswith(".bias") and name not in params_dict:
                 continue
             if name not in params_dict:
+                if strict_multimodal:
+                    raise ValueError(
+                        f"Fun-ASR checkpoint weight {checkpoint_name} has no matching "
+                        f"model parameter ({name})"
+                    )
                 continue
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)

@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
@@ -325,120 +323,73 @@ class FunAsrNanoProcessor:
         return inputs
 
 
-# ---------------------------------------------------------------------------
-# Config classes
-# ---------------------------------------------------------------------------
-
-
 class FunAsrNanoEncoderConfig(PretrainedConfig):
-    """SenseVoice-style SANM Conformer encoder hyperparameters.
-
-    Mirrors ``config.json`` ``audio_encoder_config``. The encoder itself
-    (``model.audio_encoder.*`` weights: encoders0/encoders/tp_encoders SANM
-    blocks + after_norm/tp_norm) is implemented in ``sglang_model.py``.
-    """
+    """SenseVoice SANM encoder configuration."""
 
     model_type = "fun_asr_nano_encoder"
 
     def __init__(
         self,
-        input_size: int = 560,
-        output_size: int = 512,
-        attention_heads: int = 4,
-        linear_units: int = 2048,
-        num_blocks: int = 50,
-        tp_blocks: int = 20,
+        num_mel_bins: int = 80,
+        num_stacked_frames: int = 7,
+        d_model: int = 512,
+        encoder_attention_heads: int = 4,
+        encoder_ffn_dim: int = 2048,
+        encoder_layers: int = 50,
+        num_timestamp_prediction_blocks: int = 20,
         kernel_size: int = 11,
-        sanm_shift: int = 0,
-        dropout_rate: float = 0.1,
-        attention_dropout_rate: float = 0.1,
-        positional_dropout_rate: float = 0.1,
-        initializer_range: float = 0.02,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.1,
+        activation_dropout: float = 0.1,
+        activation_function: str = "relu",
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.attention_heads = attention_heads
-        self.linear_units = linear_units
-        self.num_blocks = num_blocks
-        self.tp_blocks = tp_blocks
+        self.num_mel_bins = num_mel_bins
+        self.num_stacked_frames = num_stacked_frames
+        self.d_model = d_model
+        self.encoder_attention_heads = encoder_attention_heads
+        self.encoder_ffn_dim = encoder_ffn_dim
+        self.encoder_layers = encoder_layers
+        self.num_timestamp_prediction_blocks = num_timestamp_prediction_blocks
         self.kernel_size = kernel_size
-        self.sanm_shift = sanm_shift
-        self.dropout_rate = dropout_rate
-        self.attention_dropout_rate = attention_dropout_rate
-        self.positional_dropout_rate = positional_dropout_rate
-        self.initializer_range = initializer_range
+        self.dropout = dropout
+        self.attention_dropout = attention_dropout
+        self.activation_dropout = activation_dropout
+        self.activation_function = activation_function
 
-
-class FunAsrNanoAdaptorConfig(PretrainedConfig):
-    """Low-frame-rate adaptor hyperparameters (``config.json`` top-level ``adaptor_*``)."""
-
-    model_type = "fun_asr_nano_adaptor"
-
-    def __init__(
-        self,
-        encoder_dim: int = 512,
-        llm_dim: int = 1024,
-        ffn_dim: int = 2048,
-        num_layers: int = 2,
-        attention_heads: int = 8,
-        downsample_rate: int = 1,
-        dropout_rate: float = 0.0,
-        use_low_frame_rate: bool = True,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.encoder_dim = encoder_dim
-        self.llm_dim = llm_dim
-        self.ffn_dim = ffn_dim
-        self.num_layers = num_layers
-        self.attention_heads = attention_heads
-        self.downsample_rate = downsample_rate
-        self.dropout_rate = dropout_rate
-        self.use_low_frame_rate = use_low_frame_rate
+    @property
+    def input_size(self) -> int:
+        return self.num_mel_bins * self.num_stacked_frames
 
 
 @register_customized_processor(FunAsrNanoProcessor)
 class FunAsrNanoConfig(PretrainedConfig):
-    """Top-level config for ``FunAsrNanoForConditionalGeneration``.
-
-    Matches the HF-adapted ``config.json`` shipped with Fun-ASR-Nano-2512:
-    ``audio_encoder_config`` (sub-config) + ``text_config`` (Qwen3) + top-level
-    ``adaptor_*`` fields + ``audio_token_index``. Note the HF checkpoint has NO
-    ``thinker_config`` wrapper (unlike Qwen3-ASR) — encoder/adaptor/text are
-    siblings under the top-level config.
-    """
+    """Configuration for the Fun-ASR-Nano checkpoint."""
 
     model_type = "fun_asr_nano"
     sub_configs: ClassVar[dict[str, Any]] = {
-        "audio_encoder_config": FunAsrNanoEncoderConfig,
+        "encoder_config": FunAsrNanoEncoderConfig,
     }
 
     def __init__(
         self,
-        audio_encoder_config=None,
+        encoder_config=None,
         text_config=None,
-        audio_token_index: int = 151646,
-        # Adaptor fields (top-level in config.json, prefixed adaptor_*)
-        adaptor_encoder_dim: int = 512,
-        adaptor_llm_dim: int = 1024,
-        adaptor_ffn_dim: int = 2048,
-        adaptor_num_layers: int = 2,
-        adaptor_attention_heads: int = 8,
-        adaptor_downsample_rate: int = 1,
-        adaptor_dropout_rate: float = 0.0,
-        use_low_frame_rate: bool = True,
+        audio_token_id: int = 151646,
+        adaptor_intermediate_size: int = 2048,
+        adaptor_num_hidden_layers: int = 2,
+        adaptor_num_attention_heads: int = 8,
+        activation_function: str = "relu",
+        initializer_range: float = 0.02,
+        tie_word_embeddings: bool = True,
         **kwargs,
     ):
-        # Resolve sub-configs BEFORE super().__init__: transformers 5.6 runs
-        # validate_token_ids inside __init__, which calls get_text_config() —
-        # so self.text_config must already exist when super() executes.
-        if isinstance(audio_encoder_config, dict):
-            audio_encoder_config = FunAsrNanoEncoderConfig(**audio_encoder_config)
-        elif audio_encoder_config is None:
-            audio_encoder_config = FunAsrNanoEncoderConfig()
-        self.audio_encoder_config = audio_encoder_config
+        if isinstance(encoder_config, dict):
+            encoder_config = FunAsrNanoEncoderConfig(**encoder_config)
+        elif encoder_config is None:
+            encoder_config = FunAsrNanoEncoderConfig()
+        self.encoder_config = encoder_config
 
         from transformers.models.qwen3.configuration_qwen3 import (
             Qwen3Config as HFQwen3Config,
@@ -449,29 +400,19 @@ class FunAsrNanoConfig(PretrainedConfig):
         elif text_config is None:
             text_config = HFQwen3Config()
         self.text_config = text_config
+        self.audio_token_id = audio_token_id
+        self.adaptor_intermediate_size = adaptor_intermediate_size
+        self.adaptor_num_hidden_layers = adaptor_num_hidden_layers
+        self.adaptor_num_attention_heads = adaptor_num_attention_heads
+        self.activation_function = activation_function
+        self.initializer_range = initializer_range
 
-        super().__init__(**kwargs)
-
-        # Adaptor config carried as a nested object for sglang_model.py.
-        self.adaptor_config = FunAsrNanoAdaptorConfig(
-            encoder_dim=adaptor_encoder_dim or self.audio_encoder_config.output_size,
-            llm_dim=adaptor_llm_dim or getattr(text_config, "hidden_size", 1024),
-            ffn_dim=adaptor_ffn_dim,
-            num_layers=adaptor_num_layers,
-            attention_heads=adaptor_attention_heads,
-            downsample_rate=adaptor_downsample_rate,
-            dropout_rate=adaptor_dropout_rate,
-            use_low_frame_rate=use_low_frame_rate,
+        super().__init__(
+            tie_word_embeddings=tie_word_embeddings,
+            **kwargs,
         )
 
-        # Audio placeholder token id (<|object_ref_start|>).
-        self.audio_token_index = audio_token_index
-
     def get_text_config(self, decoder: bool = False) -> PretrainedConfig:
-        # Called by transformers during super().__init__ validation and by
-        # sglang for context-length sizing. Guard against the brief window
-        # before self.text_config is assigned (should not trigger after the
-        # reorder above, but kept defensive).
         text_config = getattr(self, "text_config", None)
         if text_config is None:
             return self
@@ -480,12 +421,6 @@ class FunAsrNanoConfig(PretrainedConfig):
 
 AutoConfig.register("fun_asr_nano", FunAsrNanoConfig)
 AutoConfig.register("fun_asr_nano_encoder", FunAsrNanoEncoderConfig)
-AutoConfig.register("fun_asr_nano_adaptor", FunAsrNanoAdaptorConfig)
 
-# FunAsrNanoFeatureExtractor is a custom class (not a transformers built-in),
-# so AutoFeatureExtractor.from_pretrained — which stages.py uses to load the
-# feature extractor from preprocessor_config.json (feature_extractor_type=
-# "FunAsrNanoFeatureExtractor") — cannot resolve it without this registration.
-# The checkpoint ships no remote-code feature extractor (processor_config.json
-# only auto-maps AutoProcessor), so we register it ourselves.
+# note(LauraGPT): The checkpoint metadata names this local feature extractor.
 AutoFeatureExtractor.register("FunAsrNanoFeatureExtractor", FunAsrNanoFeatureExtractor)
