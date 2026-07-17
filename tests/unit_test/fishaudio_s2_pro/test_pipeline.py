@@ -16,6 +16,11 @@ import typer
 
 from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
+    IM_END_TOKEN,
+    IM_START_TOKEN,
+    MODALITY_VOICE_TOKEN,
+)
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     S2ProSGLangRequestData,
@@ -173,6 +178,216 @@ def test_fish_preprocessing_thread_bound_holds_in_real_process(
         assert 1 <= effective <= cap
     else:
         assert effective == expected
+
+
+@pytest.mark.parametrize(
+    "references,expected_text_segments,expected_codes,vq_insert_at",
+    [
+        pytest.param(
+            None,
+            [
+                f"{IM_START_TOKEN}user\n",
+                "<|speaker:alice|>target",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}",
+            ],
+            None,
+            None,
+            id="no-reference",
+        ),
+        pytest.param(
+            [
+                Reference(
+                    audio_bytes=b"",
+                    text="ref",
+                    vq_codes=torch.tensor([[0, 1], [10, 11]]),
+                )
+            ],
+            [
+                f"{IM_START_TOKEN}system\n",
+                "convert the provided text to speech reference to the following:\n\nText:\n",
+                "<|speaker:alice|>ref",
+                "\n\nSpeech:\n",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}user\n",
+                "<|speaker:alice|>target",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}",
+            ],
+            torch.tensor([[0, 1], [10, 11]]),
+            4,
+            id="single-reference",
+        ),
+        pytest.param(
+            [
+                Reference(
+                    audio_bytes=b"",
+                    text="one",
+                    vq_codes=torch.tensor([[0], [10]]),
+                ),
+                Reference(
+                    audio_bytes=b"",
+                    text="two",
+                    vq_codes=torch.tensor([[1, 2], [11, 12]]),
+                ),
+            ],
+            [
+                f"{IM_START_TOKEN}system\n",
+                "convert the provided text to speech reference to the following:\n\nText:\n",
+                "<|speaker:alice|>one",
+                "<|speaker:alice|>two",
+                "\n\nSpeech:\n",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}user\n",
+                "<|speaker:alice|>target",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}",
+            ],
+            torch.tensor([[0, 1, 2], [10, 11, 12]]),
+            5,
+            id="multiple-references",
+        ),
+        pytest.param(
+            [Reference(audio_bytes=b"", text="ref text")],
+            [
+                f"{IM_START_TOKEN}system\n",
+                "convert the provided text to speech reference to the following:\n\nText:\n",
+                "<|speaker:alice|>ref text",
+                "\n\nSpeech:\n",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}user\n",
+                "<|speaker:alice|>target",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}",
+            ],
+            None,
+            None,
+            id="reference-text-only",
+        ),
+        pytest.param(
+            [
+                Reference(
+                    audio_bytes=b"",
+                    text="",
+                    vq_codes=torch.tensor([[3, 4], [13, 14]]),
+                )
+            ],
+            [
+                f"{IM_START_TOKEN}system\n",
+                "convert the provided text to speech reference to the following:\n\nText:\n",
+                "\n\nSpeech:\n",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}user\n",
+                "<|speaker:alice|>target",
+                f"{IM_END_TOKEN}\n",
+                f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}",
+            ],
+            torch.tensor([[3, 4], [13, 14]]),
+            3,
+            id="reference-codes-only",
+        ),
+    ],
+)
+def test_fish_inference_prompt_preserves_segment_and_vq_layout(
+    references: list[Reference] | None,
+    expected_text_segments: list[str],
+    expected_codes: torch.Tensor | None,
+    vq_insert_at: int | None,
+) -> None:
+    tokenizer = FakeFishTokenizer()
+    prompt = S2ProTokenizerAdapter(tokenizer).build_prompt(
+        "target", references=references, num_codebooks=2, speaker="alice"
+    )
+
+    assert tokenizer.encoded_texts == expected_text_segments
+
+    expected_tokenizer = FakeFishTokenizer()
+    expected_ids: list[int] = []
+    expected_mask: list[bool] = []
+    for index, segment in enumerate(expected_text_segments):
+        if index == vq_insert_at:
+            assert expected_codes is not None
+            semantic_ids = expected_tokenizer.convert_tokens_to_ids(
+                [f"<|semantic:{int(code)}|>" for code in expected_codes[0]]
+            )
+            expected_ids.extend(semantic_ids)
+            expected_mask.extend([True] * len(semantic_ids))
+        text_ids = expected_tokenizer.encode(segment)
+        expected_ids.extend(text_ids)
+        expected_mask.extend([False] * len(text_ids))
+
+    assert prompt["input_ids"].dtype == torch.int
+    assert torch.equal(prompt["input_ids"], torch.tensor(expected_ids, dtype=torch.int))
+    assert prompt["vq_mask_tokens"].dtype == torch.bool
+    assert torch.equal(prompt["vq_mask_tokens"], torch.tensor(expected_mask))
+
+    if expected_codes is None:
+        assert prompt["vq_parts"] == []
+    else:
+        assert len(prompt["vq_parts"]) == 1
+        assert prompt["vq_parts"][0].dtype == torch.int
+        assert torch.equal(prompt["vq_parts"][0], expected_codes.to(torch.int))
+
+
+def test_fish_inference_prompt_preserves_zero_length_vq_codes() -> None:
+    prompt = S2ProTokenizerAdapter(FakeFishTokenizer()).build_prompt(
+        "target",
+        references=[
+            Reference(
+                audio_bytes=b"",
+                text="",
+                vq_codes=torch.empty((2, 0), dtype=torch.long),
+            )
+        ],
+        num_codebooks=2,
+    )
+
+    assert not prompt["vq_mask_tokens"].any()
+    assert len(prompt["vq_parts"]) == 1
+    assert prompt["vq_parts"][0].shape == (2, 0)
+    assert prompt["vq_parts"][0].dtype == torch.int
+
+
+@pytest.mark.parametrize(
+    "references,expected_error",
+    [
+        pytest.param(
+            [Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((3, 1)))],
+            "Reference 0 VQ codes must have shape (2, T); got (3, 1)",
+            id="single-wrong-codebook-count",
+        ),
+        pytest.param(
+            [
+                Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((3, 1))),
+                Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((3, 2))),
+            ],
+            "Reference 0 VQ codes must have shape (2, T); got (3, 1)",
+            id="multiple-same-wrong-codebook-count",
+        ),
+        pytest.param(
+            [
+                Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((2, 1))),
+                Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((3, 1))),
+            ],
+            "Reference 1 VQ codes must have shape (2, T); got (3, 1)",
+            id="later-reference-wrong-codebook-count",
+        ),
+        pytest.param(
+            [Reference(audio_bytes=b"", text="", vq_codes=torch.zeros((2,)))],
+            "Reference 0 VQ codes must have shape (2, T); got (2,)",
+            id="rank-one-codes",
+        ),
+    ],
+)
+def test_fish_inference_prompt_rejects_invalid_reference_codebook_shapes(
+    references: list[Reference], expected_error: str
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        S2ProTokenizerAdapter(FakeFishTokenizer()).build_prompt(
+            "target", references=references, num_codebooks=2
+        )
+
+    assert str(exc_info.value) == expected_error
 
 
 def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> None:

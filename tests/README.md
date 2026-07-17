@@ -443,7 +443,7 @@ that happened to contain an older version of the test.
   - streaming response framing and failure semantics.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
-  - tokenizer/state contracts
+  - inference prompt segmentation, reference VQ edge cases, and state contracts
   - TTS scheduler behavior
   - model-runner state transitions
   - vocoder batching/trim behavior
