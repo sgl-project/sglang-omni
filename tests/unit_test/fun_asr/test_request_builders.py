@@ -10,10 +10,6 @@ import numpy as np
 import torch
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
-from sglang_omni.models.fun_asr.request_builders import (
-    FunASRRequestData,
-    make_fun_asr_scheduler_adapters,
-)
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
@@ -96,7 +92,7 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
         "load_audio",
         lambda source: np.zeros(1600 * 3, dtype=np.float32),
     )
-    request_builder, _ = make_fun_asr_scheduler_adapters(
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=_feature_extractor(num_lfr_frames),
@@ -148,7 +144,7 @@ def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:
             captured["prompt_text"] = text
             return super().__call__(text, add_special_tokens=add_special_tokens)
 
-    request_builder, _ = make_fun_asr_scheduler_adapters(
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_CapturingTokenizer(),
         max_new_tokens=16,
         feature_extractor=_feature_extractor(11),
@@ -166,7 +162,7 @@ def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:
 
 def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
     tokenizer = _FakeTokenizer()
-    _, result_adapter = make_fun_asr_scheduler_adapters(
+    _, result_adapter = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
         feature_extractor=object(),
@@ -176,7 +172,7 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
         request=OmniRequest(inputs={}),
         data={},
     )
-    data = FunASRRequestData(
+    data = request_builders.FunASRRequestData(
         output_ids=[20, 21, 30],  # 你好 世界 <|im_end|>
         stage_payload=payload,
         language="zh",
