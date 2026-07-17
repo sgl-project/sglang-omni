@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, MOSS-TTS, MOSS-TTS-Local, and Higgs Audio v3 TTS.
 
 ## Prerequisites
 
@@ -28,6 +28,35 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
+| [MOSS-TTS-Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | Local-transformer variant of MOSS-TTS; same request fields, native 48 kHz stereo output |
+| [Higgs Audio v3 TTS](../cookbook/higgs_tts.md) | None (auto-selected from checkpoint) | Plain TTS plus voice cloning via `references` or pre-encoded `reference_codes` (+ `reference_text`). Launched without `--config` |
+
+## Model Parameter Differences
+
+### Feature Support
+
+| Feature | Fish S2-Pro | Voxtral | Qwen3-TTS | MOSS-TTS | MOSS-TTS-Local | Higgs |
+|---|---|---|---|---|---|---|
+| Voice cloning via `references` | optional | ✗ | required (Base) | optional | optional | optional |
+| Named voice via `voice` | ✗ | optional (default `cheerful_female`) | uploaded voices / `Vivian` (CustomVoice) | ✗ | ✗ | uploaded voices |
+| Language hint via `language` | ✗ | ✗ | optional (default `auto`) | optional | optional | ✗ |
+| Pre-encoded `reference_codes` | optional | ✗ | ✗ | ✗ | ✗ | optional |
+| Reference transcript via `ref_text` | optional | ✗ | required (Base) | optional | optional | optional |
+
+### Default Generation Parameters
+
+Values are applied when the request omits the field. `—` means the parameter is
+not consumed by that model; `unset` means it is honored when supplied but has no
+default. The MOSS-TTS families sample text and audio channels separately, so
+`(audio)` marks the audio-channel default that shapes the generated speech.
+
+| Parameter | Fish S2-Pro | Voxtral | Qwen3-TTS | MOSS-TTS | MOSS-TTS-Local | Higgs |
+|---|---|---|---|---|---|---|
+| `max_new_tokens` | `1024` | `4096` | `2048` | `4096` | `4096` | `2048` |
+| `temperature` | `0.8` | `0.0` (greedy) | `0.9` | `1.7` (audio) | `1.7` (audio) | `1.0` |
+| `top_p` | `0.8` | — | `1.0` | `0.8` (audio) | `0.8` (audio) | unset |
+| `top_k` | `30` | — | `50` | `25` (audio) | `25` (audio) | unset |
+| `repetition_penalty` | `1.1` | — | `1.05` | `1.0` (audio) | `1.0` (audio) | — |
 
 ## Launch the Server
 
@@ -108,6 +137,28 @@ For MOSS-TTS:
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
   --config examples/configs/moss_tts.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --port 8000
+```
+
+For MOSS-TTS-Local:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
+  --config examples/configs/moss_tts_local.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --port 8000
+```
+
+For Higgs Audio v3 TTS (no `--config`; the pipeline is selected from the
+checkpoint architecture):
+
+```bash
+sgl-omni serve \
+  --model-path bosonai/higgs-audio-v3-tts-4b \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
