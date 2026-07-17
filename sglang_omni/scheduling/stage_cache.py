@@ -96,12 +96,18 @@ class StageOutputCache:
             self.current_bytes = 0
 
     def remove_if(self, predicate: Callable[[str], bool]) -> int:
+        # Evaluate the predicate outside the lock: it runs arbitrary caller code
+        # and may re-enter this cache, which would deadlock the non-reentrant
+        # lock. Snapshot keys, test them lock-free, then re-acquire to delete.
+        with self._lock:
+            keys = list(self._cache)
+        to_remove = [key for key in keys if predicate(key)]
         removed = 0
         with self._lock:
-            for key in list(self._cache):
-                if not predicate(key):
+            for key in to_remove:
+                entry = self._cache.pop(key, None)
+                if entry is None:
                     continue
-                entry = self._cache.pop(key)
                 self.current_bytes -= entry.size_bytes
                 removed += 1
         return removed
