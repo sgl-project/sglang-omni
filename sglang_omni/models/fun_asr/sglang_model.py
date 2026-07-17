@@ -84,7 +84,6 @@ class MultiHeadedAttentionSANM(nn.Module):
         self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward_fsmn(self, v: torch.Tensor) -> torch.Tensor:
-        b, t, d = v.size()
         x = v.transpose(1, 2)  # (b, d, t)
         x = self.pad_fn(x)
         x = self.fsmn_block(x)
