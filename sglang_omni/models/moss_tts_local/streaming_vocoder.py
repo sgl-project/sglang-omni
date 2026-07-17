@@ -261,6 +261,8 @@ class _CodecStreamSession:
         if borrowed:
             del self._free_stream_slots[-borrow_count:]
         available = reserved + borrowed
+        # Note(Chenchen Hong): Under stream saturation, offline batches degrade
+        # to serial waves and block the scheduler pump until decoding completes.
         wave_size = min(requested_wave_size, len(available))
         decode_succeeded = False
         try:
