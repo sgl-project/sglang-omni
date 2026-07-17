@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
@@ -13,31 +11,27 @@ _LOW_FRAME_RATE_STAGES = 3
 
 
 def fun_asr_lfr_length(mel_frames: int) -> int:
-
     return (mel_frames + _LFR_N - 1) // _LFR_N
 
 
 def fun_asr_low_frame_rate_length(lfr_frames: int) -> int:
-
     out = lfr_frames
     for _ in range(_LOW_FRAME_RATE_STAGES):
-        out = (out + 1) // 2  # ceil(out / 2)
+        out = (out + 1) // 2
     return out
 
 
 def fun_asr_audio_token_lengths(input_lengths: Any) -> torch.Tensor:
-
     if not isinstance(input_lengths, torch.Tensor):
         input_lengths = torch.tensor(input_lengths)
-    lfr_lengths = (input_lengths + _LFR_N - 1) // _LFR_N  # ceil(T / 6)
+    lfr_lengths = (input_lengths + _LFR_N - 1) // _LFR_N
     tokens = lfr_lengths
     for _ in range(_LOW_FRAME_RATE_STAGES):
-        tokens = (tokens + 1) // 2  # ceil(x / 2)
+        tokens = (tokens + 1) // 2
     return tokens
 
 
 def fun_asr_num_audio_tokens(num_mel_frames: int) -> int:
-    """Scalar wrapper for scheduler request construction."""
     return int(fun_asr_audio_token_lengths(num_mel_frames).item())
 
 

@@ -62,6 +62,7 @@ print(resp.json()["text"])
 | `language` | string | `en` | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribe to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
+| `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
 
 ## Benchmarking
 
@@ -90,6 +91,8 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
+- Each uploaded audio segment must be 30 seconds or shorter, matching the
+  official Fun-ASR VAD segment limit. Split longer recordings before upload.
 - `itn` and `hotwords` are supported by the model request builder but not
   exposed as form fields on the public transcription endpoint.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but

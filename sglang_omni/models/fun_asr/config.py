@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Author:
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 
 from __future__ import annotations
 
@@ -29,7 +27,9 @@ class FunASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 32,
-                "max_new_tokens": 256,
+                "max_new_tokens": 200,
+                "request_build_max_workers": 2,
+                "request_build_max_pending": 16,
             },
             gpu=0,
             terminal=True,
