@@ -70,10 +70,10 @@ VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.881,
+        "throughput_qps": 0.908,
         "output_tok_per_req_s": 3.2,
-        "latency_mean_s": 12.957,
-        "rtf_mean": 1.4203,
+        "latency_mean_s": 13.154,
+        "rtf_mean": 1.5246,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
