@@ -281,12 +281,8 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     asyncio.run(_run())
 
 
-def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
-    monkeypatch,
-) -> None:
+def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs() -> None:
     """TP followers get the unresolved ref; the local scheduler gets the resolved tensor."""
-    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
-
     async def _run() -> None:
         relay = FakeRelay()
         tensor = torch.arange(6, dtype=torch.float32)
@@ -322,6 +318,7 @@ def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
             scheduler=scheduler,
             relay=relay,
             tp_fanout=tp_fanout,
+            resolve_tensor_refs=True,
         )
 
         await stage_obj._execute(payload)
@@ -335,17 +332,8 @@ def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
     asyncio.run(_run())
 
 
-def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob(
-    monkeypatch,
-) -> None:
+def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob() -> None:
     """The small envelope op completes without waiting on the deferred blob op."""
-    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
-    monkeypatch.setenv(
-        "SGLANG_OMNI_TENSOR_REF_EDGES", "image_encoder:mm_aggregate:thinker"
-    )
-    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_PATHS", "big")
-    monkeypatch.setenv("SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB", "0")
-
     async def _run() -> None:
         gate = asyncio.Event()
 
@@ -365,10 +353,18 @@ def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob(
                 return op
 
         relay = GatedRelay()
+        policy = TensorRefPolicy(
+            threshold_bytes=0,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("big",),
+        )
         stage_obj = make_stage(
             name="image_encoder",
             endpoints={"mm_aggregate": "inproc://mm"},
             relay=relay,
+            tensor_ref_policies={"mm_aggregate": policy},
         )
         payload = make_stage_payload(request_id="req-1", data={"big": torch.randn(4)})
 
@@ -465,8 +461,6 @@ def test_stage_abort_releases_tracked_unresolved_tensor_ref_payload() -> None:
 
 
 def test_stage_abort_preserves_tracked_refs_across_ref_free_fanin(monkeypatch) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
-
     async def _run() -> None:
         relay = FakeRelay()
         tensor = torch.arange(8, dtype=torch.float32)
@@ -496,6 +490,7 @@ def test_stage_abort_preserves_tracked_refs_across_ref_free_fanin(monkeypatch) -
             name="mm_aggregate",
             relay=relay,
             input_handler=AggregatedInput({"image_encoder", "preprocessing"}, _merge),
+            resolve_tensor_refs=True,
         )
         started_materialize = asyncio.Event()
         release_materialize = asyncio.Event()

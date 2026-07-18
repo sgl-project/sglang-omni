@@ -8,9 +8,7 @@ the declared ``consumer_stage`` resolves it back into a real tensor.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
 import torch
@@ -71,10 +69,6 @@ class TensorRef:
         )
 
 
-def tensor_refs_enabled() -> bool:
-    return os.environ.get("SGLANG_OMNI_ENABLE_TENSOR_REFS") == "1"
-
-
 def is_tensor_ref_dict(obj: Any) -> bool:
     return isinstance(obj, dict) and obj.get(TENSOR_REF_MARKER) is True
 
@@ -110,46 +104,3 @@ class TensorRefPolicy:
             return False
         nbytes = tensor.numel() * tensor.element_size()
         return nbytes >= self.threshold_bytes
-
-    @classmethod
-    def from_env(cls, *, from_stage: str, to_stage: str) -> "TensorRefPolicy | None":
-        if os.environ.get("SGLANG_OMNI_ENABLE_TENSOR_REFS") != "1":
-            return None
-        edges = _parse_edges(os.environ.get("SGLANG_OMNI_TENSOR_REF_EDGES", ""))
-        consumer_stage = edges.get((from_stage, to_stage))
-        if consumer_stage is None:
-            return None
-        threshold_mb = float(
-            os.environ.get(
-                "SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB",
-                str(DEFAULT_TENSOR_REF_THRESHOLD_MB),
-            )
-        )
-        raw_paths = os.environ.get("SGLANG_OMNI_TENSOR_REF_PATHS")
-        path_allowlist = (
-            tuple(p.strip() for p in raw_paths.split(",") if p.strip())
-            if raw_paths is not None
-            else DEFAULT_TENSOR_REF_PATHS
-        )
-        return cls(
-            threshold_bytes=int(threshold_mb * 1024 * 1024),
-            from_stage=from_stage,
-            to_stage=to_stage,
-            consumer_stage=consumer_stage,
-            path_allowlist=path_allowlist,
-        )
-
-
-@lru_cache(maxsize=1)
-def _parse_edges(raw: str) -> dict[tuple[str, str], str]:
-    edges: dict[tuple[str, str], str] = {}
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        parts = entry.split(":")
-        if len(parts) != 3:
-            continue
-        from_stage, to_stage, consumer_stage = (p.strip() for p in parts)
-        edges[(from_stage, to_stage)] = consumer_stage
-    return edges

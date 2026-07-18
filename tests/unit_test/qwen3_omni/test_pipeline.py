@@ -92,6 +92,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     speech_talker = _stage(speech_config, "talker_ar")
     text_thinker = _stage(text_config, "thinker")
     preprocessing = _stage(speech_config, "preprocessing")
+    image_encoder = _stage(speech_config, "image_encoder")
     aggregate = _stage(speech_config, "mm_aggregate")
     # Speech-mode thinker streams hidden states to talker_ar AND text-token
     # ids to decode (for the streaming detokenizer); text-mode thinker
@@ -108,6 +109,13 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     )
     assert aggregate.route_fn == (
         f"{request_builders_path}.resolve_mm_aggregate_next_stages"
+    )
+    tensor_ref = image_encoder.tensor_ref_edges["mm_aggregate"]
+    assert tensor_ref.consumer_stage == "thinker"
+    assert tensor_ref.threshold_mb == 2.0
+    assert tensor_ref.paths == (
+        "deepstack_visual_embeds_image",
+        "deepstack_visual_embeds_video",
     )
     assert speech_thinker.stream_to == ["talker_ar", "decode"]
     assert speech_thinker.route_fn == (
@@ -1192,22 +1200,34 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
     }
 
 
-def test_qwen_merge_preserves_unresolved_video_tensor_ref() -> None:
-    """A lazily-externalized video_embeds ref survives merge unresolved."""
+def test_qwen_merge_preserves_unresolved_deepstack_tensor_ref() -> None:
+    """A lazily-externalized deepstack ref survives merge unresolved."""
     ref = TensorRef(
-        ref_id="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        ref_id=(
+            "req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:"
+            "deepstack_visual_embeds_video"
+        ),
         request_id="req-qwen",
         producer_stage="image_encoder",
         consumer_stage="thinker",
-        path="encoder_outs.image_encoder.video_embeds",
+        path="encoder_outs.image_encoder.deepstack_visual_embeds_video",
         shape=(4, 8),
         dtype="torch.bfloat16",
         nbytes=4 * 8 * 2,
-        blob_key="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
+        blob_key=(
+            "req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:"
+            "deepstack_visual_embeds_video"
+        ),
         blob_metadata={"relay_info": {}, "tensor_shape": [4, 8]},
     )
+    video_embeds = torch.ones((4, 8), dtype=torch.bfloat16)
     image_state = Qwen3OmniPipelineState(
-        encoder_outs={"image_encoder": {"video_embeds": ref.to_dict()}}
+        encoder_outs={
+            "image_encoder": {
+                "video_embeds": video_embeds,
+                "deepstack_visual_embeds_video": ref.to_dict(),
+            }
+        }
     )
 
     merged = merge_for_thinker(
@@ -1218,9 +1238,11 @@ def test_qwen_merge_preserves_unresolved_video_tensor_ref() -> None:
     )
     merged_state = Qwen3OmniPipelineState.from_dict(merged.data)
 
-    video_embeds = merged_state.thinker_inputs["model_inputs"]["video_embeds"]
-    assert is_tensor_ref_dict(video_embeds)
-    assert video_embeds == ref.to_dict()
+    model_inputs = merged_state.thinker_inputs["model_inputs"]
+    assert torch.equal(model_inputs["video_embeds"], video_embeds)
+    deepstack_embeds = model_inputs["deepstack_visual_embeds"]
+    assert is_tensor_ref_dict(deepstack_embeds)
+    assert deepstack_embeds == ref.to_dict()
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:

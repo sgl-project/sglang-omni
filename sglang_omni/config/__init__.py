@@ -19,6 +19,7 @@ from sglang_omni.config.schema import (
     StageConfig,
     StageResourceConfig,
     StageRuntimeConfig,
+    TensorRefEdgeConfig,
 )
 from sglang_omni.config.topology import (
     ProcessGroupPlacement,
@@ -51,4 +52,5 @@ __all__ = [
     "PlacementConfig",
     "RelayConfig",
     "EndpointsConfig",
+    "TensorRefEdgeConfig",
 ]
