@@ -125,8 +125,8 @@ MAX_VOICE_UPLOAD_BODY_BYTES = (
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
-    "accepts audio up to",  
-    "max_new_tokens must be",  
+    "accepts audio up to",
+    "max_new_tokens must be",
 )
 
 

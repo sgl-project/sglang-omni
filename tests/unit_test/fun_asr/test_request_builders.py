@@ -286,7 +286,9 @@ def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
         request_builder(payload)
 
 
-def test_fun_asr_request_builder_wraps_string_hotword_as_single_entry(monkeypatch) -> None:
+def test_fun_asr_request_builder_wraps_string_hotword_as_single_entry(
+    monkeypatch,
+) -> None:
     # A bare string must stay one hotword, not be split into characters.
     monkeypatch.setattr(
         request_builders,
@@ -346,4 +348,3 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
 
     with pytest.raises(ValueError, match=r"longer than the model's context length"):
         request_builder(payload)
-

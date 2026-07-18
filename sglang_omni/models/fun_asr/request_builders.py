@@ -138,7 +138,6 @@ def _build_prompt_text(language: str | None, itn: bool, hotwords: list[str]) -> 
     return prompt + "："
 
 
-
 def _prompt_template(prompt_text: str, num_audio_tokens: int) -> str:
 
     return (
@@ -165,7 +164,9 @@ def fun_asr_prompt_overhead_tokens(
     ``_AUDIO_PAD`` is a special token with atomic boundaries.
     """
     prompt_text = _build_prompt_text(language, itn, list(hotwords))
-    return len(tokenizer(_prompt_template(prompt_text, 0), add_special_tokens=False).input_ids)
+    return len(
+        tokenizer(_prompt_template(prompt_text, 0), add_special_tokens=False).input_ids
+    )
 
 
 def make_fun_asr_scheduler_adapters(

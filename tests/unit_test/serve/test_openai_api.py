@@ -960,13 +960,16 @@ def test_transcription_endpoint_returns_text_json() -> None:
 
 
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
-    
+
     bad_request_error = (
         "Fun-ASR accepts audio up to 30.0 seconds because its official "
         "VAD segment limit is 30 seconds; split longer audio before inference."
     )
     client = TestClient(
-        create_app(_fault_client("qwen3-omni", error=bad_request_error), model_name="qwen3-omni")
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
     )
 
     response = client.post(
@@ -982,7 +985,10 @@ def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
 def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
     bad_request_error = "max_new_tokens must be between 1 and 200, got 65536"
     client = TestClient(
-        create_app(_fault_client("qwen3-omni", error=bad_request_error), model_name="qwen3-omni")
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
     )
 
     response = client.post(
