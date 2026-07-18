@@ -132,7 +132,11 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert _stage(speech_config, "code2wav").can_accept_stream_before_payload
     assert text_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert speech_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
-    assert colocated_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+    assert colocated_config.env_defaults == {
+        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0",
+        "OMP_NUM_THREADS": "8",
+        "TOKENIZERS_PARALLELISM": "false",
+    }
 
     # Early-submit wiring (issue #473): the talker stage receives its
     # new_request from mm_aggregate so it can enter its deferred state
@@ -279,6 +283,43 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     assert state.prompt["attention_mask"].tolist() == [1, 1, 1]
     assert state.encoder_inputs["image_encoder"]["_skip"] is True
     assert state.encoder_inputs["audio_encoder"]["_skip"] is True
+
+
+def test_qwen_preprocessor_retries_without_special_token_compat(
+    tmp_path, monkeypatch
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"image_token": "<|image_pad|>", "audio_token": "<|audio_pad|>"}'
+    )
+    calls = []
+
+    def fake_from_pretrained(model_dir, **kwargs):
+        calls.append(kwargs)
+        if "extra_special_tokens" in kwargs:
+            raise TypeError("old transformers does not accept extra_special_tokens")
+        return SimpleNamespace(
+            tokenizer=SimpleNamespace(chat_template=None),
+            chat_template=None,
+        )
+
+    monkeypatch.setattr(
+        preprocessor_mod.Qwen3OmniMoeProcessor,
+        "from_pretrained",
+        fake_from_pretrained,
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
+
+    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path))
+
+    assert calls[0]["extra_special_tokens"] == {
+        "image_token": "<|image_pad|>",
+        "audio_token": "<|audio_pad|>",
+    }
+    assert "extra_special_tokens" not in calls[1]
 
 
 def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:

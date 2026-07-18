@@ -450,6 +450,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.models.voxtral_tts import request_builders
     from sglang_omni.models.voxtral_tts.pipeline import stages
     from sglang_omni.scheduling import bootstrap as bootstrap_mod
+    from sglang_omni.scheduling import engine_factory
     from sglang_omni.scheduling import omni_scheduler as scheduler_mod
     from sglang_omni.scheduling import sglang_backend
 
@@ -474,7 +475,9 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
 
-    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
+    )
     monkeypatch.setattr(
         stages,
         "_write_voxtral_sglang_config",

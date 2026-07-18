@@ -120,10 +120,3 @@ class StreamingVAD:
 
 def offsets_to_ms(samples: int) -> int:
     return samples * 1000 // VAD_SAMPLE_RATE
-
-
-def emits_for_test(pcm_bytes: bytes, **cfg) -> list[tuple[str, int]]:
-    """Test helper: drive the VAD on a complete byte buffer."""
-    vad = StreamingVAD(VADConfig(**cfg))
-    emits = vad.process(pcm_bytes)
-    return [(e.event_type, offsets_to_ms(e.sample_offset)) for e in emits]

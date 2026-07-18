@@ -39,7 +39,12 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
     from sglang_omni.models.higgs_tts import model_runner as model_runner_mod
     from sglang_omni.models.higgs_tts import request_builders
-    from sglang_omni.scheduling import bootstrap, omni_scheduler, sglang_backend
+    from sglang_omni.scheduling import (
+        bootstrap,
+        engine_factory,
+        omni_scheduler,
+        sglang_backend,
+    )
 
     captured: dict[str, object] = {}
     infrastructure_saw_graph_disabled: list[bool] = []
@@ -102,7 +107,9 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
             captured["scheduler_kwargs"] = kwargs
             self.outbox = object()
 
-    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
+    )
     monkeypatch.setattr(
         sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
     )
@@ -366,7 +373,11 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
-            return torch.tensor([[11, 12], [21, 22]], dtype=torch.long)
+            offset = self.calls * 100
+            return torch.tensor(
+                [[offset + 11, offset + 12], [offset + 21, offset + 22]],
+                dtype=torch.long,
+            )
 
     cache = get_speaker_artifact_cache()
     cache.clear()
@@ -382,14 +393,20 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
     fake_codec.calls = 0
     encode = scheduler._fn
 
-    def make_payload(request_id: str) -> StagePayload:
+    def make_payload(
+        request_id: str,
+        *,
+        reference_code_cache_key: str = "waveform:sr:24000:uploaded",
+        uploaded_voice_created_at: int = 7,
+        waveform_value: float = 0.0,
+    ) -> StagePayload:
         state = HiggsTtsState(
-            reference_waveform=torch.zeros(1, 1, 16),
-            reference_code_cache_key="waveform:sr:24000:uploaded",
+            reference_waveform=torch.full((1, 1, 16), waveform_value),
+            reference_code_cache_key=reference_code_cache_key,
             target_text="hello",
             reference_text="speaker",
             uploaded_voice_name="guide",
-            uploaded_voice_created_at=7,
+            uploaded_voice_created_at=uploaded_voice_created_at,
             num_codebooks=2,
         )
         return StagePayload(
@@ -403,12 +420,27 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
     cache.clear_voice("guide")
     third = encode(make_payload("third"))
 
+    assert fake_codec.calls == 1
+
+    reuploaded = encode(
+        make_payload(
+            "reuploaded",
+            reference_code_cache_key="waveform:sr:24000:uploaded-v2",
+            uploaded_voice_created_at=8,
+            waveform_value=1.0,
+        )
+    )
+
     assert fake_codec.calls == 2
     assert (
         first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
     )
     assert (
         third.data["reference_codes_delayed"] == first.data["reference_codes_delayed"]
+    )
+    assert (
+        reuploaded.data["reference_codes_delayed"]
+        != first.data["reference_codes_delayed"]
     )
 
 

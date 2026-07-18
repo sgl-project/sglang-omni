@@ -7,7 +7,6 @@ import importlib
 from typing import Any
 
 from sglang_omni.models.higgs_tts import request_builders
-from sglang_omni.models.higgs_tts import stages as higgs_stages
 from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
@@ -31,9 +30,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.model: Any | None = None
-
-    def resolve_checkpoint(self, model_path: str) -> str:
-        return higgs_stages.resolve_checkpoint(model_path)
 
     def generation_defaults(
         self,

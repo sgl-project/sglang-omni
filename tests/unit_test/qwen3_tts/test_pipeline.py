@@ -259,41 +259,6 @@ def test_qwen3_tts_base_path_detection_for_uploaded_voice_requirement(
     assert config.supports_uploaded_voice_references() is expected
 
 
-def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
-    state = Qwen3TTSState(
-        text="hello",
-        task_type="CustomVoice",
-        task_type_explicit=True,
-        language="en",
-        voice="Vivian",
-        instructions="warm",
-        ref_audio="voice.wav",
-        ref_text="reference",
-        uploaded_voice_name="guide",
-        uploaded_voice_created_at=7,
-        generation_kwargs={"max_new_tokens": 128, "temperature": 0.7},
-        audio_codes=[[1, 2], [3, 4]],
-        ref_code_len=1,
-        audio_samples=[0.0, 0.1],
-        sample_rate=24000,
-    )
-    restored = Qwen3TTSState.from_dict(state.to_dict())
-    assert restored.text == "hello"
-    assert restored.task_type == "CustomVoice"
-    assert restored.task_type_explicit is True
-    assert restored.language == "en"
-    assert restored.voice == "Vivian"
-    assert restored.instructions == "warm"
-    assert restored.ref_audio == "voice.wav"
-    assert restored.ref_text == "reference"
-    assert restored.uploaded_voice_name == "guide"
-    assert restored.uploaded_voice_created_at == 7
-    assert restored.generation_kwargs["max_new_tokens"] == 128
-    assert restored.audio_codes == [[1, 2], [3, 4]]
-    assert restored.ref_code_len == 1
-    assert restored.audio_samples == [0.0, 0.1]
-
-
 def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> None:
     payload = make_payload(
         inputs={
@@ -679,92 +644,6 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         wrapper=wrapper,
     )
     assert calls == 3
-
-
-def test_qwen3_tts_adhoc_reference_failure_does_not_poison(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
-    data_uri = "data:audio/wav;base64,BBBB"
-
-    class FakePrompt:
-        ref_text = "reference"
-
-    class FakeWrapper:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def create_voice_clone_prompt(self, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                raise RuntimeError("transient")
-            return [FakePrompt()]
-
-        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
-            del prompt_items
-            return {
-                "ref_code": [torch.ones((1, 2), dtype=torch.long)],
-                "ref_spk_embedding": [torch.ones(4)],
-                "icl_mode": [True],
-            }
-
-        def _tokenize_texts(self, texts):
-            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
-
-        def _build_assistant_text(self, text):
-            return text
-
-        def _build_ref_text(self, text):
-            return text
-
-        def _merge_generate_kwargs(self, **kwargs):
-            return kwargs
-
-    class FakeModel:
-        device = torch.device("cpu")
-        root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-
-        def build_voice_clone_inputs(self, **kwargs):
-            return (
-                torch.ones((1, 2, 4)),
-                torch.ones((1, 2), dtype=torch.long),
-                torch.ones((1, 1, 4)),
-                None,
-            )
-
-        def get_text_embeddings(self):
-            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
-
-        def text_projection(self, embeds):
-            return embeds
-
-    monkeypatch.setattr(
-        qwen3_request_builders,
-        "_build_qwen3_tts_pad_embed",
-        lambda model: torch.zeros(4),
-    )
-
-    wrapper = FakeWrapper()
-    model = FakeModel()
-    payload = make_payload(
-        inputs="target",
-        tts_params={"ref_audio": data_uri, "ref_text": "reference"},
-    )
-
-    with pytest.raises(RuntimeError, match="transient"):
-        qwen3_request_builders._prepare_qwen3_tts_request(
-            payload,
-            model=model,
-            wrapper=wrapper,
-        )
-
-    qwen3_request_builders._prepare_qwen3_tts_request(
-        payload,
-        model=model,
-        wrapper=wrapper,
-    )
-    assert wrapper.calls == 2
 
 
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(

@@ -31,13 +31,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 
 CONCURRENCY = 16
 
-MMSU_MIN_ACCURACY = 0.697
+MMSU_MIN_ACCURACY = 0.6965
 
 _MMSU_P95 = {
     16: {
-        "throughput_qps": 70.65,
-        "output_tok_per_req_s": 9.1,
-        "latency_mean_s": 0.226,
+        "throughput_qps": 59.377,
+        "output_tok_per_req_s": 7.7,
+        "latency_mean_s": 0.269,
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)

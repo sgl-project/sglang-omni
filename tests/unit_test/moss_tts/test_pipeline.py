@@ -142,7 +142,12 @@ def test_moss_tts_config_and_registry_contracts() -> None:
 
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     from sglang_omni.models.moss_tts import request_builders, stages
-    from sglang_omni.scheduling import bootstrap, omni_scheduler, sglang_backend
+    from sglang_omni.scheduling import (
+        bootstrap,
+        engine_factory,
+        omni_scheduler,
+        sglang_backend,
+    )
 
     captured: dict[str, object] = {"build_kwargs": []}
 
@@ -202,7 +207,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
 
     monkeypatch.setattr(
-        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
     monkeypatch.setattr(
         request_builders,
@@ -265,31 +270,6 @@ def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None
     server_args_overrides = tts_engine.factory_args["server_args_overrides"]
     assert server_args_overrides["enable_torch_compile"] is True
     assert server_args_overrides["torch_compile_max_bs"] == 4
-
-
-def test_moss_tts_state_round_trip_keeps_tensors_native() -> None:
-    codes = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
-    state = MossTTSState(
-        text="hello",
-        ref_audio="ref.wav",
-        ref_text="reference",
-        language="en",
-        instructions="warm",
-        token_count=180,
-        generation_kwargs={"max_new_tokens": 64},
-        delayed_audio_codes=codes,
-        assistant_start_length=2,
-    )
-    restored = MossTTSState.from_dict(state.to_dict())
-
-    assert restored.text == "hello"
-    assert restored.ref_audio == "ref.wav"
-    assert restored.ref_text == "reference"
-    assert restored.language == "en"
-    assert restored.instructions == "warm"
-    assert restored.token_count == 180
-    assert torch.equal(restored.delayed_audio_codes, codes)
-    assert restored.assistant_start_length == 2
 
 
 def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) -> None:

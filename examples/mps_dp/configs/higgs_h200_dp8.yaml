@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 141 GB H200 with eight same-GPU Higgs replicas.
+
+config_cls: HiggsTtsPipelineConfig
+name: higgs
+model_path: bosonai/higgs-tts-3-4b
+
+stage_overrides:
+  tts_engine:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.85
+
+runtime_overrides:
+  tts_engine:
+    server_args_overrides:
+      max_total_tokens: 30000
+      max_running_requests: 64
+      cuda_graph_max_bs: 64

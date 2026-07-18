@@ -21,6 +21,16 @@ MIN_PARTIAL_START_CHUNKS = 3
 # policy once that exists outside import-time environment globals.
 _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
+# A colocated worker launches eight stage processes. Letting every PyTorch
+# process size its OpenMP pool to the full host oversubscribes launch-side CPU
+# work when multiple workers share a node. Preprocessing handles one prompt per
+# scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
+_COLOCATED_STAGE_ENV_DEFAULTS = {
+    **_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS,
+    "OMP_NUM_THREADS": "8",
+    "TOKENIZERS_PARALLELISM": "false",
+}
+
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
@@ -341,6 +351,10 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     config file so deployments can use hardware-appropriate stage fractions and
     SGLang AR cache fractions.
     """
+
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_COLOCATED_STAGE_ENV_DEFAULTS)
+    )
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _speech_stages(

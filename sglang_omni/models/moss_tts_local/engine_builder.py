@@ -35,9 +35,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self.profile_total_gpu_memory_fraction: float | None = None
         self.model: Any | None = None
 
-    def resolve_checkpoint(self, model_path: str) -> str:
-        return moss_local_stages.resolve_moss_checkpoint(model_path)
-
     def generation_defaults(
         self,
         *,
