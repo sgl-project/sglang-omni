@@ -138,11 +138,42 @@ def _build_prompt_text(language: str | None, itn: bool, hotwords: list[str]) -> 
     return prompt + "："
 
 
+
+def _prompt_template(prompt_text: str, num_audio_tokens: int) -> str:
+
+    return (
+        f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+        f"<|im_start|>user\n"
+        f"{prompt_text}{_AUDIO_PAD * num_audio_tokens}"
+        f"<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+
+
+def fun_asr_prompt_overhead_tokens(
+    tokenizer: Any,
+    *,
+    language: str | None = None,
+    itn: bool = True,
+    hotwords: tuple[str, ...] = (),
+) -> int:
+    """Token count of the non-audio prompt preamble (wrappers + prompt_text).
+
+    Audio placeholders are sized separately via ``encoder_token_count``; the
+    context-length budget needs only this overhead plus the per-request
+    prompt tokens. Tokenizing without audio pads is exact because
+    ``_AUDIO_PAD`` is a special token with atomic boundaries.
+    """
+    prompt_text = _build_prompt_text(language, itn, list(hotwords))
+    return len(tokenizer(_prompt_template(prompt_text, 0), add_special_tokens=False).input_ids)
+
+
 def make_fun_asr_scheduler_adapters(
     *,
     tokenizer: Any,
     max_new_tokens: int,
     feature_extractor: Any = None,
+    context_length: int | None = None,
 ) -> tuple[
     Callable[[StagePayload], FunASRRequestData],
     Callable[[FunASRRequestData], StagePayload],
@@ -158,14 +189,10 @@ def make_fun_asr_scheduler_adapters(
     vocab_size = int(tokenizer.vocab_size)
 
     def _build_prompt_ids(num_audio_tokens: int, prompt_text: str) -> list[int]:
-        prompt = (
-            f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-            f"<|im_start|>user\n"
-            f"{prompt_text}{_AUDIO_PAD * num_audio_tokens}"
-            f"<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-        return tokenizer(prompt, add_special_tokens=False).input_ids
+        return tokenizer(
+            _prompt_template(prompt_text, num_audio_tokens),
+            add_special_tokens=False,
+        ).input_ids
 
     def request_builder(payload: StagePayload) -> FunASRRequestData:
         params = payload.request.params or {}
@@ -201,7 +228,13 @@ def make_fun_asr_scheduler_adapters(
         lang_raw = params.get("language")
         language = _resolve_language(lang_raw)
         itn = bool(params.get("itn", True))
-        hotwords = list(params.get("hotwords") or [])
+        hotwords_raw = params.get("hotwords") or []
+        # A bare string would be split into characters by list(...); wrap it as
+        # a single hotword so each user-supplied entry stays intact.
+        if isinstance(hotwords_raw, str):
+            hotwords = [hotwords_raw]
+        else:
+            hotwords = list(hotwords_raw)
         prompt_text = _build_prompt_text(language, itn, hotwords)
         input_ids = _build_prompt_ids(num_audio_tokens, prompt_text)
 
@@ -242,6 +275,15 @@ def make_fun_asr_scheduler_adapters(
         request_max_new_tokens = _request_token_budget(
             params, audio_duration_s, max_new_tokens
         )
+        if (
+            context_length is not None
+            and len(input_ids) + request_max_new_tokens > context_length
+        ):
+            raise ValueError(
+                f"Fun-ASR request is longer than the model's context length "
+                f"({len(input_ids)} prompt/audio tokens + {request_max_new_tokens} "
+                f"max_new_tokens > {context_length}); reduce hotwords or split the audio"
+            )
         logger.debug(
             f"[fun-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"

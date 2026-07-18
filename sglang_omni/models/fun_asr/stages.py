@@ -10,7 +10,10 @@ from transformers import AutoFeatureExtractor, AutoTokenizer
 # note(LauraGPT): Auto* loading depends on these local registrations.
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.fun_asr.request_builders import make_fun_asr_scheduler_adapters
+from sglang_omni.models.fun_asr.request_builders import (
+    fun_asr_prompt_overhead_tokens,
+    make_fun_asr_scheduler_adapters,
+)
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
@@ -56,7 +59,12 @@ def create_sglang_fun_asr_executor(
         fun_asr_low_frame_rate_length(feature_extractor.nb_max_frames)
     )
 
-    prompt_overhead_tokens = 128
+    # Size the text-prompt overhead from the actual tokenized prompt template
+    # (system/user/assistant wrappers + base prompt_text, no hotwords) instead
+    # of a fixed guess, so context_length is accurate. Per-request hotword
+    # overflow is guarded in the request builder against this context_length.
+    prompt_overhead_tokens = fun_asr_prompt_overhead_tokens(tokenizer)
+    context_length = encoder_token_count + int(max_new_tokens) + prompt_overhead_tokens
 
     defaults: dict[str, Any] = {
         "disable_cuda_graph": False,
@@ -82,9 +90,7 @@ def create_sglang_fun_asr_executor(
 
     server_args = build_sglang_server_args(
         model_path,
-        context_length=encoder_token_count
-        + int(max_new_tokens)
-        + prompt_overhead_tokens,
+        context_length=context_length,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -120,6 +126,7 @@ def create_sglang_fun_asr_executor(
         tokenizer=tokenizer,
         feature_extractor=feature_extractor,
         max_new_tokens=max_new_tokens,
+        context_length=context_length,
     )
 
     return OmniScheduler(

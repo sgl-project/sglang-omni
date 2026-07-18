@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
-from sglang_omni.models.fun_asr.stages import create_sglang_fun_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 
@@ -31,7 +30,7 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
 
 
 def test_fun_asr_stage_default_allows_32_running_requests() -> None:
-    signature = inspect.signature(create_sglang_fun_asr_executor)
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["max_running_requests"].default == 32
     assert signature.parameters["max_new_tokens"].default == 200
@@ -40,19 +39,19 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
 
 
 def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
-    signature = inspect.signature(create_sglang_fun_asr_executor)
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["mem_fraction_static"].default is None
 
 
 def test_fun_asr_stage_default_disables_multimodal_embedding_cache() -> None:
-    signature = inspect.signature(create_sglang_fun_asr_executor)
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
 
 
 def test_fun_asr_stage_default_disables_torch_compile() -> None:
-    signature = inspect.signature(create_sglang_fun_asr_executor)
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["enable_torch_compile"].default is False
 
@@ -64,7 +63,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     monkeypatch.setattr(
         fun_asr_stages.AutoTokenizer,
         "from_pretrained",
-        lambda *args, **kwargs: object(),
+        lambda *args, **kwargs: lambda text, add_special_tokens=False: SimpleNamespace(
+            input_ids=[0] * len(text)
+        ),
     )
     monkeypatch.setattr(
         fun_asr_stages.AutoFeatureExtractor,
@@ -91,7 +92,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     monkeypatch.setattr(
         fun_asr_stages,
         "OmniScheduler",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        SimpleNamespace,
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):

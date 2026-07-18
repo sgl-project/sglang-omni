@@ -16,7 +16,6 @@ from transformers import (
     AutoTokenizer,
     PretrainedConfig,
 )
-from transformers.audio_utils import mel_filter_bank, window_function
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
@@ -72,22 +71,9 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         self.padding_value = padding_value
         self.return_attention_mask = return_attention_mask
 
-        # Precompute the mel filterbank (n_mels x (n_fft//2 + 1)).
-        self.mel_filters = mel_filter_bank(
-            num_frequency_bins=self.n_fft // 2 + 1,
-            num_mel_filters=self.n_mels,
-            min_frequency=0.0,
-            max_frequency=float(self.sampling_rate / 2),
-            sampling_rate=self.sampling_rate,
-            norm="slaney",
-            mel_scale="htk",
-        ).astype(np.float32)
-
-        if window == "hamming":
-            self._window = window_function(
-                self.win_length, name="hamming", periodic=False
-            ).astype(np.float32)
-        else:
+        # _extract_fbank builds its own mel filterbank/window via
+        # torchaudio.compliance.kaldi.fbank, so we don't precompute them here.
+        if window != "hamming":
             raise ValueError(f"Unsupported window: {window!r} (Fun-ASR uses hamming)")
 
     @property
@@ -221,7 +207,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
             out["attention_mask"] = attention
         if return_tensors == "pt":
             out["input_features"] = torch.from_numpy(out["input_features"])
-            out["attention_mask"] = torch.from_numpy(out["attention_mask"])
+            if "attention_mask" in out:
+                out["attention_mask"] = torch.from_numpy(out["attention_mask"])
         return out
 
 

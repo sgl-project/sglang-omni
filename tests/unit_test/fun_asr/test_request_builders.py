@@ -284,3 +284,66 @@ def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
 
     with pytest.raises(ValueError, match=r"max_new_tokens.*200"):
         request_builder(payload)
+
+
+def test_fun_asr_request_builder_wraps_string_hotword_as_single_entry(monkeypatch) -> None:
+    # A bare string must stay one hotword, not be split into characters.
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: np.zeros(1600, dtype=np.float32),
+    )
+    captured = {}
+
+    class _CapturingTokenizer(_FakeTokenizer):
+        def __call__(self, text: str, *, add_special_tokens: bool = False):
+            captured["prompt_text"] = text
+            return super().__call__(text, add_special_tokens=add_special_tokens)
+
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_CapturingTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(11),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-hotwords-str",
+        request=OmniRequest(
+            inputs={"audio_path": "x.wav"},
+            params={"hotwords": "人工智能"},
+        ),
+        data={},
+    )
+
+    request_builder(payload)
+    assert "热词列表：[人工智能]" in captured["prompt_text"]
+
+
+def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
+    monkeypatch,
+) -> None:
+    # 17 LFR frames -> 3 audio tokens; FakeTokenizer yields 9 + 3 = 12 input ids.
+    # With context_length=10 and max_new_tokens=5, 12 + 5 > 10 must raise a
+    # clear bad-request error (caught by _BAD_REQUEST_MARKERS -> HTTP 400).
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(17),
+        context_length=10,
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-overflow",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"},
+            params={"max_new_tokens": 5},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match=r"longer than the model's context length"):
+        request_builder(payload)
+
