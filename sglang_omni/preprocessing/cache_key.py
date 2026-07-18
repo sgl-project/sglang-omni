@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -233,29 +233,3 @@ def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
         parts.append(part)
 
     return f"{prefix}:{_hash_joined(parts)}"
-
-
-def compute_cache_key(
-    items: Any, *, item_to_part: Callable[[Any], str | None]
-) -> str | None:
-    """Compute cache key from a list-like input.
-
-    The item_to_part callback must return a string part or None to
-    indicate the item type is unsupported (no cache key).
-
-    Note: Prefer compute_media_cache_key() for new code.
-    """
-    if items is None:
-        return None
-    seq = items if isinstance(items, list) else [items]
-    if not seq:
-        return None
-
-    parts: list[str] = []
-    for item in seq:
-        part = item_to_part(item)
-        if part is None:
-            return None
-        parts.append(part)
-
-    return _hash_joined(parts)

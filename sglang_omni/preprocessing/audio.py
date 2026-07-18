@@ -124,13 +124,6 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
     return audio.astype(np.float32, copy=False), int(sample_rate)
 
 
-def _read_wav_bytes(path: str) -> tuple[np.ndarray, int]:
-    """Read PCM/IEEE-float WAV from file path without external deps."""
-    with open(path, "rb") as f:
-        data = f.read()
-    return _parse_wav_bytes(data, source=path)
-
-
 def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
         return audio.astype(np.float32, copy=False)
@@ -151,29 +144,6 @@ def load_audio_path(path: str | Path, *, target_sr: int = 16000) -> np.ndarray:
     except ValueError:
         audio, sr = _decode_audio_bytes_av(data)
     return _resample_linear(audio, sr, target_sr)
-
-
-def pcm16_bytes_to_float32(
-    data: bytes,
-    *,
-    source_sr: int = 16000,
-    target_sr: int = 16000,
-    channels: int = 1,
-) -> np.ndarray:
-    """Decode raw little-endian PCM16 bytes to mono float32 in [-1, 1]."""
-    if not data:
-        return np.zeros(0, dtype=np.float32)
-
-    bytes_per_sample = 2 * channels
-    truncate = len(data) - (len(data) % bytes_per_sample)
-    if truncate <= 0:
-        return np.zeros(0, dtype=np.float32)
-
-    audio_i16 = np.frombuffer(data[:truncate], dtype="<i2")
-    audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1).astype(np.float32)
-    return _resample_linear(audio, source_sr, target_sr)
 
 
 class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):

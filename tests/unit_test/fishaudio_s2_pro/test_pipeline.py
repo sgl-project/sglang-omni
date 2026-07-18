@@ -1015,8 +1015,147 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     assert codec.calls == 2
 
 
+def _tiny_fish_omni_config(*, with_audio_decoder: bool = True):
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
+        FishQwen3AudioDecoderConfig,
+        FishQwen3Config,
+        FishQwen3OmniConfig,
+    )
+
+    text_config = FishQwen3Config(
+        vocab_size=32,
+        n_layer=1,
+        n_head=2,
+        n_local_heads=1,
+        dim=8,
+        head_dim=4,
+        intermediate_size=16,
+    )
+    audio_decoder_config = None
+    if with_audio_decoder:
+        audio_decoder_config = FishQwen3AudioDecoderConfig(
+            vocab_size=16,
+            n_layer=1,
+            n_head=2,
+            n_local_heads=1,
+            dim=8,
+            head_dim=4,
+            intermediate_size=16,
+            text_dim=8,
+            num_codebooks=2,
+        )
+    return FishQwen3OmniConfig(
+        text_config=text_config,
+        audio_decoder_config=audio_decoder_config,
+    )
+
+
+def _write_tiny_audio_decoder_checkpoint(tmp_path, *, drop_key: str | None = None):
+    from safetensors.torch import save_file
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
+        FishQwen3AudioDecoder,
+    )
+
+    config = _tiny_fish_omni_config()
+    config.save_pretrained(tmp_path)
+    source = FishQwen3AudioDecoder(config.audio_decoder_config)
+    with torch.no_grad():
+        for index, parameter in enumerate(source.parameters(), start=1):
+            parameter.fill_(index / 16)
+    state_dict = {
+        f"audio_decoder.{name}": tensor.detach().contiguous()
+        for name, tensor in source.state_dict().items()
+        if name != drop_key
+    }
+    save_file(state_dict, tmp_path / "model.safetensors")
+    return source
+
+
+def test_load_audio_decoder_strictly_loads_only_fast_path_on_meta(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.models import weight_loader
+    from sglang_omni.models.fishaudio_s2_pro import bootstrap
+
+    source = _write_tiny_audio_decoder_checkpoint(tmp_path)
+    tokenizer = object()
+    monkeypatch.setattr(
+        "transformers.PreTrainedTokenizerFast.from_pretrained",
+        lambda checkpoint_dir: tokenizer,
+    )
+
+    original_load_module = weight_loader.load_module
+
+    def checked_load_module(module, *args, **kwargs):
+        assert all(parameter.is_meta for parameter in module.parameters())
+        return original_load_module(module, *args, **kwargs)
+
+    monkeypatch.setattr(weight_loader, "load_module", checked_load_module)
+
+    decoder, num_codebooks, codebook_size, loaded_tokenizer = (
+        bootstrap.load_audio_decoder(str(tmp_path), device="cpu")
+    )
+
+    assert loaded_tokenizer is tokenizer
+    assert num_codebooks == 2
+    assert codebook_size == 16
+    assert all(not parameter.is_meta for parameter in decoder.parameters())
+    assert {parameter.dtype for parameter in decoder.parameters()} == {torch.bfloat16}
+    for name, expected in source.state_dict().items():
+        assert torch.equal(decoder.state_dict()[name], expected.to(torch.bfloat16))
+    assert torch.equal(decoder.codebook_offsets, torch.tensor([0, 16]))
+    assert decoder.freqs_cis.device.type == "cpu"
+
+
+def test_load_audio_decoder_rejects_missing_decoder_config(tmp_path) -> None:
+    from sglang_omni.models.fishaudio_s2_pro import bootstrap
+
+    _tiny_fish_omni_config(with_audio_decoder=False).save_pretrained(tmp_path)
+
+    with pytest.raises(RuntimeError, match="config does not define an audio decoder"):
+        bootstrap.load_audio_decoder(str(tmp_path), device="cpu")
+
+
+def test_load_audio_decoder_rejects_incomplete_decoder_weights(tmp_path) -> None:
+    from sglang_omni.models.fishaudio_s2_pro import bootstrap
+
+    _write_tiny_audio_decoder_checkpoint(
+        tmp_path,
+        drop_key="output.weight",
+    )
+
+    with pytest.raises(RuntimeError, match="Missing key.*output.weight"):
+        bootstrap.load_audio_decoder(str(tmp_path), device="cpu")
+
+
+def test_fish_checkpoint_config_remains_registered_without_hf_slow_model(
+    tmp_path,
+) -> None:
+    from transformers import AutoConfig
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
+        FishQwen3OmniConfig,
+    )
+
+    _tiny_fish_omni_config().save_pretrained(tmp_path)
+
+    loaded = AutoConfig.from_pretrained(tmp_path)
+    assert isinstance(loaded, FishQwen3OmniConfig)
+    assert loaded.audio_decoder_config.num_codebooks == 2
+
+
+def test_fish_slow_hf_modeling_surface_is_removed() -> None:
+    assert (
+        importlib.util.find_spec(
+            "sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling"
+        )
+        is None
+    )
+
+
 def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
-    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
         FishQwen3AudioDecoder,
     )
 

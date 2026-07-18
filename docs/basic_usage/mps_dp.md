@@ -28,20 +28,28 @@ Pick a GPU that is idle, then find its NUMA node from the PCI bus id (drm card o
 2. **Launch the replicas.**
 
 ```bash
-CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 bash examples/mps_dp/launch.sh up
+CONFIG=examples/mps_dp/configs/higgs_h100_dp3.yaml N=3 CORE_BLOCKS="0-9 10-19 20-29" bash examples/mps_dp/launch.sh up
 ```
 
-The command above is the validated H100 Higgs DP3 recipe. The launcher uses three replicas by default, resolves the GPU's NUMA node, assigns one local port per replica, starts a private MPS daemon, waits for each replica's health check before starting the next, and verifies MPS attachment. The CPU blocks are specific to the tested host; derive the correct blocks for your own CPU topology.
+The command above is the validated H100 Higgs DP3 recipe. For the validated H200 Higgs DP8 recipe, use:
 
-The example leaves `--mem-fraction-static` unset and uses the model's existing default. Launching replicas sequentially avoids overlapping memory profiling and CUDA-graph capture during startup.
+```bash
+CONFIG=examples/mps_dp/configs/higgs_h200_dp8.yaml N=8 CORE_BLOCKS="0-3 4-7 8-11 12-15 16-19 20-23 24-27 28-31" bash examples/mps_dp/launch.sh up
+```
+
+The pipeline config supplies the model and per-replica runtime settings. The launcher environment supplies host-local placement, including the GPU, replica count, and CPU blocks. The launcher resolves the GPU's NUMA node, assigns local ports automatically, starts a private MPS daemon, waits for each replica's health check before starting the next, and verifies MPS attachment. The CPU blocks above are specific to the tested hosts; derive the correct non-overlapping blocks for your own CPU topology.
+
+Both profiles set `mem_fraction_static` to `0.85`; `MF` can override it. When `CONFIG` is unset, the existing `MODEL` and `MAX_TOTAL_TOKENS` interface remains available. Launching replicas sequentially avoids overlapping memory profiling and CUDA-graph capture during startup.
 
 Identical `--mem-fraction-static` flags do **not** mean identical KV capacity. `--mem-fraction-static` budgets model weights and the KV pool against the GPU memory available when each replica starts. Roughly, the profiled KV memory is the requested fraction of free memory measured before model loading, minus model and fixed runtime allocations. It is a per-replica budget, not an additive share of the card. Because replicas start sequentially, earlier ones have already reserved memory, so later ones see a smaller free pool and allocate fewer KV tokens even when every flag is the same (in one run, three sequential `mf=0.27` replicas received 97,503 / 53,149 / 20,961 KV tokens).
 
 ![What same-GPU DP spends in VRAM and what it reclaims](../_static/image/same-gpu-dp-vram.svg)
 
-Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, the launcher therefore requires one common `MAX_TOTAL_TOKENS` value and passes it to every replica as `--max-total-tokens`. SGLang treats this value as an upper bound; the launcher rejects startup unless every replica resolves exactly that capacity. The cap is independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
+Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, the launcher therefore requires one common `max_total_tokens` value, either from the pipeline config or from `MAX_TOTAL_TOKENS`. SGLang treats this value as an upper bound; the launcher rejects startup unless every replica resolves exactly that capacity. The cap applies independently to each replica; it is not divided across the pool. It is also independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
 
-The validated H100 Higgs DP3 cap is `100000` tokens per replica. This value is a starting point for the tested configuration, not a universal hardware default. Recalculate the cap after changing the model, GPU, runtime, replica count, memory settings, or CUDA-graph settings. If a replica cannot allocate the common cap, lower it or reduce the replica count.
+The H100 Higgs DP3 profile uses `100000` tokens per replica. The H200 Higgs DP8 profile uses `30000` tokens per replica, preserving GPU memory headroom for non-KV runtime allocations, including the colocated audio encoder and vocoder. These values are specific to their configurations, not universal hardware defaults. Recalculate the cap after changing the model, GPU, runtime, replica count, memory settings, or CUDA-graph settings. If a replica cannot allocate the common cap, lower it or reduce the replica count.
+
+The H200 profile's `30000`-token KV pool is smaller than the worst-case demand from 64 requests each generating up to 2048 new tokens, even before accounting for input tokens. Therefore, `max_running_requests=64` is an admission ceiling rather than a guarantee that 64 long requests can decode concurrently. If the pool fills, SGLang retracts requests and returns them to the waiting queue until KV capacity becomes available.
 
 3. **Drive every replica to saturation.**
 
@@ -74,7 +82,7 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 | DP2 + MPS, 2 x c64 | 31.5 to 37.7 qps | 1.4 to 1.7x |
 | DP3 + MPS, 3 x c64 | 39.9 to 46.9 qps | 1.8 to 2.1x |
 
-These commands and the token cap are from an 80 GB H100 with Higgs and are not fixed recommendations for other GPUs. On an H200 you would re-determine the replica count, common feasible token cap, CPU allocation, and saturation concurrency for that card. H200 may fit a larger KV budget or additional replicas, but this guide does not prescribe unverified values: repeat the sizing and saturation procedure and inspect every replica's actual allocation.
+The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
 
 ## How We Found This
