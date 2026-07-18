@@ -174,6 +174,8 @@ class StageConfig(BaseModel):
 
     # --- Relay (auto-inferred from gpu when None) ---
     relay: RelayConfig | None = None
+    trace_stage_io: bool = False
+    trace_stage_io_sync: bool = False
 
     def model_post_init(self, __context: Any = None) -> None:
         fields_set = self.__pydantic_fields_set__

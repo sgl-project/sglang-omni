@@ -115,6 +115,8 @@ def _build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             name_map=name_map,
+            trace_stage_io=stage_cfg.trace_stage_io,
+            trace_stage_io_sync=stage_cfg.trace_stage_io_sync,
         )
         if tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(

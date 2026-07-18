@@ -11,6 +11,7 @@ import torch
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
+from sglang_omni.pipeline.stage import runtime as stage_runtime
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
@@ -279,6 +280,146 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
         assert "hidden" in msg.shm_metadata["chunk_metadata_tensors"]
 
     asyncio.run(_run())
+
+
+def test_stage_io_trace_disabled_by_default(monkeypatch, caplog) -> None:
+    """Stage IO tracing must stay silent unless explicitly enabled."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+    caplog.set_level(logging.INFO, logger="sglang_omni.pipeline.stage.runtime")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="image_encoder",
+            endpoints={"mm_aggregate": "inproc://mm_aggregate"},
+            relay=relay,
+            control_plane=control_plane,
+        )
+        await sender._send_to_stage(
+            "req-trace-off",
+            "mm_aggregate",
+            make_stage_payload(
+                request_id="req-trace-off",
+                data={
+                    "thinker_inputs": {
+                        "model_inputs": {
+                            "video_embeds": torch.ones(2, 3),
+                        }
+                    }
+                },
+            ),
+        )
+
+    asyncio.run(_run())
+
+    assert not any(
+        event["event_name"] == stage_runtime.STAGE_IO_TRACE_EVENT
+        for event in events
+    )
+    assert stage_runtime.STAGE_IO_TRACE_EVENT not in caplog.text
+
+
+def test_stage_io_trace_records_relay_payload_edges(monkeypatch, caplog) -> None:
+    """Trace relay write/read tensor volume and timing for one stage edge."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+    caplog.set_level(logging.INFO, logger="sglang_omni.pipeline.stage.runtime")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="image_encoder",
+            endpoints={"mm_aggregate": "inproc://mm_aggregate"},
+            relay=relay,
+            control_plane=control_plane,
+            trace_stage_io=True,
+        )
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="mm_aggregate",
+            relay=relay,
+            scheduler=receiver_scheduler,
+            trace_stage_io=True,
+        )
+        payload = make_stage_payload(
+            request_id="req-trace-on",
+            data={
+                "thinker_inputs": {
+                    "model_inputs": {
+                        "video_embeds": torch.ones(2, 3, dtype=torch.bfloat16),
+                        "video_grid_thw": torch.tensor([[1, 2, 3]]),
+                    }
+                }
+            },
+        )
+
+        await sender._send_to_stage("req-trace-on", "mm_aggregate", payload)
+        msg = control_plane.sent_to_stage[0][2]
+        await receiver._on_data_ready(msg)
+
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.type == "new_request"
+
+    asyncio.run(_run())
+
+    trace_events = [
+        event
+        for event in events
+        if event["event_name"] == stage_runtime.STAGE_IO_TRACE_EVENT
+    ]
+    assert len(trace_events) == 2
+
+    write_meta = next(
+        event["metadata"]
+        for event in trace_events
+        if event["metadata"]["direction"] == "write"
+    )
+    assert write_meta["edge"] == "image_encoder->mm_aggregate"
+    assert write_meta["tensor_count"] == 2
+    assert write_meta["tensor_bytes"] == 36
+    assert {
+        tensor["path"] for tensor in write_meta["tensors"]
+    } == {
+        "thinker_inputs.model_inputs.video_embeds",
+        "thinker_inputs.model_inputs.video_grid_thw",
+    }
+    for key in (
+        "extract_ms",
+        "pickle_ms",
+        "cat_ms",
+        "put_async_ms",
+        "control_plane_send_ms",
+        "relay_op_wait_ms",
+    ):
+        assert key in write_meta["timing_ms"]
+
+    read_meta = next(
+        event["metadata"]
+        for event in trace_events
+        if event["metadata"]["direction"] == "read"
+    )
+    assert read_meta["edge"] == "image_encoder->mm_aggregate"
+    assert read_meta["aggregate_ready"] is True
+    for key in (
+        "unpickle_ms",
+        "alloc_recv_ms",
+        "get_async_ms",
+        "get_wait_ms",
+        "restore_ms",
+        "input_receive_ms",
+    ):
+        assert key in read_meta["timing_ms"]
+
+    assert caplog.text.count(stage_runtime.STAGE_IO_TRACE_EVENT) == 2
 
 
 def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(

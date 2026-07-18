@@ -99,6 +99,8 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
                 route_fn=fake_factory_path("identity_route"),
                 stream_to=["talker"],
                 stream_done_to_fn=fake_factory_path("identity_stream_targets"),
+                trace_stage_io=True,
+                trace_stage_io_sync=True,
             ),
             stage(
                 "aggregate",
@@ -133,6 +135,8 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
     assert specs["thinker"].stream_done_to_fn == fake_factory_path(
         "identity_stream_targets"
     )
+    assert specs["thinker"].trace_stage_io
+    assert specs["thinker"].trace_stage_io_sync
     assert specs["aggregate"].wait_for == ["preprocess", "thinker"]
     assert specs["aggregate"].wait_for_fn == fake_factory_path("identity_wait_sources")
     assert specs["aggregate"].merge_fn == fake_factory_path("merge_payloads")
