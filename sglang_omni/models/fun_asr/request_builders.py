@@ -23,12 +23,12 @@ from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int
 from sglang_omni.utils.audio import load_audio as _shared_load_audio
 
+from .configuration_fun_asr import AUDIO_PLACEHOLDER_TOKEN as _AUDIO_PAD
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 logger = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
-_AUDIO_PAD = "<|object_ref_start|>"
 _MAX_AUDIO_DURATION_S = 30.0
 _MAX_GENERATION_TOKENS_AT_MAX_DURATION = 200
 _MIN_GENERATION_TOKENS = 16
