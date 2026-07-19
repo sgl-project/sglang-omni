@@ -617,3 +617,150 @@ seedtts_speed:
         scale: 1
         digits: 4
       status: OK
+fun_asr_en_wer:
+  test: tests/test_model/test_asr_ci_fun_asr.py
+  title: "FUN ASR EN Wer"
+  group: wer
+  extra_env: {}
+  context_vars:
+    - SEEDTTS_FUN_ASR_EN_SAMPLES
+  variant: "en"
+  test_file_sha256: 9017ecf0074a6b49ddac2337ae7dba1328913d418dbe70b058865132dd7837de
+  last_discovered_at: 2026-07-19T05:01:27Z
+  expected_samples: 1088
+  sample_counts:
+    total:
+      json_file: "fun_asr_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "fun_asr_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "FUN_ASR_EN_CORPUS_WER_MAX"
+      json_file: "fun_asr_results.json"
+      json_path: "summary.corpus_wer"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+    per_sample_wer_max:
+      source: "FUN_ASR_EN_SAMPLE_WER_MAX"
+      json_file: "fun_asr_results.json"
+      json_path: "summary.wer_per_sample_max"
+      worst: max
+      display:
+        label: "Max per-sample WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+fun_asr_en_speed:
+  test: tests/test_model/test_asr_ci_fun_asr.py
+  title: "FUN ASR EN Speed"
+  group: speed
+  extra_env: {}
+  context_vars:
+    - SEEDTTS_FUN_ASR_EN_SAMPLES
+  variant: "en"
+  test_file_sha256: 9017ecf0074a6b49ddac2337ae7dba1328913d418dbe70b058865132dd7837de
+  last_discovered_at: 2026-07-19T05:01:27Z
+  expected_samples: 1088
+  sample_counts:
+    total:
+      json_file: "fun_asr_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "fun_asr_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    throughput_qps:
+      source: "FUN_ASR_THROUGHPUT_MIN"
+      json_file: "fun_asr_results.json"
+      json_path: "speed.throughput_samples_per_s"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_mean_s:
+      source: "FUN_ASR_LATENCY_MEAN_MAX_S"
+      json_file: "fun_asr_results.json"
+      json_path: "speed.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_p95_s:
+      source: "FUN_ASR_LATENCY_P95_MAX_S"
+      json_file: "fun_asr_results.json"
+      json_path: "speed.latency_p95_s"
+      worst: max
+      display:
+        label: "Latency p95 (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "FUN_ASR_RTF_MEAN_MAX"
+      json_file: "fun_asr_results.json"
+      json_path: "speed.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
+    rtf_p95:
+      source: "FUN_ASR_RTF_P95_MAX"
+      json_file: "fun_asr_results.json"
+      json_path: "speed.rtf_p95"
+      worst: max
+      display:
+        label: "RTF p95"
+        scale: 1
+        digits: 4
+      status: OK
+fun_asr_zh_wer:
+  test: tests/test_model/test_asr_ci_fun_asr.py
+  title: "FUN ASR ZH Wer"
+  group: wer
+  extra_env: {}
+  context_vars:
+    - SEEDTTS_FUN_ASR_ZH_SAMPLES
+  variant: "zh"
+  test_file_sha256: 9017ecf0074a6b49ddac2337ae7dba1328913d418dbe70b058865132dd7837de
+  last_discovered_at: 2026-07-19T05:01:27Z
+  expected_samples: 2020
+  sample_counts:
+    total:
+      json_file: "fun_asr_zh_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "fun_asr_zh_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "FUN_ASR_ZH_CORPUS_WER_MAX"
+      json_file: "fun_asr_zh_results.json"
+      json_path: "summary.corpus_wer"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+    per_sample_wer_max:
+      source: "FUN_ASR_ZH_SAMPLE_WER_MAX"
+      json_file: "fun_asr_zh_results.json"
+      json_path: "summary.wer_per_sample_max"
+      worst: max
+      display:
+        label: "Max per-sample WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
