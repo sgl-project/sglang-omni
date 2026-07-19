@@ -126,7 +126,16 @@ Serving throughput depends on more than the GPU's peak compute. It also depends 
 
 **Replicating the weights costs VRAM. What does that buy?**
 
-Same-GPU DP does not save VRAM; it spends more of it. It copies the weights per replica and gives each replica its own, smaller KV pool. What it buys is the otherwise idle compute, reclaimed. That trade pays off only when a tuned single replica leaves the GPU idle (so there are idle SMs to fill) and the model is small enough that its weights are a modest slice of the card, so two or three full replicas still fit. On a compute-bound model, or one too large to hold several weight copies, extra replicas buy little.
+Same-GPU DP does not save VRAM; it spends more of it. It copies the weights per replica and gives each replica its own, smaller KV pool. What it buys is the otherwise idle compute, reclaimed. That trade pays off only when a tuned single replica leaves the GPU idle (so there are idle SMs to fill) and the model is small enough that its weights are a modest slice of the card, so two or three full replicas still fit. On a compute-bound model, or one too large to hold several weight copies, extra replicas buy little. (Weight sharing over CUDA IPC relaxes the fit constraint — followers attach the leader's copy instead of loading their own — but not the idle-compute precondition.)
+
+**Why does this pay for TTS models and not for general LLM serving?**
+
+Memory fit is the enabling condition, not the cause. The cause is idle that a single engine cannot reclaim, and TTS-style AR audio models produce it on two axes at once:
+
+- *Latency-capped batch shapes.* Streaming first-chunk latency pins the per-replica batch small, and a 0.6–4B talker at that batch runs low-occupancy kernels. The usual LLM remedy — batch deeper in one engine — spends the latency budget the product is built around.
+- *Host-heavy serving path.* Sampler pools, vocoder scheduling, chunk assembly, and HTTP streaming do per-step host work that rivals the GPU step time, so a single process idles the card temporally between launches. N processes overlap one replica's dispatch bubble with another's kernels; this is also why same-GPU DP scaling is sensitive to the CPU cores allotted per replica.
+
+A large dense transformer inverts every part of this: its decode batch can grow until the GEMMs saturate the SM array (continuous batching in one engine already multiplexes requests over one weight copy), SM utilization is high at serving batch sizes so MPS has no idle to harvest — only contention to add — and at tens of GiB per weight copy, same-card replicas stop fitting at all. The scaling tools there are TP/PP/EP within one engine, not DP behind MPS. Rule of thumb: colocate replicas when a tuned single replica holds roughly ≤60% SM-active under its latency SLO and N× the footprint fits (weight sharing extends the fit); otherwise scale the batch, not the process count.
 
 ## Reproduce the results
 
