@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, MOSS-TTS, and CSM-1B.
 
 ## Prerequisites
 
@@ -28,6 +28,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
+| [CSM-1B](https://huggingface.co/sesame/csm-1b) | `examples/configs/csm_1b.yaml` | Plain TTS via `input` + `response_format` (`stream=true` for streaming PCM); single default speaker. `sesame/csm-1b` is gated, accept its license on HF first |
 
 ## Launch the Server
 
@@ -55,6 +56,15 @@ sgl-omni serve \
   --tts-batch-max-items 32 \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
+  --port 8000
+```
+
+For CSM-1B:
+
+```bash
+sgl-omni serve \
+  --model-path sesame/csm-1b \
+  --config examples/configs/csm_1b.yaml \
   --port 8000
 ```
 

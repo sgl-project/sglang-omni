@@ -1,0 +1,46 @@
+# CSM-1B (sesame/csm-1b) example config — sized for a 12 GB card (e.g. RTX 3060).
+#
+# runtime_overrides[<stage>] keys merge DIRECTLY as factory kwargs (NO
+# factory_args: nesting — config/runtime.py:28-31,125-139; a nested
+# factory_args key arrives as a bogus kwarg and TypeErrors at stage build).
+# server_args_overrides dicts deep-merge into the factory's own
+# (runtime.py:129-137). mem_fraction_static rides server_args_overrides only
+# while the typed runtime.sglang_server_args.mem_fraction_static is unset
+# (runtime.py:82-91) — we leave the typed field unset.
+#
+# budget @ mrr 8 (engineering arithmetic, NOT framework-enforced —
+# validate with a peak-VRAM smoke): backbone bf16 ~2.74 GB + cb0/depth
+# ~0.36 GB + Mimi fp32 ~0.4 GB + KV pool worst-case 512 MiB + CUDA ctx/torch
+# ~1.2 GB ≈ 5.6-6.0 GB total → ≥ 6 GB headroom on 12 GB. mem_fraction_static
+# 0.5 ≈ 2.9 GB KV pool ≈ 94k pooled positions (45× the mrr-8 worst case) —
+# deliberately low to leave Mimi, encoder activations, CG pool, and the
+# colocated stages outside SGLang's fence. The binding constraint on the
+# 3060 is COMPUTE (frame step < 80 ms RT), not VRAM.
+#
+# context_length is pinned to 2048 (the CSM hard model ceiling) inside the
+# tts_engine factory (stages.create_sglang_tts_engine_executor) — it is not a
+# YAML knob.
+#
+# Launch:
+#   sgl-omni serve --model-path sesame/csm-1b \
+#     --config examples/configs/csm_1b.yaml --port 8000
+config_cls: CsmTtsPipelineConfig
+model_path: sesame/csm-1b
+name: csm-1b
+runtime_overrides:
+  preprocessing:
+    max_concurrency: 8
+  audio_encoder:
+    max_batch_size: 4
+  tts_engine:
+    max_new_tokens: 125
+    enable_async_decode: false            # set true to enable async decode
+    server_args_overrides:
+      max_running_requests: 8
+      mem_fraction_static: 0.5
+      cuda_graph_max_bs: 8
+      disable_cuda_graph: true            # set false to enable CUDA graphs
+  vocoder:
+    stream_followup_stride: 6
+    stream_overlap_frames: 4
+    stream_holdback_frames: 2
