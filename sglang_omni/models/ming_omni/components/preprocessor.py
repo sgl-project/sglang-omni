@@ -14,6 +14,10 @@ from sglang_omni.models.ming_omni.components.common import (
     load_ming_config,
     load_ming_tokenizer,
 )
+from sglang_omni.models.ming_omni.components.image_gen_request import (
+    extract_image_generation_params,
+    should_generate_image,
+)
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState, PromptInputs
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.preprocessing.audio import compute_audio_cache_key, load_audio_path
@@ -28,6 +32,8 @@ from sglang_omni.preprocessing.video import (
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
+
+load_image_gen_query_info: Any = None
 
 # Ming-Omni chat template tokens
 ROLE_HUMAN = "<role>HUMAN</role>"
@@ -55,6 +61,8 @@ VIDEO_PATCH = "<videoPatch>"
 WHISPER_N_MELS = 128
 WHISPER_HOP_LENGTH = 160
 WHISPER_SAMPLE_RATE = 16000
+
+_NO_INPUT_IMAGES_MSG = "image generation requests cannot include input images"
 
 
 def compute_mel_spectrogram(
@@ -219,8 +227,10 @@ class MingPreprocessor:
     - Placeholder token insertion for audio/image segments
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, *, enable_image_gen: bool = False):
         self._model_path = model_path
+        self._enable_image_gen = bool(enable_image_gen)
+        self._image_gen_query_info: Any | None = None
         self._config = load_ming_config(model_path)
         self._tokenizer = load_ming_tokenizer(model_path)
         self._audio_config = self._config.audio_config
@@ -255,6 +265,23 @@ class MingPreprocessor:
                 merge_size=vc.spatial_merge_size,
             )
         return self._image_processor
+
+    def _get_image_gen_query_info(self) -> Any:
+        """Lazy-load generated-image query metadata.
+
+        Keep this import out of module import time so text/audio-only paths do
+        not import diffusion dependencies.
+        """
+        global load_image_gen_query_info
+        if self._image_gen_query_info is None:
+            if load_image_gen_query_info is None:
+                from sglang_omni.models.ming_omni.diffusion.query_info import (
+                    load_image_gen_query_info as _load_image_gen_query_info,
+                )
+
+                load_image_gen_query_info = _load_image_gen_query_info
+            self._image_gen_query_info = load_image_gen_query_info(self._model_path)
+        return self._image_gen_query_info
 
     def _process_images(
         self, images: list[Any]
@@ -344,6 +371,12 @@ class MingPreprocessor:
             video_max_pixels = raw_inputs.get("video_max_pixels")
             video_total_pixels = raw_inputs.get("video_total_pixels")
 
+        image_gen_requested = self._enable_image_gen and should_generate_image(payload)
+        # (wenyao) Coexistence is wired downstream but gated until GPU E2E
+        # validates the image/input-image disjointness contract.
+        if image_gen_requested and top_level_images:
+            raise ValueError(_NO_INPUT_IMAGES_MSG)
+
         # If top-level images are provided (e.g. {"images": ["url1", ...]}),
         # inject them as inline content items in the first user message so that
         # placeholder insertion and image extraction use a single code path.
@@ -389,6 +422,11 @@ class MingPreprocessor:
                             vid = item.get("video", "")
                             if vid:
                                 raw_videos.append(vid)
+
+        # (wenyao) Inline images follow the same gated coexistence contract as
+        # top-level images.
+        if image_gen_requested and raw_images:
+            raise ValueError(_NO_INPUT_IMAGES_MSG)
 
         # Compute cache keys BEFORE async loading; same content -> same key so
         # SGLang's radix prefix cache can correctly reuse KVs across requests, and
@@ -532,6 +570,24 @@ class MingPreprocessor:
             image_token_counts=image_token_counts,
             video_token_counts=video_token_counts,
         )
+        image_gen_inputs: dict[str, Any] | None = None
+        if image_gen_requested:
+            query_info = self._get_image_gen_query_info()
+            prompt_text, input_ids, gen_mask = self._append_image_gen_placeholders(
+                prompt_text,
+                input_ids,
+                query_info=query_info,
+            )
+            query_tokens = query_info.query_tokens
+            if isinstance(query_tokens, torch.Tensor):
+                query_tokens = query_tokens.detach().cpu().tolist()
+            image_gen_inputs = {
+                "gen_mask": gen_mask,
+                "query_tokens": query_tokens,
+                "prefill_only": True,
+                "image_patch_token_id": int(query_info.image_patch_token_id),
+                "image_gen_params": extract_image_generation_params(payload),
+            }
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
         attention_mask = torch.ones_like(input_ids_tensor)
 
@@ -591,6 +647,9 @@ class MingPreprocessor:
         state = MingOmniPipelineState(
             raw_inputs=raw_inputs,
             prompt=prompt,
+            mm_inputs=(
+                {"image_gen": image_gen_inputs} if image_gen_inputs is not None else {}
+            ),
             encoder_inputs=encoder_inputs,
         )
 
@@ -599,6 +658,28 @@ class MingPreprocessor:
             request=payload.request,
             data=state.to_dict(),
         )
+
+    def _append_image_gen_placeholders(
+        self,
+        prompt_text: str,
+        input_ids: list[int],
+        *,
+        query_info: Any,
+    ) -> tuple[str, list[int], list[int]]:
+        query_tokens = query_info.query_tokens
+        query_token_count = int(query_tokens.shape[0])
+        image_patch_token_id = int(query_info.image_patch_token_id)
+
+        prompt_text += IMAGE_START + IMAGE_PATCH * query_token_count + IMAGE_END
+        input_ids.extend(self._tokenizer.encode(IMAGE_START, add_special_tokens=False))
+        patch_start = len(input_ids)
+        input_ids.extend([image_patch_token_id] * query_token_count)
+        input_ids.extend(self._tokenizer.encode(IMAGE_END, add_special_tokens=False))
+
+        gen_mask = [0] * len(input_ids)
+        for idx in range(patch_start, patch_start + query_token_count):
+            gen_mask[idx] = 1
+        return prompt_text, input_ids, gen_mask
 
     def _build_prompt(
         self,

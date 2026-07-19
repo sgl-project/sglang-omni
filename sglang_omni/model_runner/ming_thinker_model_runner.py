@@ -65,7 +65,31 @@ class MingThinkerModelRunner(ModelRunner):
         input_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
         if input_embeds is None:
             return None
-        return self._forward_with_omni_embeds(forward_batch, input_embeds)
+        capture_hidden = any(
+            bool(getattr(req, "_omni_capture_hidden", False))
+            for req in schedule_batch.reqs
+        )
+        return self._forward_with_omni_embeds(
+            forward_batch, input_embeds, capture_hidden=capture_hidden
+        )
+
+    def requested_capture_hidden_mode_prefill(
+        self, schedule_batch: Any, requests: list
+    ) -> Any:
+        del schedule_batch, requests
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+        # (wenyao) Ming's custom omni-embed prefill path attaches full prefill
+        # hidden states itself; asking SGLang for LAST truncates them.
+        return CaptureHiddenMode.NULL
+
+    def requested_capture_hidden_mode_decode(
+        self, schedule_batch: Any, requests: list
+    ) -> Any:
+        del schedule_batch, requests
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+        return CaptureHiddenMode.NULL
 
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
@@ -101,6 +125,7 @@ class MingThinkerModelRunner(ModelRunner):
 
             for modality, embed_key, token_id in [
                 ("image", "image_embeds", self._image_token_id),
+                ("image_gen", "image_gen_embeds", self._image_token_id),
                 ("video", "video_embeds", self._video_token_id),
                 ("audio", "audio_embeds", self._audio_token_id),
             ]:
@@ -221,7 +246,11 @@ class MingThinkerModelRunner(ModelRunner):
         )
 
     def _forward_with_omni_embeds(
-        self, forward_batch: Any, input_embeds: torch.Tensor
+        self,
+        forward_batch: Any,
+        input_embeds: torch.Tensor,
+        *,
+        capture_hidden: bool = False,
     ) -> Any:
         model_runner = self.tp_worker.model_runner
         outer = self._outer_model
@@ -245,6 +274,8 @@ class MingThinkerModelRunner(ModelRunner):
             outer.lm_head,
             forward_batch,
         )
+        if capture_hidden:
+            logits_output.hidden_states = hidden_states
 
         return GenerationBatchResult(
             logits_output=logits_output,

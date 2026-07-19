@@ -11,6 +11,7 @@ from sglang_omni.proto import StagePayload
 PREPROCESSING_STAGE = "preprocessing"
 AUDIO_STAGE = "audio_encoder"
 IMAGE_STAGE = "image_encoder"
+IMAGE_GEN_STAGE = "image_gen"
 AGGREGATE_STAGE = "mm_aggregate"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"

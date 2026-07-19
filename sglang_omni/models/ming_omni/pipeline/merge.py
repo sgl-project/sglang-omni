@@ -12,7 +12,11 @@ from sglang_omni.models.ming_omni.io import (
     MingOmniPipelineState,
     ThinkerOutput,
 )
-from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
+from sglang_omni.models.ming_omni.pipeline.next_stage import (
+    AUDIO_STAGE,
+    IMAGE_GEN_STAGE,
+    IMAGE_STAGE,
+)
 from sglang_omni.proto import StagePayload
 
 
@@ -29,6 +33,14 @@ def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | N
 
 def _non_empty(tensor: torch.Tensor | None) -> bool:
     return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
+
+
+def _image_gen_state(state: MingOmniPipelineState) -> dict[str, Any]:
+    if IMAGE_GEN_STAGE in state.mm_inputs:
+        value = state.mm_inputs[IMAGE_GEN_STAGE]
+        return value if isinstance(value, dict) else {}
+    value = state.mm_inputs.get("image_gen")
+    return value if isinstance(value, dict) else {}
 
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
@@ -96,6 +108,10 @@ def build_thinker_inputs(
         if isinstance(image_out, dict)
         else None
     )
+    image_gen = _image_gen_state(state)
+    query_tokens = None
+    if image_gen:
+        query_tokens = _as_tensor(image_gen.get("query_tokens"), dtype=torch.bfloat16)
 
     thinker_model_inputs: dict[str, Any] = {}
 
@@ -115,6 +131,11 @@ def build_thinker_inputs(
         if video_embeds.dim() == 3:
             video_embeds = video_embeds.squeeze(0)
         thinker_model_inputs["video_embeds"] = video_embeds
+
+    if _non_empty(query_tokens):
+        if query_tokens.dim() == 3:
+            query_tokens = query_tokens.squeeze(0)
+        thinker_model_inputs["image_gen_embeds"] = query_tokens
 
     media_cache_keys: dict[str, str] = {}
     encoder_inputs = state.encoder_inputs or {}
@@ -137,6 +158,8 @@ def build_thinker_inputs(
             return {"media_cache_keys": media_cache_keys}
         return {}
     result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    if image_gen:
+        result["capture_model_output_keys"] = ("hidden_states",)
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
     return result

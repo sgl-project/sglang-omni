@@ -7,6 +7,8 @@ tests/
 ├── data/
 ├── test_model/
 │   ├── conftest.py
+│   ├── test_ming_tp_parity_ci.py
+│   ├── test_production_image_gen_e2e.py
 │   ├── test_rl_distributed_weight_update.py
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
@@ -63,17 +65,39 @@ tests/
     │   ├── test_talker.py
     │   └── test_text_template.py
     ├── ming_omni/
+    │   ├── test_byt5_encoder.py
+    │   ├── test_diffusion_imports.py
+    │   ├── test_image_gen_bootstrap.py
+    │   ├── test_image_gen_cli.py
+    │   ├── test_image_gen_client_api.py
+    │   ├── test_image_gen_config.py
+    │   ├── test_image_gen_executor.py
+    │   ├── test_image_gen_merge.py
+    │   ├── test_image_gen_preprocessor.py
+    │   ├── test_image_gen_query_info.py
+    │   ├── test_image_gen_request.py
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
+    │   ├── test_sampling_params.py
+    │   ├── test_semantic_conditioner.py
+    │   ├── test_sglang_output_processor.py
     │   ├── test_streaming_decode.py
     │   ├── test_streaming_e2e_glue.py
+    │   ├── test_streaming_segmenter.py
     │   ├── test_streaming_speech_config.py
+    │   ├── test_streaming_talker.py
+    │   ├── test_streaming_text.py
     │   ├── test_talker.py
+    │   ├── test_talker_cuda_graph.py
     │   ├── test_talker_voice_validation.py
     │   ├── test_thinker.py
+    │   ├── test_thinker_tp_pattern.py
     │   ├── test_tokenizer.py
     │   ├── test_tp.py
-    │   └── test_vision_patch_embed_linear.py
+    │   ├── test_tp_utils.py
+    │   ├── test_usage.py
+    │   ├── test_vision_patch_embed_linear.py
+    │   └── test_zimage_backend.py
     ├── qwen3_asr/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
@@ -257,6 +281,11 @@ MING_OMNI_MODEL_NAME=ming-omni \
 python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 ```
 
+- `test_production_image_gen_e2e.py`: gated Ming image-generation production
+  E2E. The GPU path is skipped unless `RUN_MING_IMAGE_E2E=1` and
+  `DIT_MODEL_PATH` are set; its default CI-visible helper tests validate that
+  generated artifacts are complete PNG files with expected dimensions, including
+  rejection of empty and truncated image payloads.
 - `test_tts_ci.py`: default TTS CI gate. It starts the TTS managed router
   with two one-GPU workers using the default model config, runs the
   full SeedTTS EN set (1088 samples) in non-streaming / streaming stages at
@@ -378,6 +407,12 @@ that happened to contain an older version of the test.
   - omni serve CLI/config merge, default speech vs. text-only selection,
     launcher handoff, GPU placement, TP wiring, and unsupported flag capability
     boundaries
+  - image-gen serve flags (`--image-gen`, `--diffusion-model-path`,
+    `--image-gen-gpu`, `--enable-standalone-semantic-encoder`,
+    `--enable-byt5-text-rendering`): variant selection, override ordering against
+    the thinker TP range, config-file preservation, and flag-conflict guards
+  - sglang backend output processor hidden-states slicing (single vs. batched
+    rows), which feeds the thinker → image_gen DiT relay
   - stage factory and scheduler contracts (preprocessing, encoders, thinker, talker, decode)
   - thinker bootstrap registration and Ming model runner wiring
   - multimodal embed injection (per-modality consumed state, pad-value fallback, short-embeds detection)
@@ -401,6 +436,15 @@ that happened to contain an older version of the test.
     `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
     talker, terminal talker-stream stage, thinker/talker GPU-range collision
     rejection, streaming variant exposure).
+  - image generation (thinker-fused diffusion): semantic-source routing and
+    `image_generation` request param parsing, ZImage backend load/generate
+    contract (fake diffusers component assembly, optional Ming semantic/ByT5
+    assets from `ming_model_path`, fail-fast asset guards, text-rendering
+    routing), `SemanticConditioner.load()` config / connector / projection /
+    query-token contract, ByT5 render-text formatting and padding-zeroing,
+    executor load/generate wiring, preprocessor query-token injection,
+    query-info construction, bootstrap, client API, and merge behavior, plus a
+    diffusion-import smoke test.
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts

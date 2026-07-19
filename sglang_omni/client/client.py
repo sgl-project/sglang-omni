@@ -22,6 +22,7 @@ from sglang_omni.client.types import (
     AbortResult,
     ClientError,
     CompletionAudio,
+    CompletionImage,
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
@@ -90,6 +91,7 @@ class Client:
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
+        image_payloads: list[dict[str, Any]] = []
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
         logprobs_parts: list[Any] = []
@@ -105,6 +107,8 @@ class Client:
                 audio_chunks.append(chunk.audio_data)
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
+            if chunk.images:
+                image_payloads.extend(dict(image) for image in chunk.images)
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
             if chunk.output_token_logprobs is not None:
@@ -139,10 +143,22 @@ class Client:
                 transcript=full_text if full_text else None,
             )
 
+        images = [
+            CompletionImage(
+                id=f"image-{request_id}-{idx}",
+                data=image.get("b64_json") or image.get("data") or "",
+                format=image.get("format", "png"),
+                width=image.get("width"),
+                height=image.get("height"),
+            )
+            for idx, image in enumerate(image_payloads)
+        ]
+
         return CompletionResult(
             request_id=request_id,
             text=full_text,
             audio=audio,
+            images=images,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -170,7 +186,7 @@ class Client:
         """
         async for chunk in self.generate(request, request_id=request_id):
             audio_b64: str | None = None
-            if chunk.modality == "audio" and chunk.audio_data is not None:
+            if chunk.audio_data is not None:
                 audio_b64 = audio_to_base64(
                     chunk.audio_data,
                     sample_rate=chunk.sample_rate or DEFAULT_SAMPLE_RATE,
@@ -182,6 +198,7 @@ class Client:
                 text=chunk.text,
                 modality=chunk.modality,
                 audio_b64=audio_b64,
+                images=[dict(image) for image in chunk.images],
                 finish_reason=chunk.finish_reason,
                 usage=chunk.usage,
                 stage_name=chunk.stage_name,
@@ -420,6 +437,18 @@ class Client:
             chunk.sample_rate = sample_rate
 
     @staticmethod
+    def _set_image_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        images = data.get("images")
+        if isinstance(images, list) and images:
+            chunk.images = [dict(image) for image in images if isinstance(image, dict)]
+            chunk.modality = "image"
+
+    @staticmethod
+    def _set_multimodal_modality(chunk: GenerateChunk) -> None:
+        if chunk.audio_data is not None and chunk.images:
+            chunk.modality = "multimodal"
+
+    @staticmethod
     def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
@@ -458,17 +487,19 @@ class Client:
         if isinstance(result, dict):
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
             # talker_stream.
-            audio_result = None
             if "decode" in result:
-                for audio_stage in ("code2wav", "talker", "talker_stream"):
-                    if audio_stage in result:
-                        audio_result = result[audio_stage] or {}
-                        break
-            if audio_result is not None:
                 decode_result = result["decode"] or {}
                 text = decode_result.get("text")
                 if isinstance(text, str):
                     chunk.text = text
+                token_ids = decode_result.get("token_ids")
+                if token_ids is not None:
+                    if not isinstance(token_ids, (list, tuple)):
+                        token_ids = token_ids.tolist()
+                    chunk.token_ids = list(token_ids)
+                logprobs = decode_result.get("logprobs")
+                if logprobs is not None:
+                    chunk.logprobs = logprobs
                 finish_reason = decode_result.get("finish_reason")
                 if finish_reason is not None:
                     chunk.finish_reason = finish_reason
@@ -481,10 +512,45 @@ class Client:
                 weight_version = decode_result.get("weight_version")
                 if weight_version is not None:
                     chunk.weight_version = weight_version
-                Client._set_audio_data(chunk, audio_result)
-                chunk.usage = Client._build_usage_info(
-                    decode_result
-                ) or Client._build_usage_info(audio_result)
+
+                audio_result = None
+                for audio_stage in ("code2wav", "talker", "talker_stream"):
+                    if audio_stage in result:
+                        audio_result = result[audio_stage] or {}
+                        break
+                if audio_result is not None:
+                    Client._set_audio_data(chunk, audio_result)
+                image_result = result.get("image_gen") or {}
+                if isinstance(image_result, dict):
+                    Client._set_image_data(chunk, image_result)
+
+                has_audio = chunk.audio_data is not None
+                has_images = bool(chunk.images)
+                has_image_output = has_images or (
+                    isinstance(image_result, dict)
+                    and image_result.get("modality") == "image"
+                )
+                if has_audio and has_image_output:
+                    chunk.modality = "multimodal"
+                elif has_image_output:
+                    chunk.modality = "image"
+                elif has_audio:
+                    chunk.modality = "audio"
+                else:
+                    modality = decode_result.get("modality")
+                    if modality is not None:
+                        chunk.modality = modality
+                if has_image_output and isinstance(image_result, dict):
+                    image_finish_reason = image_result.get("finish_reason")
+                    if image_finish_reason is not None:
+                        chunk.finish_reason = image_finish_reason
+                chunk.usage = (
+                    Client._build_usage_info(decode_result)
+                    or Client._build_usage_info(audio_result or {})
+                    or Client._build_usage_info(
+                        image_result if isinstance(image_result, dict) else {}
+                    )
+                )
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
@@ -515,6 +581,8 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
+            Client._set_image_data(chunk, result)
+            Client._set_multimodal_modality(chunk)
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
@@ -576,6 +644,8 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, data)
+            Client._set_image_data(chunk, data)
+            Client._set_multimodal_modality(chunk)
             return chunk
         if isinstance(data, str):
             chunk.text = data
@@ -610,10 +680,11 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    image_generation = request.metadata.get("image_generation")
 
     # If we have any media, return a dict with messages and media
     # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if audios or images or videos or image_generation is not None:
         result = {"messages": messages}
         if images:
             result["images"] = images
@@ -621,6 +692,8 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             result["audios"] = audios
         if videos:
             result["videos"] = videos
+        if image_generation is not None:
+            result["image_generation"] = image_generation
         for key in (
             "video_fps",
             "video_max_frames",
