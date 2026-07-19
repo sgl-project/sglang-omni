@@ -198,7 +198,7 @@ Relevant model CI ownership:
   accuracy/speed thresholds generated from `tune-ci-thresholds`.
 - `test_asr_ci_fun_asr.py`: Fun-ASR-Nano correctness + speed via SGLang Omni
   router (`/v1/audio/transcriptions`). Gates the full 1088-sample English and
-  2020-sample Chinese SeedTTS splits; writes `fun_asr_results.json` and
+  2020-sample Chinese SeedTTS splits. It writes `fun_asr_results.json` and
   `fun_asr_zh_results.json` for threshold calibration (`asr` in
   `tune-ci-thresholds`). Its stdout uses the same boxed summary style as the
   other benchmark stages: `ASR WER Benchmark Result` followed by

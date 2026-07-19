@@ -519,8 +519,8 @@ fun_asr_en_wer:
   context_vars:
     - SEEDTTS_FUN_ASR_EN_SAMPLES
   variant: "en"
-  test_file_sha256: bfe95eb8c7b2ab5ef0ada37c84b5cc3a41b28f59033a3fcfe1a8a654469621e5
-  last_discovered_at: 2026-07-19T22:50:22Z
+  test_file_sha256: ec5284531db40dd28f52a5c0a2024f5a4a869792e17e170e4d49c3647e097638
+  last_discovered_at: 2026-07-19T23:27:23Z
   expected_samples: 1088
   sample_counts:
     total:
@@ -558,8 +558,8 @@ fun_asr_en_speed:
   context_vars:
     - SEEDTTS_FUN_ASR_EN_SAMPLES
   variant: "en"
-  test_file_sha256: bfe95eb8c7b2ab5ef0ada37c84b5cc3a41b28f59033a3fcfe1a8a654469621e5
-  last_discovered_at: 2026-07-19T22:50:22Z
+  test_file_sha256: ec5284531db40dd28f52a5c0a2024f5a4a869792e17e170e4d49c3647e097638
+  last_discovered_at: 2026-07-19T23:27:23Z
   expected_samples: 1088
   sample_counts:
     total:
@@ -627,8 +627,8 @@ fun_asr_zh_wer:
   context_vars:
     - SEEDTTS_FUN_ASR_ZH_SAMPLES
   variant: "zh"
-  test_file_sha256: bfe95eb8c7b2ab5ef0ada37c84b5cc3a41b28f59033a3fcfe1a8a654469621e5
-  last_discovered_at: 2026-07-19T22:50:22Z
+  test_file_sha256: ec5284531db40dd28f52a5c0a2024f5a4a869792e17e170e4d49c3647e097638
+  last_discovered_at: 2026-07-19T23:27:23Z
   expected_samples: 2020
   sample_counts:
     total:

@@ -46,22 +46,26 @@ SEEDTTS_ASR_DATASET_LABEL = format_benchmark_dataset_label(
     repo_id=DATASETS["seedtts"],
 )
 
-# note (db-ol): WER references calibrated worst-of-5 on an idle 2x H100 80GB
-# DP=2 managed-router topology at concurrency 32 and confirmed identical on
-# the CI host across all observed runs. Speed references are the CI host's
-# worst observation across the first two stage-3 runs (6 attempts), one of
-# which ran while concurrent pipelines contended for the runner, so these
-# bounds absorb normal cross-job interference. The gate guards regressions,
-# not peak numbers, and a quiet CI host runs 20 to 25 percent above them.
-FUN_ASR_EN_CORPUS_WER_MAX = 0.0171
-FUN_ASR_EN_SAMPLE_WER_MAX = 0.2857
+# note (db-ol): references are the strict worst-of-5 from the official
+# tune-ci-thresholds calibration run 20260719T2302Z_asr_fun_g25 on idle
+# GPUs of the CI host (2x H100 80GB, DP=2 managed router, concurrency 32).
+# EN WER was identical across all five repeats and speed CV stayed under
+# 7 percent with no outliers. Two caveats the numbers alone do not show:
+# heavily contended CI runs have measured 16 to 20 percent below the idle
+# speed references, beyond the 10 percent slack, so a loaded runner leans
+# on the flaky-pytest retry wrapper. The ZH per-sample bound keeps the more
+# conservative worst of the two strict calibrations because that single
+# utterance metric drifted between runs (0.75 in this run, 0.8333 in the
+# previous strict worst-of-5 on the same topology).
+FUN_ASR_EN_CORPUS_WER_MAX = 0.0172
+FUN_ASR_EN_SAMPLE_WER_MAX = 0.2858
 FUN_ASR_ZH_CORPUS_WER_MAX = 0.0136
 FUN_ASR_ZH_SAMPLE_WER_MAX = 0.8333
-FUN_ASR_THROUGHPUT_MIN = 51.45998815507805
-FUN_ASR_LATENCY_MEAN_MAX_S = 0.619
-FUN_ASR_LATENCY_P95_MAX_S = 0.8708952147979282
-FUN_ASR_RTF_MEAN_MAX = 0.1346282594805471
-FUN_ASR_RTF_P95_MAX = 0.1973
+FUN_ASR_THROUGHPUT_MIN = 61.458
+FUN_ASR_LATENCY_MEAN_MAX_S = 0.517330357373473
+FUN_ASR_LATENCY_P95_MAX_S = 0.744
+FUN_ASR_RTF_MEAN_MAX = 0.1124
+FUN_ASR_RTF_P95_MAX = 0.1668
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1

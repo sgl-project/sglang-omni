@@ -20,7 +20,6 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
-  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # DAG:
@@ -112,7 +111,6 @@ jobs:
           HF_HUB_DISABLE_XET: "1"
           HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          FUN_ASR_MODEL_PATH: ${{ env.FUN_ASR_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
