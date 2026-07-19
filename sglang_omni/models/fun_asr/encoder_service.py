@@ -249,8 +249,6 @@ class FunAsrPreLMEncoderService:
     def _drain_batch(
         self,
     ) -> list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]]:
-        # Note (Akazaakane): Never wait here: this service overlaps individual
-        # encodes today, while true batched inference belongs to F-PR5.
         batch = [self._queue.get()]
         while True:
             try:
@@ -294,9 +292,7 @@ class FunAsrPreLMEncoderService:
                         future.set_exception(item_exc)
                 with self._lock:
                     self._encoder_time_s += time.perf_counter() - encode_start
-                    # Note (Akazaakane): Each recovered item re-encoded as its
-                    # own single-item batch; count it as one so the items/batch
-                    # telemetry stays honest for the F-PR5 gate.
+                    # Note (Akazaakane): Retried items are single-item batches.
                     self._batch_count += recovered
                     self._item_count += recovered
                 continue

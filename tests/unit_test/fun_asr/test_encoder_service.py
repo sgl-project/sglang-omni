@@ -20,8 +20,6 @@ _NAMESPACE = "testns"
 
 
 class _StubModel(torch.nn.Module):
-    """Duck-typed Fun-ASR model: deterministic full-rate "encoder + adaptor"."""
-
     def __init__(self, dtype: torch.dtype = torch.float32) -> None:
         super().__init__()
         self.audio_tower = torch.nn.Linear(2, 2).to(dtype)
@@ -42,8 +40,6 @@ class _StubModel(torch.nn.Module):
         self.encode_calls += 1
         gate = self.encode_gate
         if gate is not None:
-            # One-shot: hold only the first encode so tests can stage a
-            # multi-item queue drain deterministically.
             self.encode_gate = None
             gate.wait(timeout=10)
         if self.encode_delay_s:
@@ -250,8 +246,6 @@ def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
     model.encode_delay_s = 0.2
     service = _make_service(model)
     leader_item = _item(321, 3)
-    # Same fingerprint but inconsistent token metadata: the merged follower
-    # must reject the leader's embedding and count the failure.
     follower_item = _item(321, 5)
     errors: list[BaseException] = []
 
@@ -298,12 +292,8 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     threads = [threading.Thread(target=worker, args=(item,)) for item in items]
     for thread in threads:
         thread.start()
-    # While the gate holds the first drained batch inside the encoder, the
-    # remaining items queue up and are drained together on the next pass,
-    # forcing the multi-item failure + per-item retry path. Every item is a
-    # distinct-key leader, so its in-flight entry (registered alongside the
-    # queue put and only cleared after the gate-blocked encode resolves)
-    # proves it reached the queue.
+    # Note (Akazaakane): Queue every leader before releasing the gate so the
+    # next drain exercises the multi-item retry path.
     deadline = time.monotonic() + 5
     while len(service._inflight) < 3 and time.monotonic() < deadline:
         time.sleep(0.005)
