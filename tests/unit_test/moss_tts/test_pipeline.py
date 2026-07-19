@@ -142,7 +142,12 @@ def test_moss_tts_config_and_registry_contracts() -> None:
 
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     from sglang_omni.models.moss_tts import request_builders, stages
-    from sglang_omni.scheduling import bootstrap, omni_scheduler, sglang_backend
+    from sglang_omni.scheduling import (
+        bootstrap,
+        engine_factory,
+        omni_scheduler,
+        sglang_backend,
+    )
 
     captured: dict[str, object] = {"build_kwargs": []}
 
@@ -202,7 +207,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
 
     monkeypatch.setattr(
-        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
     monkeypatch.setattr(
         request_builders,

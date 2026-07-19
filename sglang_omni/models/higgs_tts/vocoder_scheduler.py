@@ -20,6 +20,11 @@ from sglang_omni.scheduling.streaming_vocoder import (
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.codec_delay import reverse_delay_pattern
 
+HIGGS_STREAM_STRIDE_METADATA = "stream_stride"
+HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA = "stream_followup_stride"
+DEFAULT_HIGGS_STREAM_STRIDE = 75
+DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE = 75
+
 
 @dataclass
 class _HiggsStreamState:
@@ -38,8 +43,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         self,
         codec: HiggsAudioCodec,
         *,
-        stream_stride: int = 75,
-        stream_followup_stride: int = 75,
+        stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
+        stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
         stream_overlap_tokens: int = 8,
         stream_holdback_tokens: int = 4,
         max_batch_size: int = 4,
@@ -141,24 +146,29 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
     def validate_chunk(
         self, request_id: str, state: _HiggsStreamState, codes: torch.Tensor
     ) -> torch.Tensor:
-        row = codes.to(dtype=torch.long)
-        if row.ndim != 1:
+        chunk = codes.to(dtype=torch.long)
+        if chunk.ndim == 1:
+            rows = chunk.unsqueeze(0)
+        elif chunk.ndim == 2:
+            rows = chunk
+        else:
             raise ValueError(
-                f"Higgs stream chunk must be 1-D [N], got {tuple(row.shape)}"
+                f"Higgs stream chunk must be 1-D [N] or 2-D [T, N], "
+                f"got {tuple(chunk.shape)}"
             )
         num_codebooks = self._require_stream_contract(state, request_id)[0]
-        if int(row.shape[0]) != num_codebooks:
+        if int(rows.shape[1]) != num_codebooks:
             raise ValueError(
-                f"Higgs stream chunk has {int(row.shape[0])} codebooks, "
+                f"Higgs stream chunk has {int(rows.shape[1])} codebooks, "
                 f"expected {num_codebooks}"
             )
-        return row
+        return rows
 
     def ingest(
         self, request_id: str, state: _HiggsStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
-        state.delayed_rows.append(codes)
+        state.delayed_rows.extend(codes.unbind(0))
 
     def decode_delta(
         self, request_id: str, state: _HiggsStreamState, *, is_final: bool

@@ -1,3 +1,2 @@
 config_cls: S2ProPipelineConfig
 model_path: fishaudio/s2-pro
-relay_backend: shm

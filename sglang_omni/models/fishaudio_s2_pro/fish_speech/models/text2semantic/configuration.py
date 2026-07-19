@@ -8,7 +8,7 @@ with the original BaseModelArgs interface.
 import logging
 from typing import Optional
 
-from transformers import PretrainedConfig
+from transformers import AutoConfig, PretrainedConfig
 
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.utils import (
     find_multiple,
@@ -440,3 +440,10 @@ class FishQwen3OmniConfig(PretrainedConfig):
     def to_dict(self):
         output = super().to_dict()
         return clean_config_dict(output)
+
+
+# note (xinyu): SGLang asks Transformers to parse the checkpoint before constructing the
+# project-owned Slow AR model. Keep config discovery without registering any
+# unused Hugging Face model implementation.
+AutoConfig.register("fish_qwen3", FishQwen3Config)
+AutoConfig.register("fish_qwen3_omni", FishQwen3OmniConfig)

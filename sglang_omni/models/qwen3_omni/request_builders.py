@@ -260,8 +260,7 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
-# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack --
-# on the #932 fast path deepstack would arrive as a ref the talker must never touch. #934
+# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
 _TALKER_UNUSED_MODEL_INPUT_KEYS = (
     "image_deepstack_visual_embeds",
     "video_deepstack_visual_embeds",
@@ -884,7 +883,7 @@ def make_thinker_stream_output_builder():
             and (stage_payload.request.params or {}).get("stream", False)
         )
         if is_streaming:
-            # Wrap int — relay_io.write_blob is tensor-only.
+            # Wrap int; stream transport only accepts tensors.
             messages.append(
                 OutgoingMessage(
                     request_id=request_id,

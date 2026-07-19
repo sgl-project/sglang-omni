@@ -25,6 +25,7 @@ import asyncio
 import os
 import random
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import aiohttp
@@ -46,8 +47,8 @@ from benchmarks.tts_serving.ws_client import run_ws_scenario
 LOAD_GENERATOR_LAGGED_THRESHOLD_S = 1.0
 DEFAULT_SPEC_PATH = "/etc/benchmark/spec.json"
 DEFAULT_OUT_DIR = "/var/benchmark/out"
-SUMMARY_LINE_WIDTH = 72
-SUMMARY_LABEL_WIDTH = 30
+SUMMARY_LINE_WIDTH = 96
+SUMMARY_LABEL_WIDTH = 32
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -449,36 +450,265 @@ def _print_results_summary(report: dict, out_dir: Path) -> None:
     config = report.get("config", {})
     metrics = report.get("metrics", {})
     latency = metrics.get("latency_s", {}) if isinstance(metrics, dict) else {}
-    status_counts = (
-        metrics.get("status_counts", {}) if isinstance(metrics, dict) else {}
+    ttfa = metrics.get("ttfa_s", {}) if isinstance(metrics, dict) else {}
+    queue_wait = metrics.get("queue_wait_s", {}) if isinstance(metrics, dict) else {}
+    generator_lag = (
+        metrics.get("generator_lag_s", {}) if isinstance(metrics, dict) else {}
     )
+    rtf = metrics.get("rtf", {}) if isinstance(metrics, dict) else {}
     line_width = SUMMARY_LINE_WIDTH
-    label_width = SUMMARY_LABEL_WIDTH
     print(f"\n{'=' * line_width}")
     print(f"{'TTS Serving Benchmark Result':^{line_width}}")
     print(f"{'=' * line_width}")
-    print(f"  {'Model:':<{label_width}} {config.get('model_name', 'N/A')}")
-    print(f"  {'Profile:':<{label_width}} {config.get('profile', 'N/A')}")
-    print(f"  {'Passed:':<{label_width}} {overall.get('passed')}")
-    print(f"  {'Total scenarios:':<{label_width}} {overall.get('total')}")
-    print(f"  {'Passed scenarios:':<{label_width}} {overall.get('succeeded')}")
-    print(f"  {'Failed scenarios:':<{label_width}} {overall.get('failed')}")
-    print(
-        f"  {'Coverage contract valid:':<{label_width}} "
-        f"{overall.get('coverage_contract_valid')}"
+    _print_summary_row("Model", config.get("model_name", "N/A"))
+    _print_summary_row("Base URL", config.get("base_url", "N/A"))
+    _print_summary_row("Profile", config.get("profile", "N/A"))
+    _print_summary_row("Run ID", config.get("run_id") or "N/A")
+    _print_summary_row("Seed", config.get("seed"))
+    _print_summary_row("Passed", overall.get("passed"))
+    _print_summary_row("Harness status", report.get("harness_status"))
+    _print_summary_row(
+        "Scenarios",
+        (
+            f"{overall.get('succeeded')}/{overall.get('total')} passed, "
+            f"{overall.get('failed')} failed"
+        ),
     )
-    print(
-        f"  {'Load generation valid:':<{label_width}} "
-        f"{overall.get('load_generation_valid')}"
+    _print_summary_row("Traffic scenarios", overall.get("traffic_total"))
+    _print_summary_row("Coverage valid", overall.get("coverage_contract_valid"))
+    _print_summary_row("Load generation valid", overall.get("load_generation_valid"))
+    _print_summary_row(
+        "Status counts",
+        _format_counts(metrics.get("status_counts", {})),
     )
-    print(f"{'-' * line_width}")
-    print(f"  {'Latency mean (s):':<{label_width}} {latency.get('mean')}")
-    print(f"  {'Latency p95 (s):':<{label_width}} {latency.get('p95')}")
-    print(f"  {'Latency p99 (s):':<{label_width}} {latency.get('p99')}")
-    print(f"  {'Peak inflight:':<{label_width}} {metrics.get('peak_inflight')}")
-    print(f"  {'Status counts:':<{label_width}} {status_counts}")
-    print(f"  {'Results JSON:':<{label_width}} {out_dir / 'results.json'}")
+    _print_summary_row(
+        "HTTP status counts",
+        _format_counts(metrics.get("http_status_counts", {})),
+    )
+    _print_summary_row(
+        "Error classes",
+        _format_counts(metrics.get("error_class_counts", {})),
+    )
+
+    _print_summary_section("Performance")
+    _print_summary_row("Latency seconds", _format_summary(latency))
+    _print_summary_row("TTFA seconds", _format_summary(ttfa))
+    _print_summary_row("RTF", _format_summary(rtf))
+    _print_summary_row("Queue wait seconds", _format_summary(queue_wait))
+    _print_summary_row("Generator lag seconds", _format_summary(generator_lag))
+
+    _print_summary_section("Load Generator")
+    _print_summary_row("Peak inflight", metrics.get("peak_inflight"))
+    _print_summary_row("Peak pending tasks", metrics.get("peak_pending_tasks"))
+    _print_summary_row(
+        "Load generator issue",
+        metrics.get("load_generation_error") or "none",
+    )
+
+    _print_endpoint_summary(metrics.get("by_endpoint", {}))
+    _print_operation_summary(metrics.get("by_operation", {}))
+    _print_stage_summary(config, metrics.get("by_stage", {}))
+    _print_failure_summary(report)
+
+    _print_summary_section("Artifacts")
+    _print_summary_row("Results JSON", out_dir / "results.json")
+    _print_summary_row("Manifest JSON", out_dir / "manifest.json")
+    _print_summary_row("Raw results JSONL", out_dir / "raw_results.jsonl")
     print(f"{'=' * line_width}")
+
+
+def _print_summary_section(title: str) -> None:
+    print(f"{title:-^{SUMMARY_LINE_WIDTH}}")
+
+
+def _print_summary_row(label: str, value: object) -> None:
+    print(f"  {label + ':':<{SUMMARY_LABEL_WIDTH}} {_format_value(value)}")
+
+
+def _format_value(value: object) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return _format_float(value)
+    return str(value)
+
+
+def _format_float(value: float) -> str:
+    return f"{value:.6g}"
+
+
+def _format_summary(summary: object) -> str:
+    if not isinstance(summary, dict) or not summary:
+        return "N/A"
+    fields = (
+        ("mean", "mean"),
+        ("p50", "p50"),
+        ("p95", "p95"),
+        ("p99", "p99"),
+        ("p99_9", "p99.9"),
+        ("max", "max"),
+    )
+    return " ".join(
+        f"{label}={_format_value(summary[key])}"
+        for key, label in fields
+        if summary.get(key) is not None
+    )
+
+
+def _format_counts(counts: object) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return "none"
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+
+
+def _summary_column_width(header: str, values: Iterable[object], minimum: int) -> int:
+    return max(len(header), minimum, *(len(str(value)) for value in values))
+
+
+def _print_endpoint_summary(by_endpoint: object) -> None:
+    if not isinstance(by_endpoint, dict) or not by_endpoint:
+        return
+    summaries = sorted(
+        by_endpoint.items(),
+        key=lambda item: (
+            int(item[1].get("total", 0)) if isinstance(item[1], dict) else 0
+        ),
+        reverse=True,
+    )
+    endpoint_width = _summary_column_width(
+        "Endpoint",
+        (endpoint for endpoint, summary in summaries if isinstance(summary, dict)),
+        16,
+    )
+    _print_summary_section("Endpoint Summary")
+    print(
+        "  "
+        f"{'Endpoint':<{endpoint_width}}"
+        f"{'Total':>8}"
+        f"{'Pass':>8}"
+        f"{'Fail':>8}"
+        f"{'Lat p95':>12}"
+        f"{'TTFA p95':>12}"
+        f"{'RTF mean':>12}"
+    )
+    for endpoint, summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        print(
+            "  "
+            f"{str(endpoint):<{endpoint_width}}"
+            f"{summary.get('total', 0):>8}"
+            f"{summary.get('succeeded', 0):>8}"
+            f"{summary.get('failed', 0):>8}"
+            f"{_summary_metric(summary, 'latency_s', 'p95'):>12}"
+            f"{_summary_metric(summary, 'ttfa_s', 'p95'):>12}"
+            f"{_summary_metric(summary, 'rtf', 'mean'):>12}"
+        )
+
+
+def _print_operation_summary(by_operation: object) -> None:
+    if not isinstance(by_operation, dict) or not by_operation:
+        return
+    summaries = sorted(
+        by_operation.items(),
+        key=lambda item: (
+            int(item[1].get("total", 0)) if isinstance(item[1], dict) else 0
+        ),
+        reverse=True,
+    )
+    operation_width = _summary_column_width(
+        "Operation",
+        (operation for operation, summary in summaries if isinstance(summary, dict)),
+        28,
+    )
+    _print_summary_section("Operation Summary")
+    print(
+        "  "
+        f"{'Operation':<{operation_width}}"
+        f"{'Total':>8}"
+        f"{'Pass':>8}"
+        f"{'Fail':>8}"
+        f"{'Lat p95':>12}"
+        f"{'RTF mean':>12}"
+    )
+    for operation, summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        print(
+            "  "
+            f"{str(operation):<{operation_width}}"
+            f"{summary.get('total', 0):>8}"
+            f"{summary.get('succeeded', 0):>8}"
+            f"{summary.get('failed', 0):>8}"
+            f"{_summary_metric(summary, 'latency_s', 'p95'):>12}"
+            f"{_summary_metric(summary, 'rtf', 'mean'):>12}"
+        )
+
+
+def _print_stage_summary(config: dict, by_stage: object) -> None:
+    if not isinstance(by_stage, dict) or not by_stage:
+        return
+    stage_ids = [
+        str(stage.get("id"))
+        for stage in config.get("load_stages", [])
+        if isinstance(stage, dict) and stage.get("id") in by_stage
+    ]
+    stage_ids.extend(stage_id for stage_id in by_stage if stage_id not in stage_ids)
+    stage_width = _summary_column_width("Stage", stage_ids, 24)
+    _print_summary_section("Load Stage Summary")
+    print(
+        "  "
+        f"{'Stage':<{stage_width}}"
+        f"{'Total':>8}"
+        f"{'Fail':>8}"
+        f"{'Peak':>8}"
+        f"{'RPS':>10}"
+        f"{'Lat p95':>12}"
+        f"{'TTFA p95':>12}"
+    )
+    for stage_id in stage_ids:
+        summary = by_stage.get(stage_id)
+        if not isinstance(summary, dict):
+            continue
+        print(
+            "  "
+            f"{str(stage_id):<{stage_width}}"
+            f"{summary.get('total', 0):>8}"
+            f"{summary.get('failed', 0):>8}"
+            f"{_format_value(summary.get('peak_inflight')):>8}"
+            f"{_format_value(summary.get('achieved_rps')):>10}"
+            f"{_summary_metric(summary, 'latency_s', 'p95'):>12}"
+            f"{_summary_metric(summary, 'ttfa_s', 'p95'):>12}"
+        )
+
+
+def _summary_metric(summary: dict, metric_name: str, value_name: str) -> str:
+    metric = summary.get(metric_name)
+    if not isinstance(metric, dict):
+        return "N/A"
+    return _format_value(metric.get(value_name))
+
+
+def _print_failure_summary(report: dict) -> None:
+    failures = report.get("failures", [])
+    coverage_failures = report.get("coverage_failures", [])
+    unsupported_contracts = report.get("unsupported_contracts", [])
+    if not failures and not coverage_failures and not unsupported_contracts:
+        return
+    _print_summary_section("Failures")
+    _print_summary_row("Coverage failures", len(coverage_failures))
+    _print_summary_row("Unsupported contracts", len(unsupported_contracts))
+    _print_summary_row("Recorded failures", len(failures))
+    if not isinstance(failures, list):
+        return
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        scenario_id = str(failure.get("scenario_id", "unknown"))
+        status = str(failure.get("status", "unknown"))
+        error_class = str(failure.get("error_class") or "unknown")
+        error = str(failure.get("error") or "")
+        print(f"  - {scenario_id}: {status}, {error_class}, {error}")
 
 
 def main() -> int:

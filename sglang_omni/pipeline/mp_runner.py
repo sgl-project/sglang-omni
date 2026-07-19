@@ -15,7 +15,7 @@ from typing import Any
 
 from sglang_omni.config.placement import (
     StagePlacementPlan,
-    resolve_same_gpu_stream_targets,
+    resolve_gpu_stage_names,
     resolve_stage_gpu_ids,
 )
 from sglang_omni.config.runtime import (
@@ -28,7 +28,7 @@ from sglang_omni.pipeline import Coordinator
 from sglang_omni.pipeline.runtime_config import (
     IpcRuntimeDir,
     PipelineRuntimePrep,
-    build_relay_config,
+    build_comm_config,
     prepare_pipeline_runtime,
 )
 from sglang_omni.pipeline.stage_workers import (
@@ -68,6 +68,22 @@ def _build_stage_groups(
 
     nccl_port_counter = _NcclPortAllocator()
 
+    # GPU-resident stages, shared by every stage so the transport router can
+    # decide GPU vs host transport per edge from static placement alone. Include the
+    # pre-fusion aliases so lookups work whether an edge names a stage by its
+    # raw or canonical (fused) name.
+    gpu_canonical = resolve_gpu_stage_names(placement_plan)
+    gpu_stage_names = set(gpu_canonical)
+    for raw_name, canonical_name in name_map.items():
+        if canonical_name in gpu_canonical:
+            gpu_stage_names.add(raw_name)
+    stage_gpu_ids = {
+        name: placement.gpu_ids for name, placement in placement_plan.stages.items()
+    }
+    for raw_name, canonical_name in name_map.items():
+        if canonical_name in stage_gpu_ids:
+            stage_gpu_ids[raw_name] = stage_gpu_ids[canonical_name]
+
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
@@ -75,10 +91,6 @@ def _build_stage_groups(
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
 
-        same_gpu_targets = resolve_same_gpu_stream_targets(
-            placement_plan,
-            stage_cfg,
-        )
         same_process_targets = _resolve_same_process_targets(
             stage_cfg,
             stage_cfg_by_name,
@@ -110,10 +122,12 @@ def _build_stage_groups(
             stage_endpoints=stage_endpoints,
             stream_targets=list(stage_cfg.stream_to),
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
-            same_gpu_targets=same_gpu_targets,
+            gpu_stage_names=gpu_stage_names,
+            stage_gpu_ids=stage_gpu_ids,
             same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
+            disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
         )
         if tp_size == 1:
@@ -208,18 +222,19 @@ def _build_single_stage_spec(
     stage_kwargs: dict[str, Any],
 ) -> StageLaunchConfig:
     factory_args = dict(base_factory_args)
-    relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
+    comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
     return StageLaunchConfig(
         role="single",
         tp_rank=0,
         tp_size=1,
+        placement_gpu_id=gpu_id,
         gpu_id=gpu_id,
         nccl_port=None,
         factory_args=factory_args,
         factory_arg_defaults=resolve_stage_factory_arg_defaults(
             stage_cfg, config, gpu_id=gpu_id
         ),
-        relay_config=relay_config,
+        comm_config=comm_config,
         recv_endpoint=recv_endpoint,
         **stage_kwargs,
     )
@@ -250,7 +265,7 @@ def _build_tp_stage_specs(
         factory_args["tp_size"] = stage_cfg.tp_size
         factory_args["nccl_port"] = nccl_port
 
-        relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
+        comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
 
         if tp_rank == 0:
             specs.append(
@@ -258,13 +273,14 @@ def _build_tp_stage_specs(
                     role="leader",
                     tp_rank=tp_rank,
                     tp_size=stage_cfg.tp_size,
+                    placement_gpu_id=gpu_id,
                     gpu_id=gpu_id,
                     nccl_port=nccl_port,
                     factory_args=factory_args,
                     factory_arg_defaults=resolve_stage_factory_arg_defaults(
                         stage_cfg, config, gpu_id=gpu_id
                     ),
-                    relay_config=relay_config,
+                    comm_config=comm_config,
                     recv_endpoint=recv_endpoint,
                     follower_work_queues=follower_work_queues,
                     follower_abort_queues=follower_abort_queues,
@@ -280,13 +296,14 @@ def _build_tp_stage_specs(
                 role="follower",
                 tp_rank=tp_rank,
                 tp_size=stage_cfg.tp_size,
+                placement_gpu_id=gpu_id,
                 gpu_id=gpu_id,
                 nccl_port=nccl_port,
                 factory_args=factory_args,
                 factory_arg_defaults=resolve_stage_factory_arg_defaults(
                     stage_cfg, config, gpu_id=gpu_id
                 ),
-                relay_config=relay_config,
+                comm_config=comm_config,
                 recv_endpoint="",
                 internal_work_queue=follower_work_queues[idx],
                 internal_abort_queue=follower_abort_queues[idx],
@@ -298,19 +315,16 @@ def _build_tp_stage_specs(
     return specs
 
 
-def _resolve_relay_config(
+def _resolve_comm_config(
     stage_cfg: StageConfig,
-    config: PipelineConfig,
     *,
     gpu_id: int | None,
 ) -> dict[str, Any]:
-    """Build relay config, overriding gpu_id from placement."""
-    relay_config = build_relay_config(stage_cfg, config)
-    # shm copies into host shared memory, so CUDA staging only creates extra
-    # GPU allocator pressure.
-    if stage_cfg.gpu is not None and config.relay_backend != "shm":
-        relay_config["gpu_id"] = gpu_id
-    return relay_config
+    """Build stage-local communication options from placement."""
+    comm_config = build_comm_config(stage_cfg)
+    if stage_cfg.gpu is not None:
+        comm_config["gpu_id"] = gpu_id
+    return comm_config
 
 
 class _NcclPortAllocator:

@@ -6,12 +6,13 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 
 from benchmarks.tts_serving import voice_contracts
 from benchmarks.tts_serving.audio_validation import validate_audio_response
+from benchmarks.tts_serving.batch_client import handle_batch_success
 from benchmarks.tts_serving.http_contracts import (
     UNSUPPORTED_HTTP_STATUSES,
     ResponseBodyTooLarge,
@@ -232,6 +233,15 @@ async def run_voice_lifecycle(
         )
         if before_delete is None:
             return
+        if not await _post_speech_with_uploaded_voice(
+            session,
+            spec,
+            scenario,
+            result,
+            voice_name=voice_name,
+            prompt="Synthesize speech before deleting the uploaded voice.",
+        ):
+            return
         if not await _delete_voice_by_name(session, spec, scenario, result, voice_name):
             return
         after_delete = await _get_voice_list(session, spec, scenario, result)
@@ -239,7 +249,7 @@ async def run_voice_lifecycle(
             return
         if not _require_voice_absent_in_list(after_delete, result, voice_name):
             return
-        if not await _expect_deleted_voice_speech_404(
+        if not await _expect_deleted_voice_speech_bad_request(
             session, spec, scenario, result, voice_name
         ):
             return
@@ -597,6 +607,106 @@ async def run_voice_upload_metadata_sequence(
             result,
         ):
             return
+        _mark_success(result, capability="pass")
+    finally:
+        cleanup_error = await _cleanup_voice_names(session, spec, created_voice_names)
+        if cleanup_error is not None:
+            _mark_cleanup_error_if_primary_path_passed(result, cleanup_error)
+
+
+async def run_voice_named_speech_sequence(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+) -> None:
+    await _run_voice_upload_synthesis_sequence(
+        session,
+        spec,
+        scenario,
+        result,
+        synthesis_kind="speech",
+    )
+
+
+async def run_voice_named_batch_sequence(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+) -> None:
+    await _run_voice_upload_synthesis_sequence(
+        session,
+        spec,
+        scenario,
+        result,
+        synthesis_kind="batch",
+    )
+
+
+async def _run_voice_upload_synthesis_sequence(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+    *,
+    synthesis_kind: Literal["speech", "batch"],
+) -> None:
+    operation = f"named {synthesis_kind}"
+    upload_url = api_url(spec.base_url, scenario.path)
+    voice_name = scenario.planned_metadata.get("voice_name")
+    assert isinstance(voice_name, str) and voice_name
+    created_voice_names: list[str] = []
+    try:
+        result.request_bytes = request_size(scenario)
+        payload = await _post_voice_upload(
+            session,
+            upload_url,
+            scenario,
+            result,
+            form_fields=scenario.form_fields,
+        )
+        if payload is None:
+            return
+        created_voice_names.append(voice_name)
+        if not _require_voice_upload_identifier(
+            payload,
+            result,
+            error=f"{operation} voice upload response must include an identifier",
+        ):
+            return
+        if (
+            await _require_uploaded_voice_present(
+                session,
+                spec,
+                scenario,
+                result,
+                voice_name,
+                operation=f"{operation} upload",
+            )
+            is None
+        ):
+            return
+        if synthesis_kind == "speech":
+            synthesized = await _post_speech_with_uploaded_voice(
+                session,
+                spec,
+                scenario,
+                result,
+                voice_name=voice_name,
+                prompt="Synthesize speech with the uploaded named voice.",
+            )
+        elif synthesis_kind == "batch":
+            synthesized = await _post_batch_with_uploaded_voice(
+                session, spec, scenario, result, voice_name
+            )
+        else:
+            raise AssertionError(f"unknown synthesis kind: {synthesis_kind}")
+        if not synthesized:
+            return
+        if not await _delete_voice_by_name(session, spec, scenario, result, voice_name):
+            return
+        created_voice_names.clear()
         _mark_success(result, capability="pass")
     finally:
         cleanup_error = await _cleanup_voice_names(session, spec, created_voice_names)
@@ -1287,11 +1397,46 @@ async def _post_speech_with_uploaded_voice(
             )
             return False
         result.audio_bytes += len(body)
-        result.audio_duration_s += validation.duration_s
         return True
 
 
-async def _expect_deleted_voice_speech_404(
+async def _post_batch_with_uploaded_voice(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+    voice_name: str,
+) -> bool:
+    payload = dict(scenario.payload)
+    payload["voice"] = voice_name
+    result.request_bytes += len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    batch_url = api_url(spec.base_url, "/v1/audio/speech/batch")
+    audio_duration_before = result.audio_duration_s
+    async with session.post(batch_url, json=payload) as response:
+        result.http_status = response.status
+        result.http_status_class = classify_http_status(response.status)
+        result.response_headers = dict(response.headers)
+        body = await _read_voice_response_body(response, result)
+        if body is None:
+            return False
+        body_text = body.decode("utf-8", errors="replace")
+        if response.status in UNSUPPORTED_HTTP_STATUSES:
+            _mark_unsupported_contract(
+                result,
+                scenario,
+                body=body_text,
+                path="/v1/audio/speech/batch",
+            )
+            return False
+        if not 200 <= response.status < 300:
+            _classify_http_failure(response.status, body_text, result, scenario)
+            return False
+        handle_batch_success(body, result, scenario)
+        result.audio_duration_s = audio_duration_before
+        return result.status == "ok"
+
+
+async def _expect_deleted_voice_speech_bad_request(
     session: aiohttp.ClientSession,
     spec: BenchmarkSpec,
     scenario: Scenario,
@@ -1316,22 +1461,22 @@ async def _expect_deleted_voice_speech_404(
             return False
         status = response.status
     body_text = body.decode("utf-8", errors="replace")
-    if status != 404:
+    if status != 400:
         _mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
-                "speech with a deleted uploaded voice must return HTTP 404 "
+                "speech with a deleted uploaded voice must return HTTP 400 "
                 f"with structured error JSON; got HTTP {status}: {body_text}"
             ),
         )
         return False
-    if not _is_valid_error_response(status, body_text, expected_status=404):
+    if not _is_valid_error_response(status, body_text, expected_status=400):
         _mark_protocol_error(
             result,
             status="invalid_error_response",
             error=(
-                "speech with a deleted uploaded voice returned HTTP 404 without "
+                "speech with a deleted uploaded voice returned HTTP 400 without "
                 f"OpenAI-compatible error JSON: {body_text}"
             ),
         )

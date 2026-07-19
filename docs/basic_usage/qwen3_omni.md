@@ -176,7 +176,7 @@ Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
 For manual multi-GPU placement, use the example script:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
@@ -217,7 +217,7 @@ sgl-omni serve \
 The speech server launcher exposes the same per-stage controls:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \

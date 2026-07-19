@@ -311,6 +311,11 @@ class Qwen3OmniPreprocessor:
             stream_state={"token_ids": [], "text": ""},
         )
         payload.data = state.to_dict()
+        # Downstream projections consume the canonical state. Retaining request
+        # inputs would duplicate raw media on every stage hop.
+        payload.request.inputs = None
+        for key in ("audios", "images", "videos"):
+            payload.request.metadata.pop(key, None)
         return payload
 
     def _preprocess_pretokenized(

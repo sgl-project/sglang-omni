@@ -322,7 +322,7 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                # Wrap int — relay_io.write_blob is tensor-only.
+                # Wrap int; stream transport only accepts tensors.
                 data=torch.tensor([token_id], dtype=torch.long),
                 target=text_decode_stage,
                 metadata={"token_id": token_id},

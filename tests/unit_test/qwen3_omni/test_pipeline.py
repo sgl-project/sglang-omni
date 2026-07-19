@@ -43,7 +43,6 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_mm_aggregate_wait_sources,
     resolve_preprocessing_next_stages,
 )
-from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
@@ -132,7 +131,11 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert _stage(speech_config, "code2wav").can_accept_stream_before_payload
     assert text_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert speech_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
-    assert colocated_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+    assert colocated_config.env_defaults == {
+        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0",
+        "OMP_NUM_THREADS": "8",
+        "TOKENIZERS_PARALLELISM": "false",
+    }
 
     # Early-submit wiring (issue #473): the talker stage receives its
     # new_request from mm_aggregate so it can enter its deferred state
@@ -251,7 +254,7 @@ def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     assert state.engine_outputs["thinker"] is thinker_out
 
 
-def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
+def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None:
     # Miles RL rollout sends pre-tokenized input_ids; they must reach the thinker
     # directly (no chat template / re-tokenize), with encoders skipped.
     from sglang_omni.models.qwen3_omni.components.preprocessor import (
@@ -267,7 +270,17 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     pre = object.__new__(Qwen3OmniPreprocessor)
     pre.max_seq_len = None
     payload = SimpleNamespace(
-        request=SimpleNamespace(params={"max_new_tokens": 16}),
+        request=OmniRequest(
+            inputs=[5, 6, 7],
+            params={"max_new_tokens": 16},
+            metadata={
+                "audios": ["raw-audio"],
+                "images": ["raw-image"],
+                "videos": ["raw-video"],
+                "output_modalities": ["text"],
+                "trace": "keep",
+            },
+        ),
         request_id="r1",
         data=None,
     )
@@ -279,6 +292,12 @@ def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     assert state.prompt["attention_mask"].tolist() == [1, 1, 1]
     assert state.encoder_inputs["image_encoder"]["_skip"] is True
     assert state.encoder_inputs["audio_encoder"]["_skip"] is True
+    assert out.request.inputs is None
+    assert out.request.params == {"max_new_tokens": 16}
+    assert out.request.metadata == {
+        "output_modalities": ["text"],
+        "trace": "keep",
+    }
 
 
 def test_qwen_preprocessor_retries_without_special_token_compat(
@@ -1186,37 +1205,6 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
         "video": "video:image-cache",
         "audio": "audio:audio-cache",
     }
-
-
-def test_qwen_merge_preserves_unresolved_video_tensor_ref() -> None:
-    """A lazily-externalized video_embeds ref survives merge unresolved."""
-    ref = TensorRef(
-        ref_id="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
-        request_id="req-qwen",
-        producer_stage="image_encoder",
-        consumer_stage="thinker",
-        path="encoder_outs.image_encoder.video_embeds",
-        shape=(4, 8),
-        dtype="torch.bfloat16",
-        nbytes=4 * 8 * 2,
-        blob_key="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
-        blob_metadata={"relay_info": {}, "tensor_shape": [4, 8]},
-    )
-    image_state = Qwen3OmniPipelineState(
-        encoder_outs={"image_encoder": {"video_embeds": ref.to_dict()}}
-    )
-
-    merged = merge_for_thinker(
-        {
-            "preprocessing": make_qwen_payload(make_qwen_state()),
-            "image_encoder": make_qwen_payload(image_state),
-        }
-    )
-    merged_state = Qwen3OmniPipelineState.from_dict(merged.data)
-
-    video_embeds = merged_state.thinker_inputs["model_inputs"]["video_embeds"]
-    assert is_tensor_ref_dict(video_embeds)
-    assert video_embeds == ref.to_dict()
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:

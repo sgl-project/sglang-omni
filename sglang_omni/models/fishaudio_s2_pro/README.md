@@ -29,7 +29,7 @@ Text input ──► Preprocessing ──► SGLang AR Engine ──► DAC Voco
 
 **Stage 1 — Preprocessing:** Tokenizes the input text into a Qwen3-style chat prompt. For voice cloning, it encodes the reference audio into VQ codes via the DAC codec and prepends them to the prompt as a system message.
 
-**Stage 2 — Dual-AR Generation:** The Slow AR runs inside SGLang along the time axis. At each decode step, it predicts a semantic token, then the Fast AR (4-layer transformer) generates the remaining 9 residual codebook tokens conditioned on the hidden state. VQ embeddings are injected into the input embedding at masked positions, allowing the model to attend over both text and audio context through SGLang's KV cache.
+**Stage 2 — Dual-AR Generation:** The Slow AR runs inside SGLang along the time axis. At each decode step, it predicts a semantic token, then the Fast AR (4-layer transformer) generates the remaining 9 residual codebook tokens conditioned on the hidden state. VQ embeddings are injected into the input embedding at masked positions, allowing the model to attend over both text and audio context through SGLang's KV cache. Startup constructs the Fast AR directly and strictly loads only the checkpoint's `audio_decoder.*` tensors; the unused Hugging Face Slow AR wrapper is not instantiated.
 
 **Stage 3 — Vocoder:** The accumulated codebook indices are decoded into a waveform by a DAC codec, producing the final audio output.
 

@@ -123,20 +123,6 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     ]
 
 
-def _audio_to_list(audio: Any) -> list[float]:
-    if isinstance(audio, torch.Tensor):
-        return audio.detach().float().cpu().flatten().tolist()
-    try:
-        import numpy as np
-
-        array = np.asarray(audio, dtype=np.float32).reshape(-1)
-        return array.tolist()
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"Unsupported Qwen3-TTS audio output type: {type(audio)}"
-        ) from exc
-
-
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
     return SimpleScheduler(
@@ -167,8 +153,7 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
-    return create_sglang_tts_engine_executor(*args, **kwargs)
+create_tts_engine_executor = create_sglang_tts_engine_executor
 
 
 class _Qwen3TTSVocoder(BatchVocoderBase):

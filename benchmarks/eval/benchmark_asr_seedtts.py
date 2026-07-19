@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ASR benchmark on SeedTTS reference audio (issue #646).
+# Author:
+# chenyang zhao: https://github.com/zhaochenyang20
+# PoTaTo-Mika: https://github.com/PoTaTo-Mika
+"""ASR concurrency benchmark on SeedTTS reference audio (issue #646).
 
-This script transcribes the SeedTTS reference audio clips directly
-and compare them with reference scripts.
-
-Author:
-chenyang zhao: https://github.com/zhaochenyang20
+This script transcribes SeedTTS reference clips directly through a running ASR
+router and reports WER, throughput, latency, RTF, and worker routing balance.
+It supports both Qwen3-ASR and Fun-ASR-Nano through ``--model-path``.
 
 Usage:
 
@@ -32,6 +33,27 @@ Usage:
     # Quick local smoke on a 20-sample subset:
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 3
+
+    # Run the same sweep against Fun-ASR-Nano:
+    python -m sglang_omni.cli serve \
+        --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+    python -m benchmarks.eval.benchmark_asr_seedtts \
+        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+        --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+
+Reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
+4080 SUPER 32 GB, DP=1, three repeats plus one discarded warmup per level):
+
+* At concurrency 32, Qwen3-ASR-1.7B reached 55.07 samples/s with 0.577 s mean
+  latency, 0.1247 mean RTF, and 0.0130 corpus WER.
+* At concurrency 32, Fun-ASR-Nano reached 40.66 samples/s with 0.784 s mean
+  latency, 0.1696 mean RTF, and 0.0171 corpus WER.
+* At concurrency 1, Fun-ASR-Nano had roughly half the mean latency and RTF of
+  Qwen3-ASR (0.081 s vs. 0.165 s; 0.0175 vs. 0.0359).
+
+Both models saturated near concurrency 32. Fun-ASR completed every request at
+all measured levels; Qwen3-ASR skipped 72 requests at concurrency 64 on the
+single GPU. Audio duration was 4.69 s mean, 4.53 s median, and 8.81 s maximum.
 """
 
 from __future__ import annotations
@@ -221,7 +243,7 @@ def parse_args() -> argparse.Namespace:
         "--port",
         type=int,
         required=True,
-        help="Port of the running Qwen3-ASR SGLang Omni router.",
+        help="Port of the running ASR SGLang Omni router.",
     )
     parser.add_argument(
         "--meta",
@@ -244,7 +266,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         default=QWEN3_ASR_MODEL_PATH,
-        help="ASR model id served by the router.",
+        help=(
+            "ASR model id served by the router. Defaults to "
+            f"{QWEN3_ASR_MODEL_PATH}; use "
+            "FunAudioLLM/Fun-ASR-Nano-2512-hf for Fun-ASR-Nano."
+        ),
     )
     parser.add_argument(
         "--warmup",

@@ -3,7 +3,6 @@
 config_cls: Qwen3OmniPipelineConfig
 name: qwen3-omni-mmmu-h100
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
-relay_backend: shm
 
 stage_overrides:
   image_encoder:

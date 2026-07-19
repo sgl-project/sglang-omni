@@ -27,9 +27,6 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         self.adapter: Any | None = None
         self.tokenizer: Any | None = None
 
-    def resolve_checkpoint(self, model_path: str) -> str:
-        return fish_stages._resolve_checkpoint(model_path)
-
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap

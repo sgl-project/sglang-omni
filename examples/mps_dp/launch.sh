@@ -4,6 +4,9 @@
 # This is a tested example, not a production process supervisor.
 #
 # Usage:
+#   CONFIG=examples/mps_dp/configs/higgs_h100_dp3.yaml GPU_ID=0 N=3 \
+#     CORE_BLOCKS="0-9 10-19 20-29" \
+#     bash examples/mps_dp/launch.sh up
 #   MODEL=bosonai/higgs-tts-3-4b GPU_ID=0 N=3 MAX_TOTAL_TOKENS=100000 \
 #     CORE_BLOCKS="0-9 10-19 20-29" \
 #     bash examples/mps_dp/launch.sh up
@@ -12,15 +15,23 @@
 #   bash examples/mps_dp/launch.sh down [RUN_ID]
 #
 # Environment for `up` (defaults in parentheses):
-#   MODEL (bosonai/higgs-tts-3-4b), MODEL_NAME (higgs), GPU_ID (0), N (3),
-#   BASE_PORT (8801),
+#   CONFIG: optional pipeline config. For N > 1, it must contain one SGLang
+#     engine stage so the launcher can identify that stage's KV log. When unset,
+#     MODEL is used.
+#   MODEL (bosonai/higgs-tts-3-4b; unavailable with CONFIG),
+#   MODEL_NAME (higgs without CONFIG; pipeline name with CONFIG), GPU_ID (0), N (3),
+#   BASE_PORT (8801), PYTHON_BIN (python),
 #   CORE_BLOCKS: N non-overlapping CPU blocks on the GPU's NUMA node, required.
 #   NUMA_NODE: explicit override when the PCI-derived NUMA node is unavailable.
-#   MAX_TOTAL_TOKENS: common positive --max-total-tokens cap; required for N > 1.
-#   MF: optional explicit --mem-fraction-static override (unset = Higgs default).
+#   MAX_TOTAL_TOKENS: optional common positive token-cap override. For N > 1,
+#     set it here or in CONFIG's generation-stage server arguments. The environment
+#     value takes precedence when both are set.
+#   MF: optional explicit --mem-fraction-static override (unset = pipeline default).
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 STATE_ROOT=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
+PYTHON_BIN=${PYTHON_BIN:-python}
 CMD=${1:-}
 RUN_ARG=${2:-}
 HEALTH_TRIES=${HEALTH_TRIES:-50}
@@ -295,7 +306,8 @@ teardown_state() {
 }
 
 up() {
-  local model=${MODEL:-bosonai/higgs-tts-3-4b} model_name=${MODEL_NAME:-higgs}
+  local config=${CONFIG:-} model=${MODEL:-bosonai/higgs-tts-3-4b}
+  local model_name=${MODEL_NAME:-}
   local gpu=${GPU_ID:-0} n=${N:-3} base_port=${BASE_PORT:-8801} mf=${MF:-}
   [[ "$gpu" =~ ^[0-9]+$ ]] || die "GPU_ID must be a non-negative integer, got '$gpu'"
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "N must be a positive integer, got '$n'"
@@ -312,14 +324,44 @@ up() {
   read -r -a blocks <<< "$CORE_BLOCKS"
   [ "${#blocks[@]}" = "$n" ] || die "CORE_BLOCKS must contain exactly $n blocks"
 
+  local serve_cmd=(sgl-omni serve) source_args=() model_name_args=()
   local extra_args=() mem_args=()
-  if [ "$n" -gt 1 ] && [ -z "${MAX_TOTAL_TOKENS:-}" ]; then
+  local expected_max_total_tokens=${MAX_TOTAL_TOKENS:-}
+  local model_path_manifest=$model
+  if [ -n "$config" ]; then
+    [ -z "${MODEL:-}" ] || die "MODEL cannot be combined with CONFIG"
+    [ -f "$config" ] || die "config file not found: $config"
+    config=$(cd -- "$(dirname -- "$config")" && pwd)/$(basename -- "$config")
+    serve_cmd=("$PYTHON_BIN" -m sglang_omni.cli serve)
+    source_args=(--config "$config")
+    model_path_manifest=from_config
+    if [ -n "$model_name" ]; then
+      model_name_args=(--model-name "$model_name")
+    fi
+    local config_resolver_args=("$config")
+    if [ -n "$expected_max_total_tokens" ]; then
+      config_resolver_args+=(--max-total-tokens "$expected_max_total_tokens")
+    fi
+    if [ "$n" -gt 1 ]; then
+      config_resolver_args+=(--require-single-sglang-engine)
+    fi
+    expected_max_total_tokens=$("$PYTHON_BIN" "$SCRIPT_DIR/config.py" \
+      "${config_resolver_args[@]}") \
+      || die "could not resolve max_total_tokens from $config"
+  else
+    source_args=(--model-path "$model")
+    model_name=${MODEL_NAME:-higgs}
+    model_name_args=(--model-name "$model_name")
+  fi
+  if [ "$n" -gt 1 ] && [ -z "$expected_max_total_tokens" ]; then
     die "MAX_TOTAL_TOKENS is required for N=$n so every replica has the same KV capacity"
   fi
+  if [ -n "$expected_max_total_tokens" ]; then
+    [[ "$expected_max_total_tokens" =~ ^[1-9][0-9]*$ ]] \
+      || die "max_total_tokens must be a positive integer, got '$expected_max_total_tokens'"
+  fi
   if [ -n "${MAX_TOTAL_TOKENS:-}" ]; then
-    [[ "$MAX_TOTAL_TOKENS" =~ ^[1-9][0-9]*$ ]] \
-      || die "MAX_TOTAL_TOKENS must be a positive integer, got '$MAX_TOTAL_TOKENS'"
-    extra_args+=(--max-total-tokens "$MAX_TOTAL_TOKENS")
+    extra_args+=(--max-total-tokens "$expected_max_total_tokens")
   fi
   if [ -n "$mf" ]; then
     mem_args+=(--mem-fraction-static "$mf")
@@ -358,10 +400,11 @@ up() {
   chmod 700 "$state/mps" "$state/mps/pipe" "$state/mps/log"
   {
     echo "run_id=$run"; echo "gpu_id=$gpu"; echo "gpu_uuid=$uuid"; echo "numa_node=$node"
-    echo "model=$model"; echo "model_name=$model_name"; echo "n=$n"
-    echo "mem_fraction_static=${mf:-default}"
+    echo "config=${config:-none}"; echo "model_path=$model_path_manifest"
+    echo "model_name=${model_name:-from_config}"; echo "n=$n"
+    echo "mem_fraction_static_cli_override=${mf:-none}"
     echo "base_port=$base_port"; echo "core_blocks=$CORE_BLOCKS"
-    echo "max_total_tokens=${MAX_TOTAL_TOKENS:-auto/profiled}"
+    echo "max_total_tokens=${expected_max_total_tokens:-auto/profiled}"
   } > "$state/manifest"
 
   export CUDA_MPS_PIPE_DIRECTORY=$state/mps/pipe CUDA_MPS_LOG_DIRECTORY=$state/mps/log
@@ -397,7 +440,7 @@ up() {
     # exactly this run's process trees.
     CUDA_VISIBLE_DEVICES="$uuid" \
     setsid numactl --cpunodebind="$node" --membind="$node" -C "${blocks[$i]}" \
-      sgl-omni serve --model-path "$model" --model-name "$model_name" \
+      "${serve_cmd[@]}" "${source_args[@]}" "${model_name_args[@]}" \
         "${mem_args[@]}" "${extra_args[@]}" \
         --host 127.0.0.1 --port "$port" > "$log" 2>&1 < /dev/null &
     pid=$!
@@ -421,15 +464,15 @@ up() {
       tail -n 8 "$log" >&2
       exit 1
     fi
-    echo "replica $i healthy on port $port (cores ${blocks[$i]}, mem fraction ${mf:-default})"
+    echo "replica $i healthy on port $port (cores ${blocks[$i]})"
     resolved_tokens=""
     resolved_tokens=$(grep -m1 -oE '#tokens:[[:space:]]*[0-9]+' "$log" \
       | grep -oE '[0-9]+$' || true)
     if [ "$n" -gt 1 ]; then
       [ -n "$resolved_tokens" ] \
         || die "replica $i is healthy but its resolved KV capacity is missing from $log"
-      [ "$resolved_tokens" = "$MAX_TOTAL_TOKENS" ] \
-        || die "replica $i resolved $resolved_tokens KV tokens; expected $MAX_TOTAL_TOKENS"
+      [ "$resolved_tokens" = "$expected_max_total_tokens" ] \
+        || die "replica $i resolved $resolved_tokens KV tokens; expected $expected_max_total_tokens"
     fi
     echo "replica $i KV #tokens: ${resolved_tokens:-not found}"
   done
@@ -440,7 +483,7 @@ up() {
     exit 1
   fi
   trap - EXIT
-  echo "up: $n replicas on GPU $gpu; token cap ${MAX_TOTAL_TOKENS:-auto/profiled}; state: $state"
+  echo "up: $n replicas on GPU $gpu; token cap ${expected_max_total_tokens:-auto/profiled}; state: $state"
   echo "tear down with: bash $0 down $run"
 }
 
