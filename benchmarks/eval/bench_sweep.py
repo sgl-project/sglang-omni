@@ -24,6 +24,10 @@ multi-client numbers.
 
 Environment:
     BENCH_MODEL   model name passed to benchmark_tts_seedtts (default higgs)
+    BENCH_STREAM  1 (default) benchmarks streaming and records TTFC; 0 drops
+                  --stream for models that generate the final waveform only
+                  (e.g. Ming-Omni-TTS) — TTFC percentiles are then null and
+                  latency/RTF carry the comparison
     CLIENT_CORES  optional comma-separated CPU list to pin client processes
                   to (keeps load generation off the server cores); unpinned
                   when unset
@@ -62,11 +66,13 @@ for rate in RATES:
             "--meta", "zhaochenyang20/seed-tts-eval-arrow",
             "--model", os.environ.get("BENCH_MODEL", "higgs"),
             "--host", "127.0.0.1", "--port", str(8801 + i),
-            "--ref-format", "references", "--stream", "--lang", "en",
+            "--ref-format", "references", "--lang", "en",
             "--max-samples", str(SAMPLES), "--sample-offset", str(offset),
             "--concurrency", "0", "--request-rate", str(per_client_rate),
             "--output-dir", cdir, "--disable-tqdm",
         ]
+        if os.environ.get("BENCH_STREAM", "1") != "0":
+            cmd.append("--stream")
         logf = open(os.path.join(OUT, f"rate{rate:g}_client{i}.log"), "w")
         preexec = None
         if os.environ.get("CLIENT_CORES"):
@@ -93,9 +99,11 @@ for rate in RATES:
             continue
         d = json.load(open(f))
         for r in d["per_request"]:
-            if r.get("is_success") and r.get("audio_ttfp_s") is not None:
-                ttfcs.append(r["audio_ttfp_s"])
+            if r.get("is_success"):
                 lats.append(r["latency_s"])
+                # TTFC only exists for streaming runs; latency/RTF always do.
+                if r.get("audio_ttfp_s") is not None:
+                    ttfcs.append(r["audio_ttfp_s"])
                 if r.get("rtf") is not None:
                     rtfs.append(r["rtf"])
                 if r.get("audio_duration_s") is not None:
@@ -132,10 +140,12 @@ for rate in RATES:
         ),
     }
     sweep.append(stage)
-    rtf50 = f"{stage['rtf_p50']:.2f}" if stage["rtf_p50"] is not None else "-"
+    def fmt(v, spec):
+        return format(v, spec) if v is not None else "-"
+
     print(f"rate={rate:g} achieved={stage['achieved_qps_runner']} "
-          f"audio_s/s={stage['audio_s_per_s']} rtf_p50={rtf50} "
-          f"p50={stage['ttfc_p50']:.3f} p99={stage['ttfc_p99']:.3f} "
+          f"audio_s/s={stage['audio_s_per_s']} rtf_p50={fmt(stage['rtf_p50'], '.2f')} "
+          f"p50={fmt(stage['ttfc_p50'], '.3f')} p99={fmt(stage['ttfc_p99'], '.3f')} "
           f"failed={failed}", flush=True)
     time.sleep(5)  # drain between stages
 

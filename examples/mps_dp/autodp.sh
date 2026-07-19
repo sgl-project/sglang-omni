@@ -151,7 +151,7 @@ if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME MODEL_CONFIG=${MODEL_CONFIG:-} \
   # Config-file pipelines (e.g. Qwen3-TTS) reject --mem-fraction-static.
   # The derived MF is only *required* when it exceeds the model default;
   # retry without it and let the launcher's exact-KV check arbitrate.
-  if grep -q "mem-fraction-static requires a pipeline" "$launch_log"; then
+  if grep -qE "mem-fraction-static requires a pipeline|sets mem_fraction_static through both" "$launch_log"; then
     echo "[autodp] pipeline rejects --mem-fraction-static; retrying with the model default (derived MF=$MF_REQ was advisory)"
     # The failed attempt keeps its state dir for diagnostics; remove it (all
     # recorded PIDs are dead) so the retry can start.
