@@ -209,18 +209,15 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
 
     assert config["test_globs"] == [
         "tests/test_model/test_asr_ci_multi_speaker.py",
-        "tests/test_model/test_asr_ci_seedtts.py",
         "tests/test_model/test_asr_ci_fun_asr.py",
     ]
     assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
     assert config["gpus_per_test"] == {
         "test_asr_ci_multi_speaker.py": 2,
-        "test_asr_ci_seedtts.py": 2,
         "test_asr_ci_fun_asr.py": 2,
     }
     assert config["hf_model_ids_by_test"] == {
         "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
-        "test_asr_ci_seedtts.py": ["Qwen/Qwen3-ASR-1.7B"],
         "test_asr_ci_fun_asr.py": ["FunAudioLLM/Fun-ASR-Nano-2512-hf"],
     }
     assert {
@@ -231,7 +228,6 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
 
     assert set(config["metric_sources"]) == {
         "test_asr_ci_multi_speaker.py",
-        "test_asr_ci_seedtts.py",
         "test_asr_ci_fun_asr.py",
     }
     assert (
@@ -243,7 +239,9 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         == "diarization_metrics_percent.cer"
     )
     assert (
-        config["metric_sources"]["test_asr_ci_seedtts.py"]["paths"]["corpus_wer"]
+        config["metric_sources"]["test_asr_ci_fun_asr.py"]["variants"]["en"]["paths"][
+            "corpus_wer"
+        ]
         == "summary.corpus_wer"
     )
 
@@ -254,8 +252,6 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "multi_speaker_speed",
         "multi_speaker_stream_diarization",
         "multi_speaker_stream_speed",
-        "seedtts_wer",
-        "seedtts_speed",
         "fun_asr_en_wer",
         "fun_asr_en_speed",
         "fun_asr_zh_wer",
@@ -288,8 +284,6 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
     )
-    assert stages["seedtts_wer"]["test"] == "tests/test_model/test_asr_ci_seedtts.py"
-    assert stages["seedtts_wer"]["expected_samples"] == 1088
     assert stages["fun_asr_en_wer"]["test"] == "tests/test_model/test_asr_ci_fun_asr.py"
     assert stages["fun_asr_en_wer"]["expected_samples"] == 1088
     assert stages["fun_asr_zh_wer"]["expected_samples"] == 2020

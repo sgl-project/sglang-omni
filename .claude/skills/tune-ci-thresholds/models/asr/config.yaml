@@ -2,20 +2,15 @@
 #
 # CI DAG:
 #   stage-1-multi-speaker (MOSS-Transcribe-Diarize on movies800time + AISHELL4 long)
-#   -> stage-2-seedtts (Qwen3-ASR on SeedTTS EN)
-#   -> stage-3-fun-asr (Fun-ASR-Nano on SeedTTS EN and ZH)
+#   -> stage-2-seedtts (Fun-ASR-Nano on SeedTTS EN and ZH)
 #
 # All stages use the managed router with 2 single-GPU workers (DP=2).
-# Qwen3-ASR SeedTTS uses the ASR transcribe fan-out from tests.utils
-# (QWEN3_ASR_WER_CONCURRENCY = 32).
 name: asr
-description: "ASR CI (MOSS-TD multi-speaker + Qwen3-ASR SeedTTS + Fun-ASR SeedTTS)"
+description: "ASR CI (MOSS-TD multi-speaker + Fun-ASR SeedTTS)"
 hf_model_id: "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 hf_model_ids_by_test:
   test_asr_ci_multi_speaker.py:
     - "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-  test_asr_ci_seedtts.py:
-    - "Qwen/Qwen3-ASR-1.7B"
   test_asr_ci_fun_asr.py:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 hf_datasets:
@@ -44,11 +39,9 @@ auto_env:
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 gpus_per_test:
   test_asr_ci_multi_speaker.py: 2
-  test_asr_ci_seedtts.py: 2
   test_asr_ci_fun_asr.py: 2
 test_globs:
   - "tests/test_model/test_asr_ci_multi_speaker.py"
-  - "tests/test_model/test_asr_ci_seedtts.py"
   - "tests/test_model/test_asr_ci_fun_asr.py"
 extra_env: {}
 pytest_extra_args: {}
@@ -147,19 +140,6 @@ metric_sources:
           rtf_p95: "speed.rtf_p95"
           text_ttft_p95_s: "speed.text_ttft_p95_s"
           inter_chunk_p95_s: "speed.inter_chunk_p95_s"
-  test_asr_ci_seedtts.py:
-    json_file: "qwen3_asr_results.json"
-    sample_counts:
-      total: "summary.total_samples"
-      ok: "summary.evaluated"
-    paths:
-      corpus_wer: "summary.corpus_wer"
-      per_sample_wer_max: "summary.wer_per_sample_max"
-      throughput_qps: "speed.throughput_samples_per_s"
-      latency_mean_s: "speed.latency_mean_s"
-      latency_p95_s: "speed.latency_p95_s"
-      rtf_mean: "speed.rtf_mean"
-      rtf_p95: "speed.rtf_p95"
   test_asr_ci_fun_asr.py:
     variants:
       en:

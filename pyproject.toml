@@ -57,6 +57,7 @@ dependencies = [
     "jiwer",
     "scipy>=1.10.0",
     "openai-whisper==20250625",
+    "zhon==2.1.1",
     # SeedTTS speaker similarity (WavLM-large SV head). The pip-installed
     # package supplies s3prl.upstream.wavlm.hubconf at runtime, so no source
     # clone is required.

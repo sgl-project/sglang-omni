@@ -211,6 +211,8 @@ def test_fun_asr_matches_seedtts_reference_text_en(
         )
     )
 
+    total_samples = summary["total_samples"]
+    evaluated = summary["evaluated"]
     corpus_wer = summary["corpus_wer"]
     throughput_samples_per_s = speed["throughput_samples_per_s"]
     latency_mean_s = speed["latency_mean_s"]
@@ -218,6 +220,16 @@ def test_fun_asr_matches_seedtts_reference_text_en(
     rtf_mean = speed["rtf_mean"]
     rtf_p95 = speed["rtf_p95"]
 
+    checks.check(
+        total_samples == SEEDTTS_FUN_ASR_EN_SAMPLES,
+        f"Expected {SEEDTTS_FUN_ASR_EN_SAMPLES} scored samples, "
+        f"got {total_samples}",
+    )
+    checks.check(
+        evaluated == total_samples,
+        f"Fun-ASR EN transcribed only {evaluated}/{total_samples} samples, "
+        "failed requests are excluded from WER scoring",
+    )
     checks.check(
         corpus_wer <= FUN_ASR_EN_CORPUS_WER_THRESHOLD,
         f"Fun-ASR EN corpus WER {corpus_wer:.4f} exceeds "
@@ -314,8 +326,20 @@ def test_fun_asr_matches_seedtts_reference_text_zh(
         )
     )
 
+    total_samples = summary["total_samples"]
+    evaluated = summary["evaluated"]
     corpus_wer = summary["corpus_wer"]
 
+    checks.check(
+        total_samples == SEEDTTS_FUN_ASR_ZH_SAMPLES,
+        f"Expected {SEEDTTS_FUN_ASR_ZH_SAMPLES} scored samples, "
+        f"got {total_samples}",
+    )
+    checks.check(
+        evaluated == total_samples,
+        f"Fun-ASR ZH transcribed only {evaluated}/{total_samples} samples, "
+        "failed requests are excluded from WER scoring",
+    )
     checks.check(
         corpus_wer <= FUN_ASR_ZH_CORPUS_WER_THRESHOLD,
         f"Fun-ASR ZH corpus WER {corpus_wer:.4f} exceeds "
