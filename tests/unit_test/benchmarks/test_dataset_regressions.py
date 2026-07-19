@@ -210,15 +210,18 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     assert config["test_globs"] == [
         "tests/test_model/test_asr_ci_multi_speaker.py",
         "tests/test_model/test_asr_ci_seedtts.py",
+        "tests/test_model/test_asr_ci_fun_asr.py",
     ]
     assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
     assert config["gpus_per_test"] == {
         "test_asr_ci_multi_speaker.py": 2,
         "test_asr_ci_seedtts.py": 2,
+        "test_asr_ci_fun_asr.py": 2,
     }
     assert config["hf_model_ids_by_test"] == {
         "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
         "test_asr_ci_seedtts.py": ["Qwen/Qwen3-ASR-1.7B"],
+        "test_asr_ci_fun_asr.py": ["FunAudioLLM/Fun-ASR-Nano-2512-hf"],
     }
     assert {
         "zhaochenyang20/movies800time",
@@ -229,6 +232,7 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     assert set(config["metric_sources"]) == {
         "test_asr_ci_multi_speaker.py",
         "test_asr_ci_seedtts.py",
+        "test_asr_ci_fun_asr.py",
     }
     assert (
         config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
@@ -252,6 +256,9 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "multi_speaker_stream_speed",
         "seedtts_wer",
         "seedtts_speed",
+        "fun_asr_en_wer",
+        "fun_asr_en_speed",
+        "fun_asr_zh_wer",
     }
     assert stages["multi_speaker_diarization"]["test"] == (
         "tests/test_model/test_asr_ci_multi_speaker.py"
@@ -283,6 +290,14 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     )
     assert stages["seedtts_wer"]["test"] == "tests/test_model/test_asr_ci_seedtts.py"
     assert stages["seedtts_wer"]["expected_samples"] == 1088
+    assert stages["fun_asr_en_wer"]["test"] == "tests/test_model/test_asr_ci_fun_asr.py"
+    assert stages["fun_asr_en_wer"]["expected_samples"] == 1088
+    assert stages["fun_asr_zh_wer"]["expected_samples"] == 2020
+    assert (
+        stages["fun_asr_zh_wer"]["metrics"]["corpus_wer"]["json_file"]
+        == "fun_asr_zh_results.json"
+    )
+    assert "throughput_qps" in stages["fun_asr_en_speed"]["metrics"]
 
 
 def test_tune_ci_threshold_tts_config_no_longer_owns_asr_ci_stages() -> None:

@@ -21,10 +21,11 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
+  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # DAG:
-#   stage-1-multi-speaker -> stage-2-seedtts
+#   stage-1-multi-speaker -> stage-2-seedtts -> stage-3-fun-asr
 
 jobs:
   stage-1-multi-speaker:
@@ -124,4 +125,56 @@ jobs:
             */qwen3_asr_results.json
           artifact-upload-name: asr-stage-seedtts-results
           artifact-upload-path: /tmp/**/qwen3_asr_results.json
+          summary-only: "true"
+
+  stage-3-fun-asr:
+    name: stage 3 - Fun-ASR SeedTTS
+    needs: stage-2-seedtts
+    if: always() && !cancelled()
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run Fun-ASR SeedTTS CI
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_asr_ci_fun_asr.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_HUB_DISABLE_XET: "1"
+          HF_HUB_ENABLE_HF_TRANSFER: "0"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FUN_ASR_MODEL_PATH: ${{ env.FUN_ASR_MODEL_PATH }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: ASR stage 3 (Fun-ASR SeedTTS)
+          artifact-path-globs: |
+            */fun_asr_results.json
+            */fun_asr_zh_results.json
+          artifact-upload-name: asr-stage-fun-asr-results
+          artifact-upload-path: |
+            /tmp/**/fun_asr_results.json
+            /tmp/**/fun_asr_zh_results.json
           summary-only: "true"

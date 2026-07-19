@@ -52,6 +52,11 @@ if ! python -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/nu
   uv pip install --force-reinstall --no-deps --no-cache openai-whisper==20250625
 fi
 
+if ! python -c "import zhon.hanzi" 2>/dev/null; then
+  echo "zhon missing from prepared venv, installing pinned dependency..."
+  uv pip install --force-reinstall --no-deps --no-cache zhon==2.1.1
+fi
+
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
   exit 1
 fi

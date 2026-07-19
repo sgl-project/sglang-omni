@@ -66,7 +66,7 @@ print(resp.json()["text"])
 
 ## Benchmarking
 
-SeedTTS EN concurrency/WER benchmarking for Fun-ASR-Nano lives in
+SeedTTS EN/ZH concurrency/WER benchmarking for Fun-ASR-Nano lives in
 `benchmarks/eval/benchmark_asr_seedtts.py`. Pass the Fun-ASR-Nano model
 path with `--model-path`.
 
@@ -87,6 +87,47 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
   --max-samples 20 --concurrencies 2 --repeats 1
 ```
+
+## Benchmark Results
+
+Measured on a single H100 80 GB (bf16, DP=1, default server settings)
+against the full SeedTTS sets. Each row is the mean of 3 runs with one
+discarded warmup pass per level. RTF is processing time divided by audio
+duration (lower is better). audio_s/s is seconds of audio transcribed per
+wall-clock second.
+
+SeedTTS EN (1088 clips, mean clip length 4.69 s). Corpus WER was 0.0171 at
+every level through concurrency 32:
+
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 26.44 | 0.038 | 0.047 | 0.0082 | 124 |
+| 2 | 42.55 | 0.047 | 0.058 | 0.0102 | 200 |
+| 4 | 62.35 | 0.064 | 0.088 | 0.0139 | 293 |
+| 8 | 90.24 | 0.088 | 0.121 | 0.0192 | 423 |
+| 16 | 127.46 | 0.125 | 0.167 | 0.0270 | 598 |
+| 32 | 127.44 | 0.249 | 0.334 | 0.0539 | 598 |
+| 64 | 137.98 | 0.453 | 0.542 | 0.0988 | 647 |
+
+SeedTTS ZH (2020 clips, mean clip length 4.68 s). Corpus WER, effectively
+character level after normalization, was 0.0135 at every level through
+concurrency 32:
+
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 26.96 | 0.037 | 0.048 | 0.0080 | 126 |
+| 2 | 45.97 | 0.043 | 0.056 | 0.0094 | 215 |
+| 4 | 58.28 | 0.069 | 0.093 | 0.0148 | 273 |
+| 8 | 79.76 | 0.100 | 0.138 | 0.0216 | 373 |
+| 16 | 138.23 | 0.116 | 0.160 | 0.0249 | 647 |
+| 32 | 167.42 | 0.190 | 0.264 | 0.0410 | 784 |
+| 64 | 165.75 | 0.381 | 0.475 | 0.0825 | 776 |
+
+At concurrency 64 a single worker rejects roughly 2 to 5 percent of
+requests with HTTP 500 by design, because the request-build backlog admits
+at most 16 pending builds per worker. Qwen3-ASR shows the same shedding
+behavior at this level. For higher client concurrency, serve behind the
+DP=2 managed router, matching the ASR CI topology.
 
 ## Known Limitations
 
