@@ -55,6 +55,7 @@ dependencies = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "jiwer",
+    "zhon==2.1.1",
     "scipy>=1.10.0",
     "openai-whisper==20250625",
     # SeedTTS speaker similarity (WavLM-large SV head). The pip-installed

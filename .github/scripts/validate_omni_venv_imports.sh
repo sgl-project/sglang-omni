@@ -25,6 +25,7 @@ import av
 import torch
 import transformers
 import sglang
+import zhon.hanzi
 from whisper.normalizers import EnglishTextNormalizer
 " 2>/dev/null; then
   echo "::error::${VENV_NAME} import probe failed at ${OMNI_CI_HOME}/${VENV_NAME}" >&2
