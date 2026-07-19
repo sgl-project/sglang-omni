@@ -13,6 +13,7 @@ dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
     "msgpack>=1.0.0",         # Message serialization
+    "msgspec",                # msgspec.Struct support
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
@@ -99,4 +100,4 @@ include = ["sglang_omni*"]
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
-"sglang_omni.models.higgs_tts" = ["_vendored/*.json"]
+"sglang_omni.models.higgs_tts" = ["configs/*.json"]

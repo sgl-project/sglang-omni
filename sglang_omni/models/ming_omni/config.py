@@ -99,6 +99,7 @@ def _aggregate_stage(*, process: str) -> StageConfig:
         wait_for=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
         merge_fn=f"{_PKG}.pipeline.merge.merge_for_thinker",
         next=THINKER_STAGE,
+        disable_direct_cuda_ipc_payload=True,
     )
 
 

@@ -30,6 +30,30 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 
 logger = logging.getLogger(__name__)
 
+_MAX_PREPROCESSING_INTRAOP_THREADS = 8
+
+
+def _configure_preprocessing_threads(worker_count: int) -> int:
+    override = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if override.isdigit() and int(override) >= 1:
+        requested = int(override)
+        torch.set_num_threads(requested)
+        return requested
+
+    cpu_count = (
+        len(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else (os.cpu_count() or 1)
+    )
+    # Requests already fan out across worker threads; bound the shared intra-op
+    # pool so reference encoding cannot starve the GPU pipeline process.
+    intraop_threads = min(
+        max(cpu_count // worker_count, 1),
+        _MAX_PREPROCESSING_INTRAOP_THREADS,
+    )
+    torch.set_num_threads(intraop_threads)
+    return intraop_threads
+
 
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
@@ -216,6 +240,13 @@ def create_preprocessing_executor(
     """Returns a threaded scheduler for CPU-heavy preprocessing."""
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
+    worker_count = max(int(max_concurrency), 1)
+    intraop_threads = _configure_preprocessing_threads(worker_count)
+    logger.info(
+        "Fish preprocessing uses %d workers, %d shared intra-op threads",
+        worker_count,
+        intraop_threads,
+    )
     checkpoint_dir = _resolve_checkpoint(model_path)
 
     from transformers import PreTrainedTokenizerFast
@@ -285,7 +316,7 @@ def create_preprocessing_executor(
         )
         return store_state(payload, state)
 
-    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
+    return ThreadedSimpleScheduler(_preprocess, max_concurrency=worker_count)
 
 
 def create_sglang_tts_engine_executor(

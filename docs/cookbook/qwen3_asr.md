@@ -67,12 +67,23 @@ print(resp.json()["text"])
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
-SeedTTS reference audio through `/v1/audio/transcriptions`. ASR CI reuses
-the same single-pass benchmark entry point in `tests/test_model/test_asr_ci.py`
-and applies WER, throughput, latency, and RTF thresholds.
+SeedTTS reference audio through `/v1/audio/transcriptions`. It defaults to
+`--model-path Qwen/Qwen3-ASR-1.7B`; the shared request and metric logic lives in
+`benchmarks.tasks.asr` and also supports Fun-ASR through `--model-path`.
 
 ```bash
-QWEN3_ASR_CI_CONCURRENCY=32 pytest tests/test_model/test_asr_ci.py -s
+sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8000
+
+# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+```
+
+ASR CI reuses the same single-pass benchmark entry point and applies WER,
+throughput, latency, and RTF thresholds.
+
+```bash
+QWEN3_ASR_CI_CONCURRENCY=32 pytest tests/test_model/test_asr_ci_seedtts.py -s
 ```
 
 ## Known Limitations

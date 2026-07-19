@@ -3,21 +3,28 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class RelayConfig(BaseModel):
-    """Relay configuration for stage data transfer."""
+class CommConfig(BaseModel):
+    """Per-stage communication buffer and Mooncake options.
+
+    Transport selection is owned by ``CommRouter`` from stage locality and
+    placement. This config only tunes buffer pools and backend-specific
+    connection options for transports the router selects.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     slot_size_mb: int = 512
     credits: int = 2
-    rank: int | None = None
-    world_size: int | None = None
-    device: str = "cpu"
+    cuda_ipc_slot_size_kb: int = 64
+    cuda_ipc_pool_size_mb: int | None = None
+    mooncake_protocol: str = "rdma"
+    mooncake_hostname: str | None = None
+    mooncake_device_name: str = ""
 
 
 class EndpointsConfig(BaseModel):
@@ -169,11 +176,14 @@ class StageConfig(BaseModel):
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
 
+    # --- Payload transport ---
+    disable_direct_cuda_ipc_payload: bool = False
+
     # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
 
-    # --- Relay (auto-inferred from gpu when None) ---
-    relay: RelayConfig | None = None
+    # --- Communication pool tuning ---
+    comm: CommConfig | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
         fields_set = self.__pydantic_fields_set__
@@ -216,7 +226,6 @@ class PipelineConfig(BaseModel):
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None
-    relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
     runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)

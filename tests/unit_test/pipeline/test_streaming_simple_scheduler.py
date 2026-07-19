@@ -201,6 +201,10 @@ class _DefaultBatchScheduler(_TestStreamingScheduler):
     _can_batch_stream_chunks = True
 
 
+class _DistinctBatchStreamingScheduler(_BatchStreamingScheduler):
+    _stream_chunk_batch_distinct_requests = True
+
+
 def test_stream_chunk_batch_opt_out_dispatches_one_at_a_time() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))
@@ -216,6 +220,19 @@ def test_stream_chunk_batch_coalesces_queued_chunks_into_one_pump() -> None:
     scheduler._handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "b", "c"]]
     assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y", "z"]
+
+
+def test_stream_chunk_batch_can_stop_before_duplicate_request() -> None:
+    scheduler = _DistinctBatchStreamingScheduler(max_batch_size=4)
+    scheduler.inbox.put(_chunk("b", "y"))
+    scheduler.inbox.put(_chunk("a", "second"))
+    scheduler.inbox.put(_chunk("c", "z"))
+
+    scheduler._handle_message(_chunk("a", "first"), None)
+
+    assert scheduler.pump_batches == [["a", "b"]]
+    assert scheduler._next_message().data.data == "second"
+    assert scheduler._next_message().request_id == "c"
 
 
 def test_stream_chunk_batch_stops_at_non_chunk_and_pushes_back() -> None:

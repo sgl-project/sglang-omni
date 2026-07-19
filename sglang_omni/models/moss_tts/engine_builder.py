@@ -7,7 +7,6 @@ import importlib
 from typing import Any
 
 from sglang_omni.models.moss_tts import request_builders
-from sglang_omni.models.moss_tts import stages as moss_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -15,9 +14,6 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS"
     context_length = 8192
     model_arch_override = "MossTTSDelaySGLangModel"
-
-    def resolve_checkpoint(self, model_path: str) -> str:
-        return moss_stages.resolve_moss_checkpoint(model_path)
 
     def generation_defaults(
         self,

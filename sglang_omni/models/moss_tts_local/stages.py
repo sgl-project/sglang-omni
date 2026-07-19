@@ -580,8 +580,7 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
-    return create_sglang_tts_engine_executor(*args, **kwargs)
+create_tts_engine_executor = create_sglang_tts_engine_executor
 
 
 def create_vocoder_executor(
@@ -592,7 +591,7 @@ def create_vocoder_executor(
     codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    stream_slots: int = 8,
+    stream_slots: int = 15,
     stream_chunk_frames: int = 25,
     # Note(Jiaxin): serve-aligned streaming defaults. The first chunk is small (1) for low TTFC,
     # while coalesce_floor_frames (5) is the separate steady-state coalescing join floor.

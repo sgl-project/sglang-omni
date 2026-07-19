@@ -49,6 +49,7 @@ class StageLaunchConfig:
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
+    placement_gpu_id: int | None = None
     gpu_id: int | None = None
     nccl_port: int | None = None
 
@@ -69,8 +70,8 @@ class StageLaunchConfig:
     merge_fn: str | None = None
     project_payload: dict[str, str] = field(default_factory=dict)
 
-    # Relay
-    relay_config: dict[str, Any] = field(default_factory=dict)
+    # Communication pool/options. Transport selection belongs to CommRouter.
+    comm_config: dict[str, Any] = field(default_factory=dict)
 
     # Endpoints
     recv_endpoint: str = ""
@@ -81,9 +82,14 @@ class StageLaunchConfig:
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
     stream_done_to_fn: str | None = None
-    same_gpu_targets: set[str] = field(default_factory=set)
+    # GPU-resident stage names (for the transport router to pick GPU vs host transport).
+    gpu_stage_names: set[str] = field(default_factory=set)
+    stage_gpu_ids: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # Explicit cross-node stage names. These edges use Mooncake when present.
+    remote_stage_names: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
+    disable_direct_cuda_ipc_payload: bool = False
 
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
@@ -737,18 +743,22 @@ def _construct_stage(
         role=spec.role,
         get_next=get_next,
         gpu_id=spec.gpu_id,
+        placement_gpu_id=spec.placement_gpu_id,
         endpoints=spec.stage_endpoints,
         control_plane=control_plane,
         input_handler=input_handler,
-        relay_config=spec.relay_config,
+        comm_config=spec.comm_config,
         scheduler=scheduler,
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
         get_stream_done_targets=get_stream_done_targets,
-        same_gpu_targets=spec.same_gpu_targets or None,
+        gpu_stage_names=spec.gpu_stage_names or None,
+        stage_gpu_ids=spec.stage_gpu_ids or None,
+        remote_stage_names=spec.remote_stage_names or None,
         same_process_targets=spec.same_process_targets or None,
         local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
+        disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
     )
@@ -844,11 +854,13 @@ def _prepare_cuda_environment(
 
 
 def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
+    if spec.placement_gpu_id is None:
+        spec.placement_gpu_id = spec.gpu_id
     spec.gpu_id = 0
     if "gpu_id" in spec.factory_arg_defaults:
         spec.factory_arg_defaults["gpu_id"] = 0
-    if "gpu_id" in spec.relay_config:
-        spec.relay_config["gpu_id"] = 0
+    if "gpu_id" in spec.comm_config:
+        spec.comm_config["gpu_id"] = 0
 
 
 def _process_name(spec: StageWorkerProcessSpec) -> str:

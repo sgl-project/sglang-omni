@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 import pytest
@@ -41,7 +42,7 @@ MODEL_FAMILIES = {
 class FaultInjectingCoordinator(Coordinator):
     """Inject a model-stage failure through the real Coordinator/Client path."""
 
-    def __init__(self, terminal_stage: str):
+    def __init__(self, terminal_stage: str, error: str = "cuda out of memory"):
         super().__init__(
             completion_endpoint="inproc://complete",
             abort_endpoint="inproc://abort",
@@ -50,6 +51,7 @@ class FaultInjectingCoordinator(Coordinator):
         )
         self.control_plane = RecordingCoordinatorControlPlane()
         self.terminal_stage = terminal_stage
+        self.error = error
         self.register_stage("preprocess", "inproc://preprocess")
 
     async def _submit_request(
@@ -65,7 +67,7 @@ class FaultInjectingCoordinator(Coordinator):
                 request_id=request_id,
                 from_stage=self.terminal_stage,
                 success=False,
-                error="cuda out of memory",
+                error=self.error,
             )
         )
 
@@ -91,20 +93,21 @@ class FaultInjectingCoordinator(Coordinator):
         )
 
 
-def _fault_client(model_name: str) -> Client:
-    return Client(FaultInjectingCoordinator(MODEL_FAMILIES[model_name]))
+def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
+    return Client(FaultInjectingCoordinator(MODEL_FAMILIES[model_name], error=error))
 
 
 class SuccessfulSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
         self.sample_rate = sample_rate
+        self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
     async def generate(self, request: Any, request_id: str | None = None):
-        del request
+        self.generate_requests.append(request)
         yield GenerateChunk(
             request_id=request_id or "speech-1",
             modality="audio",
@@ -401,6 +404,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
         json={
             "model": model_name,
             "input": "hello",
+            "voice": "default",
             "stream": False,
             "response_format": "wav",
         },
@@ -416,7 +420,9 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "tts",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },
@@ -434,16 +440,52 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "response_format": "wav"},
+        json={
+            "input": "hello",
+            "response_format": "wav",
+        },
     )
 
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert speech_client.speech_requests[0].model == "tts"
+    assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_endpoint_accepts_seedtts_reference_payload_without_voice(
+    stream: bool,
+) -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="served-model"))
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "seedtts",
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "response_format": "pcm" if stream else "wav",
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == 200
+    request = (
+        speech_client.generate_requests[0]
+        if stream
+        else speech_client.speech_requests[0]
+    )
+    assert request.model == "seedtts"
+    assert request.metadata["tts_params"]["voice"] == "default"
 
 
 def test_speech_endpoint_accepts_sdk_shaped_binary_request() -> None:
@@ -489,7 +531,13 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -502,7 +550,13 @@ def test_speech_endpoint_stream_empty_delta_is_not_success() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={"input": "hello", "stream": True, "response_format": "pcm"},
+        json={
+            "model": "tts",
+            "input": "hello",
+            "voice": "default",
+            "stream": True,
+            "response_format": "pcm",
+        },
     )
 
     assert response.status_code == 500
@@ -651,7 +705,9 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -674,7 +730,9 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "s2-pro",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "pcm",
         },
@@ -737,7 +795,9 @@ def test_speech_stream_rejects_non_pcm_response_format() -> None:
     response = client.post(
         "/v1/audio/speech",
         json={
+            "model": "higgs-audio-v2",
             "input": "hello",
+            "voice": "default",
             "stream": True,
             "response_format": "wav",
         },
@@ -956,6 +1016,48 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
+
+
+def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
+
+    bad_request_error = (
+        "Fun-ASR accepts audio up to 30.0 seconds because its official "
+        "VAD segment limit is 30 seconds; split longer audio before inference."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "accepts audio up to" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
+    bad_request_error = "max_new_tokens must be between 1 and 200, got 65536"
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "max_new_tokens must be" in response.json()["detail"]
 
 
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:

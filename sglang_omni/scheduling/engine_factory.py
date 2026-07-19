@@ -10,6 +10,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
+from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 
 class TtsEngineBuilder(ABC):
@@ -117,9 +118,8 @@ class TtsEngineBuilder(ABC):
         self.post_scheduler_setup(scheduler, model_runner)
         return scheduler
 
-    @abstractmethod
     def resolve_checkpoint(self, model_path: str) -> str:
-        raise NotImplementedError
+        return _resolve_checkpoint(model_path)
 
     @abstractmethod
     def generation_defaults(

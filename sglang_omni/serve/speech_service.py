@@ -144,7 +144,10 @@ class SpeechRequestValidator:
         self._validate_batch_defaults(request)
         return request
 
-    def validate_raw_speech_fields(self, payload: dict[str, Any]) -> None:
+    def validate_raw_speech_fields(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
         """Validate speech fields before Pydantic can coerce JSON values."""
 
         self._validate_raw_payload(payload)
@@ -154,7 +157,10 @@ class SpeechRequestValidator:
 
         return self.prepare_generation_request(self._parse_raw_request(payload))
 
-    def _parse_raw_request(self, payload: Any) -> CreateSpeechRequest:
+    def _parse_raw_request(
+        self,
+        payload: Any,
+    ) -> CreateSpeechRequest:
         if not isinstance(payload, dict):
             raise bad_request("speech request body must be a JSON object")
         self._validate_raw_payload(payload)
