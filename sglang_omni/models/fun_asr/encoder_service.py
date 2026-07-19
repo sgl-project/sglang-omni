@@ -190,6 +190,8 @@ class FunAsrPreLMEncoderService:
         if leader:
             return
         if not self._is_valid(embedding, expected_tokens):
+            with self._lock:
+                self._failed += 1
             raise RuntimeError(
                 f"Fun-ASR pre-LM encode leader for {key} returned an invalid "
                 f"embedding"
@@ -282,14 +284,21 @@ class FunAsrPreLMEncoderService:
                     f"Fun-ASR batched audio encode failed for {len(items)} "
                     f"items; retrying per item"
                 )
+                recovered = 0
                 for item, future, _ in batch:
                     try:
                         embedding = self._encode_batch([item])[0]
                         future.set_result(embedding)
+                        recovered += 1
                     except Exception as item_exc:
                         future.set_exception(item_exc)
                 with self._lock:
                     self._encoder_time_s += time.perf_counter() - encode_start
+                    # Note (Akazaakane): Each recovered item re-encoded as its
+                    # own single-item batch; count it as one so the items/batch
+                    # telemetry stays honest for the F-PR5 gate.
+                    self._batch_count += recovered
+                    self._item_count += recovered
                 continue
             for (_, future, _), embedding in zip(batch, embeddings):
                 future.set_result(embedding)

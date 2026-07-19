@@ -31,6 +31,8 @@ class _StubModel(torch.nn.Module):
         self.dtype = dtype
         self.encode_calls = 0
         self.fail = False
+        self.fail_multi_item = False
+        self.encode_gate: threading.Event | None = None
         self.row_offset = 0
         self.encode_delay_s = 0.0
         self.grad_enabled_during_encode: bool | None = None
@@ -38,10 +40,18 @@ class _StubModel(torch.nn.Module):
     def _get_audio_feature_uncached(self, items, forward_batch):  # noqa: ANN001
         self.grad_enabled_during_encode = torch.is_grad_enabled()
         self.encode_calls += 1
+        gate = self.encode_gate
+        if gate is not None:
+            # One-shot: hold only the first encode so tests can stage a
+            # multi-item queue drain deterministically.
+            self.encode_gate = None
+            gate.wait(timeout=10)
         if self.encode_delay_s:
             time.sleep(self.encode_delay_s)
         if self.fail:
             raise RuntimeError("boom")
+        if self.fail_multi_item and len(items) > 1:
+            raise RuntimeError("multi-item boom")
         parts = []
         for item in items:
             rows = _expected_audio_tokens(item) + self.row_offset
@@ -233,6 +243,87 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
     item = _item(55, 3)
     service.encode_item(item)
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+
+
+def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
+    model = _StubModel()
+    model.encode_delay_s = 0.2
+    service = _make_service(model)
+    leader_item = _item(321, 3)
+    # Same fingerprint but inconsistent token metadata: the merged follower
+    # must reject the leader's embedding and count the failure.
+    follower_item = _item(321, 5)
+    errors: list[BaseException] = []
+
+    def leader() -> None:
+        try:
+            service.encode_item(leader_item)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=leader)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not service._inflight and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert service._inflight, "leader never registered in-flight"
+
+    with pytest.raises(RuntimeError, match="returned an invalid"):
+        service.encode_item(follower_item)
+    thread.join(timeout=30)
+
+    assert not errors, errors
+    assert leader_item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert follower_item.precomputed_embeddings is None
+    stats = service.stats()
+    assert stats["merged"] == 1
+    assert stats["failed"] == 1
+
+
+def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
+    model = _StubModel()
+    model.fail_multi_item = True
+    gate = threading.Event()
+    model.encode_gate = gate
+    service = _make_service(model)
+    items = [_item(31, 3), _item(32, 3), _item(33, 4)]
+    errors: list[BaseException] = []
+
+    def worker(item: SimpleNamespace) -> None:
+        try:
+            service.encode_item(item)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(item,)) for item in items]
+    for thread in threads:
+        thread.start()
+    # While the gate holds the first drained batch inside the encoder, the
+    # remaining items queue up and are drained together on the next pass,
+    # forcing the multi-item failure + per-item retry path. Every item is a
+    # distinct-key leader, so its in-flight entry (registered alongside the
+    # queue put and only cleared after the gate-blocked encode resolves)
+    # proves it reached the queue.
+    deadline = time.monotonic() + 5
+    while len(service._inflight) < 3 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert len(service._inflight) == 3, "items never queued"
+    gate.set()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    for item in items:
+        assert item.precomputed_embeddings.shape == (
+            item.num_audio_tokens,
+            _HIDDEN_SIZE,
+        )
+    stats = service.stats()
+    assert stats["failed"] == 0
+    assert stats["items"] == 3
+    assert stats["batches"] == 3
+    assert model.encode_calls == 4
+    assert len(service._cache) == 3
 
 
 def test_eviction_under_byte_budget_triggers_reencode() -> None:
