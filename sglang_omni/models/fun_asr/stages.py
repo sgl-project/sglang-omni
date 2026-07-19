@@ -10,6 +10,10 @@ from transformers import AutoFeatureExtractor, AutoTokenizer
 # note(LauraGPT): Auto* loading depends on these local registrations.
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.fun_asr.encoder_service import (
+    FunAsrPreLMEncoderService,
+    build_cache_namespace,
+)
 from sglang_omni.models.fun_asr.request_builders import (
     fun_asr_prompt_overhead_tokens,
     make_fun_asr_scheduler_adapters,
@@ -45,7 +49,10 @@ def create_sglang_fun_asr_executor(
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     mm_attention_backend: str | None = None,
-    request_build_max_workers: int = 2,
+    enable_pre_lm_encoder: bool = True,
+    pre_lm_cache_max_entries: int = 4096,
+    pre_lm_cache_max_bytes: int = 2 * 1024**3,
+    request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
 ):
@@ -124,11 +131,28 @@ def create_sglang_fun_asr_executor(
         capture_hidden_layers=None,
         model=model_worker.model_runner.model,
     )
+
+    audio_encoder_service = None
+    if enable_pre_lm_encoder:
+        model = model_worker.model_runner.model
+        audio_encoder_service = FunAsrPreLMEncoderService(
+            model,
+            cache_namespace=build_cache_namespace(
+                model,
+                model_path=model_path,
+                feature_extractor=feature_extractor,
+                mm_attention_backend=getattr(server_args, "mm_attention_backend", None),
+            ),
+            cache_max_entries=pre_lm_cache_max_entries,
+            cache_max_bytes=pre_lm_cache_max_bytes,
+        )
+
     request_builder, result_adapter = make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
         feature_extractor=feature_extractor,
         max_new_tokens=max_new_tokens,
         context_length=context_length,
+        audio_encoder_service=audio_encoder_service,
     )
 
     return OmniScheduler(

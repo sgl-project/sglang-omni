@@ -131,6 +131,41 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
     )
 
 
+def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) -> None:
+    audio = np.zeros(1600, dtype=np.float32)
+    monkeypatch.setattr(request_builders, "_load_audio", lambda source: audio)
+    observed: dict[str, object] = {}
+
+    class _EncoderService:
+        def encode_item(self, item) -> None:
+            observed["offsets"] = item.offsets
+            observed["num_audio_tokens"] = item.num_audio_tokens
+            observed["audio_fingerprint"] = item.audio_fingerprint
+            item.precomputed_embeddings = torch.zeros(item.num_audio_tokens, 4)
+            item.feature = None
+
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(17),
+        audio_encoder_service=_EncoderService(),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-pre-lm",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert observed["offsets"] == item.offsets
+    assert observed["num_audio_tokens"] == 3
+    assert observed["audio_fingerprint"] == request_builders.audio_fingerprint(audio)
+    assert item.feature is None
+    assert item.precomputed_embeddings.shape[0] == 3
+
+
 def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:
 
     monkeypatch.setattr(

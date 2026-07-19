@@ -175,6 +175,7 @@ def make_fun_asr_scheduler_adapters(
     max_new_tokens: int,
     feature_extractor: Any = None,
     context_length: int | None = None,
+    audio_encoder_service: Any | None = None,
 ) -> tuple[
     Callable[[StagePayload], FunASRRequestData],
     Callable[[FunASRRequestData], StagePayload],
@@ -245,6 +246,8 @@ def make_fun_asr_scheduler_adapters(
             feature=features,
             model_specific_data={
                 "feature_attention_mask": feature_attention_mask,
+                "audio_fingerprint": fingerprint,
+                "num_audio_tokens": num_audio_tokens,
             },
         )
 
@@ -260,6 +263,9 @@ def make_fun_asr_scheduler_adapters(
             for tok in input_ids
         ]
         audio_item.offsets = [(audio_start, audio_start + num_audio_tokens - 1)]
+
+        if audio_encoder_service is not None:
+            audio_encoder_service.encode_item(audio_item)
 
         mm_inputs = MultimodalInputs(
             mm_items=[audio_item],

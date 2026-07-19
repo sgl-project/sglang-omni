@@ -376,6 +376,13 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+        return self._get_audio_feature_uncached(items, None)
+
+    def _get_audio_feature_uncached(
+        self,
+        items: List[MultimodalDataItem],
+        forward_batch: Optional[ForwardBatch],
+    ) -> torch.Tensor:
 
         device = next(self.audio_tower.parameters()).device
         dtype = next(self.audio_tower.parameters()).dtype
