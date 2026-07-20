@@ -110,6 +110,7 @@ tests/
     │   ├── test_engine_factory.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
+    │   ├── test_stage_cache.py
     │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
@@ -317,6 +318,9 @@ that happened to contain an older version of the test.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
+  - `StageOutputCache` thread safety: concurrent get/put byte-accounting,
+    the `remove_if` eviction predicate evaluated outside the lock (re-entrant
+    and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory concurrency defaults
   - single-source audio token length formula used by both processor and
