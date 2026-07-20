@@ -23,7 +23,7 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["max_new_tokens"] == 200
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
     assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
-    assert config.stages[0].factory_args["pre_lm_cache_max_bytes"] == 2 * 1024**3
+    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
@@ -39,7 +39,7 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
     assert signature.parameters["max_new_tokens"].default == 200
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
-    assert signature.parameters["pre_lm_cache_max_bytes"].default == 2 * 1024**3
+    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
 
@@ -116,7 +116,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
     monkeypatch.setattr(
         fun_asr_stages,
-        "FunAsrPreLMEncoderService",
+        "FunASRPreLMEncoderService",
         lambda *args, **kwargs: encoder_service,
     )
 

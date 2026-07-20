@@ -11,7 +11,7 @@ from transformers import AutoFeatureExtractor, AutoTokenizer
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.fun_asr.encoder_service import (
-    FunAsrPreLMEncoderService,
+    FunASRPreLMEncoderService,
     build_cache_namespace,
 )
 from sglang_omni.models.fun_asr.request_builders import (
@@ -51,7 +51,7 @@ def create_sglang_fun_asr_executor(
     mm_attention_backend: str | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
-    pre_lm_cache_max_bytes: int = 2 * 1024**3,
+    pre_lm_cache_size_bytes: int = 2 * 1024**3,
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -135,7 +135,7 @@ def create_sglang_fun_asr_executor(
     audio_encoder_service = None
     if enable_pre_lm_encoder:
         model = model_worker.model_runner.model
-        audio_encoder_service = FunAsrPreLMEncoderService(
+        audio_encoder_service = FunASRPreLMEncoderService(
             model,
             cache_namespace=build_cache_namespace(
                 model,
@@ -144,7 +144,7 @@ def create_sglang_fun_asr_executor(
                 mm_attention_backend=getattr(server_args, "mm_attention_backend", None),
             ),
             cache_max_entries=pre_lm_cache_max_entries,
-            cache_max_bytes=pre_lm_cache_max_bytes,
+            cache_max_bytes=pre_lm_cache_size_bytes,
         )
 
     request_builder, result_adapter = make_fun_asr_scheduler_adapters(

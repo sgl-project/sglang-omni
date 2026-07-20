@@ -18,6 +18,11 @@ _AUDIO_PAD = "<|object_ref_start|>"
 _AUDIO_PAD_ID = 42  # arbitrary sentinel distinct from vocabulary ids below
 
 
+class _UnexpectedEncoderService:
+    def encode_item(self, _item: object) -> None:
+        pytest.fail("invalid requests must not be encoded")
+
+
 class _FakeTokenizer:
     eos_token_id = 151645
     vocab_size = 151936
@@ -210,6 +215,9 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
     )
     data = request_builders.FunASRRequestData(
         output_ids=[20, 21, 30],  # 你好 世界 <|im_end|>
+        prompt_token_ids=[10, 11, 12, 13],
+        num_audio_tokens=3,
+        finish_reason="stop",
         stage_payload=payload,
         language="zh",
         audio_duration_s=2.5,
@@ -222,6 +230,10 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
     assert result.data["text"] == "你好世界"
     assert result.data["language"] == "zh"
     assert result.data["duration_s"] == 2.5
+    assert result.data["prompt_tokens"] == 4
+    assert result.data["audio_tokens"] == 3
+    assert result.data["completion_tokens"] == 3
+    assert result.data["finish_reason"] == "stop"
     assert result.data["modality"] == "text"
     assert tokenizer.decode_calls[-1] == {
         "token_ids": [20, 21, 30],
@@ -307,6 +319,7 @@ def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=200,
         feature_extractor=_feature_extractor(17),
+        audio_encoder_service=_UnexpectedEncoderService(),
     )
     payload = StagePayload(
         request_id="req-fun-asr-token-cap",
@@ -371,6 +384,7 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
         max_new_tokens=200,
         feature_extractor=_feature_extractor(17),
         context_length=10,
+        audio_encoder_service=_UnexpectedEncoderService(),
     )
     payload = StagePayload(
         request_id="req-fun-asr-overflow",

@@ -87,7 +87,7 @@ def test_fun_asr_weight_loader_rejects_unknown_audio_weights() -> None:
         model.load_weights([("model.audio_tower.missing.weight", torch.ones(2))])
 
 
-def test_fun_asr_fallback_matches_uncached_audio_path() -> None:
+def test_fun_asr_audio_feature_shape() -> None:
     class _IdentityTower(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -107,8 +107,6 @@ def test_fun_asr_fallback_matches_uncached_audio_path() -> None:
         feature_attention_mask=torch.ones(1, 17, dtype=torch.long),
     )
 
-    fallback = model.get_audio_feature([item])
-    uncached = model._get_audio_feature_uncached([item], None)
+    embedding = model.get_audio_feature([item])
 
-    assert torch.equal(fallback, uncached)
-    assert fallback.shape == (3, 4)
+    assert embedding.shape == (3, 4)

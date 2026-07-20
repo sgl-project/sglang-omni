@@ -38,6 +38,7 @@ _MIN_GENERATION_TOKENS = 16
 class FunASRRequestData(SGLangARRequestData):
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
+    num_audio_tokens: int = 0
     audio_duration_s: float = 0.0
     language: str | None = None
     engine_start_s: float = 0.0
@@ -264,9 +265,6 @@ def make_fun_asr_scheduler_adapters(
         ]
         audio_item.offsets = [(audio_start, audio_start + num_audio_tokens - 1)]
 
-        if audio_encoder_service is not None:
-            audio_encoder_service.encode_item(audio_item)
-
         mm_inputs = MultimodalInputs(
             mm_items=[audio_item],
             num_image_tokens=num_audio_tokens,
@@ -292,7 +290,8 @@ def make_fun_asr_scheduler_adapters(
                 f"max_new_tokens > {context_length}); reduce hotwords or split the audio"
             )
         logger.debug(
-            f"[fun-asr] sampling temp={temperature} "
+            f"[fun-asr] prompt_tokens={len(input_ids)} "
+            f"audio_tokens={num_audio_tokens} sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"
         )
         sampling_params = SamplingParams(
@@ -302,6 +301,9 @@ def make_fun_asr_scheduler_adapters(
             stop_token_ids=[eos_token_id],
         )
         sampling_params.normalize(tokenizer=None)
+
+        if audio_encoder_service is not None:
+            audio_encoder_service.encode_item(audio_item)
 
         req = Req(
             rid=payload.request_id,
@@ -320,6 +322,7 @@ def make_fun_asr_scheduler_adapters(
             prompt_token_ids=input_ids,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
+            num_audio_tokens=num_audio_tokens,
             audio_duration_s=audio_duration_s,
             language=lang_raw,
             engine_start_s=time.perf_counter(),
@@ -334,8 +337,13 @@ def make_fun_asr_scheduler_adapters(
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
+        prompt_tokens = len(data.prompt_token_ids or [])
         logger.debug(
-            f"[fun-asr] n_out={len(output_ids)} ids={output_ids[:40]} text={text!r}"
+            f"[fun-asr] prompt_tokens={prompt_tokens} "
+            f"audio_tokens={data.num_audio_tokens} "
+            f"completion_tokens={len(output_ids)} "
+            f"finish_reason={data.finish_reason!r} ids={output_ids[:40]} "
+            f"text={text!r}"
         )
         return StagePayload(
             request_id=payload.request_id,
@@ -345,6 +353,10 @@ def make_fun_asr_scheduler_adapters(
                 "language": data.language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
+                "prompt_tokens": prompt_tokens,
+                "audio_tokens": data.num_audio_tokens,
+                "completion_tokens": len(output_ids),
+                "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
                 "modality": "text",
             },

@@ -11,20 +11,18 @@ import logging
 import queue
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 
-from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
-    fun_asr_low_frame_rate_length,
-)
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
 _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
+_SHUTDOWN = object()
 
 _FRONTEND_CONFIG_FIELDS = (
     "feature_size",
@@ -68,18 +66,10 @@ def build_cache_namespace(
 def _expected_audio_tokens(item: Any) -> int | None:
     """Audio placeholder token count for an item (rows the LM expects)."""
     num_tokens = getattr(item, "num_audio_tokens", None)
-    if num_tokens is not None:
-        return int(num_tokens)
-    mask = getattr(item, "feature_attention_mask", None)
-    if mask is not None:
-        return max(int(fun_asr_low_frame_rate_length(int(mask.sum()))), 1)
-    feature = getattr(item, "feature", None)
-    if isinstance(feature, torch.Tensor) and feature.dim() >= 1:
-        return max(int(fun_asr_low_frame_rate_length(int(feature.shape[-1]))), 1)
-    return None
+    return int(num_tokens) if num_tokens is not None else None
 
 
-class FunAsrPreLMEncoderService:
+class FunASRPreLMEncoderService:
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
@@ -91,6 +81,8 @@ class FunAsrPreLMEncoderService:
         cache_namespace: str,
         cache_max_entries: int = _CACHE_MAX_ENTRIES,
         cache_max_bytes: int = _CACHE_MAX_BYTES,
+        max_batch_size: int = 8,
+        max_batch_wait_ms: int = 4,
     ) -> None:
         self._model = model
         reference = next(model.audio_tower.parameters())
@@ -108,10 +100,12 @@ class FunAsrPreLMEncoderService:
             cache_device="cpu",
         )
         self._namespace = cache_namespace
-        self._queue: queue.Queue[
-            tuple[Any, concurrent.futures.Future[torch.Tensor], float]
-        ] = queue.Queue()
+        self._max_batch_size = max(int(max_batch_size), 1)
+        self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self._queue: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._closed = False
         self._inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
         self._hits = 0
         self._misses = 0
@@ -128,6 +122,25 @@ class FunAsrPreLMEncoderService:
         )
         self._thread.start()
 
+    def close(self) -> None:
+        """Stop the encoder worker after all queued requests finish."""
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._queue.put(_SHUTDOWN)
+        self._thread.join(timeout=5)
+
+    def _enqueue(
+        self,
+        item: Any,
+        future: concurrent.futures.Future[torch.Tensor],
+    ) -> None:
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Fun-ASR pre-LM encoder service is closed")
+            self._queue.put((item, future, time.perf_counter()))
+
     def encode_item(self, item: Any) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
 
@@ -138,8 +151,7 @@ class FunAsrPreLMEncoderService:
         expected_tokens = _expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
-                "Fun-ASR pre-LM encode requires the item's audio token count "
-                "(num_audio_tokens or feature_attention_mask)"
+                "Fun-ASR pre-LM encode requires the item's num_audio_tokens"
             )
         key = self._cache_key(item)
 
@@ -147,7 +159,7 @@ class FunAsrPreLMEncoderService:
             future: concurrent.futures.Future[torch.Tensor] = (
                 concurrent.futures.Future()
             )
-            self._queue.put((item, future, time.perf_counter()))
+            self._enqueue(item, future)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
 
@@ -173,7 +185,11 @@ class FunAsrPreLMEncoderService:
                 self._inflight[key] = future
                 leader = True
                 self._misses += 1
-                self._queue.put((item, future, time.perf_counter()))
+                try:
+                    self._enqueue(item, future)
+                except Exception:
+                    del self._inflight[key]
+                    raise
             else:
                 self._merged += 1
         try:
@@ -227,8 +243,6 @@ class FunAsrPreLMEncoderService:
     def _cache_key(self, item: Any) -> str | None:
         item_hash = getattr(item, "audio_fingerprint", None)
         if item_hash is None:
-            item_hash = getattr(item, "hash", None)
-        if item_hash is None:
             return None
         return f"{self._namespace}:{item_hash}"
 
@@ -248,18 +262,41 @@ class FunAsrPreLMEncoderService:
 
     def _drain_batch(
         self,
-    ) -> list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]]:
-        batch = [self._queue.get()]
-        while True:
+    ) -> tuple[list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]], bool]:
+        first = self._queue.get()
+        if first is _SHUTDOWN:
+            return [], True
+        batch = [
+            cast(tuple[Any, concurrent.futures.Future[torch.Tensor], float], first)
+        ]
+        deadline = time.monotonic() + self._max_batch_wait_s
+        shutdown = False
+        while len(batch) < self._max_batch_size:
             try:
-                batch.append(self._queue.get_nowait())
+                remaining = deadline - time.monotonic()
+                queued = (
+                    self._queue.get(timeout=remaining)
+                    if remaining > 0
+                    else self._queue.get_nowait()
+                )
             except queue.Empty:
                 break
-        return batch
+            if queued is _SHUTDOWN:
+                shutdown = True
+                break
+            batch.append(
+                cast(
+                    tuple[Any, concurrent.futures.Future[torch.Tensor], float],
+                    queued,
+                )
+            )
+        return batch, shutdown
 
     def _worker(self) -> None:
         while True:
-            batch = self._drain_batch()
+            batch, shutdown = self._drain_batch()
+            if not batch:
+                return
             dequeue_time = time.perf_counter()
             queue_waits = [dequeue_time - enqueued_at for _, _, enqueued_at in batch]
             with self._lock:
@@ -277,6 +314,8 @@ class FunAsrPreLMEncoderService:
                     batch[0][1].set_exception(batch_exc)
                     with self._lock:
                         self._encoder_time_s += time.perf_counter() - encode_start
+                    if shutdown:
+                        return
                     continue
                 logger.exception(
                     f"Fun-ASR batched audio encode failed for {len(items)} "
@@ -295,6 +334,8 @@ class FunAsrPreLMEncoderService:
                     # Note (Akazaakane): Retried items are single-item batches.
                     self._batch_count += recovered
                     self._item_count += recovered
+                if shutdown:
+                    return
                 continue
             for (_, future, _), embedding in zip(batch, embeddings):
                 future.set_result(embedding)
@@ -311,6 +352,8 @@ class FunAsrPreLMEncoderService:
                     f"{item_count / batch_count:.2f} items/batch, "
                     f"last batch: {len(items)}), cache: {self.stats()}"
                 )
+            if shutdown:
+                return
 
     def _encode_batch(self, items: list[Any]) -> list[torch.Tensor]:
         stream_context = (
@@ -319,7 +362,7 @@ class FunAsrPreLMEncoderService:
             else contextlib.nullcontext()
         )
         with torch.inference_mode(), stream_context:
-            embedding = self._model._get_audio_feature_uncached(items, None)
+            embedding = self._model.get_audio_feature(items)
             token_counts = []
             for item in items:
                 expected = _expected_audio_tokens(item)
@@ -353,6 +396,6 @@ class FunAsrPreLMEncoderService:
 
 
 __all__ = [
-    "FunAsrPreLMEncoderService",
+    "FunASRPreLMEncoderService",
     "build_cache_namespace",
 ]

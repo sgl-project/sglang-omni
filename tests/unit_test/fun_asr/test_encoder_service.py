@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from sglang_omni.models.fun_asr.encoder_service import (
-    FunAsrPreLMEncoderService,
+    FunASRPreLMEncoderService,
     _expected_audio_tokens,
     build_cache_namespace,
 )
 
 _HIDDEN_SIZE = 4
 _NAMESPACE = "testns"
+_SERVICES: list[FunASRPreLMEncoderService] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_services() -> Iterator[None]:
+    yield
+    for service in _SERVICES:
+        service.close()
+    _SERVICES.clear()
 
 
 class _StubModel(torch.nn.Module):
@@ -35,7 +45,7 @@ class _StubModel(torch.nn.Module):
         self.encode_delay_s = 0.0
         self.grad_enabled_during_encode: bool | None = None
 
-    def _get_audio_feature_uncached(self, items, forward_batch):  # noqa: ANN001
+    def get_audio_feature(self, items):  # noqa: ANN001
         self.grad_enabled_during_encode = torch.is_grad_enabled()
         self.encode_calls += 1
         gate = self.encode_gate
@@ -61,13 +71,15 @@ def _make_service(
     *,
     cache_max_entries: int = 16,
     cache_max_bytes: int = 1 << 20,
-) -> FunAsrPreLMEncoderService:
-    return FunAsrPreLMEncoderService(
+) -> FunASRPreLMEncoderService:
+    service = FunASRPreLMEncoderService(
         model or _StubModel(),
         cache_namespace=_NAMESPACE,
         cache_max_entries=cache_max_entries,
         cache_max_bytes=cache_max_bytes,
     )
+    _SERVICES.append(service)
+    return service
 
 
 def _item(
@@ -78,6 +90,7 @@ def _item(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         hash=audio_hash,
+        audio_fingerprint=str(audio_hash) if audio_hash is not None else None,
         num_audio_tokens=num_audio_tokens,
         feature=torch.zeros(1, 560, 8) if with_feature else None,
         precomputed_embeddings=None,
@@ -102,6 +115,14 @@ def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
     assert model.encode_calls == 1
     assert model.grad_enabled_during_encode is False
     assert service.stats()["misses"] == 1
+
+
+def test_close_stops_worker() -> None:
+    service = _make_service()
+
+    service.close()
+
+    assert not service._thread.is_alive()
 
 
 def test_cache_hit_skips_reencode() -> None:
@@ -373,12 +394,14 @@ def test_missing_token_count_raises() -> None:
         service.encode_item(item)
 
 
-def test_item_without_hash_encodes_without_caching() -> None:
+def test_item_without_fingerprint_encodes_without_caching() -> None:
     model = _StubModel()
     service = _make_service(model)
 
-    first = _item(None, 2)
-    second = _item(None, 2)
+    first = _item(1, 2)
+    second = _item(1, 2)
+    first.audio_fingerprint = None
+    second.audio_fingerprint = None
     service.encode_item(first)
     service.encode_item(second)
 
@@ -388,13 +411,7 @@ def test_item_without_hash_encodes_without_caching() -> None:
     assert len(service._cache) == 0
 
 
-def test_expected_audio_tokens_derivation() -> None:
-    from_mask = SimpleNamespace(
-        feature_attention_mask=torch.ones(1, 17, dtype=torch.long)
-    )
-    assert _expected_audio_tokens(from_mask) == 3
-    from_feature = SimpleNamespace(feature=torch.zeros(1, 560, 17))
-    assert _expected_audio_tokens(from_feature) == 3
+def test_expected_audio_tokens_uses_request_metadata() -> None:
     explicit = SimpleNamespace(num_audio_tokens=5, feature=torch.zeros(1, 560, 17))
     assert _expected_audio_tokens(explicit) == 5
     assert _expected_audio_tokens(SimpleNamespace()) is None
