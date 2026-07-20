@@ -87,6 +87,7 @@ class SGLModelRunner(ModelRunner):
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
             "HiggsMultimodalQwen3ForConditionalGeneration": "sglang_omni.models.higgs_tts.model:HiggsTTSModel",
             "Qwen3TTSTalker": "sglang_omni.models.qwen3_tts.sglang_model:Qwen3TTSTalker",
+            "MingTTSSGLangModel": "sglang_omni.models.ming_tts.sglang_model:MingTTSSGLangModel",
             "MossTTSDelaySGLangModel": "sglang_omni.models.moss_tts.sglang_model:MossTTSDelaySGLangModel",
             "MossTTSLocalSGLangModel": "sglang_omni.models.moss_tts_local.sglang_model:MossTTSLocalSGLangModel",
             "MossTranscribeDiarizeForConditionalGeneration": "sglang_omni.models.moss_transcribe_diarize.sglang_model:MossTranscribeDiarizeForConditionalGeneration",

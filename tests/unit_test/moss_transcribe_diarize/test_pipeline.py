@@ -33,7 +33,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 16
-    assert config.stages[0].factory_args["request_build_max_workers"] == 2
+    assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config(
@@ -54,7 +54,7 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
 
     assert signature.parameters["max_running_requests"].default == 16
     assert signature.parameters["mem_fraction_static"].default == 0.80
-    assert signature.parameters["request_build_max_workers"].default == 2
+    assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
     assert signature.parameters["encoder_chunk_buckets"].default is None
@@ -177,6 +177,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         stages, "create_sglang_infrastructure_defer_cuda_graph", lambda *a, **k: infra
     )
     monkeypatch.setattr(stages, "init_mm_embedding_cache", lambda n: None)
+    monkeypatch.setattr(stages, "BatchedAudioEncoderService", lambda model: object())
     monkeypatch.setattr(
         stages,
         "make_moss_transcribe_diarize_scheduler_adapters",

@@ -74,6 +74,12 @@ tests/
     │   ├── test_tokenizer.py
     │   ├── test_tp.py
     │   └── test_vision_patch_embed_linear.py
+    ├── ming_tts/
+    │   ├── test_audio_decode.py
+    │   ├── test_engine_io.py
+    │   ├── test_model_runner.py
+    │   ├── test_reference_encode.py
+    │   └── test_request_builders.py
     ├── qwen3_asr/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
@@ -118,6 +124,7 @@ tests/
     │   ├── test_engine_factory.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
+    │   ├── test_stage_cache.py
     │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
     │   ├── test_pipeline.py
@@ -334,6 +341,9 @@ that happened to contain an older version of the test.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
+  - `StageOutputCache` thread safety: concurrent get/put byte-accounting,
+    the `remove_if` eviction predicate evaluated outside the lock (re-entrant
+    and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory concurrency defaults
   - single-source audio token length formula used by both processor and
@@ -401,6 +411,16 @@ that happened to contain an older version of the test.
     `MingOmniStreamingSpeechPipelineConfig` wiring (segmenter between thinker and
     talker, terminal talker-stream stage, thinker/talker GPU-range collision
     rejection, streaming variant exposure).
+
+- `unit_test/ming_tts/`: Ming-TTS unit tests:
+  - request builder rejection for unsupported seed inputs until the FlowLoss RNG
+    contract is exposed
+  - request/result adapter finish semantics for empty latent output, stop-head
+    finish, SGLang length finish, max-step length finish, and terminal cleanup
+  - TP tail-failure propagation and idempotent abort cleanup without loading a
+    model checkpoint
+  - reference-audio content-cache identity and invalidation
+  - audio decode behavior for zero generated latents without invoking AudioVAE.
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts

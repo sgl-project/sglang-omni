@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, and MOSS-TTS.
 
 ## Prerequisites
 
@@ -27,6 +27,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
+| [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 
 ## Launch the Server
@@ -110,6 +111,15 @@ sgl-omni serve \
   --config examples/configs/moss_tts.yaml \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
+  --port 8000
+```
+
+For Ming-Omni-TTS on two 80 GB GPUs:
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-omni-tts-16.8B-A3B \
+  --config examples/configs/ming_omni_tts.yaml \
   --port 8000
 ```
 

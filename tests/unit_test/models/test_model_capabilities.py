@@ -51,6 +51,13 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
     ),
+    "BailingMMNativeForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
+    ),
     "VoxtralTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
         supports_batch_vocoder=False,
