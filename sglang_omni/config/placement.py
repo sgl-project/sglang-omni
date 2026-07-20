@@ -34,7 +34,6 @@ class GpuPlacement:
 class StagePlacementPlan:
     stages: dict[str, StagePlacement]
     gpus: dict[int, GpuPlacement]
-    same_gpu_stream_targets: dict[str, frozenset[str]]
 
 
 class PlacementPolicy(Protocol):
@@ -84,10 +83,6 @@ class StagePlacementPlanner:
         plan = StagePlacementPlan(
             stages=placements,
             gpus=gpu_plans,
-            same_gpu_stream_targets=_build_same_gpu_stream_targets(
-                stages,
-                placements,
-            ),
         )
         self._validate_memory_budgets(plan)
         if apply_policy:
@@ -127,11 +122,14 @@ def resolve_stage_gpu_ids(
     return list(placement.gpu_ids)
 
 
-def resolve_same_gpu_stream_targets(
-    plan: StagePlacementPlan,
-    stage_cfg: StageConfig,
-) -> set[str]:
-    return set(plan.same_gpu_stream_targets.get(stage_cfg.name, frozenset()))
+def resolve_gpu_stage_names(plan: StagePlacementPlan) -> set[str]:
+    """Names of all GPU-resident stages.
+
+    The placement planner only records stages that resolve to a GPU (CPU-only
+    stages are skipped), so the plan's stage keys are exactly the GPU stages.
+    The transport router uses this to decide CUDA-IPC vs SHM per edge.
+    """
+    return set(plan.stages.keys())
 
 
 def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
@@ -157,37 +155,6 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
             f"got {list(gpu_ids)}"
         )
     return gpu_ids
-
-
-def _build_same_gpu_stream_targets(
-    stages: list[StageConfig],
-    placements: dict[str, StagePlacement],
-) -> dict[str, frozenset[str]]:
-    out: dict[str, frozenset[str]] = {}
-    for stage in stages:
-        if not stage.stream_to:
-            continue
-        sender_gpu = _primary_gpu(stage.name, placements)
-        if sender_gpu is None:
-            continue
-        same_gpu_targets = {
-            target_name
-            for target_name in stage.stream_to
-            if _primary_gpu(target_name, placements) == sender_gpu
-        }
-        if same_gpu_targets:
-            out[stage.name] = frozenset(same_gpu_targets)
-    return out
-
-
-def _primary_gpu(
-    stage_name: str,
-    placements: dict[str, StagePlacement],
-) -> int | None:
-    placement = placements.get(stage_name)
-    if placement is None or not placement.gpu_ids:
-        return None
-    return placement.gpu_ids[0]
 
 
 def _build_gpu_placement(

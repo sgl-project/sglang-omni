@@ -19,9 +19,6 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         self.decrypted_config_file: str | None = None
         self.voice_embeddings: dict[str, Any] = {}
 
-    def resolve_checkpoint(self, model_path: str) -> str:
-        return voxtral_stages._resolve_checkpoint(model_path)
-
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.decrypted_config_file = voxtral_stages._write_voxtral_sglang_config(
             checkpoint_dir

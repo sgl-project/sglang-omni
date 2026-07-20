@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +14,38 @@ def test_tts_engine_builder_import_is_cpu_only() -> None:
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
     assert TtsEngineBuilder.__name__ == "TtsEngineBuilder"
+
+
+def test_legacy_tts_engine_factory_paths_remain_importable() -> None:
+    module_names = (
+        "sglang_omni.models.moss_tts.stages",
+        "sglang_omni.models.moss_tts_local.stages",
+        "sglang_omni.models.qwen3_tts.stages",
+    )
+
+    for module_name in module_names:
+        module = importlib.import_module(module_name)
+        assert (
+            module.create_tts_engine_executor
+            is module.create_sglang_tts_engine_executor
+        )
+
+
+def test_tts_engine_builder_uses_shared_checkpoint_resolver(monkeypatch) -> None:
+    from sglang_omni.scheduling import engine_factory
+
+    calls: list[str] = []
+
+    def fake_resolve_checkpoint(model_path: str) -> str:
+        calls.append(model_path)
+        return "/resolved/checkpoint"
+
+    monkeypatch.setattr(engine_factory, "_resolve_checkpoint", fake_resolve_checkpoint)
+
+    resolved = engine_factory.TtsEngineBuilder.resolve_checkpoint(object(), "repo/id")
+
+    assert resolved == "/resolved/checkpoint"
+    assert calls == ["repo/id"]
 
 
 def test_tts_engine_builder_hook_contract_is_narrow() -> None:

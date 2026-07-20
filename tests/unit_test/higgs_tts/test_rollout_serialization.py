@@ -18,6 +18,8 @@ V = 1026
 def _fake_data(*, return_omni_rollout, return_logprob, t_raw=6):
     delayed = apply_delay_pattern(torch.randint(0, 1024, (t_raw, N)))
     return SimpleNamespace(
+        output_code_buffer=None,
+        output_code_count=0,
         output_codes=list(delayed.unbind(0)),
         output_logprobs=list(torch.randn(*delayed.shape).unbind(0)),
         num_codebooks=N,

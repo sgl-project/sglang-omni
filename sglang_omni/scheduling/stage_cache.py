@@ -32,6 +32,8 @@ def _detach_value(value: Any, *, device: torch.device | None) -> Any:
 def _value_size_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
+    if isinstance(value, (bytes, bytearray)):
+        return len(value)
     if isinstance(value, dict):
         return sum(_value_size_bytes(item) for item in value.values())
     if isinstance(value, (list, tuple)):

@@ -26,6 +26,7 @@ from sglang.srt.layers.linear import (
 )
 from sglang.srt.layers.moe import (
     get_moe_a2a_backend,
+    should_skip_post_experts_all_reduce,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
@@ -151,6 +152,7 @@ __all__ = [
     "StandardTopKOutput",
     "TopK",
     "get_moe_a2a_backend",
+    "should_skip_post_experts_all_reduce",
     "should_use_flashinfer_cutlass_moe_fp4_allgather",
     "get_moe_impl_class",
     "RoutingMethodType",

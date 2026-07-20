@@ -115,23 +115,27 @@ def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction()
     ]
 
 
-def test_colocated_config_marks_same_gpu_stream_targets() -> None:
+def test_colocated_config_places_ar_chain_on_one_gpu() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     _set_colocated_runtime(config)
 
     plan = build_stage_placement_plan(config)
 
-    assert plan.same_gpu_stream_targets["thinker"] == frozenset({"talker_ar"})
-    assert plan.same_gpu_stream_targets["talker_ar"] == frozenset({"code2wav"})
+    # Colocated: thinker -> talker_ar -> code2wav all share GPU 0.
+    assert plan.stages["thinker"].gpu_ids == (0,)
+    assert plan.stages["talker_ar"].gpu_ids == (0,)
+    assert plan.stages["code2wav"].gpu_ids == (0,)
 
 
-def test_default_speech_marks_only_talker_to_code2wav_same_gpu_stream() -> None:
+def test_default_speech_splits_thinker_from_talker_chain() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
     plan = build_stage_placement_plan(config)
 
-    assert "thinker" not in plan.same_gpu_stream_targets
-    assert plan.same_gpu_stream_targets["talker_ar"] == frozenset({"code2wav"})
+    # Default: thinker on its own GPU, talker_ar -> code2wav colocated on another.
+    assert plan.stages["thinker"].gpu_ids == (0,)
+    assert plan.stages["talker_ar"].gpu_ids == (1,)
+    assert plan.stages["code2wav"].gpu_ids == (1,)
 
 
 def test_colocated_config_rejects_conflicting_ar_mem_fraction() -> None:

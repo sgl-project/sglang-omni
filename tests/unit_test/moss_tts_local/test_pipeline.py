@@ -476,7 +476,7 @@ def _install_fake_moss_ar_factory(
 
     from sglang_omni.models.moss_tts_local import request_builders, stages
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
-    from sglang_omni.scheduling import omni_scheduler, sglang_backend
+    from sglang_omni.scheduling import engine_factory, omni_scheduler, sglang_backend
     from sglang_omni.utils import gpu_memory as gpu_memory_utils
 
     infrastructure_calls = []
@@ -554,7 +554,7 @@ def _install_fake_moss_ar_factory(
         lambda **kwargs: (object(), object()),
     )
     monkeypatch.setattr(
-        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
 

@@ -44,3 +44,33 @@ def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     assert result.data["completion_tokens"] == 1
     assert result.data["engine_time_s"] == 2.5
     assert reset_calls == ["req-higgs"]
+
+
+def test_higgs_result_adapter_reads_output_code_buffer() -> None:
+    reset_calls: list[str] = []
+    _, result_adapter = request_builders.make_higgs_scheduler_adapters(
+        SimpleNamespace(reset_request=reset_calls.append),
+    )
+    state = HiggsTtsState(
+        prompt_token_ids=[1, 2, 3],
+        max_new_tokens=8,
+        num_codebooks=3,
+    )
+    payload = StagePayload(
+        request_id="req-higgs",
+        request=OmniRequest(inputs={}),
+        data=state.to_dict(),
+    )
+    data = request_builders.build_sglang_higgs_request(
+        state, request_id=payload.request_id
+    )
+    data.stage_payload = payload
+    data.output_codes.append(torch.tensor([9, 9, 9], dtype=torch.long))
+    data.output_code_buffer = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
+    data.output_code_count = 2
+
+    result = result_adapter(data)
+
+    assert result.data["output_codes_delayed"] == [[1, 2, 3], [4, 5, 6]]
+    assert result.data["completion_tokens"] == 2
+    assert reset_calls == ["req-higgs"]

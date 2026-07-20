@@ -416,7 +416,8 @@ class MooncakeRelay(Relay):
             device_name: RDMA device name (e.g., "mlx5_0")
         """
         self.engine_id = engine_id
-        self.device = torch.device(device)
+        self.device = device
+        self.torch_device = torch.device(device)
 
         # Parse device ID
         self.device_id = 0
@@ -448,7 +449,7 @@ class MooncakeRelay(Relay):
         )
 
         self.pool_tensor = torch.zeros(
-            total_pool_bytes, dtype=torch.uint8, device=self.device
+            total_pool_bytes, dtype=torch.uint8, device=self.torch_device
         )
         self.pool_ptr = self.pool_tensor.data_ptr()
 
@@ -482,7 +483,11 @@ class MooncakeRelay(Relay):
         )
 
     async def put_async(
-        self, tensor: torch.Tensor, request_id: str = None, dst_rank: int = None
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
     ) -> PutOperation:
         """
         Asynchronously send tensor via Mooncake using memory pool.
@@ -492,6 +497,7 @@ class MooncakeRelay(Relay):
             tensor: Tensor to send
             request_id: Optional request identifier
             dst_rank: Destination rank (not used in P2P mode)
+            receiver_id: Stable destination process (unused in P2P mode)
 
         Returns:
             PutOperation handle with metadata
@@ -748,7 +754,7 @@ class MooncakeRelay(Relay):
             "engine_id": self.engine_id,
             "protocol": self.connection.protocol,
             "session_id": self.connection.session_id,
-            "device": str(self.device),
+            "device": self.device,
             "slot_size_mb": self.slot_size // (1024 * 1024),
             "credits": self.allocator.credits,
         }

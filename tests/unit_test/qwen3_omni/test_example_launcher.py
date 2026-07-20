@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import asyncio
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,9 +12,236 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from examples.launchers.qwen3_omni import _parse_thinker_tp_gpu_list
+from examples.launchers.qwen3_omni import (
+    launch_qwen_speech_server as _launch_speech_server,
+)
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 
 _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [
+        "qwen3-text-server",
+        "qwen3-speech-server",
+        "qwen3-speech",
+        "ming-text-server",
+        "ming-speech-server",
+        "ming-speech",
+        "ming-text",
+    ],
+)
+def test_unified_launcher_preset_help(preset):
+    result = subprocess.run(
+        [sys.executable, str(_EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
+
+def test_qwen_speech_help_preserves_topology_contract():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_EXAMPLES_DIR / "run_omni.py"),
+            "qwen3-speech-server",
+            "--help",
+        ],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    help_text = " ".join(result.stdout.decode().split())
+    assert "Tensor-parallel size for the thinker stage" in help_text
+    assert "exactly that many GPU ids" in help_text
+    assert "Defaults to on for the disaggregated topology" in help_text
+    assert "must be >= MIN_PARTIAL_START_CHUNKS (3)" in help_text
+    assert "All GPU stage flags must point to the same device" in help_text
+
+
+def _preset_help(preset: str) -> str:
+    result = subprocess.run(
+        [sys.executable, str(_EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    return " ".join(result.stdout.decode().split())
+
+
+def test_ming_speech_server_help_preserves_pipeline_contract():
+    help_text = _preset_help("ming-speech-server")
+
+    assert "8-stage streaming-TTS path" in help_text
+    assert "non-streaming 7-stage speech path" in help_text
+    assert "about 200 GB of MoE weights" in help_text
+    assert "--gpu-thinker is the first GPU rank" in help_text
+    assert "curl http://localhost:8000/v1/chat/completions" in help_text
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected_examples"),
+    [
+        ("qwen3-text-server", ("qwen3-text-server", "curl http://localhost:8000")),
+        ("qwen3-speech", ("qwen3-speech", "--output audio.wav")),
+        ("ming-text-server", ("ming-text-server", "curl http://localhost:8000")),
+        ("ming-speech", ("ming-speech", "--output audio.wav")),
+        ("ming-text", ("ming-text", "--audio-path /path/to/audio.wav")),
+    ],
+)
+def test_remaining_launcher_help_preserves_examples(preset, expected_examples):
+    help_text = _preset_help(preset)
+
+    for expected in expected_examples:
+        assert expected in help_text
+
+
+def test_offline_help_preserves_input_output_guidance():
+    ming_help = _preset_help("ming-speech")
+    qwen_help = _preset_help("qwen3-speech")
+
+    assert "Thinker GPU id. With TP > 1" in ming_help
+    assert "Output WAV path (default: ./output_audio.wav)" in ming_help
+    assert "Output WAV path; omit to skip saving audio" in qwen_help
+
+
+def _fresh_process_log_level(preset: str, loglevel: str | None) -> str:
+    code = (
+        "import logging\n"
+        "from examples import _omni_launcher\n"
+        "try:\n"
+        f"    _omni_launcher.run_preset({preset!r}, ['--help'])\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "print(logging.getLevelName(logging.getLogger().level))\n"
+    )
+    process_env = os.environ.copy()
+    if loglevel is None:
+        process_env.pop("LOGLEVEL", None)
+    else:
+        process_env["LOGLEVEL"] = loglevel
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=_EXAMPLES_DIR.parent,
+        env=process_env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip().splitlines()[-1]
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [
+        "qwen3-text-server",
+        "qwen3-speech-server",
+        "qwen3-speech",
+        "ming-text-server",
+        "ming-speech-server",
+        "ming-speech",
+        "ming-text",
+    ],
+)
+def test_unified_launcher_honors_loglevel_override(preset):
+    assert _fresh_process_log_level(preset, "DEBUG") == "DEBUG"
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected"),
+    [("qwen3-text-server", "INFO"), ("ming-text", "DEBUG")],
+)
+def test_unified_launcher_preserves_default_log_levels(preset, expected):
+    assert _fresh_process_log_level(preset, None) == expected
+
+
+def test_unified_qwen_offline_launcher_applies_stage_gpus(monkeypatch):
+    from examples import _omni_launcher as registry
+    from examples.launchers import qwen3_omni as launcher
+
+    captured = {}
+
+    async def fake_run(config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(launcher, "run_speech_request", fake_run)
+    args = registry.parse_preset_args("qwen3-speech", ["--model-path", "dummy"])
+
+    asyncio.run(launcher.run_qwen_speech(args))
+
+    stages = {stage.name: stage for stage in captured["config"].stages}
+    assert stages["thinker"].gpu == 0
+    assert stages["talker_ar"].gpu == 1
+    assert stages["code2wav"].gpu == 0
+    assert stages["image_encoder"].gpu == 0
+    assert stages["audio_encoder"].gpu == 0
+
+
+def test_unified_ming_offline_launcher_applies_tp_and_overrides(monkeypatch):
+    from examples import _omni_launcher as registry
+    from examples.launchers import ming_omni as launcher
+
+    captured = {}
+
+    async def fake_run(config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(launcher, "run_speech_request", fake_run)
+    args = registry.parse_preset_args(
+        "ming-speech",
+        [
+            "--model-path",
+            "dummy",
+            "--tp-size",
+            "2",
+            "--gpu-talker",
+            "2",
+            "--voice",
+            "CUSTOM_VOICE",
+            "--cpu-offload-gb",
+            "4",
+            "--mem-fraction-static",
+            "0.8",
+        ],
+    )
+
+    asyncio.run(launcher.run_ming_speech(args))
+
+    stages = {stage.name: stage for stage in captured["config"].stages}
+    thinker = stages["thinker"]
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
+    assert stages["talker"].gpu == 2
+    assert stages["talker"].factory_args["voice"] == "CUSTOM_VOICE"
+    assert thinker.factory_args["server_args_overrides"] == {
+        "disable_custom_all_reduce": True,
+        "cpu_offload_gb": 4.0,
+        "mem_fraction_static": 0.8,
+    }
+
+
+def test_unified_ming_text_applies_thinker_max_seq_len():
+    from examples import _omni_launcher as registry
+    from examples.launchers import ming_omni as launcher
+
+    args = registry.parse_preset_args(
+        "ming-text",
+        [
+            "--model-path",
+            "dummy",
+            "--thinker-max-seq-len",
+            "1234",
+            "--cpu-offload-gb",
+            "0",
+        ],
+    )
+
+    config = launcher.build_ming_text_config(args)
+
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    assert thinker.factory_args["thinker_max_seq_len"] == 1234
 
 
 @pytest.mark.parametrize(
@@ -21,6 +249,11 @@ _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
     [
         "run_qwen3_omni_server.py",
         "run_qwen3_omni_speech.py",
+        "run_qwen3_omni_speech_server.py",
+        "run_ming_omni_server.py",
+        "run_ming_omni_speech.py",
+        "run_ming_omni_speech_server.py",
+        "run_ming_omni_text_first.py",
     ],
 )
 def test_example_script_help(script):
@@ -29,27 +262,6 @@ def test_example_script_help(script):
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr.decode()
-
-
-_EXAMPLE_MODULE_PATH = (
-    pathlib.Path(__file__).resolve().parents[3]
-    / "examples"
-    / "run_qwen3_omni_speech_server.py"
-)
-
-
-def _load_example_module():
-    spec = importlib.util.spec_from_file_location(
-        "run_qwen3_omni_speech_server", _EXAMPLE_MODULE_PATH
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mod = _load_example_module()
-_launch_speech_server = _mod._launch_speech_server
-_parse_thinker_tp_gpu_list = _mod._parse_thinker_tp_gpu_list
 
 
 def _make_args(**overrides) -> argparse.Namespace:
@@ -63,7 +275,6 @@ def _make_args(**overrides) -> argparse.Namespace:
         gpu_audio_encoder=None,
         thinker_tp_size=1,
         gpu_thinker_tp=None,
-        relay_backend="shm",
         thinker_max_seq_len=8192,
         talker_max_seq_len=None,
         mem_fraction_static=None,

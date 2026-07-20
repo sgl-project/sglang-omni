@@ -43,6 +43,8 @@ from sglang_omni.models.higgs_tts.utils import (
     to_codes_TN,
 )
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+    DEFAULT_HIGGS_STREAM_STRIDE,
     HiggsStreamingVocoderScheduler,
 )
 
@@ -456,6 +458,8 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
+    stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
+    stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
 ):
     """sglang-backed AR engine for Higgs TTS."""
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
@@ -466,6 +470,8 @@ def create_sglang_tts_engine_executor(
         cuda_graph_max_bs=cuda_graph_max_bs,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        stream_stride=stream_stride,
+        stream_followup_stride=stream_followup_stride,
     ).build(
         model_path,
         device=device,
@@ -480,8 +486,8 @@ def create_vocoder_executor(
     dtype: str = "bfloat16",
     vocoder_decode_batch_size: int = 16,
     max_batch_wait_ms: int = 2,
-    stream_stride: int = 75,
-    stream_followup_stride: int = 75,
+    stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
+    stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     stream_overlap_tokens: int = 8,
     stream_holdback_tokens: int = 4,
 ):

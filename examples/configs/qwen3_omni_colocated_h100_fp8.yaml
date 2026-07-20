@@ -5,7 +5,6 @@
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 name: qwen3-omni-colocated-h100-fp8
 model_path: marksverdhei/Qwen3-Omni-30B-A3B-FP8
-relay_backend: shm
 
 stage_overrides:
   image_encoder:

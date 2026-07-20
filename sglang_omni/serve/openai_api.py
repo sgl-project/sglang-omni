@@ -125,6 +125,8 @@ MAX_VOICE_UPLOAD_BODY_BYTES = (
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
+    "accepts audio up to",
+    "max_new_tokens must be",
 )
 
 
@@ -1606,8 +1608,12 @@ def _register_transcriptions(app: FastAPI) -> None:
         try:
             result = await client.completion(gen_req, request_id=request_id)
         except ClientError as exc:
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             logger.exception("Error transcribing audio for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
