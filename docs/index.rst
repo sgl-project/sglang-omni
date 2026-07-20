@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: Supports a growing set of TTS, ASR, and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, MOSS-TTS, Qwen3-ASR, Whisper ASR, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
+- **Broad Model Support**: Supports a growing set of TTS, ASR, and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, MOSS-TTS, Ming-Omni-TTS, Qwen3-ASR, Whisper ASR, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -40,6 +40,9 @@ Supported Models
    * - `OpenMOSS-Team/MOSS-TTS-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5>`_
      - TTS
      - Voice cloning, streaming, 31 languages
+   * - `inclusionAI/Ming-omni-tts-16.8B-A3B <https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B>`_
+     - TTS
+     - Text-to-speech and zero-shot voice cloning
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
      - Audio transcription through ``/v1/audio/transcriptions``
@@ -72,6 +75,7 @@ Supported Models
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
    cookbook/qwen3_tts.md
+   cookbook/ming_tts.md
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
    cookbook/qwen3_asr.md

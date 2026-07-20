@@ -88,6 +88,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
 
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+    from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
@@ -97,6 +98,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     state_classes = (
         S2ProState,
         HiggsTtsState,
+        MingTTSState,
         MossTTSState,
         MossTTSLocalState,
         Qwen3TTSState,
@@ -177,6 +179,7 @@ def _assert_restored_fields(
 def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+    from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
@@ -228,6 +231,47 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 completion_tokens=4,
                 engine_time_s=0.25,
                 audio_samples=torch.tensor([0.3, 0.4]),
+            ),
+            {},
+        ),
+        (
+            MingTTSState(
+                text="hello",
+                prompt="prompt",
+                instructions="calm",
+                language="en",
+                voice="voice",
+                ref_audio={"path": "ref.wav"},
+                ref_text="reference",
+                input_ids=[1, 2, 3, 4, 5, 6],
+                prompt_text="reference",
+                spk_token_positions=[1],
+                spk_injection_positions=[2],
+                audio_token_position=3,
+                prompt_latent_start_position=4,
+                prompt_latent_token_count=2,
+                spk_emb_bytes=b"\x00" * 8,
+                spk_emb_shape=[1, 2],
+                spk_emb_dtype="float32",
+                prompt_latent_bytes=b"\x00" * 8,
+                prompt_latent_shape=[1, 1, 2],
+                prompt_latent_dtype="float32",
+                max_decode_steps=16,
+                cfg=1.5,
+                sigma=0.2,
+                temperature=0.7,
+                generated_latents_bytes=b"\x00" * 16,
+                generated_latents_shape=[2, 1, 2],
+                generated_latents_dtype="float32",
+                generated_last_chunk=[False, True],
+                stop_step=1,
+                finish_reason="stop",
+                prompt_tokens=6,
+                completion_tokens=2,
+                engine_time_s=0.125,
+                sample_rate=44100,
+                duration_s=0.5,
+                audio_decode_time_s=0.25,
             ),
             {},
         ),

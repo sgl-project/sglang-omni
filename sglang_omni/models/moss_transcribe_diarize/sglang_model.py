@@ -205,7 +205,6 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        # NOTE: sglang's mm dispatch calls this per request, so len(items) is always 1 today.
         merge_size = int(self.config.audio_merge_size)
         device = next(self.whisper_encoder.parameters()).device
         encoder_dtype = next(self.whisper_encoder.parameters()).dtype
