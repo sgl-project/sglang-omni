@@ -371,6 +371,12 @@ up() {
   if [ -n "${MAX_TOTAL_TOKENS:-}" ]; then
     extra_args+=(--max-total-tokens "$expected_max_total_tokens")
   fi
+  if [ -n "${SERVE_EXTRA_ARGS:-}" ]; then
+    # Extra sgl-omni serve flags, word-split intentionally (e.g.
+    # "--max-running-requests 32"). Applied identically to every replica.
+    # shellcheck disable=SC2206
+    extra_args+=($SERVE_EXTRA_ARGS)
+  fi
   if [ -n "$mf" ]; then
     mem_args+=(--mem-fraction-static "$mf")
   fi
