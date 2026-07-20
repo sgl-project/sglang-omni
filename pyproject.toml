@@ -24,7 +24,7 @@ dependencies = [
     "transformers==5.6.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
-    "huggingface-hub>=0.36.0",# HF model downloads
+    "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI

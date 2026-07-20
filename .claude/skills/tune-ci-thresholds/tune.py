@@ -441,7 +441,7 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
     ])
     topology = _command_output(["nvidia-smi", "topo", "-m"])
     env_keys = (
-        "HOME", "OMNI_CI_HOME", "HF_HOME", "MODELSCOPE_CACHE",
+        "HOME", "OMNI_CI_HOME", "HF_HOME", "HF_HUB_DISABLE_XET",
         "XDG_CACHE_HOME", "HF_ENDPOINT", "TORCHINDUCTOR_CACHE_DIR",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",

@@ -56,8 +56,6 @@ jobs:
             pytest tests/test_model/test_asr_ci_multi_speaker.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_HUB_DISABLE_XET: "1"
-          HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: ${{ env.MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -108,8 +106,6 @@ jobs:
             pytest tests/test_model/test_asr_ci_fun_asr.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_HUB_DISABLE_XET: "1"
-          HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
