@@ -42,7 +42,19 @@ class SmallModel(nn.Module):
 
 def _bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
-    runner.server_args = SimpleNamespace(load_format=load_format)
+    runner.server_args = SimpleNamespace(
+        load_format=load_format,
+        max_total_tokens=1000,
+        tp_size=1,
+        pp_size=1,
+    )
+    # Satisfy the architecture gate: these tests exercise role plumbing with a
+    # stand-in model, not architecture enforcement, so override to an audited
+    # arch. (The gate itself is covered in test_ipc_weights.py.)
+    runner._model_arch_override = "HiggsMultimodalQwen3ForConditionalGeneration"
+    runner._weight_share_config = None
+    runner._weight_share_record = None
+    runner._weight_ipc_leader_monitor = None
     return runner
 
 
@@ -92,9 +104,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     # Leader publishes first (CPU tensors ride the by-value path; role
     # plumbing and ordering are what's under test, not CUDA IPC).
     leader_model = SmallModel(fill=7.0)
-    ipc_weights.export_weights(
-        leader_model, str(tmp_path / "SmallModel.weights-ipc")
-    )
+    ipc_weights.export_weights(leader_model, str(tmp_path / "SmallModel.weights-ipc"))
 
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
     seen_formats = []

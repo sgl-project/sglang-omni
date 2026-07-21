@@ -421,7 +421,7 @@ up() {
     echo "max_total_tokens=${expected_max_total_tokens:-auto/profiled}"
     echo "weight_share=$weight_share"
   } > "$state/manifest"
-  if [ "$weight_share" = 1 ]; then mkdir -p "$state/ipc_weights"; fi
+  if [ "$weight_share" = 1 ]; then mkdir -p "$state/ipc_weights"; chmod 700 "$state/ipc_weights"; fi
 
   export CUDA_MPS_PIPE_DIRECTORY=$state/mps/pipe CUDA_MPS_LOG_DIRECTORY=$state/mps/log
   local mps_launch_status=0

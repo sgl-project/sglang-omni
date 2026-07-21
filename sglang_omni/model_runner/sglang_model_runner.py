@@ -52,6 +52,12 @@ class SGLModelRunner(ModelRunner):
     ) -> None:
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
+        self._model_arch_override = model_arch_override
+        # Set here so the weight-update guard is always live, even on a path
+        # that never reaches load_model.
+        self._weight_share_config = None
+        self._weight_share_record = None
+        self._weight_ipc_leader_monitor = None
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
@@ -108,6 +114,26 @@ class SGLModelRunner(ModelRunner):
                 "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1"
             )
 
+        # Only architectures audited to keep per-request mutable state off the
+        # shared parameter set may share; others would corrupt co-located
+        # replicas. Fail before the (expensive) model build.
+        architectures = (
+            [self._model_arch_override]
+            if self._model_arch_override is not None
+            else getattr(self.model_config.hf_config, "architectures", None)
+        )
+        ipc_weights.validate_weight_share_architecture(architectures)
+
+        # A follower frees its dummy weights before KV profiling, so the
+        # profiler would over-budget KV by the shared-weight size unless the
+        # cap is pinned explicitly.
+        if ws.role == "follower" and self.server_args.max_total_tokens is None:
+            raise ipc_weights.WeightShareError(
+                "SGLANG_OMNI_WEIGHT_SHARE follower requires an explicit "
+                "--max-total-tokens: post-alias memory profiling cannot derive "
+                "a stable KV budget"
+            )
+
         if ws.role == "leader":
             super().load_model()
             self._weight_share_record = ipc_weights.leader_export(
@@ -129,10 +155,12 @@ class SGLModelRunner(ModelRunner):
             super().load_model()
         finally:
             self.server_args.load_format = original_load_format
-        self._weight_share_record = ipc_weights.follower_attach(
-            self.model,
-            ws.dir_path,
-            timeout_s=ws.attach_timeout_s,
+        self._weight_share_record, self._weight_ipc_leader_monitor = (
+            ipc_weights.follower_attach(
+                self.model,
+                ws.dir_path,
+                timeout_s=ws.attach_timeout_s,
+            )
         )
         # Return the dropped dummy-weight blocks to the driver so KV-pool
         # profiling (and later replicas) see the freed memory.
@@ -145,7 +173,7 @@ class SGLModelRunner(ModelRunner):
         after attach (would silently serve dummy weights). Leader: catches a
         post-export ``.data`` rebind (would silently orphan the followers).
         """
-        record = getattr(self, "_weight_share_record", None)
+        record = self._weight_share_record
         if record is not None:
             from sglang_omni.utils import ipc_weights
 
@@ -153,7 +181,7 @@ class SGLModelRunner(ModelRunner):
         return super().init_device_graphs()
 
     def _weight_update_blocked_reason(self) -> str | None:
-        ws = getattr(self, "_weight_share_config", None)
+        ws = self._weight_share_config
         if ws is None:
             return None
         return (

@@ -73,12 +73,16 @@ class TinyModel(nn.Module):
 def _export(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("alias_predicate", lambda t: True)
+    # These protocol tests write into pytest's tmp dir (not a private 0700
+    # store) with a mock serializer, so they opt out of the fs-trust checks.
+    kw.setdefault("validate_secure", False)
     return export_weights(model, path, **kw)
 
 
 def _attach(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("timeout_s", 5.0)
+    kw.setdefault("validate_secure", False)
     return attach_weights(model, path, **kw)
 
 
@@ -268,6 +272,40 @@ def test_handle_file_for_model_uses_class_name(tmp_path):
     assert handle_file_for_model(str(tmp_path), TinyModel()).endswith(
         "TinyModel.weights-ipc"
     )
+
+
+def test_validate_weight_share_architecture_allows_and_rejects():
+    ipc_weights.validate_weight_share_architecture(
+        ["HiggsMultimodalQwen3ForConditionalGeneration"]
+    )
+    for bad in ([], ["A", "B"], ["MossTTSLocalSGLangModel"], [""], None):
+        with pytest.raises(WeightShareError):
+            ipc_weights.validate_weight_share_architecture(bad)
+
+
+def test_is_zombie_parses_state_after_comm(monkeypatch):
+    # comm may contain spaces and ")": the state char is read after the LAST
+    # ")", so a zombie is detected regardless of the process name.
+    monkeypatch.setattr(
+        ipc_weights.Path,
+        "read_text",
+        lambda _self, encoding=None: "42 (weight (leader)) Z 1 2 3\n",
+    )
+    assert ipc_weights._is_zombie(42)
+    monkeypatch.setattr(
+        ipc_weights.Path,
+        "read_text",
+        lambda _self, encoding=None: "42 (weight (leader)) R 1 2 3\n",
+    )
+    assert not ipc_weights._is_zombie(42)
+
+
+def test_is_zombie_false_when_stat_unreadable(monkeypatch):
+    def _raise(_self, encoding=None):
+        raise OSError
+
+    monkeypatch.setattr(ipc_weights.Path, "read_text", _raise)
+    assert not ipc_weights._is_zombie(42)
 
 
 def test_get_weight_share_config_parsing():
