@@ -327,14 +327,20 @@ def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
 
 
 @_POSIX_ONLY
-def test_validate_private_file_rejects_symlink(tmp_path):
-    target = tmp_path / "real"
-    target.write_bytes(b"x")
-    os.chmod(target, 0o600)
-    link = tmp_path / "link"
-    os.symlink(target, link)
+def test_load_payload_rejects_symlinked_handle(tmp_path):
+    # The secure read path opens O_NOFOLLOW, so a symlinked handle file (even
+    # to a valid export) is refused before unpickling.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir(mode=0o700)
+    real_path = str(real_dir / "TinyModel.weights-ipc")
+    _export(TinyModel(seed=1), real_path, validate_secure=True)
+
+    link_dir = tmp_path / "link"
+    link_dir.mkdir(mode=0o700)
+    link_path = link_dir / "TinyModel.weights-ipc"
+    os.symlink(real_path, link_path)
     with pytest.raises(WeightShareError):
-        ipc_weights._validate_private_file(str(link))
+        _attach(TinyModel(seed=2), str(link_path), validate_secure=True)
 
 
 def test_check_leader_alive_rejects_dead_pid(monkeypatch):

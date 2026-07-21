@@ -23,6 +23,11 @@ Ordering contract (enforced by the caller, verified here):
   graph capture so a silently re-initialized tensor fails loudly.
 - The leader must outlive followers (CUDA IPC mappings die with the exporting
   process); restart replicas together.
+- The store directory must be unique per run (the launcher uses a per-run
+  path). Reusing one dir across runs can let a follower attach a previous
+  run's still-live publication before the new leader republishes; the model
+  path/revision and pid-liveness checks narrow but do not fully close that,
+  so per-run isolation is the contract.
 
 Role selection is environment-driven so process supervisors (e.g.
 ``examples/mps_dp/launch.sh``) can stay declarative::
@@ -240,12 +245,6 @@ def _check_private_stat(st: os.stat_result, file_path: str) -> None:
             f"weight-share handle file {file_path} must not grant group/world "
             f"permissions, got mode={stat.S_IMODE(st.st_mode):#o}"
         )
-
-
-def _validate_private_file(file_path: str) -> None:
-    if not _FS_TRUST_ENFORCED:
-        return
-    _check_private_stat(os.lstat(file_path), file_path)
 
 
 def _prepare_secure_dir(dir_path: str) -> None:
@@ -484,7 +483,14 @@ def _load_payload(
         # fstat checks the file actually read, closing the lstat-then-open
         # window before unpickling (which is arbitrary code execution).
         _validate_secure_dir(os.path.dirname(os.path.abspath(file_path)))
-        fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            # O_NOFOLLOW raises ELOOP on a symlink; treat any open failure as a
+            # refusal rather than leaking a raw OSError.
+            raise WeightShareError(
+                f"refusing to open weight-share handle {file_path}: {exc}"
+            ) from exc
         try:
             _check_private_stat(os.fstat(fd), file_path)
         except Exception:
