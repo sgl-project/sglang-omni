@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.benchmarker import utils as benchmark_utils
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MODEL_PATH,
-)
+from benchmarks.tasks.asr import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY, FUN_ASR_MODEL_PATH
 
 if TYPE_CHECKING:
     from tests.test_model.omni_router_utils import ManagedRouterHandle
@@ -34,10 +31,9 @@ stop_server = benchmark_utils.stop_server
 wait_for_gpu_memory_release = benchmark_utils.wait_for_gpu_memory_release
 wait_healthy = benchmark_utils.wait_healthy
 start_server_from_cmd = benchmark_utils.start_server_from_cmd
-
-QWEN3_ASR_WER_MODEL_PATH = QWEN3_ASR_MODEL_PATH
-QWEN3_ASR_WER_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
-QWEN3_ASR_ROUTER_STARTUP_TIMEOUT = 600
+DEFAULT_WER_ASR_MODEL_PATH = FUN_ASR_MODEL_PATH
+WER_ASR_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+WER_ASR_ROUTER_STARTUP_TIMEOUT = 600
 
 
 @dataclass
@@ -89,19 +85,19 @@ class MetricCheckCollector:
 
 
 @pytest.fixture
-def qwen3_asr_wer_router(
+def wer_asr_router(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator["ManagedRouterHandle"]:
-    """Launch Qwen3-ASR router for WER after upstream servers release GPU."""
+    """Launch the Fun-ASR WER router after upstream servers release GPU."""
     from tests.test_model.omni_router_utils import launch_managed_router
 
     wait_for_gpu_memory_release()
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=QWEN3_ASR_WER_MODEL_PATH,
-        model_name=QWEN3_ASR_WER_MODEL_PATH,
+        model_path=DEFAULT_WER_ASR_MODEL_PATH,
+        model_name=DEFAULT_WER_ASR_MODEL_PATH,
         worker_extra_args="",
-        wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
+        wait_timeout=WER_ASR_ROUTER_STARTUP_TIMEOUT,
         log_prefix="asr_wer_router_logs",
     ) as router:
         yield router

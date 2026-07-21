@@ -60,7 +60,8 @@ from tests.test_model.omni_router_utils import (
 )
 from tests.test_model.tts_ci_config import select_tts_ci_preset
 from tests.utils import (
-    QWEN3_ASR_WER_CONCURRENCY,
+    DEFAULT_WER_ASR_MODEL_PATH,
+    WER_ASR_CONCURRENCY,
     MetricCheckCollector,
     assert_speed_thresholds,
     assert_streaming_consistency,
@@ -188,7 +189,7 @@ def _run_wer_transcribe(
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER via Qwen3-ASR router."""
+    """Transcribe saved audio and compute WER via the Fun-ASR router."""
     from benchmarks.eval.benchmark_tts_seedtts import (
         TtsSeedttsBenchmarkConfig,
         run_tts_seedtts_transcribe,
@@ -202,7 +203,8 @@ def _run_wer_transcribe(
         device=device,
         stream=stream,
         concurrency=concurrency,
-        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
+        asr_model_path=DEFAULT_WER_ASR_MODEL_PATH,
+        asr_concurrency=WER_ASR_CONCURRENCY,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
     )
@@ -894,7 +896,7 @@ def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_tts_concurrencies: tuple[int, ...],
-    qwen3_asr_wer_router: ManagedRouterHandle,
+    wer_asr_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("TTS non-streaming WER")
     for concurrency in selected_tts_concurrencies:
@@ -908,7 +910,7 @@ def test_voice_cloning_wer(
         results = _run_wer_transcribe(
             dataset_repo,
             output_dir,
-            asr_router_port=qwen3_asr_wer_router.port,
+            asr_router_port=wer_asr_router.port,
             concurrency=concurrency,
         )
         print_wer_summary(
@@ -980,7 +982,7 @@ def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_tts_concurrencies: tuple[int, ...],
-    qwen3_asr_wer_router: ManagedRouterHandle,
+    wer_asr_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("TTS streaming WER")
     for concurrency in selected_tts_concurrencies:
@@ -996,7 +998,7 @@ def test_voice_cloning_streaming_wer(
             dataset_repo,
             output_dir,
             stream=True,
-            asr_router_port=qwen3_asr_wer_router.port,
+            asr_router_port=wer_asr_router.port,
             concurrency=concurrency,
         )
         print_wer_summary(

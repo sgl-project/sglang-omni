@@ -25,7 +25,7 @@
 # - Stage 3 (streaming consistency) has no numeric threshold in tune.py; see
 #   SKILL.md § TTS stage 3.
 # - Concurrency: TTS generation CI uses --concurrency 16 for every preset.
-#   Qwen3-ASR router/transcribe fan-out for WER uses 32 at DP=2.
+#   Fun-ASR router/transcribe fan-out for WER uses 32 at DP=2.
 # - GPU topology is per preset. Higgs and MOSS each need 2 GPUs total
 #   (2 router workers × 1 complete single-GPU server). MOSS Local's default
 #   pipeline config is colocated, so codec/vocoder stay on each worker's cuda:0.
@@ -39,7 +39,7 @@ hf_model_ids_by_test:
   test_tts_ci.py:
     - "bosonai/higgs-tts-3-4b"
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
@@ -84,7 +84,7 @@ metric_sources:
         constant_filter: "^HIGGS_VC_"
         hf_model_ids:
           - "bosonai/higgs-tts-3-4b"
-          - "Qwen/Qwen3-ASR-1.7B"
+          - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
       moss:
         extra_env:
           TTS_CI_MODEL: "moss"
@@ -93,7 +93,7 @@ metric_sources:
         constant_filter: "^MOSS_VC_"
         hf_model_ids:
           - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-          - "Qwen/Qwen3-ASR-1.7B"
+          - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
     # Per-variant routing: each variant claims constants matching its
     # `constant_filter` regex (matched against the bare constant name with
     # any leading underscore stripped). Stage keys become

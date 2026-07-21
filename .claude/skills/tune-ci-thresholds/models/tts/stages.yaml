@@ -11,9 +11,9 @@ tts_higgs_nonstream_wer:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -47,9 +47,9 @@ tts_higgs_nonstream_similarity:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -83,9 +83,9 @@ tts_higgs_nonstream_utmos:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -119,9 +119,9 @@ tts_higgs_nonstream_speed:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -185,9 +185,9 @@ tts_moss_nonstream_wer:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -221,9 +221,9 @@ tts_moss_nonstream_similarity:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -257,9 +257,9 @@ tts_moss_nonstream_utmos:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -293,9 +293,9 @@ tts_moss_nonstream_speed:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -359,9 +359,9 @@ tts_higgs_stream_wer:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -395,9 +395,9 @@ tts_higgs_stream_speed:
   gpus: 2
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -451,9 +451,9 @@ tts_moss_stream_wer:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775
@@ -487,9 +487,9 @@ tts_moss_stream_speed:
   gpus: 2
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-    - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-07-11T07:22:56Z
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 6c7c390c671439eca6d2366ac76b0050b6ab2f6ed85d592806584cdfa7bd1e3a
+  last_discovered_at: 2026-07-21T22:54:42Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: e3ceca3503b159412e41e1233dd7188c2e67301fb48f61e440af5fc582e48775

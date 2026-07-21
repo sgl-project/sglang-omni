@@ -35,7 +35,8 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.utils import (
-    QWEN3_ASR_WER_CONCURRENCY,
+    DEFAULT_WER_ASR_MODEL_PATH,
+    WER_ASR_CONCURRENCY,
     MetricCheckCollector,
     apply_mos_slack,
     apply_slack,
@@ -141,7 +142,7 @@ def _run_wer_transcribe(
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER via Qwen3-ASR router."""
+    """Transcribe saved audio and compute WER via the Fun-ASR router."""
     from benchmarks.eval.benchmark_omni_seedtts import (
         OmniSeedttsBenchmarkConfig,
         evaluate_generated_audio,
@@ -154,7 +155,8 @@ def _run_wer_transcribe(
         lang=lang,
         device=device,
         port=asr_router_port,
-        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
+        asr_model_path=DEFAULT_WER_ASR_MODEL_PATH,
+        asr_concurrency=WER_ASR_CONCURRENCY,
     )
     evaluate_generated_audio(config)
 
@@ -466,12 +468,12 @@ def test_voice_cloning_non_streaming(
 def test_voice_cloning_wer(
     wer_audio_dir: str,
     dataset_repo: str,
-    qwen3_asr_wer_router: ManagedRouterHandle,
+    wer_asr_router: ManagedRouterHandle,
 ) -> None:
     results = _run_wer_transcribe(
         dataset_repo,
         wer_audio_dir,
-        asr_router_port=qwen3_asr_wer_router.port,
+        asr_router_port=wer_asr_router.port,
     )
     print_wer_summary(
         results["summary"], "qwen3-omni", dataset=SEEDTTS_50_DATASET_LABEL
@@ -484,7 +486,7 @@ def test_voice_cloning_wer(
         collector=checks,
     )
     checks.assert_all()
-    print_log_tail("asr_wer_router", qwen3_asr_wer_router.log_file)
+    print_log_tail("asr_wer_router", wer_asr_router.log_file)
 
 
 @pytest.mark.benchmark

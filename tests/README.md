@@ -197,7 +197,7 @@ Relevant model CI ownership:
 - `test_qwen3_omni_tts_ci.py`: gates the SeedTTS speed/WER path through the
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
-  stopped, then transcribes through Qwen3-ASR at concurrency 32.
+  stopped, then transcribes through Fun-ASR at concurrency 32.
 - `test_asr_ci_multi_speaker.py`: MOSS-Transcribe-Diarize multi-speaker
   ASR/diarization correctness + speed via the managed router at DP=2. It
   runs movies800times (non-stream + stream), aishell4_long, and googletime,
@@ -215,8 +215,8 @@ Relevant model CI ownership:
   `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
-  a Qwen3-ASR router. It also owns the WER ASR concurrency constant
-  (`QWEN3_ASR_WER_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
+  a Fun-ASR router (`DEFAULT_WER_ASR_MODEL_PATH`). It also owns the WER ASR concurrency
+  constant (`WER_ASR_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
   and TTS WER tests instead of the in-process transformers Whisper pipeline.
 - Talker / video WER CI (`test_qwen3_omni_*_talker_ci.py`, `test_tts_ci.py`):
   generate audio with the model router first, tear down that server, free both
@@ -273,7 +273,7 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   full SeedTTS EN set (1088 samples) in non-streaming / streaming stages at
   concurrency 16, and frees the server GPUs before ASR/WER and
   speaker-similarity checks. Non-streaming and streaming WER pass the selected
-  TTS generation concurrency into the result config while keeping Qwen3-ASR
+  TTS generation concurrency into the result config while keeping Fun-ASR
   transcription concurrency at 32.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   TTS non-stream and streaming `speed_results.json` under

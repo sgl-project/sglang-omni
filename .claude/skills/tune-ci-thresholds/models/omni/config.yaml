@@ -6,22 +6,22 @@ hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 hf_model_ids_by_test:
   test_qwen3_omni_tts_ci.py:
     - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_qwen3_omni_mmmu_talker_ci.py:
     - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_qwen3_omni_mmsu_talker_ci.py:
     - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_qwen3_omni_videomme_talker_ci.py:
     - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_qwen3_omni_videoamme_talker_ci.py:
     - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_qwen3_omni_videoamme_talker_tp2_ci.py:
     - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
-    - "Qwen/Qwen3-ASR-1.7B"
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
@@ -37,7 +37,7 @@ default_venv_python:
   - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/omni/bin/python"
 # Concurrency: Qwen3-Omni talker/TTS WER CI stages use CONCURRENCY=16 for
-# generation. Their Qwen3-ASR WER router/transcribe fan-out uses 32 at DP=2.
+# generation. Their Fun-ASR WER router/transcribe fan-out uses 32 at DP=2.
 # Env vars tune.py applies at startup (matches .github/actions/omni-setup).
 auto_env:
   HOME: "/github/home"
