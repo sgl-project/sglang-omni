@@ -28,6 +28,10 @@ Environment:
                   --stream for models that generate the final waveform only
                   (e.g. Ming-Omni-TTS) — TTFC percentiles are then null and
                   latency/RTF carry the comparison
+    BENCH_REF     1 (default) sends seed-tts-eval reference audio
+                  (--ref-format references); 0 benchmarks text-only synthesis
+                  (--no-ref-audio) for pipelines whose reference decode is
+                  unavailable in the serving environment
     CLIENT_CORES  optional comma-separated CPU list to pin client processes
                   to (keeps load generation off the server cores); unpinned
                   when unset
@@ -66,13 +70,17 @@ for rate in RATES:
             "--meta", "zhaochenyang20/seed-tts-eval-arrow",
             "--model", os.environ.get("BENCH_MODEL", "higgs"),
             "--host", "127.0.0.1", "--port", str(8801 + i),
-            "--ref-format", "references", "--lang", "en",
+            "--lang", "en",
             "--max-samples", str(SAMPLES), "--sample-offset", str(offset),
             "--concurrency", "0", "--request-rate", str(per_client_rate),
             "--output-dir", cdir, "--disable-tqdm",
         ]
         if os.environ.get("BENCH_STREAM", "1") != "0":
             cmd.append("--stream")
+        if os.environ.get("BENCH_REF", "1") != "0":
+            cmd.extend(["--ref-format", "references"])
+        else:
+            cmd.append("--no-ref-audio")
         logf = open(os.path.join(OUT, f"rate{rate:g}_client{i}.log"), "w")
         preexec = None
         if os.environ.get("CLIENT_CORES"):
