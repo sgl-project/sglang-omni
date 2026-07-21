@@ -8,6 +8,7 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
@@ -44,6 +45,28 @@ def _apply_time_mask(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Ten
     return x * mask.transpose(1, 2)
 
 
+def _additive_key_pad_mask(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    # note (guozhihao): SenseVoice [B, 1, T] (1=valid) -> SDPA additive [B, 1, 1, T].
+    return torch.zeros(
+        mask.shape[0], 1, 1, mask.shape[-1], device=mask.device, dtype=dtype
+    ).masked_fill(mask.unsqueeze(1).eq(0), torch.finfo(dtype).min)
+
+
+def _fused_qkv_project(
+    x: torch.Tensor,
+    q_proj: nn.Linear,
+    k_proj: nn.Linear,
+    v_proj: nn.Linear,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # note (guozhihao): keep separate q/k/v Linears for HF checkpoint names;
+    # fuse into one GEMM at runtime.
+    weight = torch.cat([q_proj.weight, k_proj.weight, v_proj.weight], dim=0)
+    bias = None
+    if q_proj.bias is not None:
+        bias = torch.cat([q_proj.bias, k_proj.bias, v_proj.bias], dim=0)
+    return F.linear(x, weight, bias).chunk(3, dim=-1)
+
+
 class SinusoidalPositionEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -76,34 +99,30 @@ class MultiHeadedAttentionSANM(nn.Module):
         self.k_proj = nn.Linear(in_feat, n_feat)
         self.v_proj = nn.Linear(in_feat, n_feat)
         self.out_proj = nn.Linear(n_feat, n_feat)
-        self.dropout = nn.Dropout(p=dropout_rate)
+        self.attn_dropout_p = float(dropout_rate)
 
     def forward(
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Returns (attn_out, v) so FSMN can reuse the same value projection.
         b, t, _ = x.size()
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-        q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)  # (b, h, t, dk)
+        q, k, v = _fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
+        q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)
         k_h = k.view(b, t, self.h, self.d_k).transpose(1, 2)
         v_h = v.view(b, t, self.h, self.d_k).transpose(1, 2)
 
-        q_h = q_h * (self.d_k**-0.5)
-        scores = torch.matmul(q_h, k_h.transpose(-2, -1))  # (b, h, t, t)
-        if mask is not None:
-            # note (guozhihao): SenseVoice pad mask [B, 1, T] — block pad keys
-            # before/after softmax so valid queries cannot attend padding.
-            pad = mask.unsqueeze(1).eq(0)
-            scores = scores.masked_fill(pad, torch.finfo(scores.dtype).min)
-            attn = torch.softmax(scores, dim=-1)
-            attn = attn.masked_fill(pad, 0.0)
-        else:
-            attn = torch.softmax(scores, dim=-1)
-        p_attn = self.dropout(attn)
-        x = torch.matmul(p_attn, v_h)  # (b, h, t, dk)
-        x = x.transpose(1, 2).contiguous().view(b, -1, self.h * self.d_k)
-        return self.out_proj(x)
+        attn_mask = None if mask is None else _additive_key_pad_mask(mask, q.dtype)
+        dropout_p = self.attn_dropout_p if self.training else 0.0
+        out = F.scaled_dot_product_attention(
+            q_h,
+            k_h,
+            v_h,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=False,
+        )
+        out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
+        return self.out_proj(out), v
 
 
 class FunAsrNanoFSMN(nn.Module):
@@ -170,8 +189,9 @@ class EncoderLayerSANM(nn.Module):
     ) -> torch.Tensor:
         residual = x
         x = self.self_attn_layer_norm(x)
-        value_states = self.self_attn.v_proj(x)
-        x = self.dropout(self.self_attn(x, mask) + self.fsmn(value_states, mask))
+        # note (guozhihao): attn returns v so FSMN does not recompute v_proj.
+        attn_out, value_states = self.self_attn(x, mask)
+        x = self.dropout(attn_out + self.fsmn(value_states, mask))
         x = _apply_time_mask(x, mask)
         if self.in_size == self.size:
             x = residual + x
@@ -265,29 +285,29 @@ class MultiHeadedAttention(nn.Module):
         self.k_proj = nn.Linear(n_feat, n_feat)
         self.v_proj = nn.Linear(n_feat, n_feat)
         self.out_proj = nn.Linear(n_feat, n_feat)
-        self.dropout = nn.Dropout(p=dropout_rate)
+        self.attn_dropout_p = float(dropout_rate)
 
     def forward(
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        b, t, d = x.size()
-        q_h = self.q_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
-        k_h = self.k_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
-        v_h = self.v_proj(x).view(b, t, self.h, self.d_k).transpose(1, 2)
-        q_h = q_h * (self.d_k**-0.5)
-        scores = torch.matmul(q_h, k_h.transpose(-2, -1))
-        if mask is not None:
-            # note (guozhihao): same SenseVoice pad-key masking as SANM attention.
-            pad = mask.unsqueeze(1).eq(0)
-            scores = scores.masked_fill(pad, torch.finfo(scores.dtype).min)
-            attn = torch.softmax(scores, dim=-1)
-            attn = attn.masked_fill(pad, 0.0)
-        else:
-            attn = torch.softmax(scores, dim=-1)
-        p_attn = self.dropout(attn)
-        x = torch.matmul(p_attn, v_h)
-        x = x.transpose(1, 2).contiguous().view(b, -1, self.h * self.d_k)
-        return self.out_proj(x)
+        b, t, _ = x.size()
+        q, k, v = _fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
+        q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)
+        k_h = k.view(b, t, self.h, self.d_k).transpose(1, 2)
+        v_h = v.view(b, t, self.h, self.d_k).transpose(1, 2)
+
+        attn_mask = None if mask is None else _additive_key_pad_mask(mask, q.dtype)
+        dropout_p = self.attn_dropout_p if self.training else 0.0
+        out = F.scaled_dot_product_attention(
+            q_h,
+            k_h,
+            v_h,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=False,
+        )
+        out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
+        return self.out_proj(out)
 
 
 class AdaptorEncoderLayer(nn.Module):
