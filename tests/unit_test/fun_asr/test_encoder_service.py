@@ -390,7 +390,7 @@ def test_missing_token_count_raises() -> None:
     service = _make_service()
     item = SimpleNamespace(hash=1, feature=None, precomputed_embeddings=None)
 
-    with pytest.raises(RuntimeError, match="audio token count"):
+    with pytest.raises(RuntimeError, match="num_audio_tokens"):
         service.encode_item(item)
 
 
