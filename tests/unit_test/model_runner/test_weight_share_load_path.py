@@ -47,6 +47,8 @@ def _bare_runner(load_format="auto"):
         max_total_tokens=1000,
         tp_size=1,
         pp_size=1,
+        model_path="m",
+        revision="r",
     )
     # Satisfy the architecture gate: these tests exercise role plumbing with a
     # stand-in model, not architecture enforcement, so override to an audited
@@ -116,6 +118,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     with mock.patch.object(ModelRunner, "load_model", fake_load):
         runner = _bare_runner(load_format="auto")
         runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
 
     # Dummy format was in effect exactly during the super() call, restored after.
     assert seen_formats == ["dummy"]
@@ -139,6 +142,7 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
     with mock.patch.object(ModelRunner, "load_model", fake_load):
         runner = _bare_runner()
         runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
     with (
         mock.patch.object(
             ModelRunner, "init_device_graphs", lambda self: calls.append("capture")
@@ -151,6 +155,14 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
     ):
         runner.init_device_graphs()
     assert calls == ["verify", "capture"]  # attach guard precedes capture
+
+
+def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
+    runner = _bare_runner()
+    runner.server_args.max_total_tokens = None
+    with pytest.raises(ipc_weights.WeightShareError, match="max-total-tokens"):
+        runner.load_model()
 
 
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):

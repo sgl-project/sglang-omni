@@ -137,7 +137,10 @@ class SGLModelRunner(ModelRunner):
         if ws.role == "leader":
             super().load_model()
             self._weight_share_record = ipc_weights.leader_export(
-                self.model, ws.dir_path
+                self.model,
+                ws.dir_path,
+                model_path=str(self.server_args.model_path),
+                model_revision=self.server_args.revision,
             )
             return
 
@@ -160,6 +163,8 @@ class SGLModelRunner(ModelRunner):
                 self.model,
                 ws.dir_path,
                 timeout_s=ws.attach_timeout_s,
+                model_path=str(self.server_args.model_path),
+                model_revision=self.server_args.revision,
             )
         )
         # Return the dropped dummy-weight blocks to the driver so KV-pool

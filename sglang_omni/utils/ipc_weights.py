@@ -43,6 +43,7 @@ import logging
 import os
 import pickle
 import stat
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -224,10 +225,7 @@ def _validate_secure_dir(dir_path: str) -> None:
         )
 
 
-def _validate_private_file(file_path: str) -> None:
-    if not _FS_TRUST_ENFORCED:
-        return
-    st = os.lstat(file_path)
+def _check_private_stat(st: os.stat_result, file_path: str) -> None:
     if not stat.S_ISREG(st.st_mode):
         raise WeightShareError(
             f"weight-share handle file must be a regular file: {file_path}"
@@ -242,6 +240,12 @@ def _validate_private_file(file_path: str) -> None:
             f"weight-share handle file {file_path} must not grant group/world "
             f"permissions, got mode={stat.S_IMODE(st.st_mode):#o}"
         )
+
+
+def _validate_private_file(file_path: str) -> None:
+    if not _FS_TRUST_ENFORCED:
+        return
+    _check_private_stat(os.lstat(file_path), file_path)
 
 
 def _prepare_secure_dir(dir_path: str) -> None:
@@ -324,20 +328,23 @@ def _atomic_write(file_path: str, data: bytes) -> None:
     """Write ``data`` to ``file_path`` via tmp+fsync+rename (atomic publish).
 
     Followers poll for ``file_path``; rename atomicity guarantees they can
-    never observe a partially written blob. The file is created 0600 so a
-    shared store never exposes the leader's CUDA IPC handles to other users.
+    never observe a partially written blob. ``mkstemp`` creates the temp file
+    0600 with ``O_EXCL`` under an unpredictable name, so a pre-planted symlink
+    in the store cannot redirect the write.
     """
     dir_path = os.path.dirname(os.path.abspath(file_path))
     os.makedirs(dir_path, exist_ok=True)
-    tmp_path = f"{file_path}.tmp.{os.getpid()}"
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(file_path)}.tmp.", dir=dir_path
+    )
     try:
-        with open(tmp_path, "wb") as fh:
+        with os.fdopen(fd, "wb") as fh:
             if _FS_TRUST_ENFORCED:
                 os.fchmod(fh.fileno(), 0o600)
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.rename(tmp_path, file_path)
+        os.replace(tmp_path, file_path)
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -358,6 +365,8 @@ def export_weights(
     serializer: Any | None = None,
     alias_predicate: Callable[[torch.Tensor], bool] | None = None,
     validate_secure: bool = True,
+    model_path: str | None = None,
+    model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Publish CUDA-IPC handles for every model parameter/buffer to a file.
 
@@ -402,6 +411,8 @@ def export_weights(
         "manifest_hash": _manifest_hash(tensors),
         "torch_version": torch.__version__,
         "pid": os.getpid(),
+        "model_path": model_path,
+        "model_revision": model_revision,
         "ipc_blob": serializer.serialize(ipc_tensors),
         "ipc_names": sorted(ipc_tensors),
         "value_blobs": {n: _tensor_to_value_bytes(t) for n, t in value_tensors.items()},
@@ -468,13 +479,22 @@ def wait_for_any_export(
 def _load_payload(
     file_path: str, model: torch.nn.Module, *, validate_secure: bool = True
 ) -> dict[str, Any]:
-    if validate_secure:
-        # Validate ownership/permissions before unpickling: a group/world
-        # writable store or a planted symlink is arbitrary code execution.
+    if validate_secure and _FS_TRUST_ENFORCED:
+        # Bind validation to the opened inode: O_NOFOLLOW refuses a symlink and
+        # fstat checks the file actually read, closing the lstat-then-open
+        # window before unpickling (which is arbitrary code execution).
         _validate_secure_dir(os.path.dirname(os.path.abspath(file_path)))
-        _validate_private_file(file_path)
-    with open(file_path, "rb") as fh:
-        payload = pickle.load(fh)
+        fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            _check_private_stat(os.fstat(fd), file_path)
+        except Exception:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "rb") as fh:
+            payload = pickle.load(fh)
+    else:
+        with open(file_path, "rb") as fh:
+            payload = pickle.load(fh)
     if (
         not isinstance(payload, dict)
         or payload.get("format_version") != _FORMAT_VERSION
@@ -488,6 +508,11 @@ def _load_payload(
             f"handle file {file_path} was exported for model class "
             f"{payload['model_class']!r}, follower model is {type(model).__name__!r}"
         )
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        raise WeightShareError(
+            f"handle file {file_path} has an invalid leader pid {pid!r}"
+        )
     return payload
 
 
@@ -499,6 +524,8 @@ def attach_weights(
     poll_interval_s: float = 0.5,
     serializer: Any | None = None,
     validate_secure: bool = True,
+    model_path: str | None = None,
+    model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter/buffer onto the leader's exported storage.
 
@@ -508,13 +535,61 @@ def attach_weights(
 
     Returns the attachment record for :func:`verify_attachment`.
     """
+    record, _ = _attach_and_check(
+        model,
+        file_path,
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        serializer=serializer,
+        validate_secure=validate_secure,
+        model_path=model_path,
+        model_revision=model_revision,
+    )
+    return record
+
+
+def _attach_and_check(
+    model: torch.nn.Module,
+    file_path: str,
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    serializer: Any | None,
+    validate_secure: bool,
+    model_path: str | None,
+    model_revision: str | None,
+) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], dict[str, Any]]:
     serializer = _SglangIpcSerializer if serializer is None else serializer
     wait_for_export(file_path, timeout_s, poll_interval_s)
     payload = _load_payload(file_path, model, validate_secure=validate_secure)
+    _check_model_identity(payload, model_path, model_revision, file_path)
     _check_leader_alive(payload, "before attach")
     record = _alias_from_payload(model, payload, file_path, serializer)
     _check_leader_alive(payload, "after attach")
-    return record
+    return record, payload
+
+
+def _check_model_identity(
+    payload: dict[str, Any],
+    model_path: str | None,
+    model_revision: str | None,
+    file_path: str,
+) -> None:
+    # Strict only when the leader recorded an identity; a bare export (None)
+    # is still gated by model class + tensor manifest. This catches two
+    # same-shape checkpoints/revisions attaching the wrong weights.
+    recorded_path = payload.get("model_path")
+    if recorded_path is not None and recorded_path != model_path:
+        raise WeightShareError(
+            f"handle file {file_path} was exported for model_path "
+            f"{recorded_path!r}, follower is {model_path!r}"
+        )
+    recorded_rev = payload.get("model_revision")
+    if recorded_rev is not None and recorded_rev != model_revision:
+        raise WeightShareError(
+            f"handle file {file_path} was exported for revision "
+            f"{recorded_rev!r}, follower is {model_revision!r}"
+        )
 
 
 def _check_leader_alive(payload: dict[str, Any], when: str) -> None:
@@ -672,6 +747,8 @@ def leader_export(
     *,
     serializer: Any | None = None,
     validate_secure: bool = True,
+    model_path: str | None = None,
+    model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Leader role: export this engine's weights under ``dir_path``."""
     return export_weights(
@@ -679,6 +756,8 @@ def leader_export(
         handle_file_for_model(dir_path, model),
         serializer=serializer,
         validate_secure=validate_secure,
+        model_path=model_path,
+        model_revision=model_revision,
     )
 
 
@@ -689,19 +768,24 @@ def follower_attach(
     timeout_s: float = DEFAULT_ATTACH_TIMEOUT_S,
     serializer: Any | None = None,
     validate_secure: bool = True,
+    model_path: str | None = None,
+    model_revision: str | None = None,
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], LeaderLivenessMonitor]:
     """Follower role: attach this engine's weights and watch the leader.
 
     Returns the attachment record and a started :class:`LeaderLivenessMonitor`;
     the caller keeps a reference so the follower exits if the leader dies.
     """
-    serializer = _SglangIpcSerializer if serializer is None else serializer
-    file_path = handle_file_for_model(dir_path, model)
-    wait_for_export(file_path, timeout_s)
-    payload = _load_payload(file_path, model, validate_secure=validate_secure)
-    _check_leader_alive(payload, "before attach")
-    record = _alias_from_payload(model, payload, file_path, serializer)
-    _check_leader_alive(payload, "after attach")
+    record, payload = _attach_and_check(
+        model,
+        handle_file_for_model(dir_path, model),
+        timeout_s=timeout_s,
+        poll_interval_s=0.5,
+        serializer=serializer,
+        validate_secure=validate_secure,
+        model_path=model_path,
+        model_revision=model_revision,
+    )
     monitor = LeaderLivenessMonitor(int(payload.get("pid") or 0))
     monitor.start()
     return record, monitor

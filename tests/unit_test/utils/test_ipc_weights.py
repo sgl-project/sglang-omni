@@ -308,6 +308,57 @@ def test_is_zombie_false_when_stat_unreadable(monkeypatch):
     assert not ipc_weights._is_zombie(42)
 
 
+_POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX fs-trust checks")
+
+
+@_POSIX_ONLY
+def test_validate_secure_dir_rejects_group_world(tmp_path):
+    os.chmod(tmp_path, 0o777)
+    with pytest.raises(WeightShareError, match="group/world"):
+        ipc_weights._validate_secure_dir(str(tmp_path))
+
+
+@_POSIX_ONLY
+def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    monkeypatch.setattr(ipc_weights.os, "geteuid", lambda: os.stat(tmp_path).st_uid + 1)
+    with pytest.raises(WeightShareError, match="owned by"):
+        ipc_weights._validate_secure_dir(str(tmp_path))
+
+
+@_POSIX_ONLY
+def test_validate_private_file_rejects_symlink(tmp_path):
+    target = tmp_path / "real"
+    target.write_bytes(b"x")
+    os.chmod(target, 0o600)
+    link = tmp_path / "link"
+    os.symlink(target, link)
+    with pytest.raises(WeightShareError):
+        ipc_weights._validate_private_file(str(link))
+
+
+def test_check_leader_alive_rejects_dead_pid(monkeypatch):
+    monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: False)
+    with pytest.raises(WeightShareError, match="not alive"):
+        ipc_weights._check_leader_alive({"pid": 4321}, "before attach")
+    monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: True)
+    ipc_weights._check_leader_alive({"pid": 4321}, "before attach")  # alive: no raise
+
+
+def test_load_payload_requires_positive_pid(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    with open(path, "wb") as fh:
+        pickle.dump({"format_version": 1, "model_class": "TinyModel"}, fh)
+    with pytest.raises(WeightShareError, match="invalid leader pid"):
+        _attach(TinyModel(), path)
+
+
+def test_model_path_mismatch_rejected(handle_path):
+    _export(TinyModel(seed=1), handle_path, model_path="checkpoint-A")
+    with pytest.raises(WeightShareError, match="model_path"):
+        _attach(TinyModel(seed=2), handle_path, model_path="checkpoint-B")
+
+
 def test_get_weight_share_config_parsing():
     assert get_weight_share_config({}) is None
     assert get_weight_share_config({"SGLANG_OMNI_WEIGHT_SHARE": ""}) is None
