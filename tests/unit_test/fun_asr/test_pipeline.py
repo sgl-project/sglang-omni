@@ -5,6 +5,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -108,16 +110,30 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         "OmniScheduler",
         SimpleNamespace,
     )
-    encoder_service = object()
+    encoder_services = []
+
+    class _EncoderService:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
     monkeypatch.setattr(
         fun_asr_stages,
         "build_cache_namespace",
         lambda *args, **kwargs: "test-namespace",
     )
+
+    def _make_encoder_service(*args, **kwargs):
+        service = _EncoderService()
+        encoder_services.append(service)
+        return service
+
     monkeypatch.setattr(
         fun_asr_stages,
         "FunASRPreLMEncoderService",
-        lambda *args, **kwargs: encoder_service,
+        _make_encoder_service,
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
@@ -168,8 +184,21 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     assert validations == [
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
-    assert adapter_kwargs["audio_encoder_service"] is encoder_service
+    assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
     assert scheduler.request_build_max_workers == 8
     assert scheduler.request_build_max_pending == 16
     assert scheduler.enable_async_decode is True
     assert scheduler.async_decode_min_batch_size == 2
+    scheduler.shutdown_callback()
+    assert encoder_services[0].close_calls == 1
+
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "OmniScheduler",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("factory failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+
+    assert encoder_services[1].close_calls == 1

@@ -176,22 +176,33 @@ class FunASRPreLMEncoderService:
                 f"evicting and re-encoding"
             )
             self._cache.remove_if(lambda candidate: candidate == key)
+            cached = None
 
         leader = False
         with self._lock:
             future = self._inflight.get(key)
             if future is None:
-                future = concurrent.futures.Future()
-                self._inflight[key] = future
-                leader = True
-                self._misses += 1
-                try:
-                    self._enqueue(item, future)
-                except Exception:
-                    del self._inflight[key]
-                    raise
+                # Note (Akazaakane): Re-check under the single-flight lock so a
+                # stale miss cannot start work after the prior leader cached.
+                cached = self._cache.get(key)
+                if cached is not None and self._is_valid(cached, expected_tokens):
+                    self._hits += 1
+                else:
+                    cached = None
+                    future = concurrent.futures.Future()
+                    self._inflight[key] = future
+                    leader = True
+                    self._misses += 1
+                    try:
+                        self._enqueue(item, future)
+                    except Exception:
+                        del self._inflight[key]
+                        raise
             else:
                 self._merged += 1
+        if cached is not None:
+            self._attach(item, cached)
+            return
         try:
             embedding = future.result(timeout=self.ENCODE_TIMEOUT_S)
         except Exception:

@@ -51,6 +51,10 @@ class StageOutputCache:
         cache_device: torch.device | str | None = None,
         size_fn: Callable[[Any], int] | None = None,
     ) -> None:
+        if max_size is not None and max_size < 0:
+            raise ValueError("max_size must be non-negative")
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()

@@ -203,6 +203,55 @@ def test_concurrent_identical_requests_encode_once() -> None:
     assert stats["merged"] + stats["hits"] == n_threads - 1
 
 
+def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    stale_miss = threading.Event()
+    release_stale_reader = threading.Event()
+    original_get = service._cache.get
+
+    def controlled_get(key: str | None):  # noqa: ANN202
+        cached = original_get(key)
+        if (
+            threading.current_thread().name == "stale-cache-reader"
+            and not stale_miss.is_set()
+        ):
+            assert cached is None
+            stale_miss.set()
+            assert release_stale_reader.wait(timeout=10)
+        return cached
+
+    monkeypatch.setattr(service._cache, "get", controlled_get)
+    follower_item = _item(123, 3)
+    errors: list[BaseException] = []
+
+    def follower() -> None:
+        try:
+            service.encode_item(follower_item)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=follower, name="stale-cache-reader")
+    thread.start()
+    assert stale_miss.wait(timeout=10)
+
+    leader_item = _item(123, 3)
+    service.encode_item(leader_item)
+    release_stale_reader.set()
+    thread.join(timeout=30)
+
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert model.encode_calls == 1
+    assert torch.equal(
+        leader_item.precomputed_embeddings,
+        follower_item.precomputed_embeddings,
+    )
+    assert service.stats()["hits"] == 1
+
+
 def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     model = _StubModel()
     model.encode_delay_s = 0.05

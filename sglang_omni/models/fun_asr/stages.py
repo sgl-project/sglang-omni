@@ -147,31 +147,41 @@ def create_sglang_fun_asr_executor(
             cache_max_bytes=pre_lm_cache_size_bytes,
         )
 
-    request_builder, result_adapter = make_fun_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        feature_extractor=feature_extractor,
-        max_new_tokens=max_new_tokens,
-        context_length=context_length,
-        audio_encoder_service=audio_encoder_service,
-    )
+    try:
+        request_builder, result_adapter = make_fun_asr_scheduler_adapters(
+            tokenizer=tokenizer,
+            feature_extractor=feature_extractor,
+            max_new_tokens=max_new_tokens,
+            context_length=context_length,
+            audio_encoder_service=audio_encoder_service,
+        )
 
-    return OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=ModelRunner(model_worker, output_proc),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        enable_async_decode=enable_async_decode,
-        async_decode_min_batch_size=async_decode_min_batch_size,
-        request_build_max_workers=request_build_max_workers,
-        request_build_max_pending=request_build_max_pending,
-    )
+        return OmniScheduler(
+            tp_worker=model_worker,
+            tree_cache=tree_cache,
+            req_to_token_pool=req_to_token_pool,
+            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            server_args=server_args,
+            model_config=model_config,
+            prefill_manager=prefill_mgr,
+            decode_manager=decode_mgr,
+            model_runner=ModelRunner(model_worker, output_proc),
+            request_builder=request_builder,
+            result_adapter=result_adapter,
+            enable_async_decode=enable_async_decode,
+            async_decode_min_batch_size=async_decode_min_batch_size,
+            request_build_max_workers=request_build_max_workers,
+            request_build_max_pending=request_build_max_pending,
+            shutdown_callback=(
+                audio_encoder_service.close
+                if audio_encoder_service is not None
+                else None
+            ),
+        )
+    except Exception:
+        if audio_encoder_service is not None:
+            audio_encoder_service.close()
+        raise
 
 
 def create_fun_asr_executor(*args, **kwargs):
