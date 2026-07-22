@@ -419,6 +419,21 @@ def test_load_payload_rejects_unreadable_bytes(tmp_path):
         _attach(TinyModel(), path)
 
 
+def test_alias_rejects_non_tensor_blob(handle_path):
+    class BadSerializer:
+        @staticmethod
+        def serialize(obj):
+            return b"x"
+
+        @staticmethod
+        def deserialize(data):
+            return {"linear.weight": "not-a-tensor"}
+
+    _export(TinyModel(seed=1), handle_path)
+    with pytest.raises(WeightShareError, match="tensor mapping"):
+        _attach(TinyModel(seed=2), handle_path, serializer=BadSerializer)
+
+
 def test_model_path_mismatch_rejected(handle_path):
     _export(TinyModel(seed=1), handle_path, model_path="checkpoint-A")
     with pytest.raises(WeightShareError, match="model_path"):

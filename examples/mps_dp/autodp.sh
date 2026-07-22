@@ -99,7 +99,9 @@ if [ -z "$STATIC_GIB" ]; then
   # run we started, never a rediscovered newest dir (which a concurrent launcher
   # on another GPU could win).
   state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
-  probe_run="autodp-probe-$GPU_ID-$$"
+  # Note (Jiaxin Deng): the run id must start with run- so launch.sh's find_runs
+  # / down / stale-run guard (all glob run-*) can see and tear it down.
+  probe_run="run-autodp-probe-$GPU_ID-$$"
   probe_dir="$state_root/gpu-$GPU_ID/$probe_run"
   RUN_ID=$probe_run MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
   GPU_ID=$GPU_ID N=1 BASE_PORT=${BASE_PORT:-8801} \
@@ -166,7 +168,7 @@ echo "[autodp] plan: max estimated DP = ${D_MAX} (launching N=${N}); static tota
 # ---- launch ------------------------------------------------------------------
 BLOCKS=${CORE_BLOCKS:-$(core_blocks_for "$N")}
 echo "[autodp] launching N=$N (blocks: $BLOCKS)"
-launch_run="autodp-$GPU_ID-$$"
+launch_run="run-autodp-$GPU_ID-$$"
 launch_log=$(mktemp /tmp/autodp_up.XXXXXX.log)
 if ! RUN_ID=$launch_run MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
      GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \

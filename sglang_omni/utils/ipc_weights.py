@@ -19,8 +19,9 @@ Ordering contract, enforced by the caller and verified here:
   silently re-initialized tensor fails loudly instead of serving dummy weights.
 - The leader must outlive followers, since CUDA IPC mappings die with the
   exporting process; restart replicas together.
-- The store dir must be unique per run: a recycled pid or a different
-  checkpoint is caught, but reusing a live leader's dir is not.
+- The store dir must be unique per run: an exclusive flock lease refuses a
+  second live leader, and a recycled pid or a different checkpoint is caught
+  on attach.
 
 Role and store dir come from SGLANG_OMNI_WEIGHT_SHARE (leader:<dir> or
 follower:<dir>) so supervisors stay declarative; unset means sharing is off.
@@ -756,10 +757,10 @@ def _alias_from_payload(
             f"failed to open shared CUDA tensors from {file_path}: {exc}"
         ) from exc
     if not isinstance(shared, dict) or not all(
-        isinstance(t, torch.Tensor) for t in shared.values()
+        isinstance(k, str) and isinstance(t, torch.Tensor) for k, t in shared.items()
     ):
         raise WeightShareError(
-            f"handle blob in {file_path} did not deserialize to a tensor mapping"
+            f"handle blob in {file_path} did not deserialize to a str->tensor mapping"
         )
     if sorted(shared) != payload["ipc_names"]:
         raise WeightShareError(
@@ -789,6 +790,10 @@ def _alias_from_payload(
             incoming = values[name]
         else:  # unreachable while the manifest hash matches; belt & braces
             raise WeightShareError(f"leader export is missing tensor {name!r}")
+        if not isinstance(incoming, torch.Tensor):
+            raise WeightShareError(
+                f"handle blob in {file_path} entry {name!r} is not a tensor"
+            )
         if tuple(incoming.shape) != tuple(own.shape) or incoming.dtype != own.dtype:
             raise WeightShareError(
                 f"tensor {name!r} mismatch: leader "
