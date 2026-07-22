@@ -299,13 +299,28 @@ class LeaderLivenessMonitor:
     """
 
     def __init__(
-        self, leader_pid: int, *, poll_interval_s: float = 1.0, exit_code: int = 70
+        self,
+        leader_pid: int,
+        *,
+        leader_start_time: str | None = None,
+        poll_interval_s: float = 1.0,
+        exit_code: int = 70,
     ) -> None:
         self.leader_pid = leader_pid
+        self.leader_start_time = leader_start_time
         self.poll_interval_s = poll_interval_s
         self.exit_code = exit_code
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def _leader_present(self) -> bool:
+        if not pid_is_alive(self.leader_pid):
+            return False
+        # A recycled pid (leader died, pid reassigned) has a different start
+        # time; treat that as the leader being gone.
+        if self.leader_start_time is not None:
+            return _proc_start_time(self.leader_pid) == self.leader_start_time
+        return True
 
     def start(self) -> None:
         if self._thread is not None or not self.leader_pid:
@@ -323,10 +338,10 @@ class LeaderLivenessMonitor:
 
     def _run(self) -> None:
         while not self._stop.wait(self.poll_interval_s):
-            if pid_is_alive(self.leader_pid):
+            if self._leader_present():
                 continue
             logger.critical(
-                "[weight-share] leader pid=%s exited; terminating follower",
+                "[weight-share] leader pid=%s is gone; terminating follower",
                 self.leader_pid,
             )
             os._exit(self.exit_code)
@@ -483,6 +498,55 @@ def wait_for_any_export(
         time.sleep(poll_interval_s)
 
 
+# Required top-level payload fields and their accepted types. Validated as a
+# closed schema before any identity check or deserialization, so a truncated or
+# hand-forged handle raises a named WeightShareError, never a raw KeyError.
+_REQUIRED_PAYLOAD_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "format_version": int,
+    "model_class": str,
+    "manifest_hash": str,
+    "pid": int,
+    "ipc_blob": (bytes, bytearray),
+    "ipc_names": list,
+    "value_blobs": dict,
+}
+
+
+def _safe_unpickle(fh: Any, file_path: str) -> Any:
+    try:
+        return pickle.load(fh)
+    except WeightShareError:
+        raise
+    except Exception as exc:
+        raise WeightShareError(
+            f"weight-share handle {file_path} is not a readable payload: {exc}"
+        ) from exc
+
+
+def _validate_payload_schema(payload: Any, file_path: str) -> None:
+    if not isinstance(payload, dict):
+        raise WeightShareError(
+            f"weight-share handle {file_path} is not a payload dict "
+            f"(got {type(payload).__name__})"
+        )
+    version = payload.get("format_version")
+    if version != _FORMAT_VERSION:
+        raise WeightShareError(
+            f"unsupported weight-share handle format in {file_path} "
+            f"(got {version!r}, expected {_FORMAT_VERSION})"
+        )
+    for field, expected in _REQUIRED_PAYLOAD_FIELDS.items():
+        if field not in payload:
+            raise WeightShareError(
+                f"weight-share handle {file_path} is missing required field {field!r}"
+            )
+        if not isinstance(payload[field], expected):
+            raise WeightShareError(
+                f"weight-share handle {file_path} field {field!r} has wrong type "
+                f"{type(payload[field]).__name__}"
+            )
+
+
 def _load_payload(
     file_path: str, model: torch.nn.Module, *, validate_secure: bool = True
 ) -> dict[str, Any]:
@@ -502,27 +566,19 @@ def _load_payload(
             os.close(fd)
             raise
         with os.fdopen(fd, "rb") as fh:
-            payload = pickle.load(fh)
+            payload = _safe_unpickle(fh, file_path)
     else:
         with open(file_path, "rb") as fh:
-            payload = pickle.load(fh)
-    if (
-        not isinstance(payload, dict)
-        or payload.get("format_version") != _FORMAT_VERSION
-    ):
-        raise WeightShareError(
-            f"unsupported weight-share handle file format in {file_path} "
-            f"(got {payload.get('format_version') if isinstance(payload, dict) else type(payload)})"
-        )
+            payload = _safe_unpickle(fh, file_path)
+    _validate_payload_schema(payload, file_path)
     if payload["model_class"] != type(model).__name__:
         raise WeightShareError(
             f"handle file {file_path} was exported for model class "
             f"{payload['model_class']!r}, follower model is {type(model).__name__!r}"
         )
-    pid = payload.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
+    if payload["pid"] <= 0:
         raise WeightShareError(
-            f"handle file {file_path} has an invalid leader pid {pid!r}"
+            f"handle file {file_path} has an invalid leader pid {payload['pid']!r}"
         )
     return payload
 
@@ -611,15 +667,20 @@ def _check_leader_alive(payload: dict[str, Any], when: str) -> None:
             f"weight-share leader pid={leader_pid} is not alive ({when}); "
             "refusing to serve on a dead leader's CUDA storage"
         )
-    # Note (Jiaxin Deng): a recycled pid (new process) has a different start time.
+    # Note (Jiaxin Deng): a recycled pid (new process) has a different start
+    # time; require the recorded start time on Linux so this never fails open.
     recorded_start = payload.get("leader_start_time")
-    if recorded_start is not None:
-        current_start = _proc_start_time(int(leader_pid))
-        if current_start is not None and current_start != recorded_start:
-            raise WeightShareError(
-                f"weight-share leader pid={leader_pid} was recycled ({when}); "
-                "the original exporting process is gone"
-            )
+    current_start = _proc_start_time(int(leader_pid))
+    if _FS_TRUST_ENFORCED and recorded_start is None:
+        raise WeightShareError(
+            f"weight-share handle for pid={leader_pid} has no leader start time "
+            f"({when}); refusing to skip the recycled-pid check"
+        )
+    if recorded_start is not None and current_start != recorded_start:
+        raise WeightShareError(
+            f"weight-share leader pid={leader_pid} was recycled ({when}); "
+            "the original exporting process is gone"
+        )
 
 
 def _alias_from_payload(
@@ -634,13 +695,27 @@ def _alias_from_payload(
     if own_hash != payload["manifest_hash"]:
         _raise_manifest_mismatch(model, payload, own_tensors, file_path)
 
-    shared: dict[str, torch.Tensor] = serializer.deserialize(payload["ipc_blob"])
+    try:
+        shared: dict[str, torch.Tensor] = serializer.deserialize(payload["ipc_blob"])
+    except WeightShareError:
+        raise
+    except Exception as exc:
+        raise WeightShareError(
+            f"failed to open shared CUDA tensors from {file_path}: {exc}"
+        ) from exc
     if sorted(shared) != payload["ipc_names"]:
         raise WeightShareError(
             f"handle blob in {file_path} deserialized to a different tensor "
             "set than its manifest declares"
         )
-    values = {n: _value_bytes_to_tensor(b) for n, b in payload["value_blobs"].items()}
+    try:
+        values = {
+            n: _value_bytes_to_tensor(b) for n, b in payload["value_blobs"].items()
+        }
+    except Exception as exc:
+        raise WeightShareError(
+            f"failed to decode by-value tensors from {file_path}: {exc}"
+        ) from exc
 
     params = dict(model.named_parameters())
     # A buffer tensor may be registered under several module paths (tied /
@@ -807,6 +882,9 @@ def follower_attach(
         model_path=model_path,
         model_revision=model_revision,
     )
-    monitor = LeaderLivenessMonitor(int(payload.get("pid") or 0))
+    monitor = LeaderLivenessMonitor(
+        int(payload.get("pid") or 0),
+        leader_start_time=payload.get("leader_start_time"),
+    )
     monitor.start()
     return record, monitor

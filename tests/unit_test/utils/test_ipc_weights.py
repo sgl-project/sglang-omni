@@ -343,9 +343,14 @@ def test_load_payload_rejects_symlinked_handle(tmp_path):
 def test_check_leader_alive_rejects_dead_pid(monkeypatch):
     monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: False)
     with pytest.raises(WeightShareError, match="not alive"):
-        ipc_weights._check_leader_alive({"pid": 4321}, "before attach")
+        ipc_weights._check_leader_alive(
+            {"pid": 4321, "leader_start_time": "1"}, "before attach"
+        )
     monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: True)
-    ipc_weights._check_leader_alive({"pid": 4321}, "before attach")  # alive: no raise
+    monkeypatch.setattr(ipc_weights, "_proc_start_time", lambda pid: "1")
+    ipc_weights._check_leader_alive(
+        {"pid": 4321, "leader_start_time": "1"}, "before attach"
+    )  # alive + matching start time: no raise
 
 
 @_POSIX_ONLY
@@ -362,11 +367,59 @@ def test_check_leader_alive_rejects_recycled_pid():
     ipc_weights._check_leader_alive(ok, "before attach")  # matching start: no raise
 
 
+def _min_payload(**overrides):
+    payload = {
+        "format_version": 1,
+        "model_class": "TinyModel",
+        "manifest_hash": "x",
+        "pid": os.getpid(),
+        "leader_start_time": ipc_weights._proc_start_time(os.getpid()),
+        "ipc_blob": b"",
+        "ipc_names": [],
+        "value_blobs": {},
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_load_payload_requires_positive_pid(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:
-        pickle.dump({"format_version": 1, "model_class": "TinyModel"}, fh)
+        pickle.dump(_min_payload(pid=0), fh)
     with pytest.raises(WeightShareError, match="invalid leader pid"):
+        _attach(TinyModel(), path)
+
+
+def test_load_payload_rejects_missing_required_field(tmp_path):
+    for missing in (
+        "model_class",
+        "manifest_hash",
+        "ipc_blob",
+        "ipc_names",
+        "value_blobs",
+    ):
+        payload = _min_payload()
+        del payload[missing]
+        path = str(tmp_path / "TinyModel.weights-ipc")
+        with open(path, "wb") as fh:
+            pickle.dump(payload, fh)
+        with pytest.raises(WeightShareError, match="missing required field"):
+            _attach(TinyModel(), path)
+
+
+def test_load_payload_rejects_wrong_field_type(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    with open(path, "wb") as fh:
+        pickle.dump(_min_payload(ipc_names="not-a-list"), fh)
+    with pytest.raises(WeightShareError, match="wrong type"):
+        _attach(TinyModel(), path)
+
+
+def test_load_payload_rejects_unreadable_bytes(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    with open(path, "wb") as fh:
+        fh.write(b"\x80\x04 truncated not a valid pickle")
+    with pytest.raises(WeightShareError, match="not a readable payload"):
         _attach(TinyModel(), path)
 
 

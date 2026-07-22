@@ -1,7 +1,8 @@
 #!/bin/bash
 # autodp.sh — size and launch same-GPU DP automatically.
 #
-# Computes the maximum SAFE DP for this GPU + model + KV cap from the
+# Computes the maximum ESTIMATED safe DP (boot-validated, not workload-proven)
+# for this GPU + model + KV cap from the
 # two-constraint sizing model:
 #
 #   1. capacity:  D*(s + h) <= M          (no-WS)
@@ -103,8 +104,13 @@ if [ -z "$STATIC_GIB" ]; then
          die "probe boot failed"; }
   probe_used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$GPU_ID")
   STATIC_GIB=$(python3 -c "print(round($probe_used/1024, 2))")
-  run_id=$(basename "$(bash "$HERE/launch.sh" list | head -1)")
-  state_dir=$(bash "$HERE/launch.sh" list | head -1)
+  # Scope discovery to THIS GPU and the newest run (the probe we just booted).
+  # `list | head -1` returns the OLDEST run across ALL GPUs, which would parse
+  # the wrong log and tear down an unrelated run.
+  state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
+  state_dir=$(ls -d "$state_root/gpu-$GPU_ID"/run-* 2>/dev/null | tail -1)
+  [ -n "$state_dir" ] || die "autodp: could not locate the probe run under gpu-$GPU_ID"
+  run_id=$(basename "$state_dir")
   if [ -z "$WEIGHTS_GIB" ]; then
     WEIGHTS_GIB=$(grep -hoE "leader exported .*\(([0-9.]+) GiB" "$state_dir"/logs/replica_0.log 2>/dev/null \
       | grep -oE "[0-9.]+" | tail -1 || true)
@@ -145,7 +151,7 @@ N=${N:-$D_MAX}
 
 M_GIB=$(python3 -c "print(round($M_MIB/1024,1))")
 echo "[autodp] plan: GPU ${GPU_ID} M=${M_GIB} GiB | s=${STATIC_GIB} GiB W=${WEIGHTS_GIB} GiB h=${H_GIB} GiB cap=${CAP} weight_share=${WS}"
-echo "[autodp] plan: max safe DP = ${D_MAX} (launching N=${N}); static total ~${STATIC_TOT} GiB, dynamic pool ~${FREE_LEFT} GiB; derived MF=${MF_REQ}"
+echo "[autodp] plan: max estimated DP = ${D_MAX} (launching N=${N}); static total ~${STATIC_TOT} GiB, dynamic pool ~${FREE_LEFT} GiB; derived MF=${MF_REQ} (boot-validated estimate, validate under sustained load)"
 [ "$CMD" = plan ] && exit 0
 
 # ---- launch ------------------------------------------------------------------
