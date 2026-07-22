@@ -439,18 +439,12 @@ def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
         )
 
 
-def test_claim_namespace_refuses_live_second_leader(tmp_path):
+@_POSIX_ONLY
+def test_claim_namespace_refuses_second_leader(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
-    ipc_weights._claim_namespace(path, "run-A")
+    ipc_weights._claim_namespace(path, "run-A")  # first leader holds the flock
     with pytest.raises(WeightShareError, match="owns the weight-share"):
         ipc_weights._claim_namespace(path, "run-B")
-
-
-def test_claim_namespace_reclaims_dead_owner(tmp_path, monkeypatch):
-    path = str(tmp_path / "TinyModel.weights-ipc")
-    ipc_weights._claim_namespace(path, "run-A")
-    monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: False)
-    ipc_weights._claim_namespace(path, "run-B")  # stale lease reclaimed, no raise
 
 
 def test_get_weight_share_config_parsing():

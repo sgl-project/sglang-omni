@@ -86,9 +86,8 @@ class SGLModelRunner(ModelRunner):
         parameters/buffers. Follower: wait for the leader's handle file, build
         the module tree with dummy weights (no checkpoint I/O), then alias
         every parameter/buffer onto the leader's storage. Both paths finish
-        inside ``load_model``, i.e. strictly before KV-pool profiling
-        (``initialize()`` → ``init_memory_pool``), warmup forwards, and CUDA
-        graph capture.
+        inside load_model, strictly before KV-pool profiling, warmup forwards,
+        and CUDA graph capture.
         """
         from sglang_omni.utils import ipc_weights
 
@@ -168,7 +167,7 @@ class SGLModelRunner(ModelRunner):
 
         Followers: catches any load-path step that re-created a parameter
         after attach (would silently serve dummy weights). Leader: catches a
-        post-export ``.data`` rebind (would silently orphan the followers).
+        post-export .data rebind (would silently orphan the followers).
         """
         record = self._weight_share_record
         if record is not None:

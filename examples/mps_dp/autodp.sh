@@ -95,7 +95,13 @@ WEIGHTS_GIB=${WEIGHTS_GIB:-}
 if [ -z "$STATIC_GIB" ]; then
   echo "[autodp] probing: booting 1 replica at cap=$CAP to measure the static footprint..."
   probe_blocks=$(core_blocks_for 1)
-  MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
+  # Note (Jiaxin Deng): pin a unique run id so we read and tear down exactly the
+  # run we started, never a rediscovered newest dir (which a concurrent launcher
+  # on another GPU could win).
+  state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
+  probe_run="autodp-probe-$GPU_ID-$$"
+  probe_dir="$state_root/gpu-$GPU_ID/$probe_run"
+  RUN_ID=$probe_run MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
   GPU_ID=$GPU_ID N=1 BASE_PORT=${BASE_PORT:-8801} \
   CORE_BLOCKS="$probe_blocks" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS \
     bash "$HERE/launch.sh" up > /tmp/autodp_probe.$$.log 2>&1 \
@@ -103,22 +109,15 @@ if [ -z "$STATIC_GIB" ]; then
          cat /tmp/autodp_probe.$$.log >&2; \
          echo "--- diagnostics ---" >&2; \
          df -h /tmp >&2; nvidia-smi --query-compute-apps=pid,used_memory --format=csv >&2; \
-         ls /tmp/sglang-omni-same-gpu-dp/$UID/gpu-*/ 2>/dev/null >&2; \
+         bash "$HERE/launch.sh" down "$probe_run" >/dev/null 2>&1 || true; \
          die "probe boot failed"; }
   probe_used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$GPU_ID")
   STATIC_GIB=$(python3 -c "print(round($probe_used/1024, 2))")
-  # Scope discovery to THIS GPU and the newest run (the probe we just booted).
-  # `list | head -1` returns the OLDEST run across ALL GPUs, which would parse
-  # the wrong log and tear down an unrelated run.
-  state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
-  state_dir=$(ls -d "$state_root/gpu-$GPU_ID"/run-* 2>/dev/null | tail -1)
-  [ -n "$state_dir" ] || die "autodp: could not locate the probe run under gpu-$GPU_ID"
-  run_id=$(basename "$state_dir")
   if [ -z "$WEIGHTS_GIB" ]; then
-    WEIGHTS_GIB=$(grep -hoE "leader exported .*\(([0-9.]+) GiB" "$state_dir"/logs/replica_0.log 2>/dev/null \
+    WEIGHTS_GIB=$(grep -hoE "leader exported .*\(([0-9.]+) GiB" "$probe_dir"/logs/replica_0.log 2>/dev/null \
       | grep -oE "[0-9.]+" | tail -1 || true)
   fi
-  bash "$HERE/launch.sh" down "$run_id" > /dev/null
+  bash "$HERE/launch.sh" down "$probe_run" > /dev/null
   echo "[autodp] probe: s=${STATIC_GIB} GiB per replica, W=${WEIGHTS_GIB:-?} GiB weights"
 fi
 [ -n "$WEIGHTS_GIB" ] || { [ "$WS" = 0 ] || die "WS sizing needs WEIGHTS_GIB (probe could not extract it)"; WEIGHTS_GIB=0; }
@@ -167,8 +166,9 @@ echo "[autodp] plan: max estimated DP = ${D_MAX} (launching N=${N}); static tota
 # ---- launch ------------------------------------------------------------------
 BLOCKS=${CORE_BLOCKS:-$(core_blocks_for "$N")}
 echo "[autodp] launching N=$N (blocks: $BLOCKS)"
+launch_run="autodp-$GPU_ID-$$"
 launch_log=$(mktemp /tmp/autodp_up.XXXXXX.log)
-if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
+if ! RUN_ID=$launch_run MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
      GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
      CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS MF=$MF_REQ \
      bash "$HERE/launch.sh" up 2>&1 | tee "$launch_log"; then
@@ -177,14 +177,12 @@ if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
   # let the launcher's exact-KV check arbitrate.
   if grep -qE "mem-fraction-static requires a pipeline|sets mem_fraction_static through both" "$launch_log"; then
     echo "[autodp] pipeline rejects --mem-fraction-static; retrying with the model default (derived MF=$MF_REQ was advisory)"
-    # Note (Jiaxin Deng): tear the failed attempt down through the launcher,
-    # which does the start-time / PGID / MPS-client checks that a bare rm -rf
-    # skips (a surviving child or MPS daemon would otherwise be orphaned).
-    state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
-    failed_state=$(ls -d "$state_root/gpu-$GPU_ID"/run-* 2>/dev/null | tail -1)
-    [ -n "$failed_state" ] && bash "$HERE/launch.sh" down "$(basename "$failed_state")" \
-      || die "autodp: could not tear down the failed --mem-fraction-static attempt; inspect $state_root/gpu-$GPU_ID and retry"
-    MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
+    # Note (Jiaxin Deng): tear down exactly this run (pinned RUN_ID) through the
+    # launcher, which does the start-time / PGID / MPS-client checks that a bare
+    # rm -rf skips; never a rediscovered newest dir.
+    bash "$HERE/launch.sh" down "$launch_run" \
+      || die "autodp: could not tear down the failed --mem-fraction-static attempt $launch_run; inspect and retry"
+    RUN_ID=$launch_run MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
     GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
     CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS \
       bash "$HERE/launch.sh" up

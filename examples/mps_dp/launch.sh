@@ -401,7 +401,9 @@ up() {
   local uuid node run state
   uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
   node=$(resolve_numa "$gpu")
-  run="run-$(date +%Y%m%d-%H%M%S)-$$"
+  # Note (jiaxin): a caller (autodp) may pin RUN_ID so it can tear down exactly
+  # the run it started, instead of rediscovering the newest dir.
+  run="${RUN_ID:-run-$(date +%Y%m%d-%H%M%S)-$$}"
   state=$STATE_ROOT/gpu-$gpu/$run
   mkdir -p "$state/logs" "$state/mps/pipe" "$state/mps/log"
   : > "$state/replicas.tsv"

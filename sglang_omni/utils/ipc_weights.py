@@ -121,40 +121,33 @@ def _gpu_uuid() -> str | None:
         return None
 
 
-def _read_lease(lock_path: str) -> tuple[int, str | None]:
-    try:
-        lines = Path(lock_path).read_text(encoding="utf-8").splitlines()
-        return int(lines[0]), (lines[1] or None)
-    except (OSError, ValueError, IndexError):
-        return 0, None
+# Note (Jiaxin Deng): held open for the leader's lifetime so the flock lease
+# releases atomically on process exit (no dead-owner unlink races).
+_LEASE_FDS: list[int] = []
 
 
 def _claim_namespace(file_path: str, run_id: str | None) -> None:
-    # Note (Jiaxin Deng): refuse to publish over a namespace a live leader
-    # already owns, so two leaders on one directory cannot clobber each other's
-    # followers; a dead owner's lease is reclaimed.
-    lock_path = file_path + ".lock"
-    body = f"{os.getpid()}\n{_proc_start_time(os.getpid()) or ''}\n{run_id or ''}\n"
-    for _ in range(2):
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            owner_pid, owner_start = _read_lease(lock_path)
-            if (
-                owner_pid
-                and pid_is_alive(owner_pid)
-                and (owner_start is None or _proc_start_time(owner_pid) == owner_start)
-            ):
-                raise WeightShareError(
-                    f"another live leader (pid={owner_pid}) owns the weight-share "
-                    f"namespace {file_path}; refusing to clobber it"
-                )
-            os.unlink(lock_path)
-            continue
-        with os.fdopen(fd, "w") as fh:
-            fh.write(body)
+    # Note (Jiaxin Deng): a non-blocking flock is the only race-free lease: a
+    # second leader on one directory fails to acquire it instead of clobbering
+    # the first leader's followers, and the kernel releases it when the owner
+    # dies. POSIX only; the launcher's per-run dir covers non-POSIX.
+    if not _FS_TRUST_ENFORCED:
         return
-    raise WeightShareError(f"could not claim weight-share namespace {file_path}")
+    import fcntl
+
+    lock_path = file_path + ".lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise WeightShareError(
+            f"another live leader owns the weight-share namespace {file_path}; "
+            f"refusing to clobber it ({exc})"
+        ) from exc
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n{run_id or ''}\n".encode())
+    _LEASE_FDS.append(fd)
 
 
 class _SglangIpcSerializer:
@@ -701,19 +694,19 @@ def _check_model_identity(
             f"handle file {file_path} was exported for revision "
             f"{recorded_rev!r}, follower is {model_revision!r}"
         )
-    recorded_uuid = payload.get("gpu_uuid")
-    if recorded_uuid is not None:
-        own_uuid = _gpu_uuid()
-        if own_uuid is not None and own_uuid != recorded_uuid:
-            raise WeightShareError(
-                f"handle file {file_path} was exported from GPU {recorded_uuid}, "
-                f"follower is on {own_uuid}"
-            )
-    recorded_run = payload.get("run_id")
-    if recorded_run is not None and run_id is not None and recorded_run != run_id:
+    # Note (Jiaxin Deng): fail closed when the follower has an identity to
+    # match: a running GPU or a launcher run id must find an equal recorded
+    # value, so a stale export missing the field cannot slip through.
+    own_uuid = _gpu_uuid()
+    if own_uuid is not None and payload.get("gpu_uuid") != own_uuid:
         raise WeightShareError(
-            f"handle file {file_path} belongs to run {recorded_run!r}, follower "
-            f"is run {run_id!r}"
+            f"handle file {file_path} was exported from GPU "
+            f"{payload.get('gpu_uuid')!r}, follower is on {own_uuid!r}"
+        )
+    if run_id is not None and payload.get("run_id") != run_id:
+        raise WeightShareError(
+            f"handle file {file_path} belongs to run {payload.get('run_id')!r}, "
+            f"follower is run {run_id!r}"
         )
 
 
@@ -762,6 +755,12 @@ def _alias_from_payload(
         raise WeightShareError(
             f"failed to open shared CUDA tensors from {file_path}: {exc}"
         ) from exc
+    if not isinstance(shared, dict) or not all(
+        isinstance(t, torch.Tensor) for t in shared.values()
+    ):
+        raise WeightShareError(
+            f"handle blob in {file_path} did not deserialize to a tensor mapping"
+        )
     if sorted(shared) != payload["ipc_names"]:
         raise WeightShareError(
             f"handle blob in {file_path} deserialized to a different tensor "

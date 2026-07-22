@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Role plumbing tests for SGLANG_OMNI_WEIGHT_SHARE in SGLModelRunner.
 
-Runs the real ``SGLModelRunner.load_model`` / ``init_device_graphs`` overrides
-with the upstream ``ModelRunner`` methods mocked out, on CPU tensors. Verifies
-role dispatch, the dummy load-format toggle (set for the super() call, restored
-after), attach-before-capture ordering, and the weight-update guards.
+Runs the real SGLModelRunner.load_model / init_device_graphs overrides with the
+upstream ModelRunner methods mocked out, on CPU tensors. Verifies role dispatch,
+the dummy load-format toggle (set for the super() call, restored after),
+attach-before-capture ordering, and the weight-update guards.
 
-Requires sglang to be importable (login node: stub sgl_kernel first — see the
-scratchpad ``run_test_login_node.py`` pattern).
+Requires sglang to be importable.
 """
 
 from __future__ import annotations
