@@ -108,10 +108,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self.model = model_worker.model_runner.model
-        # Runs AFTER the weight-share leader export: under
-        # SGLANG_OMNI_WEIGHT_SHARE this mutates storage shared with follower
-        # replicas, which is safe only while it stays in-place, idempotent,
-        # and deterministic (see sglang_omni/utils/ipc_weights.py docstring).
         higgs_utils.truncate_rope_to_bf16(self.model)
 
     def get_model_buffer_bs(self, model: Any) -> int | None:

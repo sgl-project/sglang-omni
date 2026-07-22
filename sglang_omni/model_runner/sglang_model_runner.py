@@ -79,9 +79,6 @@ class SGLModelRunner(ModelRunner):
             server_args=server_args,
         )
 
-    # ------------------------------------------------------------------
-    # Same-GPU weight sharing (SGLANG_OMNI_WEIGHT_SHARE=leader|follower:<dir>)
-    # ------------------------------------------------------------------
     def load_model(self):
         """Load weights, honoring the same-GPU weight-share role, if any.
 

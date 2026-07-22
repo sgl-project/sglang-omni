@@ -2,7 +2,7 @@
 # autodp.sh — size and launch same-GPU DP automatically.
 #
 # Computes the maximum SAFE DP for this GPU + model + KV cap from the
-# two-constraint sizing model (see note/2026-07-18-h200-same-gpu-dp-ipc-profiling.md):
+# two-constraint sizing model:
 #
 #   1. capacity:  D*(s + h) <= M          (no-WS)
 #                 W + D*(s - W + h) <= M  (WS)

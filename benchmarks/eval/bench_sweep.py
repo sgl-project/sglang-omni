@@ -65,15 +65,32 @@ for rate in RATES:
         shard_slot += 1
         cdir = os.path.join(stage_dir, f"client{i}")
         cmd = [
-            sys.executable, "-m", "benchmarks.eval.benchmark_tts_seedtts",
-            "--generate-only", "--use-existing-server",
-            "--meta", "zhaochenyang20/seed-tts-eval-arrow",
-            "--model", os.environ.get("BENCH_MODEL", "higgs"),
-            "--host", "127.0.0.1", "--port", str(8801 + i),
-            "--lang", "en",
-            "--max-samples", str(SAMPLES), "--sample-offset", str(offset),
-            "--concurrency", "0", "--request-rate", str(per_client_rate),
-            "--output-dir", cdir, "--disable-tqdm",
+            sys.executable,
+            "-m",
+            "benchmarks.eval.benchmark_tts_seedtts",
+            "--generate-only",
+            "--use-existing-server",
+            "--meta",
+            "zhaochenyang20/seed-tts-eval-arrow",
+            "--model",
+            os.environ.get("BENCH_MODEL", "higgs"),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(8801 + i),
+            "--lang",
+            "en",
+            "--max-samples",
+            str(SAMPLES),
+            "--sample-offset",
+            str(offset),
+            "--concurrency",
+            "0",
+            "--request-rate",
+            str(per_client_rate),
+            "--output-dir",
+            cdir,
+            "--disable-tqdm",
         ]
         if os.environ.get("BENCH_STREAM", "1") != "0":
             cmd.append("--stream")
@@ -84,13 +101,19 @@ for rate in RATES:
         logf = open(os.path.join(OUT, f"rate{rate:g}_client{i}.log"), "w")
         preexec = None
         if os.environ.get("CLIENT_CORES"):
-            client_cores = {
-                int(c) for c in os.environ["CLIENT_CORES"].split(",")
-            }
+            client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
             preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
-        procs.append((subprocess.Popen(
-            cmd, stdout=logf, stderr=subprocess.STDOUT, preexec_fn=preexec,
-        ), logf))
+        procs.append(
+            (
+                subprocess.Popen(
+                    cmd,
+                    stdout=logf,
+                    stderr=subprocess.STDOUT,
+                    preexec_fn=preexec,
+                ),
+                logf,
+            )
+        )
     t0 = time.time()
     fails = 0
     for p, logf in procs:
@@ -121,7 +144,9 @@ for rate in RATES:
         failed += s["failed_requests"]
         achieved_runner += s.get("throughput_qps") or 0
         audio_sps += s.get("audio_throughput_s_per_s") or 0
-    ttfcs.sort(); rtfs.sort(); lats_sorted = sorted(lats)
+    ttfcs.sort()
+    rtfs.sort()
+    lats_sorted = sorted(lats)
 
     def pct(arr, p):
         return arr[min(int(p * len(arr)), len(arr) - 1)] if arr else None
@@ -134,30 +159,39 @@ for rate in RATES:
         "achieved_qps_runner": round(achieved_runner, 2),
         "audio_s_per_s": round(audio_sps, 1),
         "wall_s": round(wall, 1),
-        "completed": completed, "failed": failed, "client_fails": fails,
-        "ttfc_p50": pct(ttfcs, 0.50), "ttfc_p90": pct(ttfcs, 0.90),
-        "ttfc_p95": pct(ttfcs, 0.95), "ttfc_p99": pct(ttfcs, 0.99),
+        "completed": completed,
+        "failed": failed,
+        "client_fails": fails,
+        "ttfc_p50": pct(ttfcs, 0.50),
+        "ttfc_p90": pct(ttfcs, 0.90),
+        "ttfc_p95": pct(ttfcs, 0.95),
+        "ttfc_p99": pct(ttfcs, 0.99),
         "ttfc_sorted": ttfcs,  # full CDF support
-        "rtf_p50": pct(rtfs, 0.50), "rtf_p95": pct(rtfs, 0.95),
+        "rtf_p50": pct(rtfs, 0.50),
+        "rtf_p95": pct(rtfs, 0.95),
         "rtf_p99": pct(rtfs, 0.99),
         "rtf_sorted": rtfs,  # full CDF support
         "latency_mean": round(sum(lats) / len(lats), 3) if lats else None,
-        "latency_p50": pct(lats_sorted, 0.50), "latency_p99": pct(lats_sorted, 0.99),
+        "latency_p50": pct(lats_sorted, 0.50),
+        "latency_p99": pct(lats_sorted, 0.99),
         "audio_duration_mean_s": (
             round(sum(audio_secs) / len(audio_secs), 3) if audio_secs else None
         ),
     }
     sweep.append(stage)
+
     def fmt(v, spec):
         return format(v, spec) if v is not None else "-"
 
-    print(f"rate={rate:g} achieved={stage['achieved_qps_runner']} "
-          f"audio_s/s={stage['audio_s_per_s']} rtf_p50={fmt(stage['rtf_p50'], '.2f')} "
-          f"p50={fmt(stage['ttfc_p50'], '.3f')} p99={fmt(stage['ttfc_p99'], '.3f')} "
-          f"failed={failed}", flush=True)
+    print(
+        f"rate={rate:g} achieved={stage['achieved_qps_runner']} "
+        f"audio_s/s={stage['audio_s_per_s']} rtf_p50={fmt(stage['rtf_p50'], '.2f')} "
+        f"p50={fmt(stage['ttfc_p50'], '.3f')} p99={fmt(stage['ttfc_p99'], '.3f')} "
+        f"failed={failed}",
+        flush=True,
+    )
     time.sleep(5)  # drain between stages
 
 with open(os.path.join(OUT, "sweep.json"), "w") as f:
-    json.dump({"n_replicas": N, "samples_per_client": SAMPLES,
-               "stages": sweep}, f)
+    json.dump({"n_replicas": N, "samples_per_client": SAMPLES, "stages": sweep}, f)
 print("sweep written:", os.path.join(OUT, "sweep.json"))
