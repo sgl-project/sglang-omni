@@ -4,8 +4,8 @@
 Closed-loop benchmarking (fixed concurrency) conflates server capacity with
 client-side queueing: past the saturation point, TTFC absorbs the whole
 backlog. This driver instead sweeps *offered* rates: for each total rate it
-runs one open-loop Poisson client per replica (``--concurrency 0`` disables
-the closed-loop semaphore; ``--request-rate r`` gives exponential
+runs one open-loop Poisson client per replica (--concurrency 0 disables
+the closed-loop semaphore; --request-rate r gives exponential
 inter-arrivals) and harvests every per-request TTFC/RTF/latency for full
 CDFs, so TTFC can be read as a function of offered throughput and the
 capacity knee located.
@@ -52,74 +52,89 @@ OUT = sys.argv[4]
 EN_TOTAL = 1088  # seed-tts-eval EN split size
 
 os.makedirs(OUT, exist_ok=True)
+# Note (Jiaxin Deng): each client in a stage takes a disjoint SAMPLES-length
+# block so a shared server cache cannot inflate one client's numbers; N disjoint
+# blocks must exist in the EN split, and stages rotate the starting block.
+NUM_SLOTS = EN_TOTAL // SAMPLES if SAMPLES > 0 else 0
+if not (0 < N <= NUM_SLOTS):
+    sys.exit(
+        f"bench_sweep: need 0 < N <= EN_TOTAL//SAMPLES ({NUM_SLOTS}) for disjoint "
+        f"shards, got N={N} SAMPLES={SAMPLES}"
+    )
+
+
+def _spawn_client(stage_index, rate, per_client_rate, stage_dir, i):
+    slot = (stage_index + i) % NUM_SLOTS
+    offset = slot * SAMPLES
+    cdir = os.path.join(stage_dir, f"client{i}")
+    cmd = [
+        sys.executable,
+        "-m",
+        "benchmarks.eval.benchmark_tts_seedtts",
+        "--generate-only",
+        "--use-existing-server",
+        "--meta",
+        "zhaochenyang20/seed-tts-eval-arrow",
+        "--model",
+        os.environ.get("BENCH_MODEL", "higgs"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(8801 + i),
+        "--lang",
+        "en",
+        "--max-samples",
+        str(SAMPLES),
+        "--sample-offset",
+        str(offset),
+        "--concurrency",
+        "0",
+        "--request-rate",
+        str(per_client_rate),
+        "--output-dir",
+        cdir,
+        "--disable-tqdm",
+    ]
+    if os.environ.get("BENCH_STREAM", "1") != "0":
+        cmd.append("--stream")
+    if os.environ.get("BENCH_REF", "1") != "0":
+        cmd.extend(["--ref-format", "references"])
+    else:
+        cmd.append("--no-ref-audio")
+    logf = open(os.path.join(OUT, f"rate{rate:g}_client{i}.log"), "w")
+    preexec = None
+    if os.environ.get("CLIENT_CORES"):
+        client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
+        preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
+    proc = subprocess.Popen(
+        cmd, stdout=logf, stderr=subprocess.STDOUT, preexec_fn=preexec
+    )
+    return proc, logf
+
+
 sweep = []
-shard_slot = 0
-for rate in RATES:
+for stage_index, rate in enumerate(RATES):
     per_client_rate = rate / N
     stage_dir = os.path.join(OUT, f"rate{rate:g}")
     procs = []
-    for i in range(N):
-        # Disjoint shards within a stage; cycle across stages when the EN
-        # split (1088) is exhausted (later stages may replay earlier texts).
-        offset = (shard_slot * SAMPLES) % (EN_TOTAL - SAMPLES)
-        shard_slot += 1
-        cdir = os.path.join(stage_dir, f"client{i}")
-        cmd = [
-            sys.executable,
-            "-m",
-            "benchmarks.eval.benchmark_tts_seedtts",
-            "--generate-only",
-            "--use-existing-server",
-            "--meta",
-            "zhaochenyang20/seed-tts-eval-arrow",
-            "--model",
-            os.environ.get("BENCH_MODEL", "higgs"),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(8801 + i),
-            "--lang",
-            "en",
-            "--max-samples",
-            str(SAMPLES),
-            "--sample-offset",
-            str(offset),
-            "--concurrency",
-            "0",
-            "--request-rate",
-            str(per_client_rate),
-            "--output-dir",
-            cdir,
-            "--disable-tqdm",
-        ]
-        if os.environ.get("BENCH_STREAM", "1") != "0":
-            cmd.append("--stream")
-        if os.environ.get("BENCH_REF", "1") != "0":
-            cmd.extend(["--ref-format", "references"])
-        else:
-            cmd.append("--no-ref-audio")
-        logf = open(os.path.join(OUT, f"rate{rate:g}_client{i}.log"), "w")
-        preexec = None
-        if os.environ.get("CLIENT_CORES"):
-            client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
-            preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
-        procs.append(
-            (
-                subprocess.Popen(
-                    cmd,
-                    stdout=logf,
-                    stderr=subprocess.STDOUT,
-                    preexec_fn=preexec,
-                ),
-                logf,
+    # Note (Jiaxin Deng): terminate every started client and close its log even
+    # if a later spawn fails, so a partial stage cannot leak traffic or handles
+    # into the next stage.
+    try:
+        for i in range(N):
+            procs.append(
+                _spawn_client(stage_index, rate, per_client_rate, stage_dir, i)
             )
-        )
-    t0 = time.time()
-    fails = 0
-    for p, logf in procs:
-        fails += p.wait() != 0
-        logf.close()
-    wall = time.time() - t0
+        t0 = time.time()
+        fails = 0
+        for p, logf in procs:
+            fails += p.wait() != 0
+        wall = time.time() - t0
+    finally:
+        for p, logf in procs:
+            if p.poll() is None:
+                p.terminate()
+            logf.close()
 
     ttfcs, lats, rtfs, audio_secs = [], [], [], []
     completed, failed = 0, 0
@@ -128,7 +143,8 @@ for rate in RATES:
         f = os.path.join(stage_dir, f"client{i}", "speed_results.json")
         if not os.path.exists(f):
             continue
-        d = json.load(open(f))
+        with open(f) as fh:
+            d = json.load(fh)
         for r in d["per_request"]:
             if r.get("is_success"):
                 lats.append(r["latency_s"])

@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU unit tests for the weight-share export/attach file protocol.
 
-The CUDA-IPC layer itself (torch reductions + MultiprocessingSerializer under
-MPS) was validated by an on-GPU smoke test; these tests cover *our* protocol:
-atomic publish, manifest verification, timeout, alias-not-copy semantics,
-buffer coverage (incl. tied/duplicated registrations), the by-value path for
-non-aliasable tensors, and post-attach drift detection.
-
-An identity-preserving mock serializer stands in for CUDA IPC so aliasing is
-observable with plain CPU tensors (`alias_predicate=lambda t: True`).
+The CUDA-IPC layer itself was validated by an on-GPU smoke test; these cover
+our file protocol: atomic publish, manifest verification, timeout,
+alias-not-copy semantics, buffer coverage (including tied registrations), the
+by-value path for non-aliasable tensors, and post-attach drift detection. An
+identity-preserving mock serializer stands in for CUDA IPC so aliasing is
+observable with plain CPU tensors.
 """
 
 from __future__ import annotations
@@ -62,7 +60,8 @@ class TinyModel(nn.Module):
             self.linear.weight.copy_(torch.randn(3, 4, generator=gen))
             self.linear.bias.copy_(torch.randn(3, generator=gen))
         self.head = nn.Linear(4, 3, bias=False)
-        # Tied parameter: same Parameter object registered on two modules.
+        # Note (Jiaxin Deng): tie head to linear so the tied-param dedup path is
+        # exercised (one Parameter object shared by two modules).
         self.head.weight = self.linear.weight
         self.register_buffer("persistent_buf", torch.randn(2, 2, generator=gen))
         self.register_buffer(
@@ -73,7 +72,8 @@ class TinyModel(nn.Module):
 def _export(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("alias_predicate", lambda t: True)
-    # protocol tests use a mock serializer in pytest's tmp dir, so opt out of fs-trust
+    # Note (Jiaxin Deng): protocol tests use a mock serializer in pytest's tmp
+    # dir, so opt out of fs-trust.
     kw.setdefault("validate_secure", False)
     return export_weights(model, path, **kw)
 
@@ -96,20 +96,16 @@ def test_roundtrip_aliases_all_params_and_buffers(handle_path):
     _export(leader, handle_path)
     record = _attach(follower, handle_path)
 
-    # Parameters alias leader storage: same data_ptr, bit-identical values.
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
     assert follower.linear.bias.data_ptr() == leader.linear.bias.data_ptr()
-    # Buffers too — persistent and non-persistent.
     assert follower.persistent_buf.data_ptr() == leader.persistent_buf.data_ptr()
     assert follower.cache_buf.data_ptr() == leader.cache_buf.data_ptr()
     assert torch.equal(follower.linear.weight, leader.linear.weight)
 
-    # Alias, not copy: writing through the leader is visible to the follower.
     with torch.no_grad():
         leader.linear.weight[0, 0] = 123.0
     assert follower.linear.weight[0, 0].item() == 123.0
 
-    # Every shared tensor is covered by the attachment record.
     names = set(record)
     assert "linear.weight" in names
     assert "persistent_buf" in names and "cache_buf" in names
@@ -120,8 +116,6 @@ def test_tied_parameter_stays_tied_and_shared(handle_path):
     follower = TinyModel(seed=2)
     _export(leader, handle_path)
     _attach(follower, handle_path)
-    # The tie survives attach (one Parameter object on both modules) and both
-    # views alias the leader's storage.
     assert follower.head.weight is follower.linear.weight
     assert follower.head.weight.data_ptr() == leader.linear.weight.data_ptr()
 
@@ -132,22 +126,19 @@ def test_attach_is_assignment_not_inplace_copy(handle_path):
     before_ptr = follower.linear.weight.data_ptr()
     _export(leader, handle_path)
     _attach(follower, handle_path)
-    # The follower's original (dummy) storage must have been dropped, not
-    # written into.
     assert follower.linear.weight.data_ptr() != before_ptr
 
 
 def test_value_path_copies_without_aliasing(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
-    # Only alias the parameters; buffers go through the by-value path the way
-    # CPU-resident tensors do in production.
+    # Note (Jiaxin Deng): aliasing only the parameters drives buffers through
+    # the by-value path, as CPU-resident tensors do in production.
     param_ids = {id(p) for p in leader.parameters()}
     _export(leader, handle_path, alias_predicate=lambda t: id(t) in param_ids)
     _attach(follower, handle_path)
     assert torch.equal(follower.persistent_buf, leader.persistent_buf)
     assert follower.persistent_buf.data_ptr() != leader.persistent_buf.data_ptr()
-    # Aliased params still share storage.
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
 
 
@@ -159,12 +150,13 @@ def test_manifest_mismatch_extra_and_missing_names(tmp_path):
             self.head = nn.Linear(4, 3, bias=False)
             self.head.weight = self.linear.weight
             self.register_buffer("persistent_buf", torch.randn(2, 2))
-            # cache_buf shape differs (6 vs 5) and an extra buffer exists.
+            # Note (Jiaxin Deng): diverge cache_buf shape (6 vs 5) and add
+            # extra_buf so both the missing-name and extra-name paths fire.
             self.register_buffer("cache_buf", torch.randn(6), persistent=False)
             self.register_buffer("extra_buf", torch.randn(1))
 
-    # Same class *name* so the model-class gate passes and the manifest
-    # (names + shapes + dtypes) is what rejects the attach.
+    # Note (Jiaxin Deng): reuse the class name so the model-class gate passes
+    # and the manifest (names, shapes, dtypes) is what rejects the attach.
     OtherShape.__name__ = "TinyModel"
 
     path = str(tmp_path / "TinyModel.weights-ipc")
@@ -248,15 +240,16 @@ def test_verify_attachment_detects_rebound_storage(handle_path):
     record = _attach(follower, handle_path)
     verify_attachment(follower, record)  # freshly attached: passes
 
-    # Simulate a post-attach re-initialization (e.g. a stray loader step).
+    # Note (Jiaxin Deng): a post-attach re-init (a stray loader step) rebinds
+    # storage and must be caught before graph capture.
     follower.linear.weight.data = torch.zeros_like(follower.linear.weight)
     with pytest.raises(WeightShareError, match="rebound"):
         verify_attachment(follower, record)
 
 
 def test_in_place_mutation_keeps_attachment_valid(handle_path):
-    # In-place post-load mutation (the truncate_rope_to_bf16 pattern) keeps
-    # storage identity, so it must NOT trip the guard and must stay shared.
+    # Note (Jiaxin Deng): in-place post-load mutation (the truncate_rope_to_bf16
+    # pattern) keeps storage identity, so it must not trip the guard.
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
     _export(leader, handle_path)
@@ -283,7 +276,8 @@ def test_validate_weight_share_architecture_allows_and_rejects():
 
 
 def test_is_zombie_parses_state_after_comm(monkeypatch):
-    # comm can contain spaces and ")"; the state char is read after the last ")"
+    # Note (Jiaxin Deng): comm can contain spaces and ")", so the state char is
+    # read only after the last ")".
     monkeypatch.setattr(
         ipc_weights.Path,
         "read_text",
@@ -326,7 +320,8 @@ def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
 
 @_POSIX_ONLY
 def test_load_payload_rejects_symlinked_handle(tmp_path):
-    # the secure read path opens O_NOFOLLOW, so a symlinked handle is refused
+    # Note (Jiaxin Deng): the secure read path opens O_NOFOLLOW, so a symlinked
+    # handle is refused.
     real_dir = tmp_path / "real"
     real_dir.mkdir(mode=0o700)
     real_path = str(real_dir / "TinyModel.weights-ipc")
@@ -355,7 +350,8 @@ def test_check_leader_alive_rejects_dead_pid(monkeypatch):
 
 @_POSIX_ONLY
 def test_check_leader_alive_rejects_recycled_pid():
-    # Same live pid but a different recorded start time = the pid was reused.
+    # Note (Jiaxin Deng): same live pid but a different recorded start time
+    # means the pid was reused.
     with pytest.raises(WeightShareError, match="recycled"):
         ipc_weights._check_leader_alive(
             {"pid": os.getpid(), "leader_start_time": "0"}, "before attach"

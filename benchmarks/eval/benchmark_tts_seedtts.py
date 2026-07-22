@@ -297,6 +297,7 @@ def _build_results_config(
         "instructions": config.instructions,
         "stream": config.stream,
         "max_samples": config.max_samples,
+        "sample_offset": config.sample_offset,
         "max_new_tokens": config.max_new_tokens,
         "seed": config.seed,
         "token_count": config.token_count,
@@ -319,6 +320,12 @@ async def run_tts_seedtts_benchmark(
     base_url = build_base_url(config)
     api_url = f"{base_url}/v1/audio/speech"
 
+    # Note (Jiaxin Deng): a negative offset would silently slice from the end
+    # instead of skipping the first N, contaminating the shard it claims to take.
+    if config.sample_offset < 0:
+        raise ValueError(
+            f"--sample-offset must be non-negative, got {config.sample_offset}"
+        )
     if config.sample_offset:
         head = config.sample_offset + (config.max_samples or 0)
         samples = load_seedtts_samples(

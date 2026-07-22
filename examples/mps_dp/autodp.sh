@@ -58,6 +58,9 @@ else
 fi
 GPU_ID=${GPU_ID:-0}
 CAP=${MAX_TOTAL_TOKENS:-100000}
+# Note (Jiaxin Deng): weight sharing currently supports only the Higgs TTS
+# architecture; non-Higgs models fail the arch gate at startup. Size those with
+# WEIGHT_SHARE=0.
 WS=${WEIGHT_SHARE:-1}
 H_GIB=${HEADROOM_GIB:-1.5}
 
@@ -122,32 +125,39 @@ fi
 
 # ---- sizing ------------------------------------------------------------------
 SRV_CORE_COUNT=$(python3 -c "import os; c=len(os.sched_getaffinity(0)); print(max(1, c*3//4))")
-readarray -t SIZED < <(python3 - <<EOF
+SIZED_RAW=$(python3 - <<EOF
+import sys
 m = $M_MIB / 1024
 s = float("$STATIC_GIB")
 w = float("$WEIGHTS_GIB")
 h = float("$H_GIB")
-cap = $CAP
 ws = $WS
-if ws:
-    d = int((m - w) // (s - w + h))
-else:
-    d = int(m // (s + h))
-# clamps: hard MAX_DP + keep MIN_CORES_PER_REPLICA server cores per replica
+if not (m > 0 and s > 0 and h >= 0 and w >= 0 and (w < s or not ws)):
+    sys.exit("autodp: invalid sizing inputs m=%s s=%s w=%s h=%s" % (m, s, w, h))
+denom = (s - w + h) if ws else (s + h)
+if denom <= 0:
+    sys.exit("autodp: non-positive per-replica cost %.3f GiB; cannot size" % denom)
+d = int((m - w) // denom) if ws else int(m // denom)
 d = min(d, ${MAX_DP:-16}, $SRV_CORE_COUNT // ${MIN_CORES_PER_REPLICA:-2})
-d = max(d, 1)
-# required mem fraction for the LAST replica (earlier ones need less);
-# +0.02 margin, clamped. The launcher's exact-KV check validates it at boot.
+# Note (Jiaxin Deng): reject an unsizable card instead of forcing d=1, which
+# would report "safe" for a plan that cannot even boot one replica.
+if d < 1:
+    need = (w + denom) if ws else denom
+    sys.exit("autodp: no replica fits on %.1f GiB (needs >= %.1f GiB); lower the KV cap or free the GPU" % (m, need))
 prev = (d - 1) * ((s - w) if ws else s) + (w if ws else 0)
 free_last = m - prev
 mf = min(0.97, round(s / free_last + 0.02, 3)) if free_last > 0 else 0.97
-static_total = w + d * (s - w) if ws else d * s
-print(d); print(mf); print(round(static_total, 1)); print(round(m - static_total, 1))
+static_total = (w + d * (s - w)) if ws else (d * s)
+print(d)
+print(mf)
+print(round(static_total, 1))
+print(round(m - static_total, 1))
 EOF
-)
+) || die "autodp sizing failed (see message above)"
+readarray -t SIZED <<< "$SIZED_RAW"
 D_MAX=${SIZED[0]}; MF_REQ=${SIZED[1]}; STATIC_TOT=${SIZED[2]}; FREE_LEFT=${SIZED[3]}
 N=${N:-$D_MAX}
-[ "$N" -le "$D_MAX" ] || die "N=$N exceeds computed safe maximum $D_MAX"
+[ "$N" -le "$D_MAX" ] || die "N=$N exceeds computed max estimated DP $D_MAX"
 
 M_GIB=$(python3 -c "print(round($M_MIB/1024,1))")
 echo "[autodp] plan: GPU ${GPU_ID} M=${M_GIB} GiB | s=${STATIC_GIB} GiB W=${WEIGHTS_GIB} GiB h=${H_GIB} GiB cap=${CAP} weight_share=${WS}"
@@ -162,21 +172,18 @@ if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
      GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
      CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS MF=$MF_REQ \
      bash "$HERE/launch.sh" up 2>&1 | tee "$launch_log"; then
-  # Config-file pipelines (e.g. Qwen3-TTS) reject --mem-fraction-static.
-  # The derived MF is only *required* when it exceeds the model default;
-  # retry without it and let the launcher's exact-KV check arbitrate.
+  # A config-file pipeline may reject --mem-fraction-static; the derived MF is
+  # only required when it exceeds the model default, so retry without it and
+  # let the launcher's exact-KV check arbitrate.
   if grep -qE "mem-fraction-static requires a pipeline|sets mem_fraction_static through both" "$launch_log"; then
     echo "[autodp] pipeline rejects --mem-fraction-static; retrying with the model default (derived MF=$MF_REQ was advisory)"
-    # The failed attempt keeps its state dir for diagnostics; remove it (all
-    # recorded PIDs are dead) so the retry can start.
-    for st in /tmp/sglang-omni-same-gpu-dp/$UID/gpu-$GPU_ID/run-*; do
-      [ -f "$st/replicas.tsv" ] || { rm -rf "$st" 2>/dev/null; continue; }
-      live=0
-      while IFS=$'\t' read -r _ pid _ _ _ _; do
-        kill -0 "$pid" 2>/dev/null && live=1
-      done < "$st/replicas.tsv"
-      [ "$live" = 0 ] && rm -rf "$st"
-    done
+    # Note (Jiaxin Deng): tear the failed attempt down through the launcher,
+    # which does the start-time / PGID / MPS-client checks that a bare rm -rf
+    # skips (a surviving child or MPS daemon would otherwise be orphaned).
+    state_root=${STATE_ROOT:-/tmp/sglang-omni-same-gpu-dp/$UID}
+    failed_state=$(ls -d "$state_root/gpu-$GPU_ID"/run-* 2>/dev/null | tail -1)
+    [ -n "$failed_state" ] && bash "$HERE/launch.sh" down "$(basename "$failed_state")" \
+      || die "autodp: could not tear down the failed --mem-fraction-static attempt; inspect $state_root/gpu-$GPU_ID and retry"
     MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
     GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
     CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS \

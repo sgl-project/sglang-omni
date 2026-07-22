@@ -1,41 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 """Same-GPU weight sharing over CUDA IPC for same-GPU data parallelism.
 
-One replica per GPU is the weight LEADER: it loads checkpoint weights
-normally, serializes CUDA-IPC handles for every model parameter and buffer
-(via sglang's ``MultiprocessingSerializer`` + ``monkey_patch_torch_reductions``,
-the ``update_weights_from_tensor`` lineage), and atomically publishes the
-handle blob to a file. FOLLOWER replicas build the same module tree with
-dummy weights (``load_format=dummy``, no checkpoint I/O), then alias every
-parameter/buffer onto the leader's storage (``param.data = shared_tensor``,
-assign — never copy). KV cache, CUDA graphs, and sampler state stay private
-per replica.
+One replica per GPU is the LEADER: it loads checkpoint weights, serializes
+CUDA-IPC handles for every parameter and buffer, and atomically publishes the
+handle blob to a file. FOLLOWERS build the same module tree with dummy weights
+(no checkpoint I/O), then alias every parameter and buffer onto the leader's
+storage by assignment, not copy. KV cache, CUDA graphs, and sampler state stay
+private per replica.
 
-Ordering contract (enforced by the caller, verified here):
+Ordering contract, enforced by the caller and verified here:
 
-- The leader exports at the end of ``ModelRunner.load_model``. Builder-level
-  hooks (e.g. Higgs ``setup_model``'s ``truncate_rope_to_bf16``) run LATER and
-  mutate the already-shared storage: such hooks must stay in-place,
-  idempotent, and deterministic, so a follower's redundant application writes
-  identical bytes to the shared buffer.
-- Followers attach before KV-pool profiling, warmup forwards, and CUDA graph
-  capture. :func:`verify_attachment` re-checks storage identity right before
-  graph capture so a silently re-initialized tensor fails loudly.
-- The leader must outlive followers (CUDA IPC mappings die with the exporting
-  process); restart replicas together.
-- The store directory must be unique per run (the launcher uses a per-run
-  path). A recycled pid and a different checkpoint are caught, but reusing a
-  dir while the previous leader still lives is not, so per-run is the contract.
+- The leader exports at the end of load_model. Builder-level hooks (e.g. Higgs
+  truncate_rope_to_bf16) run later and mutate the already-shared storage, so
+  they must stay in-place, idempotent, and deterministic: a follower's
+  redundant application must write identical bytes.
+- Followers attach before KV-pool profiling, warmup, and graph capture.
+  verify_attachment re-checks storage identity right before capture, so a
+  silently re-initialized tensor fails loudly instead of serving dummy weights.
+- The leader must outlive followers, since CUDA IPC mappings die with the
+  exporting process; restart replicas together.
+- The store dir must be unique per run: a recycled pid or a different
+  checkpoint is caught, but reusing a live leader's dir is not.
 
-Role selection is environment-driven so process supervisors (e.g.
-``examples/mps_dp/launch.sh``) can stay declarative::
-
-    SGLANG_OMNI_WEIGHT_SHARE=leader:/path/to/dir     # replica 0
-    SGLANG_OMNI_WEIGHT_SHARE=follower:/path/to/dir   # replicas 1..N-1
-
-The path is a *directory*; each SGLang engine writes/reads
-``<dir>/<ModelClass>.weights-ipc``, so multi-engine stages cannot clobber
-each other. Unset (or empty) means weight sharing is off.
+Role and store dir come from SGLANG_OMNI_WEIGHT_SHARE (leader:<dir> or
+follower:<dir>) so supervisors stay declarative; unset means sharing is off.
+Each engine reads and writes <dir>/<ModelClass>.weights-ipc so multi-engine
+stages cannot clobber each other.
 """
 
 from __future__ import annotations
@@ -63,8 +53,8 @@ DEFAULT_ATTACH_TIMEOUT_S = 1800.0
 _FORMAT_VERSION = 1
 _FILE_SUFFIX = ".weights-ipc"
 
-# Paths this process has already exported to; a second export to the same
-# file would silently invalidate handles followers may already hold.
+# Note (Jiaxin Deng): a second export to the same file silently invalidates
+# handles attached followers already hold, so track exports and reject repeats.
 _EXPORTED_FILES: set[str] = set()
 
 
@@ -80,7 +70,7 @@ class WeightShareConfig:
 
 
 def get_weight_share_config(environ=None) -> WeightShareConfig | None:
-    """Parse ``SGLANG_OMNI_WEIGHT_SHARE``; ``None`` when unset/empty (off)."""
+    """Parse SGLANG_OMNI_WEIGHT_SHARE; None when unset or empty (off)."""
     env = os.environ if environ is None else environ
     raw = (env.get(ENV_WEIGHT_SHARE) or "").strip()
     if not raw:
@@ -110,17 +100,16 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
 
 
 def handle_file_for_model(dir_path: str, model: torch.nn.Module) -> str:
-    """``<dir>/<ModelClass>.weights-ipc`` — one handle file per engine."""
+    """Path <dir>/<ModelClass>.weights-ipc: one handle file per engine."""
     return os.path.join(dir_path, type(model).__name__ + _FILE_SUFFIX)
 
 
 class _SglangIpcSerializer:
     """CUDA-IPC (de)serialization via sglang's RLHF weight-update machinery.
 
-    ``monkey_patch_torch_reductions`` rewrites the device index in the reduced
-    tensor args to the device UUID, which is what makes the handles robust to
-    per-process CUDA_VISIBLE_DEVICES orderings (each MPS-DP replica sees the
-    GPU under a UUID-pinned CUDA_VISIBLE_DEVICES).
+    The torch-reductions monkey patch rewrites the reduced tensor's device
+    index to the device UUID, which is what makes handles robust to each
+    replica's UUID-pinned CUDA_VISIBLE_DEVICES ordering.
     """
 
     @staticmethod
@@ -141,12 +130,11 @@ class _SglangIpcSerializer:
 
 
 def _named_shared_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    """All named parameters + buffers, deduplicated, name-collision checked.
+    """All named parameters and buffers, deduplicated, name-collision checked.
 
-    ``remove_duplicate=True`` (the default) folds tied parameters (e.g. the
-    Higgs ``modality_head.weight`` ↔ embedding tie) into a single canonical
-    name on both leader and follower; assigning ``.data`` through that single
-    Parameter object updates every module that holds it.
+    Deduplication folds tied parameters (e.g. Higgs modality_head.weight tied
+    to the embedding) into one canonical name on both sides, so assigning .data
+    through that single Parameter object updates every module holding it.
     """
     tensors: dict[str, torch.Tensor] = {}
     for source in (model.named_parameters(), model.named_buffers()):
@@ -249,10 +237,10 @@ def _prepare_secure_dir(dir_path: str) -> None:
 
 
 def _proc_stat_fields(pid: int) -> list[str] | None:
-    """The whitespace fields of /proc/<pid>/stat after ``(comm)``.
+    """The whitespace fields of /proc/<pid>/stat after the (comm) field.
 
-    Index 0 is the state char; index 19 is starttime (overall field 22). comm
-    can contain spaces and parens, so split after the last ``)``.
+    Index 0 is the state char, index 19 is starttime. comm can contain spaces
+    and parens, so the caller must split after the last ')'.
     """
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
@@ -316,8 +304,8 @@ class LeaderLivenessMonitor:
     def _leader_present(self) -> bool:
         if not pid_is_alive(self.leader_pid):
             return False
-        # A recycled pid (leader died, pid reassigned) has a different start
-        # time; treat that as the leader being gone.
+        # Note (Jiaxin Deng): a recycled pid (leader died, pid reassigned) has
+        # a different start time, so treat a mismatch as the leader being gone.
         if self.leader_start_time is not None:
             return _proc_start_time(self.leader_pid) == self.leader_start_time
         return True
@@ -348,12 +336,11 @@ class LeaderLivenessMonitor:
 
 
 def _atomic_write(file_path: str, data: bytes) -> None:
-    """Write ``data`` to ``file_path`` via tmp+fsync+rename (atomic publish).
+    """Publish data to file_path via tmp, fsync, then atomic rename.
 
-    Followers poll for ``file_path``; rename atomicity guarantees they can
-    never observe a partially written blob. ``mkstemp`` creates the temp file
-    0600 with ``O_EXCL`` under an unpredictable name, so a pre-planted symlink
-    in the store cannot redirect the write.
+    Rename atomicity guarantees a polling follower never observes a partial
+    blob. mkstemp creates the temp 0600 with O_EXCL under an unpredictable
+    name, so a pre-planted symlink in the store cannot redirect the write.
     """
     dir_path = os.path.dirname(os.path.abspath(file_path))
     os.makedirs(dir_path, exist_ok=True)
@@ -391,18 +378,17 @@ def export_weights(
     model_path: str | None = None,
     model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
-    """Publish CUDA-IPC handles for every model parameter/buffer to a file.
+    """Publish CUDA-IPC handles for every model parameter and buffer to a file.
 
-    CUDA tensors are shared zero-copy through ``serializer`` (default:
-    sglang's ForkingPickler-based ``MultiprocessingSerializer``). Non-CUDA
-    tensors (rare; e.g. CPU-resident buffers) are embedded *by value* because
-    ForkingPickler's CPU shared-memory reduction does not survive a
-    file-based handoff between unrelated processes; followers copy those.
+    CUDA tensors are shared zero-copy through the serializer. Non-CUDA tensors
+    (rare, e.g. CPU-resident buffers) are embedded by value because
+    ForkingPickler's CPU shared-memory reduction does not survive a file handoff
+    between unrelated processes, so followers copy those.
 
-    Returns a record ``{name: (data_ptr, shape, dtype)}`` of the IPC-shared
-    (leader-side) tensors for later :func:`verify_attachment` — the leader's
-    own storages must stay put too, since followers alias them. In-place
-    mutation (``copy_``) is fine; rebinding ``.data`` after export is not.
+    Returns a record {name: (data_ptr, shape, dtype)} of the leader-side shared
+    tensors for verify_attachment: the leader's own storages must stay put since
+    followers alias them, so in-place mutation is fine but rebinding .data after
+    export is not.
     """
     abs_path = os.path.abspath(file_path)
     if abs_path in _EXPORTED_FILES:
@@ -475,11 +461,11 @@ def wait_for_any_export(
     timeout_s: float,
     poll_interval_s: float = 0.5,
 ) -> None:
-    """Block until any leader handle file exists under ``dir_path``.
+    """Block until any leader handle file exists under dir_path.
 
-    Used by followers *before* allocating dummy weights, when the engine's
-    model class (hence exact file name) is not known yet; attach still waits
-    on and validates the engine-specific file afterwards.
+    Used by followers before allocating dummy weights, when the engine's model
+    class (hence exact file name) is not known yet. Attach still waits on and
+    validates the engine-specific file afterwards.
     """
     deadline = time.monotonic() + timeout_s
     while True:
@@ -498,9 +484,8 @@ def wait_for_any_export(
         time.sleep(poll_interval_s)
 
 
-# Required top-level payload fields and their accepted types. Validated as a
-# closed schema before any identity check or deserialization, so a truncated or
-# hand-forged handle raises a named WeightShareError, never a raw KeyError.
+# Note (Jiaxin Deng): a closed schema checked before deserialization, so a
+# truncated or forged handle raises a named WeightShareError, not a raw KeyError.
 _REQUIRED_PAYLOAD_FIELDS: dict[str, type | tuple[type, ...]] = {
     "format_version": int,
     "model_class": str,
@@ -594,13 +579,11 @@ def attach_weights(
     model_path: str | None = None,
     model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
-    """Alias every model parameter/buffer onto the leader's exported storage.
+    """Alias every model parameter and buffer onto the leader's exported storage.
 
-    ``param.data = shared`` / ``module._buffers[leaf] = shared`` — assign,
-    never copy — so the follower's dummy-initialized storages are dropped and
-    freed. Hard-errors on any name/shape/dtype mismatch in either direction.
-
-    Returns the attachment record for :func:`verify_attachment`.
+    Assignment, not copy, so the follower's dummy-initialized storages are
+    dropped and freed. Hard-errors on any name, shape, or dtype mismatch in
+    either direction. Returns the attachment record for verify_attachment.
     """
     record, _ = _attach_and_check(
         model,
@@ -718,10 +701,8 @@ def _alias_from_payload(
         ) from exc
 
     params = dict(model.named_parameters())
-    # A buffer tensor may be registered under several module paths (tied /
-    # shared modules); named_buffers deduplicates to one canonical name, but
-    # rebinding must cover every registration or non-canonical holders would
-    # keep the follower's dummy storage.
+    # Note (Jiaxin Deng): a buffer can be registered under several module paths,
+    # so rebinding must hit every one or a stale holder keeps dummy storage.
     buffer_paths_by_id: dict[int, list[str]] = {}
     for dotted, buf in model.named_buffers(remove_duplicate=False):
         buffer_paths_by_id.setdefault(id(buf), []).append(dotted)
@@ -740,24 +721,24 @@ def _alias_from_payload(
                 f"{tuple(own.shape)}/{own.dtype}"
             )
         if incoming.is_cuda and incoming.device != own.device:
-            # A UUID-remap failure would otherwise surface later as a
-            # mixed-device kernel error that doesn't name weight sharing.
+            # Note (Jiaxin Deng): a UUID-remap failure would otherwise surface
+            # later as a mixed-device kernel error that never names weight sharing.
             raise WeightShareError(
                 f"tensor {name!r} arrived on {incoming.device}, expected "
                 f"{own.device}: CUDA IPC handle mapped to the wrong device"
             )
         if name in shared:
-            # Alias (assign, not copy): the follower drops its own storage.
             if name in params:
-                # Tied params are one Parameter object; .data assignment
-                # propagates to every module holding it.
+                # Note (Jiaxin Deng): tied params are one Parameter object, so a
+                # single .data assignment propagates to every module holding it.
                 params[name].data = incoming
             else:
                 for dotted in buffer_paths_by_id.get(id(own), [name]):
                     _rebind_buffer(model, dotted, incoming)
             aliased_bytes += incoming.numel() * incoming.element_size()
         else:
-            # By-value (non-CUDA) tensors keep private storage; copy contents.
+            # Note (Jiaxin Deng): non-CUDA tensors cannot be IPC-aliased, so
+            # this branch copies them into the follower's private storage.
             with torch.no_grad():
                 own.copy_(incoming.to(own.device))
 
@@ -846,7 +827,7 @@ def leader_export(
     model_path: str | None = None,
     model_revision: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
-    """Leader role: export this engine's weights under ``dir_path``."""
+    """Leader role: export this engine's weights under dir_path."""
     return export_weights(
         model,
         handle_file_for_model(dir_path, model),
@@ -869,8 +850,8 @@ def follower_attach(
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], LeaderLivenessMonitor]:
     """Follower role: attach this engine's weights and watch the leader.
 
-    Returns the attachment record and a started :class:`LeaderLivenessMonitor`;
-    the caller keeps a reference so the follower exits if the leader dies.
+    Returns the attachment record and a started LeaderLivenessMonitor; the
+    caller keeps a reference so the follower exits if the leader dies.
     """
     record, payload = _attach_and_check(
         model,

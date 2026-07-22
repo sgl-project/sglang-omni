@@ -102,11 +102,10 @@ class SGLModelRunner(ModelRunner):
         # shards share names/shapes/dtypes across ranks, so the handle file
         # would collide and followers would silently attach another rank's
         # shard. Refuse until the handle path is rank-qualified.
-        if getattr(self.server_args, "tp_size", 1) > 1 or (
-            getattr(self.server_args, "pp_size", 1) > 1
-        ):
+        if self.server_args.tp_size != 1 or self.server_args.pp_size != 1:
             raise ipc_weights.WeightShareError(
-                "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1"
+                "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1, got "
+                f"tp={self.server_args.tp_size} pp={self.server_args.pp_size}"
             )
 
         architectures = (
