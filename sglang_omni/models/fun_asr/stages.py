@@ -52,6 +52,8 @@ def create_sglang_fun_asr_executor(
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
+    pre_lm_max_batch_size: int = 8,
+    pre_lm_max_batch_wait_ms: int = 4,
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     server_args_overrides: dict[str, Any] | None = None,
@@ -145,6 +147,8 @@ def create_sglang_fun_asr_executor(
             ),
             cache_max_entries=pre_lm_cache_max_entries,
             cache_max_bytes=pre_lm_cache_size_bytes,
+            max_batch_size=pre_lm_max_batch_size,
+            max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         )
 
     try:
