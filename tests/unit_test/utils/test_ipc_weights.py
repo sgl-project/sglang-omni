@@ -351,6 +351,20 @@ def test_check_leader_alive_rejects_dead_pid(monkeypatch):
     ipc_weights._check_leader_alive({"pid": 4321}, "before attach")  # alive: no raise
 
 
+@_POSIX_ONLY
+def test_check_leader_alive_rejects_recycled_pid():
+    # Same live pid but a different recorded start time = the pid was reused.
+    with pytest.raises(WeightShareError, match="recycled"):
+        ipc_weights._check_leader_alive(
+            {"pid": os.getpid(), "leader_start_time": "0"}, "before attach"
+        )
+    ok = {
+        "pid": os.getpid(),
+        "leader_start_time": ipc_weights._proc_start_time(os.getpid()),
+    }
+    ipc_weights._check_leader_alive(ok, "before attach")  # matching start: no raise
+
+
 def test_load_payload_requires_positive_pid(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
     with open(path, "wb") as fh:

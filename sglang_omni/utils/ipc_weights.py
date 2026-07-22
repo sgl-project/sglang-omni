@@ -24,10 +24,10 @@ Ordering contract (enforced by the caller, verified here):
 - The leader must outlive followers (CUDA IPC mappings die with the exporting
   process); restart replicas together.
 - The store directory must be unique per run (the launcher uses a per-run
-  path). Reusing one dir across runs can let a follower attach a previous
-  run's still-live publication before the new leader republishes; the model
-  path/revision and pid-liveness checks narrow but do not fully close that,
-  so per-run isolation is the contract.
+  path). A recycled leader pid is caught by the process-start-time check and a
+  different checkpoint by the model path/revision check, but reusing one dir
+  while the previous run's leader is still alive can still let a follower
+  attach that stale publication, so per-run isolation is the contract.
 
 Role selection is environment-driven so process supervisors (e.g.
 ``examples/mps_dp/launch.sh``) can stay declarative::
@@ -254,19 +254,34 @@ def _prepare_secure_dir(dir_path: str) -> None:
     _validate_secure_dir(dir_path)
 
 
-def _is_zombie(pid: int) -> bool:
+def _proc_stat_fields(pid: int) -> list[str] | None:
+    """The whitespace fields of /proc/<pid>/stat after ``(comm)``.
+
+    Index 0 is the state char; index 19 is starttime (overall field 22). comm
+    can contain spaces and parens, so split after the last ``)``.
+    """
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
-        return False
-    # /proc/<pid>/stat stores the state char after "(comm)"; Z is a zombie,
-    # which still passes kill(pid, 0) until it is reaped.
+        return None
     closing_paren = stat_line.rfind(")")
-    return (
-        closing_paren >= 0
-        and len(stat_line) > closing_paren + 2
-        and stat_line[closing_paren + 2] == "Z"
-    )
+    if closing_paren < 0:
+        return None
+    return stat_line[closing_paren + 1 :].split()
+
+
+def _is_zombie(pid: int) -> bool:
+    fields = _proc_stat_fields(pid)
+    # Z still passes kill(pid, 0) until it is reaped.
+    return bool(fields) and fields[0] == "Z"
+
+
+def _proc_start_time(pid: int) -> str | None:
+    """Process start time, which differs for a recycled pid (None off Linux)."""
+    fields = _proc_stat_fields(pid)
+    if not fields or len(fields) <= 19:
+        return None
+    return fields[19]
 
 
 def pid_is_alive(pid: int) -> bool:
@@ -410,6 +425,7 @@ def export_weights(
         "manifest_hash": _manifest_hash(tensors),
         "torch_version": torch.__version__,
         "pid": os.getpid(),
+        "leader_start_time": _proc_start_time(os.getpid()),
         "model_path": model_path,
         "model_revision": model_revision,
         "ipc_blob": serializer.serialize(ipc_tensors),
@@ -600,11 +616,23 @@ def _check_model_identity(
 
 def _check_leader_alive(payload: dict[str, Any], when: str) -> None:
     leader_pid = payload.get("pid")
-    if leader_pid and not pid_is_alive(int(leader_pid)):
+    if not leader_pid:
+        return
+    if not pid_is_alive(int(leader_pid)):
         raise WeightShareError(
             f"weight-share leader pid={leader_pid} is not alive ({when}); "
             "refusing to serve on a dead leader's CUDA storage"
         )
+    # Defeat pid reuse: if the live pid's start time differs from the exporter's,
+    # a new process took the pid and the original leader is gone.
+    recorded_start = payload.get("leader_start_time")
+    if recorded_start is not None:
+        current_start = _proc_start_time(int(leader_pid))
+        if current_start is not None and current_start != recorded_start:
+            raise WeightShareError(
+                f"weight-share leader pid={leader_pid} was recycled ({when}); "
+                "the original exporting process is gone"
+            )
 
 
 def _alias_from_payload(
