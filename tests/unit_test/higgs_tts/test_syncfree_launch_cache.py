@@ -18,8 +18,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni.environ import OMNIENV
-from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
+from sglang_omni.models.higgs_tts.model_runner import (
+    HiggsTTSModelRunner,
+    _syncfree_launch_enabled,
+)
 from sglang_omni.models.higgs_tts.sampler import K_MAX, NO_SEED
 
 POOL = 8  # pool size incl. the reserved padding row
@@ -281,8 +283,11 @@ def test_rid_reuse_on_same_row_misses():
 
 def test_env_flag_parsing(monkeypatch):
     monkeypatch.delenv("SGLANG_OMNI_SYNCFREE_LAUNCH", raising=False)
-    assert OMNIENV.SGLANG_OMNI_SYNCFREE_LAUNCH.get() is True  # default ON
+    assert _syncfree_launch_enabled() is True  # default ON
     monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "0")
-    assert OMNIENV.SGLANG_OMNI_SYNCFREE_LAUNCH.get() is False
+    assert _syncfree_launch_enabled() is False
     monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "1")
-    assert OMNIENV.SGLANG_OMNI_SYNCFREE_LAUNCH.get() is True
+    assert _syncfree_launch_enabled() is True
+    monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "bogus")
+    with pytest.raises(ValueError):
+        _syncfree_launch_enabled()

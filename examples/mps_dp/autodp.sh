@@ -21,9 +21,10 @@
 #
 # Environment (defaults in parentheses):
 #   MODEL (bosonai/higgs-tts-3-4b), MODEL_NAME (higgs), GPU_ID (0),
-#   MODEL_CONFIG ()            config-file models (e.g. Qwen3-TTS): forwarded to
+#   CONFIG ()                  config-file models (e.g. Qwen3-TTS): forwarded to
 #                              launch.sh, which serves via --config instead of
-#                              --model-path
+#                              --model-path (MODEL/MODEL_NAME defaults are
+#                              suppressed; launch.sh forbids MODEL with CONFIG)
 #   MAX_TOTAL_TOKENS (100000)  common per-replica KV cap, required
 #   WEIGHT_SHARE (1)           1 = share the AR backbone over CUDA IPC; use 0
 #                              for models without weight-share support
@@ -45,8 +46,15 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 CMD=${1:-plan}
-MODEL=${MODEL:-bosonai/higgs-tts-3-4b}
-MODEL_NAME=${MODEL_NAME:-higgs}
+CONFIG=${CONFIG:-}
+if [ -n "$CONFIG" ]; then
+  # launch.sh forbids MODEL alongside CONFIG; empty values read as unset there.
+  MODEL=
+  MODEL_NAME=${MODEL_NAME:-}
+else
+  MODEL=${MODEL:-bosonai/higgs-tts-3-4b}
+  MODEL_NAME=${MODEL_NAME:-higgs}
+fi
 GPU_ID=${GPU_ID:-0}
 CAP=${MAX_TOTAL_TOKENS:-100000}
 WS=${WEIGHT_SHARE:-1}
@@ -83,7 +91,7 @@ WEIGHTS_GIB=${WEIGHTS_GIB:-}
 if [ -z "$STATIC_GIB" ]; then
   echo "[autodp] probing: booting 1 replica at cap=$CAP to measure the static footprint..."
   probe_blocks=$(core_blocks_for 1)
-  MODEL=$MODEL MODEL_NAME=$MODEL_NAME MODEL_CONFIG=${MODEL_CONFIG:-} \
+  MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
   GPU_ID=$GPU_ID N=1 BASE_PORT=${BASE_PORT:-8801} \
   CORE_BLOCKS="$probe_blocks" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS \
     bash "$HERE/launch.sh" up > /tmp/autodp_probe.$$.log 2>&1 \
@@ -144,7 +152,7 @@ echo "[autodp] plan: max safe DP = ${D_MAX} (launching N=${N}); static total ~${
 BLOCKS=${CORE_BLOCKS:-$(core_blocks_for "$N")}
 echo "[autodp] launching N=$N (blocks: $BLOCKS)"
 launch_log=$(mktemp /tmp/autodp_up.XXXXXX.log)
-if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME MODEL_CONFIG=${MODEL_CONFIG:-} \
+if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
      GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
      CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS MF=$MF_REQ \
      bash "$HERE/launch.sh" up 2>&1 | tee "$launch_log"; then
@@ -163,7 +171,7 @@ if ! MODEL=$MODEL MODEL_NAME=$MODEL_NAME MODEL_CONFIG=${MODEL_CONFIG:-} \
       done < "$st/replicas.tsv"
       [ "$live" = 0 ] && rm -rf "$st"
     done
-    MODEL=$MODEL MODEL_NAME=$MODEL_NAME MODEL_CONFIG=${MODEL_CONFIG:-} \
+    MODEL=$MODEL MODEL_NAME=$MODEL_NAME CONFIG=$CONFIG \
     GPU_ID=$GPU_ID N=$N BASE_PORT=${BASE_PORT:-8801} \
     CORE_BLOCKS="$BLOCKS" MAX_TOTAL_TOKENS=$CAP WEIGHT_SHARE=$WS \
       bash "$HERE/launch.sh" up

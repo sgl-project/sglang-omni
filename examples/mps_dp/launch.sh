@@ -464,10 +464,6 @@ up() {
     # memory profiling in testing, so replicas start sequentially behind a health
     # gate; setsid gives each replica its own process group so teardown can signal
     # exactly this run's process trees.
-    # Config-file models (multi-stage pipelines like Qwen3-Omni) can't be
-    # expressed as --model-path; MODEL_CONFIG switches the serve invocation.
-    local model_args=(--model-path "$model" --model-name "$model_name")
-    [ -n "${MODEL_CONFIG:-}" ] && model_args=(--config "$MODEL_CONFIG")
     CUDA_VISIBLE_DEVICES="$uuid" \
     SGLANG_OMNI_WEIGHT_SHARE="$ws_env" \
     setsid numactl --cpunodebind="$node" --membind="$node" -C "${blocks[$i]}" \
