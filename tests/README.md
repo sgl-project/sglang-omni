@@ -84,6 +84,8 @@ tests/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── fun_asr/
+    │   ├── test_encoder_service.py
+    │   ├── test_model.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_transcribe_diarize/
@@ -346,6 +348,8 @@ that happened to contain an older version of the test.
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
   - `StageOutputCache` thread safety: concurrent get/put byte-accounting,
+    non-negative capacity validation, identity-checked removal that preserves
+    newer replacements,
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
@@ -356,10 +360,16 @@ that happened to contain an older version of the test.
     text round-trips for byte-level BPE output.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
-    auto static KV budget, disabled multimodal embedding cache and torch.compile,
-    and `FunAsrNanoForConditionalGeneration` registry wiring
+    auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
+    shutdown, disabled multimodal embedding cache and torch.compile, and
+    `FunAsrNanoForConditionalGeneration` registry wiring
+  - pre-LM encoder service: bounded batching, complete-embedding validation,
+    single-flight deduplication, stale cache races, CPU LRU budgets, failure
+    isolation, telemetry, and worker shutdown
+  - model audio-feature shape and checkpoint weight-loading contracts
   - request builder: inclusive audio offset recording, language-prompt prefix
-    construction, and result adapter direct-transcript decoding.
+    construction, encode-after-validation ordering, and result adapter
+    direct-transcript decoding and token telemetry.
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio

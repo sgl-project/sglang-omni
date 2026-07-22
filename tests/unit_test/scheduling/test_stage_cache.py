@@ -44,6 +44,20 @@ def test_stage_output_cache_allows_zero_capacity(capacity: str) -> None:
     assert cache.get("key") is None
 
 
+def test_remove_if_same_preserves_a_replacement() -> None:
+    cache = StageOutputCache()
+    cache.put("key", torch.zeros(1))
+    observed = cache.get("key")
+    cache.put("key", torch.ones(1))
+
+    assert cache.remove_if_same("key", observed) is False
+    assert torch.equal(cache.get("key"), torch.ones(1))
+
+    replacement = cache.get("key")
+    assert cache.remove_if_same("key", replacement) is True
+    assert cache.get("key") is None
+
+
 def test_concurrent_get_put_keeps_byte_accounting_consistent() -> None:
     # Mirrors the moss-td encoder: many reader threads racing one writer.
     cache = StageOutputCache(max_size=64, size_fn=_fixed_size)

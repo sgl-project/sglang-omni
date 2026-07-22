@@ -173,9 +173,9 @@ class FunASRPreLMEncoderService:
             logger.warning(
                 f"Fun-ASR pre-LM cache entry {key} failed validation "
                 f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"evicting and re-encoding"
+                f"discarding it if unchanged before re-encoding"
             )
-            self._cache.remove_if(lambda candidate: candidate == key)
+            self._cache.remove_if_same(key, cached)
             cached = None
 
         leader = False

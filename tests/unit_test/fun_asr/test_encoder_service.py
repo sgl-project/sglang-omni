@@ -422,6 +422,47 @@ def test_invalid_cache_entry_is_evicted_and_reencoded() -> None:
         model.encode_calls = 1
 
 
+def test_invalid_cache_reader_preserves_a_valid_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(42, 3)
+    key = service._cache_key(item)
+    service._cache.put(key, torch.zeros(2, _HIDDEN_SIZE))
+    stale_reader = threading.Event()
+    release_reader = threading.Event()
+    original_remove = service._cache.remove_if_same
+
+    def controlled_remove(key, expected):  # noqa: ANN001, ANN202
+        stale_reader.set()
+        assert release_reader.wait(timeout=10)
+        return original_remove(key, expected)
+
+    monkeypatch.setattr(service._cache, "remove_if_same", controlled_remove)
+    errors: list[BaseException] = []
+
+    def encode() -> None:
+        try:
+            service.encode_item(item)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=encode)
+    thread.start()
+    assert stale_reader.wait(timeout=10)
+    replacement = torch.full((3, _HIDDEN_SIZE), 7.0)
+    service._cache.put(key, replacement)
+    release_reader.set()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert model.encode_calls == 0
+    assert torch.equal(item.precomputed_embeddings, replacement)
+    assert torch.equal(service._cache.get(key), replacement)
+
+
 def test_token_count_mismatch_fails_loudly() -> None:
     model = _StubModel()
     model.row_offset = 1

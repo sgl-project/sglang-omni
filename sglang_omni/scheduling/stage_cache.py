@@ -101,6 +101,19 @@ class StageOutputCache:
             self._cache.clear()
             self.current_bytes = 0
 
+    def remove_if_same(self, key: str | None, expected_data: Any) -> bool:
+        """Remove a key only if it still holds the observed object."""
+        if key is None:
+            return False
+        key = str(key)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None or entry.data is not expected_data:
+                return False
+            del self._cache[key]
+            self.current_bytes -= entry.size_bytes
+            return True
+
     def remove_if(self, predicate: Callable[[str], bool]) -> int:
         # Evaluate the predicate outside the lock: it runs arbitrary caller code
         # and may re-enter this cache, which would deadlock the non-reentrant
