@@ -466,6 +466,7 @@ up() {
     # exactly this run's process trees.
     CUDA_VISIBLE_DEVICES="$uuid" \
     SGLANG_OMNI_WEIGHT_SHARE="$ws_env" \
+    SGLANG_OMNI_WEIGHT_SHARE_RUN_ID="$run" \
     setsid numactl --cpunodebind="$node" --membind="$node" -C "${blocks[$i]}" \
       "${serve_cmd[@]}" "${source_args[@]}" "${model_name_args[@]}" \
         "${mem_args[@]}" "${extra_args[@]}" \

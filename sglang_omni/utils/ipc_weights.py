@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 ENV_WEIGHT_SHARE = "SGLANG_OMNI_WEIGHT_SHARE"
 ENV_WEIGHT_SHARE_TIMEOUT_S = "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S"
+ENV_WEIGHT_SHARE_RUN_ID = "SGLANG_OMNI_WEIGHT_SHARE_RUN_ID"
 DEFAULT_ATTACH_TIMEOUT_S = 1800.0
 _FORMAT_VERSION = 1
 _FILE_SUFFIX = ".weights-ipc"
@@ -67,6 +68,7 @@ class WeightShareConfig:
     role: str  # "leader" | "follower"
     dir_path: str
     attach_timeout_s: float
+    run_id: str | None = None
 
 
 def get_weight_share_config(environ=None) -> WeightShareConfig | None:
@@ -83,6 +85,7 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
             f"{ENV_WEIGHT_SHARE} must be 'leader:<dir>' or 'follower:<dir>', "
             f"got {raw!r}"
         )
+    run_id = (env.get(ENV_WEIGHT_SHARE_RUN_ID) or "").strip() or None
     timeout_raw = (env.get(ENV_WEIGHT_SHARE_TIMEOUT_S) or "").strip()
     if timeout_raw:
         try:
@@ -96,12 +99,62 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
             raise ValueError(f"{ENV_WEIGHT_SHARE_TIMEOUT_S} must be > 0")
     else:
         timeout_s = DEFAULT_ATTACH_TIMEOUT_S
-    return WeightShareConfig(role=role, dir_path=dir_path, attach_timeout_s=timeout_s)
+    return WeightShareConfig(
+        role=role, dir_path=dir_path, attach_timeout_s=timeout_s, run_id=run_id
+    )
 
 
 def handle_file_for_model(dir_path: str, model: torch.nn.Module) -> str:
     """Path <dir>/<ModelClass>.weights-ipc: one handle file per engine."""
     return os.path.join(dir_path, type(model).__name__ + _FILE_SUFFIX)
+
+
+def _gpu_uuid() -> str | None:
+    # Note (Jiaxin Deng): binds a publication to the physical GPU it was
+    # exported from; None off CUDA so CPU tests stay lenient.
+    if not torch.cuda.is_available():
+        return None
+    try:
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        return str(getattr(props, "uuid", "") or "") or None
+    except Exception:
+        return None
+
+
+def _read_lease(lock_path: str) -> tuple[int, str | None]:
+    try:
+        lines = Path(lock_path).read_text(encoding="utf-8").splitlines()
+        return int(lines[0]), (lines[1] or None)
+    except (OSError, ValueError, IndexError):
+        return 0, None
+
+
+def _claim_namespace(file_path: str, run_id: str | None) -> None:
+    # Note (Jiaxin Deng): refuse to publish over a namespace a live leader
+    # already owns, so two leaders on one directory cannot clobber each other's
+    # followers; a dead owner's lease is reclaimed.
+    lock_path = file_path + ".lock"
+    body = f"{os.getpid()}\n{_proc_start_time(os.getpid()) or ''}\n{run_id or ''}\n"
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            owner_pid, owner_start = _read_lease(lock_path)
+            if (
+                owner_pid
+                and pid_is_alive(owner_pid)
+                and (owner_start is None or _proc_start_time(owner_pid) == owner_start)
+            ):
+                raise WeightShareError(
+                    f"another live leader (pid={owner_pid}) owns the weight-share "
+                    f"namespace {file_path}; refusing to clobber it"
+                )
+            os.unlink(lock_path)
+            continue
+        with os.fdopen(fd, "w") as fh:
+            fh.write(body)
+        return
+    raise WeightShareError(f"could not claim weight-share namespace {file_path}")
 
 
 class _SglangIpcSerializer:
@@ -377,6 +430,7 @@ def export_weights(
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Publish CUDA-IPC handles for every model parameter and buffer to a file.
 
@@ -398,6 +452,7 @@ def export_weights(
         )
     if validate_secure:
         _prepare_secure_dir(os.path.dirname(abs_path))
+        _claim_namespace(abs_path, run_id)
     # Note (Jiaxin Deng): clear a previous run's stale export before publishing.
     if os.path.exists(abs_path):
         os.unlink(abs_path)
@@ -421,6 +476,8 @@ def export_weights(
         "leader_start_time": _proc_start_time(os.getpid()),
         "model_path": model_path,
         "model_revision": model_revision,
+        "gpu_uuid": _gpu_uuid(),
+        "run_id": run_id,
         "ipc_blob": serializer.serialize(ipc_tensors),
         "ipc_names": sorted(ipc_tensors),
         "value_blobs": {n: _tensor_to_value_bytes(t) for n, t in value_tensors.items()},
@@ -578,6 +635,7 @@ def attach_weights(
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter and buffer onto the leader's exported storage.
 
@@ -594,6 +652,7 @@ def attach_weights(
         validate_secure=validate_secure,
         model_path=model_path,
         model_revision=model_revision,
+        run_id=run_id,
     )
     return record
 
@@ -608,11 +667,12 @@ def _attach_and_check(
     validate_secure: bool,
     model_path: str | None,
     model_revision: str | None,
+    run_id: str | None = None,
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], dict[str, Any]]:
     serializer = _SglangIpcSerializer if serializer is None else serializer
     wait_for_export(file_path, timeout_s, poll_interval_s)
     payload = _load_payload(file_path, model, validate_secure=validate_secure)
-    _check_model_identity(payload, model_path, model_revision, file_path)
+    _check_model_identity(payload, model_path, model_revision, file_path, run_id=run_id)
     _check_leader_alive(payload, "before attach")
     record = _alias_from_payload(model, payload, file_path, serializer)
     _check_leader_alive(payload, "after attach")
@@ -624,9 +684,11 @@ def _check_model_identity(
     model_path: str | None,
     model_revision: str | None,
     file_path: str,
+    *,
+    run_id: str | None = None,
 ) -> None:
-    # Note (Jiaxin Deng): strict only when the leader recorded an identity;
-    # catches a same-shape but different-checkpoint attach.
+    # Note (Jiaxin Deng): strict only when the leader recorded a value; catches
+    # a same-shape different-checkpoint, wrong-GPU, or cross-run attach.
     recorded_path = payload.get("model_path")
     if recorded_path is not None and recorded_path != model_path:
         raise WeightShareError(
@@ -638,6 +700,20 @@ def _check_model_identity(
         raise WeightShareError(
             f"handle file {file_path} was exported for revision "
             f"{recorded_rev!r}, follower is {model_revision!r}"
+        )
+    recorded_uuid = payload.get("gpu_uuid")
+    if recorded_uuid is not None:
+        own_uuid = _gpu_uuid()
+        if own_uuid is not None and own_uuid != recorded_uuid:
+            raise WeightShareError(
+                f"handle file {file_path} was exported from GPU {recorded_uuid}, "
+                f"follower is on {own_uuid}"
+            )
+    recorded_run = payload.get("run_id")
+    if recorded_run is not None and run_id is not None and recorded_run != run_id:
+        raise WeightShareError(
+            f"handle file {file_path} belongs to run {recorded_run!r}, follower "
+            f"is run {run_id!r}"
         )
 
 
@@ -826,6 +902,7 @@ def leader_export(
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Leader role: export this engine's weights under dir_path."""
     return export_weights(
@@ -835,6 +912,7 @@ def leader_export(
         validate_secure=validate_secure,
         model_path=model_path,
         model_revision=model_revision,
+        run_id=run_id,
     )
 
 
@@ -847,6 +925,7 @@ def follower_attach(
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], LeaderLivenessMonitor]:
     """Follower role: attach this engine's weights and watch the leader.
 
@@ -862,6 +941,7 @@ def follower_attach(
         validate_secure=validate_secure,
         model_path=model_path,
         model_revision=model_revision,
+        run_id=run_id,
     )
     monitor = LeaderLivenessMonitor(
         int(payload.get("pid") or 0),

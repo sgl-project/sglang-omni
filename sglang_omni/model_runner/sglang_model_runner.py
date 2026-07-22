@@ -131,6 +131,7 @@ class SGLModelRunner(ModelRunner):
                 ws.dir_path,
                 model_path=str(self.server_args.model_path),
                 model_revision=self.server_args.revision,
+                run_id=ws.run_id,
             )
             return
 
@@ -155,6 +156,7 @@ class SGLModelRunner(ModelRunner):
                 timeout_s=ws.attach_timeout_s,
                 model_path=str(self.server_args.model_path),
                 model_revision=self.server_args.revision,
+                run_id=ws.run_id,
             )
         )
         # Return the dropped dummy-weight blocks to the driver so KV-pool

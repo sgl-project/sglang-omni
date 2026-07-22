@@ -425,6 +425,34 @@ def test_model_path_mismatch_rejected(handle_path):
         _attach(TinyModel(seed=2), handle_path, model_path="checkpoint-B")
 
 
+def test_run_id_mismatch_rejected(handle_path):
+    _export(TinyModel(seed=1), handle_path, run_id="run-A")
+    with pytest.raises(WeightShareError, match="run"):
+        _attach(TinyModel(seed=2), handle_path, run_id="run-B")
+
+
+def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
+    monkeypatch.setattr(ipc_weights, "_gpu_uuid", lambda: "GPU-2222")
+    with pytest.raises(WeightShareError, match="GPU"):
+        ipc_weights._check_model_identity(
+            {"gpu_uuid": "GPU-1111"}, None, None, "handle", run_id=None
+        )
+
+
+def test_claim_namespace_refuses_live_second_leader(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    ipc_weights._claim_namespace(path, "run-A")
+    with pytest.raises(WeightShareError, match="owns the weight-share"):
+        ipc_weights._claim_namespace(path, "run-B")
+
+
+def test_claim_namespace_reclaims_dead_owner(tmp_path, monkeypatch):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    ipc_weights._claim_namespace(path, "run-A")
+    monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: False)
+    ipc_weights._claim_namespace(path, "run-B")  # stale lease reclaimed, no raise
+
+
 def test_get_weight_share_config_parsing():
     assert get_weight_share_config({}) is None
     assert get_weight_share_config({"SGLANG_OMNI_WEIGHT_SHARE": ""}) is None
