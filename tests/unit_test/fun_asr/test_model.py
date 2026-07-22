@@ -7,11 +7,18 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
 from sglang_omni.models.fun_asr.sglang_model import (
     FunAsrNanoAdaptor,
     FunAsrNanoAudioEncoder,
     FunAsrNanoForConditionalGeneration,
+    FunAsrNanoFSMN,
+    MultiHeadedAttentionSANM,
+    _sanm_mask_from_lengths,
+)
+from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
+    fun_asr_low_frame_rate_length,
 )
 
 
