@@ -95,6 +95,7 @@ class Client:
         logprobs_parts: list[Any] = []
         saw_output_token_logprobs = False
         omni_rollout: dict[str, Any] | None = None
+        processed_input: dict[str, Any] | None = None
         weight_version: str | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
@@ -112,6 +113,8 @@ class Client:
                 logprobs_parts.extend(chunk.output_token_logprobs)
             if chunk.omni_rollout is not None:
                 omni_rollout = chunk.omni_rollout
+            if chunk.processed_input is not None:
+                processed_input = chunk.processed_input
             if chunk.weight_version is not None:
                 weight_version = chunk.weight_version
 
@@ -137,6 +140,8 @@ class Client:
                 id=f"audio-{request_id}",
                 data=audio_b64,
                 transcript=full_text if full_text else None,
+                format=audio_format,
+                sample_rate=sample_rate or DEFAULT_SAMPLE_RATE,
             )
 
         return CompletionResult(
@@ -149,6 +154,7 @@ class Client:
                 logprobs_parts if saw_output_token_logprobs else None
             ),
             omni_rollout=omni_rollout,
+            processed_input=processed_input,
             weight_version=weight_version,
         )
 
@@ -478,6 +484,9 @@ class Client:
                 omni_rollout = decode_result.get("omni_rollout")
                 if omni_rollout is not None:
                     chunk.omni_rollout = omni_rollout
+                processed_input = decode_result.get("processed_input")
+                if processed_input is not None:
+                    chunk.processed_input = processed_input
                 weight_version = decode_result.get("weight_version")
                 if weight_version is not None:
                     chunk.weight_version = weight_version
@@ -503,6 +512,9 @@ class Client:
             omni_rollout = result.get("omni_rollout")
             if omni_rollout is not None:
                 chunk.omni_rollout = omni_rollout
+            processed_input = result.get("processed_input")
+            if processed_input is not None:
+                chunk.processed_input = processed_input
             weight_version = result.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
@@ -559,6 +571,9 @@ class Client:
             omni_rollout = data.get("omni_rollout")
             if omni_rollout is not None:
                 chunk.omni_rollout = omni_rollout
+            processed_input = data.get("processed_input")
+            if processed_input is not None:
+                chunk.processed_input = processed_input
             weight_version = data.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
@@ -598,22 +613,63 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             "GenerateRequest requires exactly one input: "
             "prompt, prompt_token_ids, or messages."
         )
+    typed_media = bool(request.images or request.audios or request.videos)
+    typed_video_options = any(
+        value is not None
+        for value in (
+            request.video_fps,
+            request.video_max_frames,
+            request.video_min_pixels,
+            request.video_max_pixels,
+            request.video_total_pixels,
+        )
+    )
+    legacy_media = bool(
+        request.metadata.get("images")
+        or request.metadata.get("audios")
+        or request.metadata.get("videos")
+    )
+    if typed_media and legacy_media:
+        raise ValueError("media must use either typed fields or metadata, not both")
+    if typed_video_options and not request.videos:
+        raise ValueError("video options require the typed videos field")
+
+    if typed_media:
+        if request.prompt is not None:
+            raise ValueError(
+                "prompt with media is unsupported; use messages or prompt_token_ids"
+            )
+        if request.prompt_token_ids is not None:
+            result: dict[str, Any] = {"input_ids": list(request.prompt_token_ids)}
+        else:
+            result = {"messages": [msg.to_dict() for msg in request.messages or []]}
+        if request.images:
+            result["images"] = request.images
+        if request.audios:
+            result["audios"] = request.audios
+        if request.videos:
+            result["videos"] = request.videos
+        for key, value in (
+            ("video_fps", request.video_fps),
+            ("video_max_frames", request.video_max_frames),
+            ("video_min_pixels", request.video_min_pixels),
+            ("video_max_pixels", request.video_max_pixels),
+            ("video_total_pixels", request.video_total_pixels),
+        ):
+            if value is not None:
+                result[key] = value
+        return result
+
     if request.prompt is not None:
         return request.prompt
     if request.prompt_token_ids is not None:
         return list(request.prompt_token_ids)
 
-    # Build messages list
     messages = [msg.to_dict() for msg in request.messages or []]
-
-    # Check if we have audios, images, or videos in metadata
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
-
-    # If we have any media, return a dict with messages and media
-    # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if legacy_media:
         result = {"messages": messages}
         if images:
             result["images"] = images

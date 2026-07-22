@@ -47,6 +47,7 @@ class HiggsTtsState(DeclarativeStateBase):
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
     omni_rollout: dict[str, Any] | None = None
+    weight_version: str | None = None
 
     # vocoder
     audio_samples: Any | None = None

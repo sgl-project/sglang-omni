@@ -24,6 +24,8 @@ _BUFFER_PROBES: dict[str, _BufferProbe] = {
         (
             ("_sampler_pool.seeds", lambda m: m._sampler_pool.seeds.shape[0]),
             ("_cg_codes_BN", lambda m: m._cg_codes_BN.shape[0]),
+            ("_cg_action_mask_BN", lambda m: m._cg_action_mask_BN.shape[0]),
+            ("_cg_logprobs_BN", lambda m: m._cg_logprobs_BN.shape[0]),
             ("_cg_active_last_codes", lambda m: m._cg_active_last_codes.shape[0]),
         ),
         note="sampler pool = max_running_requests + 1 (one reserved padding row)",

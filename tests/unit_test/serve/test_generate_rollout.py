@@ -52,6 +52,34 @@ def _text_result() -> CompletionResult:
     )
 
 
+def _omni_rollout() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "model_family": "higgs_tts",
+        "stages": ["tts_engine"],
+        "total_action_count": 3,
+        "action_streams": [
+            {
+                "name": "higgs_codes",
+                "stage": "tts_engine",
+                "modality": "audio",
+                "action_type": "discrete",
+                "layout": "codebook_2d",
+                "flatten_order": "time_major",
+                "shape": [2, 2],
+                "vocab_size": 1026,
+                "actions": [[10, 1024], [1025, 11]],
+                "logprobs": [[-1.0, 0.0], [-2.0, -3.0]],
+                "action_mask": [[1, 0], [1, 1]],
+                "deterministic_mask": None,
+                "channel_ids": [0, 1],
+                "channel_roles": ["codebook_0", "codebook_1"],
+            }
+        ],
+        "non_action_outputs": [],
+    }
+
+
 def test_generate_returns_miles_meta_info() -> None:
     client = _RolloutClient(_text_result())
     tc = TestClient(create_app(client, model_name="qwen3-omni"))
@@ -79,15 +107,13 @@ def test_generate_returns_miles_meta_info() -> None:
     assert meta["request_metadata"] == {"rollout_id": 42, "group_id": 1}
 
 
-def test_generate_returns_omni_rollout_when_present() -> None:
+def test_generate_normalizes_typed_media_and_returns_processed_input() -> None:
     result = _text_result()
-    result.output_token_logprobs = None
-    result.omni_rollout = {
-        "version": 1,
-        "model_family": "qwen3_omni",
-        "stages": ["talker"],
-        "total_action_count": 1,
-        "action_streams": [],
+    result.processed_input = {
+        "input_ids": [1, 101, 101, 2],
+        "model_input_metadata": {
+            "image": {"image_grid_thw": [[1, 2, 4]]},
+        },
     }
     client = _RolloutClient(result)
     tc = TestClient(create_app(client, model_name="qwen3-omni"))
@@ -95,19 +121,92 @@ def test_generate_returns_omni_rollout_when_present() -> None:
     resp = tc.post(
         "/generate",
         json={
-            "prompt": "hi",
-            "sampling_params": {},
-            "return_omni_rollout": True,
+            "input_ids": [1, 101, 101, 2],
+            "image_data": ["data:image/png;base64,SU1H"],
+            "audio_data": ["data:audio/wav;base64,QVVESU8="],
+            "video_data": ["https://example.test/video.mp4"],
+            "video_fps": 2.0,
         },
     )
 
     assert resp.status_code == 200
-    assert resp.json()["meta_info"]["omni_rollout"] == result.omni_rollout
+    request = client.requests[0]
+    assert request.prompt_token_ids == [1, 101, 101, 2]
+    assert request.images == ["data:image/png;base64,SU1H"]
+    assert request.audios == ["data:audio/wav;base64,QVVESU8="]
+    assert request.videos == ["https://example.test/video.mp4"]
+    assert request.video_fps == 2.0
+    assert resp.json()["meta_info"]["processed_input"] == result.processed_input
 
 
-def test_generate_omits_omni_rollout_when_not_requested() -> None:
+def test_generate_rejects_media_in_metadata() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "messages": [{"role": "user", "content": "describe"}],
+            "metadata": {"images": ["image.png"]},
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "top-level /generate fields" in resp.text
+    assert client.requests == []
+
+
+def test_generate_rejects_prompt_with_media() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={"prompt": "describe", "images": ["image.png"]},
+    )
+
+    assert resp.status_code == 400
+    assert "use messages or input_ids" in resp.text
+    assert client.requests == []
+
+
+def test_generate_rejects_unknown_top_level_fields() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={"input_ids": [1, 2, 3], "audoi_data": ["audio.wav"]},
+    )
+
+    assert resp.status_code == 422
+    assert client.requests == []
+
+
+def test_generate_rejects_empty_input_ids() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="higgs-audio"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "input_ids": [],
+            "sampling_params": {"max_new_tokens": 2},
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "input_ids must not be empty" in resp.text
+    assert client.requests == []
+
+
+def test_generate_returns_omni_rollout_when_requested() -> None:
     result = _text_result()
-    result.omni_rollout = {"version": 1, "action_streams": []}
+    result.output_token_logprobs = None
+    result.omni_rollout = _omni_rollout()
+    result.audio = CompletionAudio(
+        id="a1", data="QUJD", format="wav", sample_rate=24000
+    )
     client = _RolloutClient(result)
     tc = TestClient(create_app(client, model_name="qwen3-omni"))
 
@@ -116,7 +215,44 @@ def test_generate_omits_omni_rollout_when_not_requested() -> None:
         json={
             "prompt": "hi",
             "sampling_params": {},
-            "return_omni_rollout": False,
+            "output_modalities": ["audio"],
+            "return_omni_rollout": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["meta_info"]["omni_rollout"] == result.omni_rollout
+    assert resp.json()["audio"]["sample_rate"] == 24000
+
+
+def test_generate_rejects_structured_audio_without_waveform() -> None:
+    result = _text_result()
+    result.output_token_logprobs = None
+    result.omni_rollout = _omni_rollout()
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="higgs-audio"))
+
+    resp = tc.post(
+        "/generate",
+        json={"prompt": "hi", "return_omni_rollout": True},
+    )
+
+    assert resp.status_code == 500
+    assert "nonempty WAV" in resp.text
+
+
+def test_generate_omits_omni_rollout_when_not_requested() -> None:
+    result = _text_result()
+    result.omni_rollout = _omni_rollout()
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "sampling_params": {},
+            "return_logprob": False,
         },
     )
 
@@ -125,7 +261,9 @@ def test_generate_omits_omni_rollout_when_not_requested() -> None:
 
 
 def test_generate_rejects_missing_omni_rollout_when_requested() -> None:
-    client = _RolloutClient(_text_result())
+    result = _text_result()
+    result.output_token_logprobs = None
+    client = _RolloutClient(result)
     tc = TestClient(create_app(client, model_name="qwen3-omni"))
 
     resp = tc.post(
@@ -214,7 +352,7 @@ def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
     )
 
     assert resp.status_code == 501
-    assert "return_omni_rollout=true" in resp.text
+    assert "omni_rollout" in resp.text
 
 
 def test_generate_rejects_logprob_length_mismatch() -> None:
@@ -412,6 +550,7 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     assert gen.sampling.max_new_tokens == 8
     assert gen.stream is False
     assert gen.extra_params["return_logprob"] is True
+    assert gen.extra_params["return_omni_rollout"] is False
 
 
 def test_converter_omits_explicit_params_when_sampling_omitted() -> None:
@@ -500,6 +639,25 @@ def test_converter_preserves_messages_as_chat_rollout_input() -> None:
     assert omni.inputs == [{"role": "user", "content": "hi"}]
 
 
+def test_converter_preserves_messages_with_typed_media() -> None:
+    from sglang_omni.client import Client
+
+    req = RolloutRequest(
+        messages=[{"role": "user", "content": "describe"}],
+        images=["image.png"],
+        audios=["audio.wav"],
+        videos=["video.mp4"],
+    )
+    omni = Client._build_omni_request(_build_rollout_generate_request(req))
+
+    assert omni.inputs == {
+        "messages": [{"role": "user", "content": "describe"}],
+        "images": ["image.png"],
+        "audios": ["audio.wav"],
+        "videos": ["video.mp4"],
+    }
+
+
 def test_converter_defaults_rollout_to_text_output_modality() -> None:
     req = RolloutRequest(prompt="hi", sampling_params={})
     gen = _build_rollout_generate_request(req)
@@ -532,4 +690,3 @@ def test_converter_defaults_stream_false_and_logprob_true() -> None:
     req = RolloutRequest(prompt="hi", sampling_params={})
     assert req.stream is False
     assert req.return_logprob is True
-    assert req.return_omni_rollout is False

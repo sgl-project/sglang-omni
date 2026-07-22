@@ -15,6 +15,7 @@ from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
     STOP_CODE,
     HiggsBatchedSamplerState,
+    HiggsSamplerState,
     batched_step,
     step,
 )
@@ -60,6 +61,7 @@ def _snapshot_pool(pool: HiggsBatchedSamplerState) -> dict:
         "eoc_countdown": pool.eoc_countdown.clone(),
         "generation_done": pool.generation_done.clone(),
         "last_codes": pool.last_codes.clone(),
+        "last_action_mask": pool.last_action_mask.clone(),
     }
 
 
@@ -96,6 +98,9 @@ def test_batched_matches_per_row_delay_window():
 
         assert torch.equal(codes_pr, codes_bt), f"codes mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
+        if t < N:
+            expected = torch.arange(N, device=DEVICE) <= t
+            assert torch.equal(pool_bt.last_action_mask, expected.expand(B, N))
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +143,7 @@ def test_batched_matches_per_row_eoc_winddown():
         pool_pr.eoc_countdown,
         torch.full_like(pool_pr.eoc_countdown, N - 2),
     )
+    assert bool(pool_bt.last_action_mask[:, 0].all())
 
     # Phase 3: wind down through N-2 more steps until done.
     for k in range(N - 2):
@@ -189,6 +195,74 @@ def test_batched_done_row_returns_stop_and_freezes_state():
 
     # Row 1 should have advanced (delay window).
     assert int(pool.delay_count[1].item()) == 1
+    assert not bool(pool.last_action_mask[0].any())
+
+
+def test_later_codebook_eoc_forces_prefix_and_records_terminating_action():
+    """Lowest sampled EOC establishes the boundary; its own cell stays scored."""
+    n = 6
+    k = 2
+    pool = HiggsBatchedSamplerState(1, n, device=DEVICE)
+    pool.delay_count[0] = n
+    target = torch.arange(10, 10 + n, device=DEVICE).unsqueeze(0)
+    target[0, k] = EOC_ID
+    logits = torch.full((1, n, V), -10.0, device=DEVICE)
+    logits.scatter_(-1, target.unsqueeze(-1), 10.0)
+
+    codes = batched_step(
+        logits,
+        pool,
+        torch.tensor([0], device=DEVICE),
+        temperature=torch.ones(1, device=DEVICE),
+        top_k_buf=torch.ones(1, dtype=torch.long, device=DEVICE),
+    )
+
+    assert codes[0, :k].tolist() == [EOC_ID] * k
+    assert int(codes[0, k]) == EOC_ID
+    assert pool.last_action_mask[0].tolist() == [False, False, True, True, True, True]
+    assert int(pool.eoc_countdown[0]) == n - k - 2
+
+    next_target = torch.arange(20, 20 + n, device=DEVICE).unsqueeze(0)
+    next_logits = torch.full((1, n, V), -10.0, device=DEVICE)
+    next_logits.scatter_(-1, next_target.unsqueeze(-1), 10.0)
+    next_codes = batched_step(
+        next_logits,
+        pool,
+        torch.tensor([0], device=DEVICE),
+        temperature=torch.ones(1, device=DEVICE),
+        top_k_buf=torch.ones(1, dtype=torch.long, device=DEVICE),
+    )
+    assert next_codes[0, : k + 2].tolist() == [EOC_ID] * (k + 2)
+    assert pool.last_action_mask[0].tolist() == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
+
+
+def test_early_eoc_preserves_local_delay_length_geometry():
+    """An EOC in the delay window defines T=row-k and still round-trips."""
+    n = 5
+    eoc_row = 2
+    eoc_codebook = 1
+    state = HiggsSamplerState(num_codebooks=n)
+    emitted = []
+    for row in range(20):
+        target = torch.arange(30, 30 + n, device=DEVICE)
+        if row == eoc_row:
+            target[eoc_codebook] = EOC_ID
+        logits = torch.full((n, V), -10.0, device=DEVICE)
+        logits.scatter_(-1, target.unsqueeze(-1), 10.0)
+        emitted.append(step(logits, state, top_k=1))
+        if state.generation_done:
+            break
+
+    expected_raw_length = eoc_row - eoc_codebook
+    assert len(emitted) - (n - 1) == expected_raw_length
+    assert bool(state.last_action_mask is not None)
 
 
 # ---------------------------------------------------------------------------

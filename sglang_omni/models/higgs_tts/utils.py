@@ -51,12 +51,12 @@ def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def delay_pattern_action_mask(
-    delayed_LN: torch.Tensor,
-    *,
-    eoc_id: int = EOC_ID,
-) -> torch.Tensor:
-    """``[L, N]`` boolean mask: ``True`` at trainable real-audio actions."""
+def delay_pattern_codec_content_mask(delayed_LN: torch.Tensor) -> torch.Tensor:
+    """Mark delayed cells that de-delay into aligned codec frames.
+
+    This is codec geometry, not an RL action mask. Sampling records the action
+    mask before forced BOC/EOC values overwrite model samples.
+    """
     if delayed_LN.ndim != 2:
         raise ValueError(
             f"delayed_LN must be 2-D [L, N], got shape {tuple(delayed_LN.shape)}"
@@ -64,8 +64,7 @@ def delay_pattern_action_mask(
     L, N = delayed_LN.shape
     device = delayed_LN.device
 
-    cb0_eoc_rows = (delayed_LN[:, 0] == eoc_id).nonzero(as_tuple=False)
-    t_raw = int(cb0_eoc_rows[0].item()) if cb0_eoc_rows.numel() > 0 else L
+    t_raw = max(L - (N - 1), 0)
 
     r = torch.arange(L, device=device).unsqueeze(1)  # [L, 1]
     c = torch.arange(N, device=device).unsqueeze(0)  # [1, N]
@@ -148,7 +147,7 @@ __all__ = [
     "BOC_ID",
     "EOC_ID",
     "apply_delay_pattern",
-    "delay_pattern_action_mask",
+    "delay_pattern_codec_content_mask",
     "get_or_load_codec",
     "load_audio_to_24k",
     "resolve_checkpoint",

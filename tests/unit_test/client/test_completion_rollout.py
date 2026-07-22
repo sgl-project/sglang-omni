@@ -52,17 +52,14 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
 
 
 def test_completion_surfaces_omni_rollout() -> None:
-    rollout = {
+    omni_rollout = {
         "version": 1,
-        "model_family": "qwen3_omni",
-        "stages": ["talker"],
-        "total_action_count": 1,
         "action_streams": [],
     }
     result = {
         "text": "hello",
         "finish_reason": "stop",
-        "omni_rollout": rollout,
+        "omni_rollout": omni_rollout,
     }
     client = Client(_SubmitStubCoordinator(result))
 
@@ -70,7 +67,29 @@ def test_completion_surfaces_omni_rollout() -> None:
         client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
     )
 
-    assert out.omni_rollout == rollout
+    assert out.omni_rollout == omni_rollout
+
+
+def test_completion_surfaces_processed_input() -> None:
+    processed_input = {
+        "input_ids": [1, 101, 101, 2],
+        "model_input_metadata": {"image": {"image_grid_thw": [[1, 2, 4]]}},
+    }
+    client = Client(
+        _SubmitStubCoordinator(
+            {
+                "text": "hello",
+                "finish_reason": "stop",
+                "processed_input": processed_input,
+            }
+        )
+    )
+
+    out = asyncio.run(
+        client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
+    )
+
+    assert out.processed_input == processed_input
 
 
 def test_completion_without_logprobs_leaves_fields_none() -> None:

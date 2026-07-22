@@ -994,12 +994,17 @@ def _register_generate(app: FastAPI) -> None:
                 status_code=400,
                 detail="exactly one of input_ids, prompt, or messages is required",
             )
+        if req.input_ids is not None and len(req.input_ids) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="input_ids must not be empty",
+            )
         if req.stream:
             raise HTTPException(
                 status_code=400,
                 detail="stream=true is not supported by /generate yet",
             )
-
+        _validate_rollout_media_fields(req)
         request_id = str(uuid.uuid4())
         audio_format = "wav"
 
@@ -1022,7 +1027,15 @@ def _register_generate(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        response = _build_generate_response(req, result, audio_format)
+        try:
+            response = _build_generate_response(req, result, audio_format)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"backend returned an invalid structured rollout: {exc}",
+            ) from exc
         return JSONResponse(content=response.model_dump())
 
 
@@ -1047,6 +1060,52 @@ def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams
     if "max_new_tokens" not in kwargs and params.max_tokens is not None:
         kwargs["max_new_tokens"] = params.max_tokens
     return SamplingParams(**kwargs)
+
+
+def _validate_rollout_media_fields(req: RolloutGenerateRequest) -> None:
+    reserved = {
+        "images",
+        "image_data",
+        "audios",
+        "audio_data",
+        "videos",
+        "video_data",
+        "video_fps",
+        "video_max_frames",
+        "video_min_pixels",
+        "video_max_pixels",
+        "video_total_pixels",
+    }
+    metadata_keys = set(req.metadata or {})
+    misplaced = sorted(metadata_keys & reserved)
+    if misplaced:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "media is model input and must use top-level /generate fields: "
+                + ", ".join(misplaced)
+            ),
+        )
+    if req.prompt is not None and (req.images or req.audios or req.videos):
+        raise HTTPException(
+            status_code=400,
+            detail="prompt with media is unsupported; use messages or input_ids",
+        )
+    has_video_options = any(
+        value is not None
+        for value in (
+            req.video_fps,
+            req.video_max_frames,
+            req.video_min_pixels,
+            req.video_max_pixels,
+            req.video_total_pixels,
+        )
+    )
+    if has_video_options and not req.videos:
+        raise HTTPException(
+            status_code=400,
+            detail="video options require videos or video_data",
+        )
 
 
 def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequest:
@@ -1090,6 +1149,14 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         output_modalities=(
             req.output_modalities if req.output_modalities is not None else ["text"]
         ),
+        images=req.images,
+        audios=req.audios,
+        videos=req.videos,
+        video_fps=req.video_fps,
+        video_max_frames=req.video_max_frames,
+        video_min_pixels=req.video_min_pixels,
+        video_max_pixels=req.video_max_pixels,
+        video_total_pixels=req.video_total_pixels,
         metadata=metadata,
     )
 
@@ -1116,18 +1183,17 @@ def _build_generate_response(
         type=finish_type,
         length=completion_tokens if finish_type == "length" else None,
     )
-    # (Jingwen): Validate that return_logprob has a backend carrier: text token
-    # logprobs or omni_rollout action logprobs, depending on modality.
-    if result.omni_rollout is None and (
-        req.return_omni_rollout
-        or (req.return_logprob and result.output_token_logprobs is None)
+    if (req.return_omni_rollout and result.omni_rollout is None) or (
+        req.return_logprob
+        and result.output_token_logprobs is None
+        and result.omni_rollout is None
     ):
         raise HTTPException(
             status_code=501,
             detail=(
                 "backend did not return requested logprobs; expected "
                 "output_token_logprobs for text or meta_info.omni_rollout for "
-                "audio (set return_omni_rollout=true for audio logprobs)"
+                "structured output (set return_omni_rollout=true)"
             ),
         )
     if (
@@ -1145,7 +1211,11 @@ def _build_generate_response(
         )
     audio: GenerateAudio | None = None
     if result.audio is not None:
-        audio = GenerateAudio(data=result.audio.data, format=audio_format)
+        audio = GenerateAudio(
+            data=result.audio.data,
+            format=result.audio.format or audio_format,
+            sample_rate=result.audio.sample_rate,
+        )
 
     meta_info = GenerateMetaInfo(
         finish_reason=finish_reason,
@@ -1153,11 +1223,53 @@ def _build_generate_response(
         completion_tokens=completion_tokens,
         weight_version=result.weight_version,
         request_metadata=req.metadata,
+        processed_input=result.processed_input,
         output_token_logprobs=(
             result.output_token_logprobs if req.return_logprob else None
         ),
-        omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
+        omni_rollout=(result.omni_rollout if req.return_omni_rollout else None),
     )
+    if meta_info.omni_rollout is not None:
+        streams = meta_info.omni_rollout.get("action_streams")
+        if not isinstance(streams, list) or not streams:
+            raise HTTPException(
+                status_code=500,
+                detail="omni_rollout must include at least one action stream",
+            )
+        first_stream = streams[0]
+        if not isinstance(first_stream, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="omni_rollout action streams must be objects",
+            )
+        first_actions = first_stream.get("actions")
+        if not isinstance(first_actions, list) or completion_tokens != len(
+            first_actions
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="completion_tokens does not match structured action length",
+            )
+        structured_audio = any(
+            stream.get("modality") == "audio"
+            for stream in streams
+            if isinstance(stream, dict)
+        )
+        if structured_audio:
+            if (
+                result.audio is None
+                or not result.audio.data
+                or result.audio.format != "wav"
+                or result.audio.sample_rate is None
+                or result.audio.sample_rate <= 0
+            ):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "structured audio rollout requires a nonempty WAV waveform "
+                        "with a positive sample_rate"
+                    ),
+                )
     return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
 

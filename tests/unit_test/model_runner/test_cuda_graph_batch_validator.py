@@ -198,6 +198,8 @@ def test_read_buffer_returns_minimum_across_registered_buffers():
         "HiggsTTSModel",
         _sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
         _cg_codes_BN=_FakeTensor(40),
+        _cg_action_mask_BN=_FakeTensor(65),
+        _cg_logprobs_BN=_FakeTensor(65),
         _cg_active_last_codes=_FakeTensor(65),
     )
     cap, source = read_model_buffer_capacity(model)

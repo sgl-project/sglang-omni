@@ -243,7 +243,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 return_logprob=True,
                 return_omni_rollout=True,
                 output_codes_delayed=[[5, 6], [7, 8]],
-                omni_rollout={"tokens": [1, 2], "logprobs": [-0.1, -0.2]},
+                omni_rollout={"version": 1, "action_streams": []},
                 prompt_tokens=2,
                 completion_tokens=4,
                 engine_time_s=0.25,

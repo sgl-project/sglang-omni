@@ -34,6 +34,7 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     num_codebooks: int = 8
     codebook_size: int = 1026
     output_codes: list[torch.Tensor] = field(default_factory=list)
+    output_action_masks: list[torch.Tensor] = field(default_factory=list)
     output_code_buffer: torch.Tensor | None = None
     output_code_count: int = 0
     output_logprobs: list[torch.Tensor] = field(default_factory=list)
@@ -182,18 +183,38 @@ def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> No
         codes = torch.empty((0, num_codebooks), dtype=torch.long)
         state.output_codes_delayed = None
 
+    delayed_logprobs = None
+    if data.return_logprob and data.output_logprobs:
+        delayed_logprobs = torch.stack(data.output_logprobs, dim=0).to(torch.float32)
+        if delayed_logprobs.shape[:2] != codes.shape[:2]:
+            raise ValueError(
+                f"Higgs rollout logprob shape {tuple(delayed_logprobs.shape)} "
+                f"does not match codes shape {tuple(codes.shape)}"
+            )
+
+    if data.output_action_masks:
+        action_mask = torch.stack(data.output_action_masks, dim=0).to(torch.bool)
+        if action_mask.shape != codes.shape:
+            raise ValueError(
+                f"Higgs rollout action-mask shape {tuple(action_mask.shape)} "
+                f"does not match codes shape {tuple(codes.shape)}"
+            )
+    else:
+        action_mask = torch.empty_like(codes, dtype=torch.bool)
+
     if data.return_omni_rollout:
-        logprobs = (
-            torch.stack(data.output_logprobs, dim=0).to(torch.float32)
-            if (data.return_logprob and data.output_logprobs)
-            else None
-        )
+        if not data.output_action_masks or delayed_logprobs is None:
+            raise ValueError(
+                "Higgs structured rollout is missing aligned action masks or policy logprobs"
+            )
         state.omni_rollout = build_omni_rollout_trace(
             codes,
             num_codebooks=num_codebooks,
             codebook_vocab_size=int(data.codebook_size),
-            delayed_logprobs=logprobs,
+            delayed_logprobs=delayed_logprobs,
+            action_mask=action_mask,
         )
+    state.weight_version = data.weight_version
     state.prompt_tokens = len(data.input_ids)
 
 

@@ -174,7 +174,7 @@ class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
     ``input_ids``, ``prompt``, ``messages``."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     model: str | None = None
 
@@ -189,6 +189,24 @@ class RolloutGenerateRequest(BaseModel):
     stage_sampling: dict[str, RolloutSamplingParams] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
     output_modalities: list[str] | None = None
+
+    images: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("images", "image_data"),
+    )
+    audios: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("audios", "audio_data"),
+    )
+    videos: list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("videos", "video_data"),
+    )
+    video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
 
     metadata: dict[str, Any] | None = None
 
@@ -223,6 +241,7 @@ class GenerateMetaInfo(BaseModel):
     cached_tokens: int = 0
     weight_version: str | None = None
     request_metadata: dict[str, Any] | None = None
+    processed_input: dict[str, Any] | None = None
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
 

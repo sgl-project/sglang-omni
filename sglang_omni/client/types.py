@@ -97,7 +97,14 @@ class GenerateRequest:
 
     # Multi-modal support
     output_modalities: list[str] | None = None
-
+    images: list[str] | None = None
+    audios: list[str] | None = None
+    videos: list[str] | None = None
+    video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -117,6 +124,14 @@ class GenerateRequest:
             "stream": self.stream,
             "max_tokens": self.max_tokens,
             "output_modalities": self.output_modalities,
+            "images": self.images,
+            "audios": self.audios,
+            "videos": self.videos,
+            "video_fps": self.video_fps,
+            "video_max_frames": self.video_max_frames,
+            "video_min_pixels": self.video_min_pixels,
+            "video_max_pixels": self.video_max_pixels,
+            "video_total_pixels": self.video_total_pixels,
             "metadata": dict(self.metadata),
         }
 
@@ -132,6 +147,7 @@ class GenerateChunk:
     logprobs: list[float] | None = None
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
+    processed_input: dict[str, Any] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
@@ -150,6 +166,7 @@ class GenerateChunk:
             "logprobs": self.logprobs,
             "output_token_logprobs": self.output_token_logprobs,
             "omni_rollout": self.omni_rollout,
+            "processed_input": self.processed_input,
             "finish_reason": self.finish_reason,
             "usage": self.usage.to_dict() if self.usage else None,
             "weight_version": self.weight_version,
@@ -189,6 +206,8 @@ class CompletionAudio:
     id: str
     data: str  # base64
     transcript: str | None = None
+    format: str = "wav"
+    sample_rate: int | None = None
 
 
 @dataclass
@@ -202,6 +221,7 @@ class CompletionResult:
     usage: UsageInfo | None = None
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
+    processed_input: dict[str, Any] | None = None
     weight_version: str | None = None
 
 

@@ -7,7 +7,10 @@ from typing import Any
 import pytest
 import torch
 
-from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.model_worker import (
+    ModelWorker,
+    _distributed_weight_update_transport,
+)
 from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
 
 
@@ -69,6 +72,91 @@ def test_tensor_bytes_supports_float8_fallback_path() -> None:
 
     assert isinstance(raw, bytes)
     assert len(raw) == tensor.numel() * tensor.element_size()
+
+
+def test_distributed_weight_update_transport_advertises_nccl_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NCCL_CUMEM_ENABLE", "1")
+    monkeypatch.setattr(torch.cuda.nccl, "version", lambda: (2, 28, 9))
+
+    assert _distributed_weight_update_transport() == {
+        "protocol_version": 1,
+        "backend": "nccl",
+        "nccl_version": "2.28.9",
+        "nccl_cumem_enable": "1",
+    }
+
+
+def test_distributed_weight_update_transport_reports_default_cumem_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("NCCL_CUMEM_ENABLE", raising=False)
+    monkeypatch.setattr(torch.cuda.nccl, "version", lambda: 22809)
+
+    assert _distributed_weight_update_transport() == {
+        "protocol_version": 1,
+        "backend": "nccl",
+        "nccl_version": "22809",
+        "nccl_cumem_enable": "default",
+    }
+
+
+def test_model_info_advertises_distributed_weight_update_transport(
+    monkeypatch,
+) -> None:
+    transport = {
+        "protocol_version": 1,
+        "backend": "nccl",
+        "nccl_version": "2.28.9",
+        "nccl_cumem_enable": "default",
+    }
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.model_worker._distributed_weight_update_transport",
+        lambda: transport,
+    )
+    worker = object.__new__(ModelWorker)
+    worker.server_args = SimpleNamespace(
+        model_path="model",
+        load_format="auto",
+        weight_version="v1",
+        tp_size=1,
+    )
+    worker.tp_rank = 0
+    worker.model_arch_override = "HiggsAudioV2GenerationModel"
+    worker.model_runner = SimpleNamespace(
+        update_weights_from_disk=lambda: None,
+        update_weights_from_distributed=lambda: None,
+    )
+
+    info = ModelWorker.model_info(worker)
+
+    assert info["supports_distributed_weight_update"] is True
+    assert info["distributed_weight_update"] == transport
+
+
+def test_model_info_does_not_advertise_unsupported_distributed_weight_update(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.model_worker._distributed_weight_update_transport",
+        lambda: pytest.fail("transport must not be inspected when unsupported"),
+    )
+    worker = object.__new__(ModelWorker)
+    worker.server_args = SimpleNamespace(
+        model_path="model",
+        load_format="auto",
+        weight_version="v1",
+        tp_size=1,
+    )
+    worker.tp_rank = 0
+    worker.model_arch_override = "HiggsAudioV2GenerationModel"
+    worker.model_runner = SimpleNamespace(update_weights_from_disk=lambda: None)
+
+    info = ModelWorker.model_info(worker)
+
+    assert info["supports_distributed_weight_update"] is False
+    assert info["distributed_weight_update"] is None
 
 
 def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> None:
@@ -293,3 +381,76 @@ def test_model_worker_update_weights_from_distributed_rejects_mismatched_metadat
     assert success is False
     assert "same length" in message
     assert calls == 0
+
+
+def test_model_worker_supports_two_distributed_update_group_cycles() -> None:
+    groups: set[str] = set()
+    updated_versions: list[str] = []
+
+    def init_weights_update_group(
+        master_address: str,
+        master_port: int,
+        rank_offset: int,
+        world_size: int,
+        group_name: str,
+        backend: str = "nccl",
+    ) -> tuple[bool, str]:
+        del master_address, master_port, rank_offset, world_size, backend
+        assert group_name not in groups
+        groups.add(group_name)
+        return True, "group ready"
+
+    def update_weights_from_distributed(
+        names: list[str],
+        dtypes: list[str],
+        shapes: list[list[int]],
+        group_name: str,
+        load_format: str | None = None,
+    ) -> tuple[bool, str]:
+        del names, dtypes, shapes, load_format
+        assert group_name in groups
+        return True, "weights updated"
+
+    def destroy_weights_update_group(group_name: str) -> tuple[bool, str]:
+        groups.remove(group_name)
+        return True, "group destroyed"
+
+    runner_args = SimpleNamespace(weight_version="initial")
+    worker = object.__new__(ModelWorker)
+    worker.server_args = SimpleNamespace(weight_version="initial")
+    worker.model_runner = SimpleNamespace(
+        server_args=runner_args,
+        init_weights_update_group=init_weights_update_group,
+        update_weights_from_distributed=update_weights_from_distributed,
+        destroy_weights_update_group=destroy_weights_update_group,
+    )
+
+    for version in ("v1", "v2"):
+        init_ok, _ = ModelWorker.init_weights_update_group(
+            worker,
+            {
+                "master_address": "127.0.0.1",
+                "master_port": 12355,
+                "world_size": 2,
+                "group_name": "policy_refit",
+            },
+        )
+        update_ok, _ = ModelWorker.update_weights_from_distributed(
+            worker,
+            {
+                "names": ["model.weight"],
+                "dtypes": ["bfloat16"],
+                "shapes": [[2, 2]],
+                "group_name": "policy_refit",
+                "weight_version": version,
+            },
+        )
+        destroy_ok, _ = ModelWorker.destroy_weights_update_group(
+            worker, {"group_name": "policy_refit"}
+        )
+        assert init_ok and update_ok and destroy_ok
+        updated_versions.append(worker.server_args.weight_version)
+
+    assert groups == set()
+    assert updated_versions == ["v1", "v2"]
+    assert runner_args.weight_version == "v2"

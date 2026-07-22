@@ -34,6 +34,11 @@ from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.higgs_tts.pretokenized import (
+    build_pretokenized_state,
+    is_pretokenized_prompt,
+    validate_higgs_rollout_sampling,
+)
 from sglang_omni.models.higgs_tts.text_tokenizer import HiggsTokenizerAdapter
 from sglang_omni.models.higgs_tts.utils import (
     apply_delay_pattern,
@@ -218,8 +223,31 @@ def create_preprocessing_executor(
     speaker_cache = get_speaker_artifact_cache()
 
     def _preprocess(payload: StagePayload) -> StagePayload:
-        inputs = payload.request.inputs or {}
+        raw_inputs = payload.request.inputs
         params = payload.request.params or {}
+        validate_higgs_rollout_sampling(params)
+
+        if isinstance(raw_inputs, dict):
+            unsupported_media = [
+                key for key in ("images", "audios", "videos") if raw_inputs.get(key)
+            ]
+            if unsupported_media:
+                raise ValueError(
+                    "Higgs TTS does not support /generate input media: "
+                    + ", ".join(unsupported_media)
+                )
+
+        if is_pretokenized_prompt(raw_inputs):
+            state = build_pretokenized_state(
+                raw_inputs,
+                params,
+                num_codebooks=num_codebooks,
+                codebook_size=codebook_size,
+            )
+            payload.data = state.to_dict()
+            return payload
+
+        inputs = raw_inputs or {}
         if isinstance(inputs, str):
             inputs = {"text": inputs}
 

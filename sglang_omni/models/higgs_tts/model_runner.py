@@ -18,7 +18,7 @@ from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
-from sglang_omni.models.higgs_tts.sampler import K_MAX, selected_token_logprobs
+from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
@@ -45,7 +45,11 @@ class HiggsTTSModelRunner(ModelRunner):
         self._logprob_slot = 0
 
     def _next_logprob_host_staging(self, device_buf: torch.Tensor) -> torch.Tensor:
-        if self._logprob_host_buffers is None:
+        if (
+            self._logprob_host_buffers is None
+            or self._logprob_host_buffers[0].shape != device_buf.shape
+            or self._logprob_host_buffers[0].dtype != device_buf.dtype
+        ):
             self._logprob_host_buffers = [
                 torch.empty(
                     device_buf.shape,
@@ -113,9 +117,9 @@ class HiggsTTSModelRunner(ModelRunner):
         host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
         logprob_host = None
         if self._should_capture_rollout_logprobs(requests):
-            logprobs_BN = self._decode_step_logprobs(result, n_real)
-            logprob_host = self._next_logprob_host_staging(logprobs_BN)
-            logprob_host[:n_real].copy_(logprobs_BN[:n_real], non_blocking=True)
+            logprob_bundle = self._decode_step_logprob_bundle(result, n_real)
+            logprob_host = self._next_logprob_host_staging(logprob_bundle)
+            logprob_host[:n_real].copy_(logprob_bundle[:n_real], non_blocking=True)
         # Set next_token_ids (cb0) from GPU state now, with NO host sync, so the
         # AR input chain (next step's input_ids = this step's output_ids) is
         # available at launch — the host collect (post_decode_resolve) lags by
@@ -269,7 +273,9 @@ class HiggsTTSModelRunner(ModelRunner):
         combined_cpu = staging[:n_real].cpu()  # one blocking D2H (sync path)
         logprobs_cpu = None
         if self._should_capture_rollout_logprobs(requests):
-            logprobs_cpu = self._decode_step_logprobs(result, n_real)[:n_real].cpu()
+            logprobs_cpu = self._decode_step_logprob_bundle(result, n_real)[
+                :n_real
+            ].cpu()
         self._decode_collect_host(
             combined_cpu,
             logprobs_cpu,
@@ -290,14 +296,21 @@ class HiggsTTSModelRunner(ModelRunner):
         pool.eoc_countdown[rows_t] = model._cg_active_eoc_countdown[:n_real]
         pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
         pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
+        pool.last_action_mask[rows_t] = model._cg_action_mask_BN[:n_real]
+        pool.last_logprobs[rows_t] = model._cg_logprobs_BN[:n_real]
         pool.step_count[rows_t] = model._cg_active_step_count[:n_real]
 
-        # Note(Jiaxin): pack the 3 tensors so a single D2H pulls them all back.
+        # Pack codes, action masks, and terminal flags into one D2H transfer.
         num_codebooks = model._cg_codes_BN.shape[1]
         staging = model._cg_collect_staging
         staging[:n_real, :num_codebooks] = model._cg_codes_BN[:n_real]
-        staging[:n_real, num_codebooks] = model._cg_was_done[:n_real]
-        staging[:n_real, num_codebooks + 1] = model._cg_active_generation_done[:n_real]
+        staging[:n_real, num_codebooks : 2 * num_codebooks] = model._cg_action_mask_BN[
+            :n_real
+        ]
+        staging[:n_real, 2 * num_codebooks] = model._cg_was_done[:n_real]
+        staging[:n_real, 2 * num_codebooks + 1] = model._cg_active_generation_done[
+            :n_real
+        ]
         return staging
 
     def _decode_collect_host(
@@ -322,8 +335,9 @@ class HiggsTTSModelRunner(ModelRunner):
         model = self.model
         num_codebooks = model._cg_codes_BN.shape[1]
         codes_BN_cpu = combined_cpu[:, :num_codebooks]
-        was_done_cpu = combined_cpu[:, num_codebooks].bool().tolist()
-        gen_done_after_cpu = combined_cpu[:, num_codebooks + 1].bool().tolist()
+        action_mask_BN_cpu = combined_cpu[:, num_codebooks : 2 * num_codebooks].bool()
+        was_done_cpu = combined_cpu[:, 2 * num_codebooks].bool().tolist()
+        gen_done_after_cpu = combined_cpu[:, 2 * num_codebooks + 1].bool().tolist()
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data
@@ -344,10 +358,18 @@ class HiggsTTSModelRunner(ModelRunner):
                 cb0_per_row.append(0)
                 continue
             codes_N = self._append_output_code(data, codes_BN_cpu[b])
+            action_mask_N = action_mask_BN_cpu[b].clone()
+            data.output_action_masks.append(action_mask_N)
             if logprobs_cpu is not None and self._request_captures_rollout_logprobs(
                 sched_req
             ):
-                data.output_logprobs.append(logprobs_cpu[b].to(torch.float32).clone())
+                data.output_logprobs.append(
+                    torch.where(
+                        action_mask_N,
+                        logprobs_cpu[b, :num_codebooks].to(torch.float32),
+                        torch.zeros(num_codebooks, dtype=torch.float32),
+                    )
+                )
             data.generation_done = bool(gen_done_after_cpu[b])
             self._queue_or_emit_code_chunk(
                 sched_req,
@@ -418,9 +440,11 @@ class HiggsTTSModelRunner(ModelRunner):
             return
 
         model = self.model
-        logprobs_BN = None
+        logprob_bundle = None
         if self._should_capture_rollout_logprobs(requests):
-            logprobs_BN = self._prefill_step_logprobs(result, requests, forward_batch)
+            logprob_bundle = self._prefill_step_logprob_bundle(
+                result, requests, forward_batch
+            )
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data
@@ -428,15 +452,33 @@ class HiggsTTSModelRunner(ModelRunner):
             rid = sched_req.request_id
             row = model._rid_to_row.get(rid)
             codes_log = model._output_codes.get(rid)
-            if req.is_chunked > 0 or row is None or not codes_log or req.finished():
+            action_mask_log = model._output_action_masks.get(rid)
+            if (
+                req.is_chunked > 0
+                or row is None
+                or not codes_log
+                or not action_mask_log
+                or req.finished()
+            ):
                 cb0_per_row.append(0)
                 continue
             codes_N = codes_log[-1]
+            action_mask_N = action_mask_log[-1]
             codes_cpu = self._append_output_code(data, codes_N)
-            if logprobs_BN is not None and self._request_captures_rollout_logprobs(
+            data.output_action_masks.append(action_mask_N.detach().cpu().clone())
+            if logprob_bundle is not None and self._request_captures_rollout_logprobs(
                 sched_req
             ):
-                data.output_logprobs.append(logprobs_BN[b].detach().cpu().clone())
+                data.output_logprobs.append(
+                    torch.where(
+                        action_mask_N,
+                        logprob_bundle[b, : model._num_codebooks],
+                        torch.zeros_like(logprob_bundle[b, : model._num_codebooks]),
+                    )
+                    .detach()
+                    .cpu()
+                    .clone()
+                )
             data.generation_done = bool(model._sampler_pool.generation_done[row].item())
             self._queue_or_emit_code_chunk(
                 sched_req,
@@ -498,65 +540,32 @@ class HiggsTTSModelRunner(ModelRunner):
         data.output_code_count = count + 1
         return row
 
-    def _decode_step_logprobs(self, result: Any, n_real: int) -> torch.Tensor:
-        model = self.model
-        hidden_states = result.logits_output.hidden_states
-        if hidden_states.ndim == 3:
-            hidden_states = hidden_states[:, -1, :]
-        logits_BNV = model.modality_head.generate(hidden_states[:n_real]).to(
-            torch.float32
-        )
-        codes_BN = model._cg_codes_BN[:n_real].clamp_min(0)
-        return selected_token_logprobs(
-            logits_BNV,
-            codes_BN,
-            temperature=model._cg_temperature[:n_real],
-            top_k_buf=model._cg_top_k_buf[:n_real],
-        )
+    def _decode_step_logprob_bundle(self, result: Any, n_real: int) -> torch.Tensor:
+        del result
+        return self.model._cg_logprobs_BN[:n_real]
 
-    def _prefill_step_logprobs(
+    def _prefill_step_logprob_bundle(
         self, result: Any, requests: list, forward_batch: Any | None
     ) -> torch.Tensor:
-        del forward_batch
+        del result, forward_batch
         model = self.model
-        hidden_states = result.logits_output.hidden_states
-        if hidden_states.ndim == 3:
-            hidden_states = hidden_states[:, -1, :]
-        logits_BNV = model.modality_head.generate(hidden_states[: len(requests)]).to(
-            torch.float32
-        )
-        codes = []
-        temps = []
-        top_ks = []
+        logprob_rows = []
         for sched_req in requests:
             rid = sched_req.request_id
-            codes_log = model._output_codes.get(rid)
-            if codes_log:
-                codes.append(codes_log[-1])
+            logprobs = model._output_logprobs.get(rid)
+            if logprobs:
+                logprob_rows.append(logprobs[-1])
             else:
-                codes.append(
+                logprob_rows.append(
                     torch.zeros(
                         model._num_codebooks,
-                        dtype=torch.long,
-                        device=logits_BNV.device,
+                        dtype=torch.float32,
+                        device=model._cg_logprobs_BN.device,
                     )
                 )
-            sp = sched_req.data.req.sampling_params
-            temps.append(float(getattr(sp, "temperature", 1.0)))
-            top_k = getattr(sp, "top_k", None)
-            top_ks.append(
-                int(top_k) if (top_k is not None and int(top_k) > 0) else K_MAX
-            )
-        codes_BN = torch.stack(
-            [c.to(device=logits_BNV.device, dtype=torch.long) for c in codes]
-        )
-        temperature = torch.tensor(temps, dtype=torch.float32, device=logits_BNV.device)
-        top_k_buf = torch.tensor(top_ks, dtype=torch.long, device=logits_BNV.device)
-        return selected_token_logprobs(
-            logits_BNV,
-            codes_BN.clamp_min(0),
-            temperature=temperature,
-            top_k_buf=top_k_buf,
+        return torch.stack(
+            [row.to(torch.float32) for row in logprob_rows],
+            dim=0,
         )
 
     @staticmethod

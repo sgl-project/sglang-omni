@@ -29,6 +29,7 @@ import pytest
 import torch
 
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
+from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.utils import EOC_ID
 
 
@@ -41,6 +42,7 @@ def _build_runner(
     finished,
     async_enabled=False,
     n_codebooks=3,
+    action_mask_BN=None,
 ):
     """Build a HiggsTTSModelRunner over a SimpleNamespace model, mirroring
     test_pipeline.py's CG fixtures. Each call returns a FRESH, independent
@@ -49,6 +51,8 @@ def _build_runner(
     independent fixtures seeded identically, never one model run twice.
     """
     n = len(codes_BN)
+    if action_mask_BN is None:
+        action_mask_BN = [[True] * n_codebooks for _ in range(n)]
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
     runner._vocoder_target = "vocoder"
@@ -69,12 +73,16 @@ def _build_runner(
         _cg_active_step_count=torch.zeros(n, dtype=torch.long),
         _cg_was_done=torch.tensor(was_done),
         _cg_codes_BN=torch.tensor(codes_BN),
-        _cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
+        _cg_action_mask_BN=torch.tensor(action_mask_BN, dtype=torch.bool),
+        _cg_logprobs_BN=torch.zeros((n, n_codebooks), dtype=torch.float32),
+        _cg_collect_staging=torch.zeros((n, 2 * n_codebooks + 2), dtype=torch.long),
         _sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
             last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
+            last_action_mask=torch.zeros((n, n_codebooks), dtype=torch.bool),
+            last_logprobs=torch.zeros((n, n_codebooks), dtype=torch.float32),
             step_count=torch.zeros(n, dtype=torch.long),
         ),
     )
@@ -88,9 +96,10 @@ def _build_runner(
         SimpleNamespace(
             req=reqs[i],
             output_codes=[],
+            output_action_masks=[],
             output_logprobs=[],
-            return_omni_rollout=False,
             return_logprob=False,
+            return_omni_rollout=False,
             generation_done=False,
         )
         for i in range(n)
@@ -107,6 +116,10 @@ def _snapshot(reqs, datas, result):
     """Capture the four observable outputs for cross-path comparison."""
     return {
         "output_codes": [[c.tolist() for c in d.output_codes] for d in datas],
+        "output_action_masks": [
+            [m.tolist() for m in d.output_action_masks] for d in datas
+        ],
+        "output_logprobs": [[lp.tolist() for lp in d.output_logprobs] for d in datas],
         "generation_done": [d.generation_done for d in datas],
         "finished_reason": [
             None if r.finished_reason is None else r.finished_reason.to_json()
@@ -136,6 +149,11 @@ def _patch_cpu_host_staging(monkeypatch):
         HiggsTTSModelRunner,
         "_next_host_staging",
         lambda self, shape, dtype: torch.empty(tuple(shape), dtype=dtype, device="cpu"),
+    )
+    monkeypatch.setattr(
+        HiggsTTSModelRunner,
+        "_next_logprob_host_staging",
+        lambda self, device_buf: torch.empty_like(device_buf, device="cpu"),
     )
 
 
@@ -252,6 +270,59 @@ def test_async_matches_sync_bs1_eoc(monkeypatch):
     assert asy == sync
 
 
+def test_async_preserves_code_mask_logprob_request_association(monkeypatch):
+    """The integer and float D2H snapshots must stay aligned by request row."""
+    kwargs = dict(
+        codes_BN=[[2, 3, 4], [5, 6, 7]],
+        action_mask_BN=[[True, False, True], [False, True, False]],
+        was_done=[False, False],
+        active_generation_done=[False, False],
+        is_chunked=[0, 0],
+        finished=[lambda: False, lambda: False],
+    )
+    logits = torch.tensor(
+        [
+            [[0.0, 0.1, 2.0, 0.2, 0.3, 0.4, 0.5, 0.6]] * 3,
+            [[0.0, 0.1, 0.2, 0.3, 0.4, 2.0, 1.5, 1.0]] * 3,
+        ]
+    )
+
+    def configure(async_enabled: bool):
+        runner, sched, result, fb, reqs, datas = _build_runner(
+            async_enabled=async_enabled, **kwargs
+        )
+        runner.model._num_codebooks = 3
+        runner.model._cg_temperature = torch.ones(2)
+        runner.model._cg_top_k_buf = torch.full((2,), K_MAX, dtype=torch.long)
+        runner.model.modality_head = SimpleNamespace(generate=lambda hidden: logits)
+        result.logits_output.hidden_states = torch.zeros(2, 4)
+        for data in datas:
+            data.return_logprob = True
+            data.return_omni_rollout = True
+        return runner, sched, result, fb, reqs, datas
+
+    sync = configure(False)
+    sync[0]._collect_step_outputs_cg(sync[2], sync[3], sync[1])
+    sync_snapshot = _snapshot(sync[4], sync[5], sync[2])
+
+    async_case = configure(True)
+    _patch_cpu_host_staging(monkeypatch)
+    host = async_case[0].post_decode_launch(async_case[2], async_case[3], async_case[1])
+    async_case[0].post_decode_resolve(
+        host, async_case[2], async_case[3], None, async_case[1]
+    )
+    async_snapshot = _snapshot(async_case[4], async_case[5], async_case[2])
+
+    assert async_snapshot == sync_snapshot
+    assert sync_snapshot["output_action_masks"] == [
+        [[True, False, True]],
+        [[False, True, False]],
+    ]
+    assert sync_snapshot["output_logprobs"][0][0][1] == 0.0
+    assert sync_snapshot["output_logprobs"][1][0][0] == 0.0
+    assert sync_snapshot["output_logprobs"][1][0][2] == 0.0
+
+
 def _pick_free_cuda_device(min_free_mib: int = 512) -> str | None:
     """Return the first CUDA device with at least ``min_free_mib`` free, else
     None. Avoids OOM on shared boxes where some GPUs already host a server."""
@@ -306,12 +377,18 @@ def test_async_real_pinned_path_matches_sync():
             _cg_codes_BN=torch.tensor(
                 [[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]], device=dev
             ),
-            _cg_collect_staging=torch.zeros((n, 3 + 2), dtype=torch.long, device=dev),
+            _cg_action_mask_BN=torch.ones((n, 3), dtype=torch.bool, device=dev),
+            _cg_logprobs_BN=torch.zeros((n, 3), dtype=torch.float32, device=dev),
+            _cg_collect_staging=torch.zeros(
+                (n, 2 * 3 + 2), dtype=torch.long, device=dev
+            ),
             _sampler_pool=SimpleNamespace(
                 delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
                 eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
                 generation_done=torch.zeros(n, dtype=torch.bool, device=dev),
                 last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
+                last_action_mask=torch.zeros((n, 3), dtype=torch.bool, device=dev),
+                last_logprobs=torch.zeros((n, 3), dtype=torch.float32, device=dev),
                 step_count=torch.zeros(n, dtype=torch.long, device=dev),
             ),
         )
@@ -323,9 +400,10 @@ def test_async_real_pinned_path_matches_sync():
             SimpleNamespace(
                 req=reqs[i],
                 output_codes=[],
+                output_action_masks=[],
                 output_logprobs=[],
-                return_omni_rollout=False,
                 return_logprob=False,
+                return_omni_rollout=False,
                 generation_done=False,
             )
             for i in range(n)

@@ -159,6 +159,31 @@ def _is_pretokenized_prompt(inputs: Any) -> bool:
     )
 
 
+def _media_token_ids(processor: Any) -> dict[str, int]:
+    tokenizer = processor.tokenizer
+    return {
+        "image": int(tokenizer.convert_tokens_to_ids(processor.image_token)),
+        "audio": int(tokenizer.convert_tokens_to_ids(processor.audio_token)),
+        "video": int(tokenizer.convert_tokens_to_ids(processor.video_token)),
+    }
+
+
+def _validate_pretokenized_media_tokens(
+    processor: Any,
+    provided_input_ids: torch.Tensor,
+    processed_input_ids: torch.Tensor,
+) -> None:
+    """Validate media placeholder expansion without replacing caller token IDs."""
+    for modality, token_id in _media_token_ids(processor).items():
+        provided_count = int((provided_input_ids == token_id).sum().item())
+        processed_count = int((processed_input_ids == token_id).sum().item())
+        if provided_count != processed_count:
+            raise ValueError(
+                f"Pretokenized {modality} token count {provided_count} does not "
+                f"match processed media token count {processed_count}"
+            )
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
@@ -353,7 +378,14 @@ class Qwen3OmniPreprocessor:
         inputs = payload.request.inputs
         if _is_pretokenized_prompt(inputs):
             return self._preprocess_pretokenized(payload, inputs)
+
+        pretokenized_ids: list[int] | None = None
         if isinstance(inputs, dict):
+            raw_input_ids = inputs.get("input_ids")
+            if raw_input_ids is not None:
+                if not _is_pretokenized_prompt(raw_input_ids):
+                    raise ValueError("input_ids must be a non-empty list of integers")
+                pretokenized_ids = list(raw_input_ids)
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_videos = inputs.get("videos") or inputs.get("video")
@@ -456,6 +488,9 @@ class Qwen3OmniPreprocessor:
                     audios = audios_result
             else:
                 audios = audios_result
+
+            if pretokenized_ids is not None and not (images or videos or audios):
+                return self._preprocess_pretokenized(payload, pretokenized_ids)
         else:
             messages = inputs
             images = []
@@ -483,6 +518,9 @@ class Qwen3OmniPreprocessor:
             resolved_video_total_pixels = None
             resolved_video_seconds_per_chunk = None
             resolved_video_position_id_per_seconds = None
+
+        if pretokenized_ids is not None and not messages:
+            messages = [{"role": "user", "content": ""}]
 
         messages_norm = normalize_messages(messages)
         # Insert placeholders:
@@ -543,12 +581,23 @@ class Qwen3OmniPreprocessor:
             **processor_kwargs,
         )
 
-        input_ids = hf_inputs["input_ids"][0]
-        attention_mask = hf_inputs.get("attention_mask")
-        if isinstance(attention_mask, torch.Tensor):
-            attention_mask = attention_mask[0]
-        else:
+        processed_input_ids = hf_inputs["input_ids"][0]
+        if pretokenized_ids is not None:
+            input_ids = torch.tensor(pretokenized_ids, dtype=torch.long)
+            _validate_pretokenized_media_tokens(
+                self.processor,
+                input_ids,
+                processed_input_ids,
+            )
             attention_mask = torch.ones_like(input_ids)
+            prompt_text = ""
+        else:
+            input_ids = processed_input_ids
+            attention_mask = hf_inputs.get("attention_mask")
+            if isinstance(attention_mask, torch.Tensor):
+                attention_mask = attention_mask[0]
+            else:
+                attention_mask = torch.ones_like(input_ids)
 
         validate_prompt_seq_len(
             input_ids,

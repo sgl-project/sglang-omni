@@ -18,6 +18,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+import torch
 from transformers import AutoTokenizer
 
 from sglang_omni.models.qwen3_omni.merge import decode_events
@@ -36,6 +37,46 @@ THINKER_STAGE = "thinker"
 # When exceeded, evict oldest first down to _DONE_SEEN_EVICT_TO.
 _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
+
+
+def _processed_input(state: Qwen3OmniPipelineState) -> dict[str, Any] | None:
+    prompt = state.prompt if isinstance(state.prompt, dict) else None
+    if prompt is None:
+        return None
+    input_ids = prompt.get("input_ids")
+    if isinstance(input_ids, torch.Tensor):
+        serialized_ids = input_ids.to(torch.long).tolist()
+    elif isinstance(input_ids, list):
+        serialized_ids = [int(token_id) for token_id in input_ids]
+    else:
+        return None
+
+    model_input_metadata: dict[str, Any] = {}
+    metadata_keys = {
+        "image": ("image_grid_thw",),
+        "audio": ("audio_feature_lengths",),
+        "video": (
+            "video_grid_thw",
+            "video_second_per_grid",
+            "use_audio_in_video",
+        ),
+    }
+    for modality, keys in metadata_keys.items():
+        source = state.mm_inputs.get(modality, {})
+        values: dict[str, Any] = {}
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, torch.Tensor):
+                value = value.tolist()
+            if value is not None:
+                values[key] = value
+        if values:
+            model_input_metadata[modality] = values
+
+    return {
+        "input_ids": serialized_ids,
+        "model_input_metadata": model_input_metadata,
+    }
 
 
 def _event_to_dict(event: Qwen3OmniEvent) -> dict[str, Any]:
@@ -279,6 +320,9 @@ class StreamingDetokenizeScheduler:
         weight_version = thinker_out.get("weight_version")
         if weight_version is not None:
             result.setdefault("weight_version", weight_version)
+        processed_input = _processed_input(state)
+        if processed_input is not None:
+            result.setdefault("processed_input", processed_input)
 
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
