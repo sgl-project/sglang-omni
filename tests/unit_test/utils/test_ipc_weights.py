@@ -73,8 +73,7 @@ class TinyModel(nn.Module):
 def _export(model, path, **kw):
     kw.setdefault("serializer", IdentitySerializer)
     kw.setdefault("alias_predicate", lambda t: True)
-    # These protocol tests write into pytest's tmp dir (not a private 0700
-    # store) with a mock serializer, so they opt out of the fs-trust checks.
+    # protocol tests use a mock serializer in pytest's tmp dir, so opt out of fs-trust
     kw.setdefault("validate_secure", False)
     return export_weights(model, path, **kw)
 
@@ -284,8 +283,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
 
 
 def test_is_zombie_parses_state_after_comm(monkeypatch):
-    # comm may contain spaces and ")": the state char is read after the LAST
-    # ")", so a zombie is detected regardless of the process name.
+    # comm can contain spaces and ")"; the state char is read after the last ")"
     monkeypatch.setattr(
         ipc_weights.Path,
         "read_text",
@@ -328,8 +326,7 @@ def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
 
 @_POSIX_ONLY
 def test_load_payload_rejects_symlinked_handle(tmp_path):
-    # The secure read path opens O_NOFOLLOW, so a symlinked handle file (even
-    # to a valid export) is refused before unpickling.
+    # the secure read path opens O_NOFOLLOW, so a symlinked handle is refused
     real_dir = tmp_path / "real"
     real_dir.mkdir(mode=0o700)
     real_path = str(real_dir / "TinyModel.weights-ipc")

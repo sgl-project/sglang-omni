@@ -50,9 +50,7 @@ def _bare_runner(load_format="auto"):
         model_path="m",
         revision="r",
     )
-    # Satisfy the architecture gate: these tests exercise role plumbing with a
-    # stand-in model, not architecture enforcement, so override to an audited
-    # arch. (The gate itself is covered in test_ipc_weights.py.)
+    # role-plumbing tests use a stand-in model; the gate is covered in test_ipc_weights.py
     runner._model_arch_override = "HiggsMultimodalQwen3ForConditionalGeneration"
     runner._weight_share_config = None
     runner._weight_share_record = None

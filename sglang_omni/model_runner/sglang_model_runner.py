@@ -53,8 +53,6 @@ class SGLModelRunner(ModelRunner):
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
         self._model_arch_override = model_arch_override
-        # Set here so the weight-update guard is always live, even on a path
-        # that never reaches load_model.
         self._weight_share_config = None
         self._weight_share_record = None
         self._weight_ipc_leader_monitor = None
@@ -114,9 +112,6 @@ class SGLModelRunner(ModelRunner):
                 "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1"
             )
 
-        # Only architectures audited to keep per-request mutable state off the
-        # shared parameter set may share; others would corrupt co-located
-        # replicas. Fail before the (expensive) model build.
         architectures = (
             [self._model_arch_override]
             if self._model_arch_override is not None
@@ -124,9 +119,8 @@ class SGLModelRunner(ModelRunner):
         )
         ipc_weights.validate_weight_share_architecture(architectures)
 
-        # A follower frees its dummy weights before KV profiling, so the
-        # profiler would over-budget KV by the shared-weight size unless the
-        # cap is pinned explicitly.
+        # Note (Jiaxin Deng): a follower frees its dummy weights before KV
+        # profiling, so it must pin an explicit cap or it over-budgets KV.
         if ws.role == "follower" and self.server_args.max_total_tokens is None:
             raise ipc_weights.WeightShareError(
                 "SGLANG_OMNI_WEIGHT_SHARE follower requires an explicit "

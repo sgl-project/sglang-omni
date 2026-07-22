@@ -24,10 +24,8 @@ Ordering contract (enforced by the caller, verified here):
 - The leader must outlive followers (CUDA IPC mappings die with the exporting
   process); restart replicas together.
 - The store directory must be unique per run (the launcher uses a per-run
-  path). A recycled leader pid is caught by the process-start-time check and a
-  different checkpoint by the model path/revision check, but reusing one dir
-  while the previous run's leader is still alive can still let a follower
-  attach that stale publication, so per-run isolation is the contract.
+  path). A recycled pid and a different checkpoint are caught, but reusing a
+  dir while the previous leader still lives is not, so per-run is the contract.
 
 Role selection is environment-driven so process supervisors (e.g.
 ``examples/mps_dp/launch.sh``) can stay declarative::
@@ -179,16 +177,12 @@ def _value_bytes_to_tensor(data: bytes) -> torch.Tensor:
     return torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
 
 
-# Weight sharing aliases one storage across replicas, so an architecture that
-# writes per-request state in place into a registered parameter/buffer (the
-# decode-embedding scratch in MOSS / Qwen3-TTS / Ming) would corrupt its peers.
-# Only architectures audited to keep such mutable state off the shared set are
-# allowed here; extend the set only after that per-model audit.
+# Note (Jiaxin Deng): MOSS / Qwen3-TTS / Ming write per-request scratch into a
+# shared param, which would corrupt co-located replicas, so gate to audited archs.
 SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(
     {"HiggsMultimodalQwen3ForConditionalGeneration"}
 )
 
-# uid / permission checks only have meaning on POSIX (the deployment target).
 _FS_TRUST_ENFORCED = os.name == "posix"
 
 
@@ -272,7 +266,7 @@ def _proc_stat_fields(pid: int) -> list[str] | None:
 
 def _is_zombie(pid: int) -> bool:
     fields = _proc_stat_fields(pid)
-    # Z still passes kill(pid, 0) until it is reaped.
+    # Note (guozhihao): Z still passes kill(pid, 0) until it is reaped.
     return bool(fields) and fields[0] == "Z"
 
 
@@ -403,9 +397,7 @@ def export_weights(
         )
     if validate_secure:
         _prepare_secure_dir(os.path.dirname(abs_path))
-    # Drop any stale handle file from a previous run before publishing, so a
-    # follower can never attach a dead leader's export (the follower also
-    # rejects a dead leader via the pid-liveness check).
+    # Note (Jiaxin Deng): clear a previous run's stale export before publishing.
     if os.path.exists(abs_path):
         os.unlink(abs_path)
     serializer = _SglangIpcSerializer if serializer is None else serializer
@@ -495,15 +487,12 @@ def _load_payload(
     file_path: str, model: torch.nn.Module, *, validate_secure: bool = True
 ) -> dict[str, Any]:
     if validate_secure and _FS_TRUST_ENFORCED:
-        # Bind validation to the opened inode: O_NOFOLLOW refuses a symlink and
-        # fstat checks the file actually read, closing the lstat-then-open
-        # window before unpickling (which is arbitrary code execution).
+        # Note (Jiaxin Deng): O_NOFOLLOW + fstat binds the check to the opened
+        # inode before unpickling (an RCE surface).
         _validate_secure_dir(os.path.dirname(os.path.abspath(file_path)))
         try:
             fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as exc:
-            # O_NOFOLLOW raises ELOOP on a symlink; treat any open failure as a
-            # refusal rather than leaking a raw OSError.
             raise WeightShareError(
                 f"refusing to open weight-share handle {file_path}: {exc}"
             ) from exc
@@ -597,9 +586,8 @@ def _check_model_identity(
     model_revision: str | None,
     file_path: str,
 ) -> None:
-    # Strict only when the leader recorded an identity; a bare export (None)
-    # is still gated by model class + tensor manifest. This catches two
-    # same-shape checkpoints/revisions attaching the wrong weights.
+    # Note (Jiaxin Deng): strict only when the leader recorded an identity;
+    # catches a same-shape but different-checkpoint attach.
     recorded_path = payload.get("model_path")
     if recorded_path is not None and recorded_path != model_path:
         raise WeightShareError(
@@ -623,8 +611,7 @@ def _check_leader_alive(payload: dict[str, Any], when: str) -> None:
             f"weight-share leader pid={leader_pid} is not alive ({when}); "
             "refusing to serve on a dead leader's CUDA storage"
         )
-    # Defeat pid reuse: if the live pid's start time differs from the exporter's,
-    # a new process took the pid and the original leader is gone.
+    # Note (Jiaxin Deng): a recycled pid (new process) has a different start time.
     recorded_start = payload.get("leader_start_time")
     if recorded_start is not None:
         current_start = _proc_start_time(int(leader_pid))
