@@ -913,32 +913,45 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
     assert s._async_pending is None
 
 
-# ---------------------------------------------------------------------------
-# _drop_stale_overrun on EXTEND/MIXED batches (#1023): out_cache_loc/input_ids
-# are per token (req i owns extend_lens[i] consecutive slots), not per request.
-# ---------------------------------------------------------------------------
-
-
 class _MixedBatch:
-    """Extend/mixed ScheduleBatch stub. filter_batch mirrors the real one:
-    per-request fields only, nulls out_cache_loc, leaves per-token fields and
-    the extend_* lists stale."""
-
-    def __init__(self, lens, done):
+    def __init__(self, lens, done, lp_start_lens=None, logprob=None):
         self.forward_mode = types.SimpleNamespace(
             is_decode=lambda: False, is_extend=lambda: True
         )
-        self.reqs = [types.SimpleNamespace(finished=lambda d=d: d) for d in done]
+        logprob = logprob or [False] * len(lens)
+        self.reqs = [
+            types.SimpleNamespace(finished=lambda d=d: d, return_logprob=lp)
+            for d, lp in zip(done, logprob)
+        ]
         self.extend_lens = list(lens)
         self.extend_num_tokens = sum(lens)
         self.prefix_lens = [10 * (i + 1) for i in range(len(lens))]
-        self.extend_logprob_start_lens = [0] * len(lens)
+        self.extend_logprob_start_lens = (
+            list(lp_start_lens) if lp_start_lens else [0] * len(lens)
+        )
         self.out_cache_loc = torch.arange(100, 100 + sum(lens))
         self.input_ids = torch.arange(sum(lens))
+        self.input_embeds = None
+        self.replace_embeds = None
+        self.token_type_ids = None
+        self.return_logprob = any(logprob)
+        if self.return_logprob:
+            self.extend_input_logprob_token_ids = torch.tensor(
+                [
+                    100 * (i + 1) + k
+                    for i, (length, start) in enumerate(
+                        zip(self.extend_lens, self.extend_logprob_start_lens)
+                    )
+                    for k in range(length - start)
+                ]
+            )
+        else:
+            self.extend_input_logprob_token_ids = None
 
     def filter_batch(self, keep_indices):
         self.reqs = [self.reqs[i] for i in keep_indices]
         self.out_cache_loc = None
+        self.return_logprob = any(r.return_logprob for r in self.reqs)
 
 
 def _drop_stale_scheduler(freed):
@@ -952,24 +965,21 @@ def _drop_stale_scheduler(freed):
 
 
 def test_drop_stale_overrun_mixed_reslices_per_token():
-    # mixed batch: extend req (3 tokens) + two folded decode reqs (1 token
-    # each, mix_with_running tail); the middle one finished on the lagged
-    # resolve.
     freed = []
     s = _drop_stale_scheduler(freed)
     batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
     out = s._drop_stale_overrun(batch)
     assert out is batch
-    assert freed == [103]  # the dropped req's token slot, nothing else
+    assert freed == [103]
     assert out.out_cache_loc.tolist() == [100, 101, 102, 104]
     assert out.input_ids.tolist() == [0, 1, 2, 4]
     assert out.extend_lens == [3, 1]
     assert out.extend_num_tokens == 4
     assert out.prefix_lens == [10, 30]
+    assert out.extend_input_logprob_token_ids is None
 
 
 def test_drop_stale_overrun_extend_multitoken_drop():
-    # pure extend batch where the dropped req owned several token slots
     freed = []
     s = _drop_stale_scheduler(freed)
     batch = _MixedBatch(lens=[2, 3], done=[True, False])
@@ -980,3 +990,28 @@ def test_drop_stale_overrun_extend_multitoken_drop():
     assert out.extend_lens == [3]
     assert out.extend_num_tokens == 3
     assert out.prefix_lens == [20]
+
+
+def test_drop_stale_overrun_reslices_logprob_token_ids():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(
+        lens=[3, 2, 2],
+        done=[False, True, False],
+        lp_start_lens=[1, 0, 2],
+        logprob=[True, True, True],
+    )
+    assert batch.extend_input_logprob_token_ids.tolist() == [100, 101, 200, 201]
+    out = s._drop_stale_overrun(batch)
+    assert out.extend_input_logprob_token_ids.tolist() == [100, 101]
+    assert out.extend_lens == [3, 2]
+    assert out.extend_logprob_start_lens == [1, 2]
+
+
+def test_drop_stale_overrun_drops_last_logprob_req():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[2, 2], done=[True, False], logprob=[True, False])
+    out = s._drop_stale_overrun(batch)
+    assert out.return_logprob is False
+    assert out.extend_input_logprob_token_ids is None

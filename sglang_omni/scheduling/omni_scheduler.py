@@ -1844,9 +1844,15 @@ class OmniScheduler:
         out_cache_loc = batch.out_cache_loc
         forward_mode = getattr(batch, "forward_mode", None)
         if forward_mode is not None and forward_mode.is_extend():
-            # extend/mixed: out_cache_loc/input_ids are per token (req i owns
-            # extend_lens[i] consecutive slots) and filter_batch only reslices
-            # the per-request fields, so handle the per-token ones here.
+            # Note:(Wenyao Gao) extend/mixed batches carry per-token fields
+            # (req i owns extend_lens[i] slots) that filter_batch leaves
+            # stale; reslice them here. The asserted fields are never
+            # populated on omni extend batches; trip instead of misslicing.
+            assert (
+                getattr(batch, "input_embeds", None) is None
+                and getattr(batch, "replace_embeds", None) is None
+                and getattr(batch, "token_type_ids", None) is None
+            ), "unhandled per-token field on drop-stale extend batch"
             lens = batch.extend_lens
             starts = [0] * len(lens)
             for i in range(1, len(lens)):
@@ -1863,6 +1869,7 @@ class OmniScheduler:
             input_ids = batch.input_ids
             prefix_lens = batch.prefix_lens
             extend_logprob_start_lens = batch.extend_logprob_start_lens
+            lp_token_ids = getattr(batch, "extend_input_logprob_token_ids", None)
             self._free_overrun_step_slots(out_cache_loc, drop_tokens)
             batch.filter_batch(keep_indices=keep)
             batch.input_ids = input_ids[keep_tokens]
@@ -1874,6 +1881,25 @@ class OmniScheduler:
             batch.extend_logprob_start_lens = [
                 extend_logprob_start_lens[i] for i in keep
             ]
+            if lp_token_ids is not None:
+                # Note:(Wenyao Gao) every req contributes a segment of
+                # lens[i] - start_lens[i] ids; not aligned with the token
+                # slices above.
+                if not batch.return_logprob:
+                    batch.extend_input_logprob_token_ids = None
+                else:
+                    lp_lens = [
+                        lens[i] - extend_logprob_start_lens[i] for i in range(len(lens))
+                    ]
+                    lp_starts = [0] * len(lp_lens)
+                    for i in range(1, len(lp_lens)):
+                        lp_starts[i] = lp_starts[i - 1] + lp_lens[i - 1]
+                    keep_lp_tokens = [
+                        t
+                        for i in keep
+                        for t in range(lp_starts[i], lp_starts[i] + lp_lens[i])
+                    ]
+                    batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
         else:
             self._free_overrun_step_slots(
                 out_cache_loc, [i for i, d in enumerate(drop) if d]
