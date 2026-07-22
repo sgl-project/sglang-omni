@@ -103,7 +103,7 @@ metric_sources:
       nonstream:
         # Higgs HIGGS_VC_* (not HIGGS_VC_STREAM_*); MOSS uses MOSS_VC_*.
         # via calibration_presets.<preset>.constant_filter in discover.
-        constant_filter: "^HIGGS_VC_(?!STREAM_).*|^MOSS_VC_(?!STREAM_).*"
+        constant_filter: "^HIGGS_VC_(?!STREAM_|NON_STREAM_HC_).*|^MOSS_VC_(?!STREAM_|NON_STREAM_HC_).*"
         json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -126,6 +126,28 @@ metric_sources:
           corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_corpus"
           similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
           utmos_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json::summary.utmos_mean"
+      nonstream_hc:
+        constant_filter: "^HIGGS_VC_NON_STREAM_HC_(?!DIRECT_).*$|^MOSS_VC_NON_STREAM_HC_(?!DIRECT_).*$"
+        json_file: "test_voice_cloning_high_concur0/vc_nonstream_hc_c96/speed_results.json"
+        sample_counts:
+          total: "summary.total_requests"
+          ok: "summary.completed_requests"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
+      nonstream_hc_direct:
+        constant_filter: "^HIGGS_VC_NON_STREAM_HC_DIRECT_.*$|^MOSS_VC_NON_STREAM_HC_DIRECT_.*$"
+        json_file: "test_voice_cloning_direct_work0/vc_nonstream_hc_direct_c48/speed_results.json"
+        sample_counts:
+          total: "summary.total_requests"
+          ok: "summary.completed_requests"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
       stream:
         constant_filter: "^HIGGS_VC_STREAM_.*$|^MOSS_VC_STREAM_.*$"
         json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"

@@ -106,6 +106,13 @@ TTS_WORKER_EXTRA_ARGS = (
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
 TTS_SIMILARITY_MAX_SAMPLES = 50
+# Note: (Jiaxin Deng) 96 client-side saturates both DP2 workers (48 each) so
+# capacity changes gate here; the c16 stage is latency-bound and cannot see them.
+TTS_HIGH_CONCURRENCY = 96
+TTS_HIGH_CONCURRENCY_MIN_WORKER_SHARE = 0.4
+# Note: (Jiaxin Deng) the direct-to-worker leg bypasses the router relay, which
+# saturates before the workers do; model-path capacity only gates here.
+TTS_DIRECT_WORKER_CONCURRENCY = 48
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -156,6 +163,7 @@ def _run_benchmark(
     concurrency: int,
     max_samples: int | None = None,
     stream: bool = False,
+    timeout_s: float | None = None,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
@@ -168,7 +176,10 @@ def _run_benchmark(
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
     )
-    speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
+    benchmark_coro = run_tts_seedtts_benchmark(benchmark_config)
+    if timeout_s is not None:
+        benchmark_coro = asyncio.wait_for(benchmark_coro, timeout_s)
+    speed_results = asyncio.run(benchmark_coro)
     _validate_speed_results_keys(speed_results)
     _print_saved_tts_speed_summary(
         output_dir,
@@ -524,6 +535,7 @@ def _assert_stage_used_all_router_workers(
     results: dict,
     label: str,
     collector: MetricCheckCollector | None = None,
+    min_worker_share: float | None = None,
 ) -> None:
     kwargs = {
         "port": router_server.port,
@@ -531,6 +543,8 @@ def _assert_stage_used_all_router_workers(
         "label": label,
         "min_total_requests": results["summary"]["completed_requests"],
     }
+    if min_worker_share is not None:
+        kwargs["min_worker_share"] = min_worker_share
     if collector is None:
         assert_workers_served_requests_since(**kwargs)
     else:
@@ -806,6 +820,141 @@ def test_voice_cloning_non_streaming(
             collector=checks,
         )
         checks.assert_all()
+
+
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
+@pytest.mark.benchmark
+def test_voice_cloning_high_concurrency(
+    router_server: ManagedRouterHandle,
+    dataset_repo: str,
+    tmp_path: Path,
+) -> None:
+    hc_thresholds = _THRESHOLDS.non_stream_hc_speed
+    if hc_thresholds is None:
+        pytest.skip(
+            f"preset {_MODEL_NAME} has no high-concurrency speed thresholds"
+        )
+    _print_stage(
+        "TTS speed",
+        "non-streaming",
+        TTS_HIGH_CONCURRENCY,
+        "saturated-throughput probe",
+    )
+    output_dir = _resolve_stage_output_dir(
+        tmp_path, f"vc_nonstream_hc_c{TTS_HIGH_CONCURRENCY}"
+    )
+    label = f"TTS non-stream hc c{TTS_HIGH_CONCURRENCY}"
+    before_workers = router_get_json(router_server.port, "/workers")
+    checks = MetricCheckCollector(
+        f"TTS high-concurrency benchmark c{TTS_HIGH_CONCURRENCY}"
+    )
+    try:
+        results = _run_benchmark(
+            router_server.port,
+            dataset_repo,
+            output_dir,
+            concurrency=TTS_HIGH_CONCURRENCY,
+            timeout_s=BENCHMARK_TIMEOUT,
+        )
+        SPEED_OUTPUT_DIRS["non_stream"][TTS_HIGH_CONCURRENCY] = output_dir
+        _assert_full_seedtts_en_speed_results(
+            results,
+            label=label,
+            collector=checks,
+        )
+        _assert_stage_used_all_router_workers(
+            router_server=router_server,
+            before_workers=before_workers,
+            results=results,
+            label=label,
+            collector=checks,
+            min_worker_share=TTS_HIGH_CONCURRENCY_MIN_WORKER_SHARE,
+        )
+    except Exception:
+        print_router_diagnostics(router_server)
+        raise
+    summary, per_request = results["summary"], results["per_request"]
+    _assert_tts_audio_result_integrity(
+        summary,
+        per_request,
+        label=label,
+        collector=checks,
+    )
+    checks.check(
+        summary.get("failed_requests") == 0,
+        f"{label}: failed_requests={summary.get('failed_requests')}, expected 0",
+    )
+    if _PRESET.gate_thresholds:
+        assert_speed_thresholds(
+            summary,
+            hc_thresholds,
+            TTS_HIGH_CONCURRENCY,
+            collector=checks,
+        )
+    checks.assert_all()
+
+
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
+@pytest.mark.benchmark
+def test_voice_cloning_direct_worker_capacity(
+    router_server: ManagedRouterHandle,
+    dataset_repo: str,
+    tmp_path: Path,
+) -> None:
+    direct_thresholds = _THRESHOLDS.non_stream_hc_direct_speed
+    if direct_thresholds is None:
+        pytest.skip(
+            f"preset {_MODEL_NAME} has no direct-worker capacity thresholds"
+        )
+    _print_stage(
+        "TTS speed",
+        "non-streaming",
+        TTS_DIRECT_WORKER_CONCURRENCY,
+        "direct-to-worker capacity probe (router bypassed)",
+    )
+    output_dir = _resolve_stage_output_dir(
+        tmp_path, f"vc_nonstream_hc_direct_c{TTS_DIRECT_WORKER_CONCURRENCY}"
+    )
+    label = f"TTS non-stream direct c{TTS_DIRECT_WORKER_CONCURRENCY}"
+    checks = MetricCheckCollector(
+        f"TTS direct-worker benchmark c{TTS_DIRECT_WORKER_CONCURRENCY}"
+    )
+    try:
+        results = _run_benchmark(
+            router_server.worker_ports[0],
+            dataset_repo,
+            output_dir,
+            concurrency=TTS_DIRECT_WORKER_CONCURRENCY,
+            timeout_s=BENCHMARK_TIMEOUT,
+        )
+        SPEED_OUTPUT_DIRS["non_stream"][TTS_DIRECT_WORKER_CONCURRENCY] = output_dir
+        _assert_full_seedtts_en_speed_results(
+            results,
+            label=label,
+            collector=checks,
+        )
+    except Exception:
+        print_router_diagnostics(router_server)
+        raise
+    summary, per_request = results["summary"], results["per_request"]
+    _assert_tts_audio_result_integrity(
+        summary,
+        per_request,
+        label=label,
+        collector=checks,
+    )
+    checks.check(
+        summary.get("failed_requests") == 0,
+        f"{label}: failed_requests={summary.get('failed_requests')}, expected 0",
+    )
+    if _PRESET.gate_thresholds:
+        assert_speed_thresholds(
+            summary,
+            direct_thresholds,
+            TTS_DIRECT_WORKER_CONCURRENCY,
+            collector=checks,
+        )
+    checks.assert_all()
 
 
 @pytest.mark.tts_stage(TTS_STAGE_STREAM)
