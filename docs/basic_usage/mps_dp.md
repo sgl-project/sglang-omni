@@ -85,9 +85,11 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
 
-## Shared weights across replicas (experimental)
+## Shared weights across replicas (opt-in, default off)
 
 By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
+
+**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and currently validated for **Higgs TTS with tp=pp=1** only; other architectures are rejected by the weight-share gate, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `--max-total-tokens` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum.
 
 ```bash
 WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
