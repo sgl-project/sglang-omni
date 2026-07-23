@@ -251,6 +251,11 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTTSLocalSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
+    # Ming stages decode feedback the same way MOSS local does; its other
+    # registered tensors, including the row-id buffer, are load or init once.
+    "MingTTSSGLangModel": WeightSharePolicy(
+        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+    ),
     # MTD carries no decode staging scratch: every registered tensor is
     # checkpoint-loaded or an init-computed constant (rope cache).
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),

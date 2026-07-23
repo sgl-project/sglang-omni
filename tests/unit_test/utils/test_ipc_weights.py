@@ -273,6 +273,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
     expected_private = {
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
         "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
@@ -283,7 +284,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         assert policy.private_tensor_names == private
     # Note (Jiaxin Deng): Qwen3-TTS carries the same scratch pattern but its
     # runtime tree includes external qwen_tts modules, unaudited; stays rejected.
-    for bad in ([], ["A", "B"], ["Qwen3TTSTalker"], ["MingTTSSGLangModel"], [""], None):
+    for bad in ([], ["A", "B"], ["Qwen3TTSTalker"], [""], None):
         with pytest.raises(WeightShareError):
             ipc_weights.validate_weight_share_architecture(bad)
 

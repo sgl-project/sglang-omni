@@ -98,7 +98,8 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 | MOSS Transcribe-Diarize (`MossTranscribeDiarizeForConditionalGeneration`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (checkpoint weights + init-computed rope cache) | none identified | mutation audit + shared protocol tests; DP launch must inject an explicit max-total-tokens |
 | Qwen3-ASR (`Qwen3ASRForConditionalGeneration`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (audio tower + LM weights, init-computed positional and rope caches) | none identified | mutation audit + shared protocol tests |
 | Whisper (`WhisperForConditionalGeneration`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (encoder-decoder weights incl. the tied output embedding) | none identified | mutation audit + shared protocol tests |
-| Qwen3-TTS, Ming TTS | Rejected | — | — | same staging pattern as MOSS, not yet audited end to end |
+| Ming TTS (`MingTTSSGLangModel`) | Supported (audited; same-GPU DP e2e pending) | backbone incl. MoE, heads, row-id buffer | `_decode_input_embedding.weight` (per-step decode staging, same pattern as MOSS local) | mutation audit + shared protocol tests; tp=1 deployments only (sharing refuses tp>1) |
+| Qwen3-TTS | Rejected | — | — | same staging pattern, but its runtime module tree includes external `qwen_tts` components the in-repo audit cannot close |
 | all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
 
 For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.
