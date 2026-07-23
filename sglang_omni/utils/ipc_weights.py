@@ -251,6 +251,9 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTTSLocalSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
+    # MTD carries no decode staging scratch: every registered tensor is
+    # checkpoint-loaded or an init-computed constant (rope cache).
+    "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
 }
 
 SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
