@@ -262,6 +262,10 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
     "WhisperForConditionalGeneration": WeightSharePolicy(),
     "FunAsrNanoForConditionalGeneration": WeightSharePolicy(),
+    # Voxtral stages decode feedback into an UNregistered plain-tensor scratch
+    # (_decode_input_embed_buffer), so nothing registered is written post-load;
+    # that scratch must stay unregistered or this entry needs a private name.
+    "VoxtralSGLangTTSModel": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches
