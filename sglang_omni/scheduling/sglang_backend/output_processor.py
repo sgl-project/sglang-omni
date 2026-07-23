@@ -30,8 +30,9 @@ class SGLangOutputProcessor:
         self,
         model_output: Any,
         scheduler_output: SchedulerOutput,
+        host_token_ids: Any = None,
     ) -> dict[str, RequestOutput]:
-        ids = getattr(model_output, "_host_token_ids", None)
+        ids = host_token_ids
         if ids is None:
             ids = model_output.next_token_ids
         token_list = ids.tolist() if ids is not None else []

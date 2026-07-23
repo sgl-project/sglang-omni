@@ -116,18 +116,43 @@ class ModelRunner:
     def _next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
         # Note:(Wenyao Gao) two buffers ping-ponged so a step's host read never races
         # the next step's async copy
-        if (
-            self._token_id_host_bufs is None
-            or self._token_id_host_bufs[0].shape[0] < n
-            or self._token_id_host_bufs[0].dtype != like.dtype
-        ):
-            self._token_id_host_bufs = [
-                torch.empty(n, dtype=like.dtype, device="cpu", pin_memory=True)
+        return self._pinned_pingpong(
+            "_token_id_host_bufs",
+            "_token_id_host_slot",
+            (n,),
+            like.dtype,
+            realloc_on_grow=True,
+        )
+
+    def _pinned_pingpong(
+        self,
+        bufs_attr: str,
+        slot_attr: str,
+        shape: Any,
+        dtype: torch.dtype,
+        *,
+        realloc_on_grow: bool,
+    ) -> torch.Tensor:
+        """Return one of two pinned host buffers, alternating slot each call.
+
+        ``realloc_on_grow`` reallocates (and resets the slot) when the request
+        outgrows the buffer or changes dtype; otherwise the pair is allocated
+        once on first use with the given fixed shape.
+        """
+        bufs = getattr(self, bufs_attr)
+        need_alloc = not bufs
+        if realloc_on_grow and bufs:
+            need_alloc = bufs[0].shape[0] < shape[0] or bufs[0].dtype != dtype
+        if need_alloc:
+            bufs = [
+                torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
                 for _ in range(2)
             ]
-            self._token_id_host_slot = 0
-        buf = self._token_id_host_bufs[self._token_id_host_slot]
-        self._token_id_host_slot ^= 1
+            setattr(self, bufs_attr, bufs)
+            setattr(self, slot_attr, 0)
+        slot = getattr(self, slot_attr)
+        buf = bufs[slot]
+        setattr(self, slot_attr, slot ^ 1)
         return buf
 
     def _resolve_host_token_ids(self, result: Any) -> Any:
@@ -149,19 +174,13 @@ class ModelRunner:
         Buffers are allocated lazily on first use (the base runner does not
         know the model-specific staging shape at construction time).
         """
-        if not self._host_staging_buffers:
-            self._host_staging_buffers = [
-                torch.empty(
-                    device_staging.shape,
-                    dtype=device_staging.dtype,
-                    device="cpu",
-                    pin_memory=True,
-                )
-                for _ in range(2)
-            ]
-        buf = self._host_staging_buffers[self._staging_slot]
-        self._staging_slot ^= 1
-        return buf
+        return self._pinned_pingpong(
+            "_host_staging_buffers",
+            "_staging_slot",
+            device_staging.shape,
+            device_staging.dtype,
+            realloc_on_grow=False,
+        )
 
     def execute(self, scheduler_output: Any) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →
@@ -442,7 +461,9 @@ class ModelRunner:
             schedule_batch.output_ids = batch_result.next_token_ids
 
         host_token_ids = self._resolve_host_token_ids(batch_result)
-        outputs = self.output_processor.process(batch_result, scheduler_output)
+        outputs = self.output_processor.process(
+            batch_result, scheduler_output, host_token_ids=host_token_ids
+        )
         self.post_process_outputs(batch_result, scheduler_output, outputs)
         skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
         advanced_steps = []
