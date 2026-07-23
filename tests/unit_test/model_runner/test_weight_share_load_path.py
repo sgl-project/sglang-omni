@@ -162,6 +162,78 @@ def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):
         runner.load_model()
 
 
+class FakeMossModel(nn.Module):
+    """Stand-in with the MOSS policy's private scratch tensor present."""
+
+    def __init__(self, fill: float):
+        super().__init__()
+        self.linear = nn.Linear(3, 2)
+        self._decode_input_embedding = nn.Embedding(4, 2)
+        with torch.no_grad():
+            self.linear.weight.fill_(fill)
+            self.linear.bias.fill_(fill)
+            self._decode_input_embedding.weight.fill_(fill)
+
+
+def test_moss_leader_export_marks_scratch_private(tmp_path, monkeypatch):
+    import pickle
+
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
+    runner = _bare_runner()
+    runner._model_arch_override = "MossTTSLocalSGLangModel"
+
+    def fake_load(self):
+        self.model = FakeMossModel(fill=1.0)
+
+    with mock.patch.object(ModelRunner, "load_model", fake_load):
+        runner.load_model()
+    with open(tmp_path / "FakeMossModel.weights-ipc", "rb") as fh:
+        payload = pickle.load(fh)
+    assert payload["private_names"] == ["_decode_input_embedding.weight"]
+    assert "_decode_input_embedding.weight" not in payload["ipc_names"]
+
+
+def test_moss_follower_keeps_scratch_storage(tmp_path, monkeypatch):
+    leader_model = FakeMossModel(fill=7.0)
+    ipc_weights.export_weights(
+        leader_model,
+        str(tmp_path / "FakeMossModel.weights-ipc"),
+        private_names=frozenset({"_decode_input_embedding.weight"}),
+    )
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
+    runner = _bare_runner()
+    runner._model_arch_override = "MossTTSLocalSGLangModel"
+    scratch_ptrs = []
+
+    def fake_load(self):
+        self.model = FakeMossModel(fill=0.0)
+        scratch_ptrs.append(self.model._decode_input_embedding.weight.data_ptr())
+
+    with mock.patch.object(ModelRunner, "load_model", fake_load):
+        runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
+
+    # The scratch kept the follower's own storage yet received leader bytes;
+    # everything else came through the share path.
+    scratch = runner.model._decode_input_embedding.weight
+    assert scratch.data_ptr() == scratch_ptrs[0]
+    assert torch.all(scratch == 7.0)
+    assert torch.all(runner.model.linear.weight == 7.0)
+
+
+def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch):
+    # The MOSS policy names a tensor SmallModel lacks: the model and policy
+    # diverged, so the leader must refuse to export rather than share it all.
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
+    runner = _bare_runner()
+    runner._model_arch_override = "MossTTSLocalSGLangModel"
+    with mock.patch.object(
+        ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
+    ):
+        with pytest.raises(ipc_weights.WeightShareError, match="diverged"):
+            runner.load_model()
+
+
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
     runner = _bare_runner()

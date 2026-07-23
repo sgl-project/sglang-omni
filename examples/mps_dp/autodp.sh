@@ -58,9 +58,9 @@ else
 fi
 GPU_ID=${GPU_ID:-0}
 CAP=${MAX_TOTAL_TOKENS:-100000}
-# Note (Jiaxin Deng): weight sharing currently supports only the Higgs TTS
-# architecture; non-Higgs models fail the arch gate at startup. Size those with
-# WEIGHT_SHARE=0.
+# Note (Jiaxin Deng): weight sharing supports only audited architectures
+# (Higgs TTS, MOSS TTS local); others fail the arch gate at startup. Size
+# those with WEIGHT_SHARE=0.
 WS=${WEIGHT_SHARE:-1}
 H_GIB=${HEADROOM_GIB:-1.5}
 

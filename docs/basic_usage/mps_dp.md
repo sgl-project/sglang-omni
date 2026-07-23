@@ -89,14 +89,23 @@ The throughput results in the table and H100 case study are from an 80 GB H100 w
 
 By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
 
-**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and currently validated for **Higgs TTS with tp=pp=1** only; other architectures are rejected by the weight-share gate, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `--max-total-tokens` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum.
+**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and gated to **audited architectures with tp=pp=1**; anything else is rejected at startup, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. Each audited architecture carries a share policy: registered tensors the model writes at serving time (per-step decode staging scratch) are classified **replica-private** — every replica keeps its own storage for them and only the immutable weights alias one storage. Leader and follower derive the classification from the same policy and fail closed on any disagreement (it is part of the manifest). Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `--max-total-tokens` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum.
+
+| Architecture | Status | Shared | Replica-private | Validation |
+|---|---|---|---|---|
+| Higgs TTS (`HiggsMultimodalQwen3ForConditionalGeneration`) | Supported | all registered parameters/buffers (audited immutable after load) | none identified | unit + CUDA IPC tests; H100/H200 case studies |
+| MOSS TTS local (`MossTTSLocalSGLangModel`) | Supported (audited; end-to-end DP benchmark pending) | AR backbone, embedding tables, local transformer, rope buffers | `_decode_input_embedding.weight` (per-step decode staging) | unit + CUDA IPC + cross-replica isolation tests |
+| Qwen3-TTS, Ming TTS | Rejected | — | — | same staging pattern as MOSS, not yet audited end to end |
+| all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
+
+For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.
 
 ```bash
 WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
   bash examples/mps_dp/launch.sh up
 ```
 
-Replica 0 is the weight **leader**: it loads the checkpoint normally and publishes CUDA-IPC handles for every backbone parameter and buffer to `$state/ipc_weights/` (atomic write; the machinery is sglang's `MultiprocessingSerializer` / `monkey_patch_torch_reductions`, the same lineage as `update_weights_from_tensor`). Replicas 1..N-1 are **followers**: they build the module tree with `load_format=dummy` (no checkpoint I/O), then alias every parameter/buffer onto the leader's storage before KV profiling, warmup, and CUDA-graph capture. KV cache, CUDA graphs, and sampler state remain private per replica. The plumbing is the `SGLANG_OMNI_WEIGHT_SHARE=leader:<dir> | follower:<dir>` environment variable; unset means today's independent-copy behavior.
+Replica 0 is the weight **leader**: it loads the checkpoint normally and publishes CUDA-IPC handles for every backbone parameter and buffer to `$state/ipc_weights/` (atomic write; the machinery is sglang's `MultiprocessingSerializer` / `monkey_patch_torch_reductions`, the same lineage as `update_weights_from_tensor`). Replicas 1..N-1 are **followers**: they build the module tree with `load_format=dummy` (no checkpoint I/O), then alias every parameter/buffer onto the leader's storage before KV profiling, warmup, and CUDA-graph capture — except policy-private tensors, which keep the follower's own storage and only receive the leader's bytes. KV cache, CUDA graphs, and sampler state remain private per replica. The plumbing is the `SGLANG_OMNI_WEIGHT_SHARE=leader:<dir> | follower:<dir>` environment variable; unset means today's independent-copy behavior.
 
 What this buys: N-1 fewer weight copies (15.2 GiB at DP3), which can fund a fourth replica at the same KV cap or a larger per-replica KV budget; followers also skip checkpoint I/O at startup. Two operational rules:
 

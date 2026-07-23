@@ -85,9 +85,10 @@ class SGLModelRunner(ModelRunner):
         Leader: normal checkpoint load, then publish CUDA-IPC handles for all
         parameters/buffers. Follower: wait for the leader's handle file, build
         the module tree with dummy weights (no checkpoint I/O), then alias
-        every parameter/buffer onto the leader's storage. Both paths finish
-        inside load_model, strictly before KV-pool profiling, warmup forwards,
-        and CUDA graph capture.
+        every parameter/buffer onto the leader's storage. Tensors the
+        architecture's share policy marks replica-private keep the follower's
+        own storage. Both paths finish inside load_model, strictly before
+        KV-pool profiling, warmup forwards, and CUDA graph capture.
         """
         from sglang_omni.utils import ipc_weights
 
@@ -112,7 +113,7 @@ class SGLModelRunner(ModelRunner):
             if self._model_arch_override is not None
             else getattr(self.model_config.hf_config, "architectures", None)
         )
-        ipc_weights.validate_weight_share_architecture(architectures)
+        policy = ipc_weights.validate_weight_share_architecture(architectures)
 
         # Note (Jiaxin Deng): a follower frees its dummy weights before KV
         # profiling, so it must pin an explicit cap or it over-budgets KV.
@@ -131,6 +132,7 @@ class SGLModelRunner(ModelRunner):
                 model_path=str(self.server_args.model_path),
                 model_revision=self.server_args.revision,
                 run_id=ws.run_id,
+                private_names=policy.private_tensor_names,
             )
             return
 
@@ -156,6 +158,7 @@ class SGLModelRunner(ModelRunner):
                 model_path=str(self.server_args.model_path),
                 model_revision=self.server_args.revision,
                 run_id=ws.run_id,
+                private_names=policy.private_tensor_names,
             )
         )
         # Return the dropped dummy-weight blocks to the driver so KV-pool

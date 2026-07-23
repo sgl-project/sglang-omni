@@ -214,9 +214,10 @@ def test_export_is_atomic_no_tmp_left_and_readable(handle_path, tmp_path):
     assert leftovers == []
     with open(handle_path, "rb") as fh:
         payload = pickle.load(fh)
-    assert payload["format_version"] == 1
+    assert payload["format_version"] == ipc_weights._FORMAT_VERSION
     assert payload["model_class"] == "TinyModel"
     assert isinstance(payload["manifest_hash"], str)
+    assert payload["private_names"] == []
 
 
 def test_double_export_same_file_rejected(handle_path):
@@ -267,10 +268,15 @@ def test_handle_file_for_model_uses_class_name(tmp_path):
 
 
 def test_validate_weight_share_architecture_allows_and_rejects():
-    ipc_weights.validate_weight_share_architecture(
+    higgs = ipc_weights.validate_weight_share_architecture(
         ["HiggsMultimodalQwen3ForConditionalGeneration"]
     )
-    for bad in ([], ["A", "B"], ["MossTTSLocalSGLangModel"], [""], None):
+    assert higgs.private_tensor_names == frozenset()
+    moss = ipc_weights.validate_weight_share_architecture(["MossTTSLocalSGLangModel"])
+    assert moss.private_tensor_names == frozenset({"_decode_input_embedding.weight"})
+    # Note (Jiaxin Deng): Qwen3-TTS and Ming carry the same per-step scratch
+    # pattern but are unaudited end to end, so they must stay rejected.
+    for bad in ([], ["A", "B"], ["Qwen3TTSTalker"], ["MingTTSSGLangModel"], [""], None):
         with pytest.raises(WeightShareError):
             ipc_weights.validate_weight_share_architecture(bad)
 
@@ -365,11 +371,13 @@ def test_check_leader_alive_rejects_recycled_pid():
 
 def _min_payload(**overrides):
     payload = {
-        "format_version": 1,
+        "format_version": ipc_weights._FORMAT_VERSION,
         "model_class": "TinyModel",
         "manifest_hash": "x",
+        "private_names": [],
         "pid": os.getpid(),
         "leader_start_time": ipc_weights._proc_start_time(os.getpid()),
+        "gpu_uuid": ipc_weights._gpu_uuid(),
         "ipc_blob": b"",
         "ipc_names": [],
         "value_blobs": {},
@@ -390,6 +398,7 @@ def test_load_payload_rejects_missing_required_field(tmp_path):
     for missing in (
         "model_class",
         "manifest_hash",
+        "private_names",
         "ipc_blob",
         "ipc_names",
         "value_blobs",
@@ -460,6 +469,139 @@ def test_claim_namespace_refuses_second_leader(tmp_path):
     ipc_weights._claim_namespace(path, "run-A")  # first leader holds the flock
     with pytest.raises(WeightShareError, match="owns the weight-share"):
         ipc_weights._claim_namespace(path, "run-B")
+
+
+class ScratchModel(nn.Module):
+    """TinyModel plus a registered per-step scratch embedding, mirroring the
+    MOSS decode staging pattern the private classification exists for."""
+
+    def __init__(self, seed: int = 0):
+        super().__init__()
+        gen = torch.Generator().manual_seed(seed)
+        self.linear = nn.Linear(4, 3)
+        self.scratch = nn.Embedding(4, 3)
+        with torch.no_grad():
+            self.linear.weight.copy_(torch.randn(3, 4, generator=gen))
+            self.linear.bias.copy_(torch.randn(3, generator=gen))
+            self.scratch.weight.copy_(torch.randn(4, 3, generator=gen))
+
+
+_SCRATCH_PRIVATE = frozenset({"scratch.weight"})
+
+
+def test_private_tensor_keeps_own_storage_and_copies_values(tmp_path):
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    leader = ScratchModel(seed=1)
+    follower = ScratchModel(seed=2)
+    scratch_ptr = follower.scratch.weight.data_ptr()
+    _export(leader, path, private_names=_SCRATCH_PRIVATE)
+    record = _attach(follower, path, private_names=_SCRATCH_PRIVATE)
+
+    assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
+    assert follower.scratch.weight.data_ptr() == scratch_ptr
+    assert follower.scratch.weight.data_ptr() != leader.scratch.weight.data_ptr()
+    assert torch.equal(follower.scratch.weight, leader.scratch.weight)
+    assert "scratch.weight" in record
+
+    with torch.no_grad():
+        leader.scratch.weight.fill_(11.0)
+    assert not torch.any(follower.scratch.weight == 11.0)
+    with torch.no_grad():
+        follower.scratch.weight.fill_(22.0)
+    assert not torch.any(leader.scratch.weight == 22.0)
+    verify_attachment(follower, record)
+
+
+def test_private_classification_mismatch_rejected(tmp_path):
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+    with pytest.raises(WeightShareError, match="classification"):
+        _attach(ScratchModel(seed=2), path)
+
+
+def test_private_classification_mismatch_other_direction(tmp_path):
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    _export(ScratchModel(seed=1), path)
+    with pytest.raises(WeightShareError, match="classification"):
+        _attach(ScratchModel(seed=2), path, private_names=_SCRATCH_PRIVATE)
+
+
+def test_unknown_private_name_fails_closed(tmp_path):
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    with pytest.raises(WeightShareError, match="diverged"):
+        _export(ScratchModel(seed=1), path, private_names=frozenset({"gone.weight"}))
+    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+    with pytest.raises(WeightShareError, match="diverged"):
+        _attach(ScratchModel(seed=2), path, private_names=frozenset({"gone.weight"}))
+
+
+def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
+    # Note (Jiaxin Deng): a leader that IPC-shared a policy-private tensor is
+    # the corruption vector itself, so the follower must refuse the whole blob.
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    tensors = ipc_weights._named_shared_tensors(ScratchModel(seed=1))
+    payload = _min_payload(
+        model_class="ScratchModel",
+        manifest_hash=ipc_weights._manifest_hash(tensors, _SCRATCH_PRIVATE),
+        private_names=sorted(_SCRATCH_PRIVATE),
+        ipc_blob=IdentitySerializer.serialize(dict(tensors)),
+        ipc_names=sorted(tensors),
+    )
+    with open(path, "wb") as fh:
+        pickle.dump(payload, fh)
+    with pytest.raises(WeightShareError, match="replica-private"):
+        _attach(ScratchModel(seed=2), path, private_names=_SCRATCH_PRIVATE)
+
+
+def test_manifest_hash_includes_classification():
+    tensors = ipc_weights._named_shared_tensors(ScratchModel(seed=1))
+    assert ipc_weights._manifest_hash(
+        tensors, frozenset()
+    ) != ipc_weights._manifest_hash(tensors, _SCRATCH_PRIVATE)
+
+
+def test_verify_attachment_detects_private_rebound(tmp_path):
+    path = str(tmp_path / "ScratchModel.weights-ipc")
+    _export(ScratchModel(seed=1), path, private_names=_SCRATCH_PRIVATE)
+    follower = ScratchModel(seed=2)
+    record = _attach(follower, path, private_names=_SCRATCH_PRIVATE)
+    follower.scratch.weight.data = torch.zeros_like(follower.scratch.weight)
+    with pytest.raises(WeightShareError, match="rebound"):
+        verify_attachment(follower, record)
+
+
+def test_format_version_1_payload_rejected(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    with open(path, "wb") as fh:
+        pickle.dump(_min_payload(format_version=1), fh)
+    with pytest.raises(WeightShareError, match="format"):
+        _attach(TinyModel(), path)
+
+
+def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
+    """The regression the MOSS policy exists for: two replicas stage different
+    requests into the same scratch rows. Shared storage lets the second write
+    clobber the first replica's staged data; private storage must not."""
+    shared_path = str(tmp_path / "shared" / "ScratchModel.weights-ipc")
+    leader = ScratchModel(seed=1)
+    follower = ScratchModel(seed=2)
+    _export(leader, shared_path)
+    _attach(follower, shared_path)
+    with torch.no_grad():
+        leader.scratch.weight[:2].fill_(1.0)
+        follower.scratch.weight[:2].fill_(2.0)
+    assert torch.all(leader.scratch.weight[:2] == 2.0)
+
+    private_path = str(tmp_path / "private" / "ScratchModel.weights-ipc")
+    leader2 = ScratchModel(seed=1)
+    follower2 = ScratchModel(seed=2)
+    _export(leader2, private_path, private_names=_SCRATCH_PRIVATE)
+    _attach(follower2, private_path, private_names=_SCRATCH_PRIVATE)
+    with torch.no_grad():
+        leader2.scratch.weight[:2].fill_(1.0)
+        follower2.scratch.weight[:2].fill_(2.0)
+    assert torch.all(leader2.scratch.weight[:2] == 1.0)
+    assert torch.all(follower2.scratch.weight[:2] == 2.0)
 
 
 def test_get_weight_share_config_parsing():

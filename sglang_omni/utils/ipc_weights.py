@@ -8,6 +8,13 @@ handle blob to a file. FOLLOWERS build the same module tree with dummy weights
 storage by assignment, not copy. KV cache, CUDA graphs, and sampler state stay
 private per replica.
 
+Tensors named by the architecture's WeightSharePolicy as replica-private are
+the exception: a registered tensor a model writes per request (a decode
+staging scratch) must never alias across replicas, so the leader ships it by
+value and the follower copies into the storage its own module build created,
+keeping the address its CUDA graphs capture. Both sides derive the
+classification from the same audited policy and fail closed on any mismatch.
+
 Ordering contract, enforced by the caller and verified here:
 
 - The leader exports at the end of load_model. Builder-level hooks (e.g. Higgs
@@ -52,7 +59,9 @@ ENV_WEIGHT_SHARE = "SGLANG_OMNI_WEIGHT_SHARE"
 ENV_WEIGHT_SHARE_TIMEOUT_S = "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S"
 ENV_WEIGHT_SHARE_RUN_ID = "SGLANG_OMNI_WEIGHT_SHARE_RUN_ID"
 DEFAULT_ATTACH_TIMEOUT_S = 1800.0
-_FORMAT_VERSION = 1
+# Note (Jiaxin Deng): version 2 added per-tensor share/private classification;
+# version-1 handles predate it and must not be attached.
+_FORMAT_VERSION = 2
 _FILE_SUFFIX = ".weights-ipc"
 
 # Note (Jiaxin Deng): a second export to the same file silently invalidates
@@ -194,11 +203,17 @@ def _named_shared_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return tensors
 
 
-def _manifest_hash(tensors: dict[str, torch.Tensor]) -> str:
+def _manifest_hash(
+    tensors: dict[str, torch.Tensor], private_names: frozenset[str]
+) -> str:
+    # Note (Jiaxin Deng): the classification is part of the manifest, so two
+    # replicas that agree on names/shapes but not on what is private cannot
+    # attach to each other.
     digest = hashlib.sha256()
     for name in sorted(tensors):
         t = tensors[name]
-        digest.update(f"{name}|{t.dtype}|{tuple(t.shape)}\n".encode("utf-8"))
+        mode = "private" if name in private_names else "shared"
+        digest.update(f"{name}|{t.dtype}|{tuple(t.shape)}|{mode}\n".encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -212,17 +227,39 @@ def _value_bytes_to_tensor(data: bytes) -> torch.Tensor:
     return torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
 
 
-# Note (Jiaxin Deng): MOSS / Qwen3-TTS / Ming write per-request scratch into a
-# shared param, which would corrupt co-located replicas, so gate to audited archs.
-SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(
-    {"HiggsMultimodalQwen3ForConditionalGeneration"}
-)
+@dataclass(frozen=True)
+class WeightSharePolicy:
+    """Audited per-architecture classification of registered tensors.
+
+    private_tensor_names holds fully-qualified names (as reported by
+    named_parameters/named_buffers) the model writes at serving time; each
+    replica keeps its own storage for them, so they are never IPC-aliased.
+    Every other registered tensor is shared.
+    """
+
+    private_tensor_names: frozenset[str] = frozenset()
+
+
+# Note (Jiaxin Deng): one audited entry per architecture; the gate derives from
+# these keys. Adding a model requires a full post-load mutation audit: any
+# registered tensor written per request must be listed private, or co-located
+# replicas corrupt each other. Qwen3-TTS and Ming stay out until audited.
+WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
+    "HiggsMultimodalQwen3ForConditionalGeneration": WeightSharePolicy(),
+    # MOSS local stages per-request decode feedback into this registered
+    # embedding every step; everything else in the model is load-once.
+    "MossTTSLocalSGLangModel": WeightSharePolicy(
+        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+    ),
+}
+
+SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
 
 _FS_TRUST_ENFORCED = os.name == "posix"
 
 
-def validate_weight_share_architecture(architectures: Any) -> None:
-    """Fail fast unless the model architecture is audited safe for sharing."""
+def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
+    """Fail fast unless the architecture is audited; return its share policy."""
     archs = [a for a in (architectures or []) if isinstance(a, str) and a.strip()]
     if len(archs) != 1:
         raise WeightShareError(
@@ -230,13 +267,15 @@ def validate_weight_share_architecture(architectures: Any) -> None:
             f"{list(architectures or [])!r}"
         )
     arch = archs[0].strip()
-    if arch not in SUPPORTED_WEIGHT_SHARE_ARCHITECTURES:
-        supported = ", ".join(sorted(SUPPORTED_WEIGHT_SHARE_ARCHITECTURES))
+    policy = WEIGHT_SHARE_POLICIES.get(arch)
+    if policy is None:
+        supported = ", ".join(sorted(WEIGHT_SHARE_POLICIES))
         raise WeightShareError(
             f"weight sharing is unsupported for architecture {arch!r}; audited "
             f"architectures: {supported}. A model that writes per-request state "
             "in place into a shared parameter would corrupt co-located replicas"
         )
+    return policy
 
 
 def _validate_secure_dir(dir_path: str) -> None:
@@ -415,6 +454,23 @@ def _atomic_write(file_path: str, data: bytes) -> None:
         pass  # best effort; rename atomicity already holds on the same fs
 
 
+def _resolve_private_names(
+    tensors: dict[str, torch.Tensor],
+    private_names: frozenset[str],
+    model: torch.nn.Module,
+) -> frozenset[str]:
+    # Note (Jiaxin Deng): a policy name with no matching tensor means the model
+    # renamed its scratch; silently sharing it would corrupt replicas, so stop.
+    unknown = private_names - set(tensors)
+    if unknown:
+        raise WeightShareError(
+            f"weight-share policy names {sorted(unknown)} that are not "
+            f"registered tensors of {type(model).__name__}; the policy and the "
+            "model have diverged"
+        )
+    return private_names
+
+
 def export_weights(
     model: torch.nn.Module,
     file_path: str,
@@ -425,13 +481,16 @@ def export_weights(
     model_path: str | None = None,
     model_revision: str | None = None,
     run_id: str | None = None,
+    private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Publish CUDA-IPC handles for every model parameter and buffer to a file.
 
     CUDA tensors are shared zero-copy through the serializer. Non-CUDA tensors
     (rare, e.g. CPU-resident buffers) are embedded by value because
     ForkingPickler's CPU shared-memory reduction does not survive a file handoff
-    between unrelated processes, so followers copy those.
+    between unrelated processes, so followers copy those. Tensors in
+    private_names ride the by-value path regardless of device: followers copy
+    the leader's bytes into their own storage and never alias it.
 
     Returns a record {name: (data_ptr, shape, dtype)} of the leader-side shared
     tensors for verify_attachment: the leader's own storages must stay put since
@@ -458,13 +517,17 @@ def export_weights(
     tensors = _named_shared_tensors(model)
     if not tensors:
         raise WeightShareError("model has no parameters or buffers to export")
-    ipc_tensors = {n: t for n, t in tensors.items() if alias_predicate(t)}
+    private = _resolve_private_names(tensors, private_names, model)
+    ipc_tensors = {
+        n: t for n, t in tensors.items() if n not in private and alias_predicate(t)
+    }
     value_tensors = {n: t for n, t in tensors.items() if n not in ipc_tensors}
 
     payload = {
         "format_version": _FORMAT_VERSION,
         "model_class": type(model).__name__,
-        "manifest_hash": _manifest_hash(tensors),
+        "manifest_hash": _manifest_hash(tensors, private),
+        "private_names": sorted(private),
         "torch_version": torch.__version__,
         "pid": os.getpid(),
         "leader_start_time": _proc_start_time(os.getpid()),
@@ -541,6 +604,7 @@ _REQUIRED_PAYLOAD_FIELDS: dict[str, type | tuple[type, ...]] = {
     "format_version": int,
     "model_class": str,
     "manifest_hash": str,
+    "private_names": list,
     "pid": int,
     "ipc_blob": (bytes, bytearray),
     "ipc_names": list,
@@ -630,12 +694,15 @@ def attach_weights(
     model_path: str | None = None,
     model_revision: str | None = None,
     run_id: str | None = None,
+    private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter and buffer onto the leader's exported storage.
 
     Assignment, not copy, so the follower's dummy-initialized storages are
-    dropped and freed. Hard-errors on any name, shape, or dtype mismatch in
-    either direction. Returns the attachment record for verify_attachment.
+    dropped and freed. Tensors in private_names keep the follower's own storage
+    and only receive the leader's bytes. Hard-errors on any name, shape, dtype,
+    or classification mismatch in either direction. Returns the attachment
+    record for verify_attachment.
     """
     record, _ = _attach_and_check(
         model,
@@ -647,6 +714,7 @@ def attach_weights(
         model_path=model_path,
         model_revision=model_revision,
         run_id=run_id,
+        private_names=private_names,
     )
     return record
 
@@ -662,13 +730,16 @@ def _attach_and_check(
     model_path: str | None,
     model_revision: str | None,
     run_id: str | None = None,
+    private_names: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], dict[str, Any]]:
     serializer = _SglangIpcSerializer if serializer is None else serializer
     wait_for_export(file_path, timeout_s, poll_interval_s)
     payload = _load_payload(file_path, model, validate_secure=validate_secure)
     _check_model_identity(payload, model_path, model_revision, file_path, run_id=run_id)
     _check_leader_alive(payload, "before attach")
-    record = _alias_from_payload(model, payload, file_path, serializer)
+    record = _alias_from_payload(
+        model, payload, file_path, serializer, private_names=private_names
+    )
     _check_leader_alive(payload, "after attach")
     return record, payload
 
@@ -741,10 +812,19 @@ def _alias_from_payload(
     payload: dict[str, Any],
     file_path: str,
     serializer: Any,
+    private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter/buffer onto the payload's shared storage."""
     own_tensors = _named_shared_tensors(model)
-    own_hash = _manifest_hash(own_tensors)
+    private = _resolve_private_names(own_tensors, private_names, model)
+    if sorted(private) != payload["private_names"]:
+        raise WeightShareError(
+            f"weight-share classification mismatch for {file_path}: leader "
+            f"marked {payload['private_names']!r} replica-private, this "
+            f"follower's policy marks {sorted(private)!r}; the replicas are "
+            "not running the same policy"
+        )
+    own_hash = _manifest_hash(own_tensors, private)
     if own_hash != payload["manifest_hash"]:
         _raise_manifest_mismatch(model, payload, own_tensors, file_path)
 
@@ -766,6 +846,12 @@ def _alias_from_payload(
         raise WeightShareError(
             f"handle blob in {file_path} deserialized to a different tensor "
             "set than its manifest declares"
+        )
+    leaked = sorted(private & set(shared))
+    if leaked:
+        raise WeightShareError(
+            f"handle blob in {file_path} IPC-shares {leaked}, which this "
+            "policy keeps replica-private; refusing to alias per-request state"
         )
     try:
         values = {
@@ -817,8 +903,9 @@ def _alias_from_payload(
                     _rebind_buffer(model, dotted, incoming)
             aliased_bytes += incoming.numel() * incoming.element_size()
         else:
-            # Note (Jiaxin Deng): non-CUDA tensors cannot be IPC-aliased, so
-            # this branch copies them into the follower's private storage.
+            # Note (Jiaxin Deng): replica-private and non-CUDA tensors are
+            # copied into the follower's own storage, never aliased, so the
+            # address its CUDA graphs capture stays this replica's.
             with torch.no_grad():
                 own.copy_(incoming.to(own.device))
 
@@ -831,6 +918,10 @@ def _alias_from_payload(
                     f"aliasing failed for {name!r}: module tensor does not "
                     "point at the shared storage after attach"
                 )
+            record[name] = (tensor.data_ptr(), tuple(tensor.shape), tensor.dtype)
+        elif name in private:
+            # Note (Jiaxin Deng): recorded so verify_attachment also catches a
+            # private tensor rebound (e.g. onto shared storage) after attach.
             record[name] = (tensor.data_ptr(), tuple(tensor.shape), tensor.dtype)
     logger.info(
         f"[weight-share] follower attached {len(record)} shared tensors "
@@ -907,6 +998,7 @@ def leader_export(
     model_path: str | None = None,
     model_revision: str | None = None,
     run_id: str | None = None,
+    private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Leader role: export this engine's weights under dir_path."""
     return export_weights(
@@ -917,6 +1009,7 @@ def leader_export(
         model_path=model_path,
         model_revision=model_revision,
         run_id=run_id,
+        private_names=private_names,
     )
 
 
@@ -930,6 +1023,7 @@ def follower_attach(
     model_path: str | None = None,
     model_revision: str | None = None,
     run_id: str | None = None,
+    private_names: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, tuple[int, tuple[int, ...], torch.dtype]], LeaderLivenessMonitor]:
     """Follower role: attach this engine's weights and watch the leader.
 
@@ -946,6 +1040,7 @@ def follower_attach(
         model_path=model_path,
         model_revision=model_revision,
         run_id=run_id,
+        private_names=private_names,
     )
     monitor = LeaderLivenessMonitor(
         int(payload.get("pid") or 0),
