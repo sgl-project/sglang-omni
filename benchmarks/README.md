@@ -123,22 +123,30 @@ python -m benchmarks.eval.benchmark_omni_mmsu \
     --model qwen3-omni --port 8000 \
     --modalities text+audio --max-samples 50
 
-# 5. Qwen3-Omni — MMMU (VLM accuracy, image input)
+# 5a. Qwen3-Omni — MMAU (audio comprehension)
+python -m benchmarks.eval.benchmark_omni_mmau \
+    --model qwen3-omni --port 8000 --max-samples 50
+
+# 5b. Qwen3-Omni — MMAR (audio reasoning)
+python -m benchmarks.eval.benchmark_omni_mmar \
+    --model qwen3-omni --port 8000 --max-samples 50
+
+# 6. Qwen3-Omni — MMMU (VLM accuracy, image input)
 python -m benchmarks.eval.benchmark_omni_mmmu \
     --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
 
-# 6. Qwen3-Omni — Video-MME (video understanding)
+# 7. Qwen3-Omni — Video-MME (video understanding)
 python -m benchmarks.eval.benchmark_omni_videomme \
     --model qwen3-omni --port 8000 --max-samples 50
 
-# 7a. Qwen3-Omni — Video-AMME (video + audio question understanding)
+# 8a. Qwen3-Omni — Video-AMME (video + audio question understanding)
 python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id zhaochenyang20/Video_AMME_ci \
     --max-samples 50 --max-concurrency 16 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
 
-# 7b. Qwen3-Omni — Video-AMME Talker (text + audio output)
+# 8b. Qwen3-Omni — Video-AMME Talker (text + audio output)
 python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id zhaochenyang20/Video_AMME_ci \
@@ -173,10 +181,12 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_mmau.py` | MMAU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_mmar.py` | MMAR (audio reasoning) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN | Qwen3-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -198,9 +208,9 @@ docstring (sequential phases on CI to reduce OOM risk).
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
-router and reports WER + speed + per-worker routing balance per concurrency
-level. Use it to measure how ASR concurrency affects throughput, latency, and
-WER for a given workload.
+or Fun-ASR router and reports WER + speed + per-worker routing balance per
+concurrency level. Use it to measure how ASR concurrency affects throughput,
+latency, and WER for a given workload.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 
@@ -266,6 +276,8 @@ python -m benchmarks.dataset.prepare --dataset seedtts-50    # 50-sample subset
 python -m benchmarks.dataset.prepare --dataset mmmu          # full MMMU (30 subjects)
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50    # MMMU CI subset
 python -m benchmarks.dataset.prepare --dataset mmsu          # full MMSU (ddwang2000/MMSU)
+python -m benchmarks.dataset.prepare --dataset mmau-mini     # MMAU test_mini split
+python -m benchmarks.dataset.prepare --dataset mmar          # MMAR metadata + audio archive
 python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI subset
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset

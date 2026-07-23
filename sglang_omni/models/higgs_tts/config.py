@@ -3,9 +3,14 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.higgs_tts"
 
@@ -28,6 +33,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -42,6 +51,9 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_audio_encoder_executor",
             factory_args={"device": "cuda"},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.03)
+            ),
             next="tts_engine",
         ),
         StageConfig(
@@ -54,19 +66,48 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "enable_async_decode": True,
             },
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
+            ),
             next="vocoder",
             stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
-            process="pipeline",
+            process="vocoder",
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"device": "cuda"},
+            factory_args={"device": "cuda", "compile_decode": True},
             gpu=0,
+            runtime=StageRuntimeConfig(
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.10)
+            ),
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        stages = {stage.name: stage for stage in self.stages}
+        vocoder = stages["vocoder"]
+        tts_engine = stages["tts_engine"]
+        vocoder_overrides = self.runtime_overrides.get("vocoder", {})
+        tts_engine_overrides = self.runtime_overrides.get("tts_engine", {})
+        missing = object()
+        for key in ("stream_stride", "stream_followup_stride"):
+            value = vocoder_overrides.get(key, vocoder.factory_args.get(key, missing))
+            if value is missing:
+                if key in tts_engine.factory_args or key in tts_engine_overrides:
+                    raise ValueError(
+                        f"Higgs TTS {key!r} must be configured on the vocoder stage"
+                    )
+                continue
+            if key in tts_engine_overrides and tts_engine_overrides[key] != value:
+                raise ValueError(
+                    f"Higgs TTS {key!r} runtime overrides must match between "
+                    "the tts_engine and vocoder stages"
+                )
+            tts_engine.factory_args[key] = value
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return True

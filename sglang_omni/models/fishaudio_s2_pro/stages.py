@@ -22,13 +22,37 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.reference_encoder import (
-    ReferenceEncodeHook,
     ReferenceEncodeKey,
     ReferenceEncodeService,
+    TensorReferenceEncodeHook,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
+
+_MAX_PREPROCESSING_INTRAOP_THREADS = 8
+
+
+def _configure_preprocessing_threads(worker_count: int) -> int:
+    override = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if override.isdigit() and int(override) >= 1:
+        requested = int(override)
+        torch.set_num_threads(requested)
+        return requested
+
+    cpu_count = (
+        len(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else (os.cpu_count() or 1)
+    )
+    # Requests already fan out across worker threads; bound the shared intra-op
+    # pool so reference encoding cannot starve the GPU pipeline process.
+    intraop_threads = min(
+        max(cpu_count // worker_count, 1),
+        _MAX_PREPROCESSING_INTRAOP_THREADS,
+    )
+    torch.set_num_threads(intraop_threads)
+    return intraop_threads
 
 
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
@@ -113,14 +137,18 @@ def _fish_reference_payload_is_supported(ref_data: dict[str, Any]) -> bool:
     )
 
 
-class _FishReferenceEncodeHook(
-    ReferenceEncodeHook[_FishReferenceInput, torch.Tensor, torch.Tensor]
-):
+class _FishReferenceEncodeHook(TensorReferenceEncodeHook[_FishReferenceInput]):
+    model_id = "fishaudio_s2_pro"
+    encoder_id = "fishaudio_s2_pro_codec"
+    artifact_kind = "fishaudio_s2_pro_vq_codes"
+    storage_dtype = torch.long
+    output_dtype = torch.long
+
     def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
         self._codec = codec
-        self._checkpoint_id = str(checkpoint_id)
+        self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
-        self._encoder_config_hash = _hash_bytes(config.encode("utf-8"))
+        self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
 
     def normalize_input(self, raw_input: Any) -> _FishReferenceInput:
         if not isinstance(raw_input, dict):
@@ -137,19 +165,6 @@ class _FishReferenceEncodeHook(
                 str(raw_input.get("media_type") or "audio/wav"),
             )
         raise ValueError("FishAudio reference input has no audio payload")
-
-    def cache_key(self, item: _FishReferenceInput) -> ReferenceEncodeKey | None:
-        input_key = self._input_key(item)
-        if input_key is None:
-            return None
-        return ReferenceEncodeKey(
-            model_id="fishaudio_s2_pro",
-            model_revision=self._checkpoint_id,
-            encoder_id="fishaudio_s2_pro_codec",
-            encoder_config_hash=self._encoder_config_hash,
-            artifact_kind="fishaudio_s2_pro_vq_codes",
-            input_key=input_key,
-        )
 
     def encode_one(self, item: _FishReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
@@ -171,18 +186,10 @@ class _FishReferenceEncodeHook(
             return self._encode_reference_waveform(audio_tensor, int(sr))
         raise TypeError(f"unknown FishAudio reference source: {item.source_kind}")
 
-    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
-        return artifact.detach().to(device="cpu", dtype=torch.long).clone()
-
-    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
-        return stored.detach().clone().to(dtype=torch.long)
-
     def revalidate(self, item: _FishReferenceInput, key: ReferenceEncodeKey) -> bool:
-        if item.source_kind != "path":
-            return True
-        return self._input_key(item) == key.input_key
+        return item.source_kind != "path" or self.input_key(item) == key.input_key
 
-    def _input_key(self, item: _FishReferenceInput) -> str | None:
+    def input_key(self, item: _FishReferenceInput) -> str | None:
         if item.source_kind == "path":
             return _reference_path_cache_key(str(item.source), trust_stat=False)
         if item.source_kind == "bytes":
@@ -208,11 +215,6 @@ class _FishReferenceEncodeHook(
         return indices.cpu()
 
 
-# ---------------------------------------------------------------------------
-# Preprocessing — returns callable
-# ---------------------------------------------------------------------------
-
-
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -221,6 +223,13 @@ def create_preprocessing_executor(
     """Returns a threaded scheduler for CPU-heavy preprocessing."""
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
+    worker_count = max(int(max_concurrency), 1)
+    intraop_threads = _configure_preprocessing_threads(worker_count)
+    logger.info(
+        "Fish preprocessing uses %d workers, %d shared intra-op threads",
+        worker_count,
+        intraop_threads,
+    )
     checkpoint_dir = _resolve_checkpoint(model_path)
 
     from transformers import PreTrainedTokenizerFast
@@ -290,12 +299,7 @@ def create_preprocessing_executor(
         )
         return store_state(payload, state)
 
-    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
-
-
-# ---------------------------------------------------------------------------
-# TTS Engine — returns OmniScheduler
-# ---------------------------------------------------------------------------
+    return ThreadedSimpleScheduler(_preprocess, max_concurrency=worker_count)
 
 
 def create_sglang_tts_engine_executor(
@@ -321,11 +325,6 @@ def create_sglang_tts_engine_executor(
         device=device,
         server_args_overrides=server_args_overrides,
     )
-
-
-# ---------------------------------------------------------------------------
-# Vocoder — returns callable
-# ---------------------------------------------------------------------------
 
 
 def create_vocoder_executor(

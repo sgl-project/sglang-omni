@@ -39,6 +39,24 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
     def revalidate(self, item: InputT, key: ReferenceEncodeKey) -> bool: ...
 
 
+class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
+    model_id: str
+    model_revision: str
+    encoder_id: str
+    encoder_config_hash: str
+    artifact_kind: str
+
+    def input_key(self, item: InputT) -> str | None: ...
+    def options_key(self, item: InputT) -> str: ...
+
+
+class TensorReferenceEncodeHook(
+    KeyedReferenceEncodeHook[InputT, Tensor, Tensor]
+):
+    storage_dtype: torch.dtype | None
+    output_dtype: torch.dtype | None
+
+
 class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
     def get_or_encode(self, raw_input: Any, *, desc: str | None = None) -> ArtifactT: ...
     def stats(self) -> dict[str, int]: ...
@@ -71,6 +89,15 @@ The hook owns model semantics:
 - store/load conversion;
 - revalidation for mutable local files.
 
+Hooks with structured identity should inherit `KeyedReferenceEncodeHook`. They
+provide key metadata, `input_key`, and `encode_one`, plus input normalization
+when the service does not already receive the typed item. The default builds
+`ReferenceEncodeKey` and rechecks input and option keys before insertion.
+Tensor-producing encoders should inherit `TensorReferenceEncodeHook`, which
+also stores a cache-owned CPU clone and returns a caller-owned clone in
+`output_dtype`. Structured artifacts such as nested prompt dictionaries keep
+their own store/load policy on top of `KeyedReferenceEncodeHook`.
+
 ## Cache-Key Contract
 
 `ReferenceEncodeKey` must include every input that can change the encoded
@@ -95,7 +122,9 @@ content identity.
 Hooks should store cache-owned artifacts, usually detached CPU tensors or a
 small CPU dictionary of detached tensors. `load_artifact` must return a
 caller-owned object, commonly by cloning and moving to the expected dtype or
-device. The service enforces the byte budget on the stored representation.
+device. `TensorReferenceEncodeHook` provides this policy through
+`storage_dtype` and `output_dtype`. The service enforces the byte budget on the
+stored representation.
 
 If a stored artifact is larger than `max_bytes`, the leader request and all
 same-key followers still receive a result, but the artifact is not inserted into

@@ -32,6 +32,7 @@ class FakeOp:
         self._metadata = metadata
         self.log = log or EventLog()
         self.waited = False
+        self.failed: BaseException | None = None
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -41,6 +42,14 @@ class FakeOp:
         del timeout
         self.waited = True
         self.log.append("op_wait", self._metadata.get("key"))
+        if self.failed is not None:
+            raise self.failed
+
+    def mark_receiver_done(self) -> None:
+        self.log.append("op_ack", self._metadata.get("key"))
+
+    def mark_receiver_failed(self, exc: BaseException) -> None:
+        self.failed = exc
 
 
 class FakeRelay:
@@ -57,8 +66,9 @@ class FakeRelay:
         tensor: torch.Tensor,
         request_id: str | None = None,
         dst_rank: int | None = None,
+        receiver_id: str | None = None,
     ) -> FakeOp:
-        del dst_rank
+        del dst_rank, receiver_id
         key = str(request_id)
         stored = tensor.detach().clone()
         self.storage[key] = stored

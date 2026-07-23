@@ -13,6 +13,7 @@ dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
     "msgpack>=1.0.0",         # Message serialization
+    "msgspec",                # msgspec.Struct support
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
@@ -23,7 +24,7 @@ dependencies = [
     "transformers==5.6.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
-    "huggingface-hub>=0.36.0",# HF model downloads
+    "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
@@ -31,7 +32,7 @@ dependencies = [
     "flash-attn-4>=4.0.0b9,<4.0.0b16",  # Avoid cutlass-dsl>=4.5.2 conflict
     "kernels>=0.14.0,<0.15",  # Match Transformers 5.6 / SGLang 0.5.12.post1 stack (ships kernels 0.14.1)
     "nixl-cu13>=1.1.0",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
-    "mooncake-transfer-engine-cuda13>=0.3.10",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks `import mooncake` on cu130
+    "mooncake-transfer-engine-cuda13>=0.3.10",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
     "logger",
     "httpx",
     "xxhash>=3.0.0",
@@ -54,6 +55,7 @@ dependencies = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "jiwer",
+    "zhon>=2.0.2",            # note (yzxiao): shared Chinese WER normalization uses zhon.hanzi punctuation.
     "scipy>=1.10.0",
     "openai-whisper==20250625",
     # SeedTTS speaker similarity (WavLM-large SV head). The pip-installed
@@ -73,6 +75,12 @@ dependencies = [
     # Ming-Omni
     "diffusers==0.37.0",      # Align with sglang 0.5.12.post1 hard pin (diffusers==0.37.0)
     "x-transformers",          # Ming talker rotary embeddings
+]
+
+[project.optional-dependencies]
+audar-tts = [
+    "llama-cpp-python==0.3.34",
+    "neucodec==0.0.6",
 ]
 
 [project.scripts]
@@ -99,4 +107,4 @@ include = ["sglang_omni*"]
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
-"sglang_omni.models.higgs_tts" = ["_vendored/*.json"]
+"sglang_omni.models.higgs_tts" = ["configs/*.json"]

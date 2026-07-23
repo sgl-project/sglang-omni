@@ -22,6 +22,7 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
@@ -122,20 +123,6 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     ]
 
 
-def _audio_to_list(audio: Any) -> list[float]:
-    if isinstance(audio, torch.Tensor):
-        return audio.detach().float().cpu().flatten().tolist()
-    try:
-        import numpy as np
-
-        array = np.asarray(audio, dtype=np.float32).reshape(-1)
-        return array.tolist()
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"Unsupported Qwen3-TTS audio output type: {type(audio)}"
-        ) from exc
-
-
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
     return SimpleScheduler(
@@ -166,8 +153,60 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
-    return create_sglang_tts_engine_executor(*args, **kwargs)
+create_tts_engine_executor = create_sglang_tts_engine_executor
+
+
+class _Qwen3TTSVocoder(BatchVocoderBase):
+    def __init__(self, tokenizer: Any) -> None:
+        self._tokenizer = tokenizer
+
+    def prepare_item(self, payload: StagePayload) -> tuple[Qwen3TTSState, torch.Tensor]:
+        state = load_state(payload)
+        if state.audio_codes is None:
+            raise RuntimeError("Qwen3-TTS vocoder requires audio_codes from tts_engine")
+
+        codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
+        return state, codes
+
+    async def decode_batch(
+        self, items: list[tuple[Qwen3TTSState, torch.Tensor]]
+    ) -> list[tuple[Any, int]]:
+        wavs, sample_rate = self._tokenizer.decode(
+            [{"audio_codes": codes} for _, codes in items]
+        )
+        if len(wavs) != len(items):
+            raise RuntimeError(
+                f"Qwen3-TTS speech tokenizer returned {len(wavs)} audios for {len(items)} requests"
+            )
+        return [(wav, sample_rate) for wav in wavs]
+
+    def store_result(
+        self,
+        payload: StagePayload,
+        state: Qwen3TTSState,
+        wav: Any,
+        sample_rate: int,
+    ) -> StagePayload:
+        if wav is None:
+            raise RuntimeError("Qwen3-TTS speech tokenizer did not return audio")
+
+        if state.ref_code_len:
+            total_len = len(state.audio_codes)
+            cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
+            wav = wav[cut:]
+        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
+        state.audio_samples = None
+        state.sample_rate = int(sample_rate)
+        state.audio_codes = None
+
+        payload = store_state(payload, state)
+        payload.data.update(audio_payload)
+        payload.data["sample_rate"] = state.sample_rate
+        payload.data["modality"] = "audio"
+        usage = build_usage(state)
+        if usage is not None:
+            payload.data["usage"] = usage
+        return payload
 
 
 def create_vocoder_executor(
@@ -189,67 +228,7 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
-    def _prepare_vocoder_item(
-        payload: StagePayload,
-    ) -> tuple[Qwen3TTSState, torch.Tensor]:
-        state = load_state(payload)
-        if state.audio_codes is None:
-            raise RuntimeError("Qwen3-TTS vocoder requires audio_codes from tts_engine")
-
-        codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
-        return state, codes
-
-    def _store_vocoder_result(
-        payload: StagePayload,
-        state: Qwen3TTSState,
-        codes: torch.Tensor,
-        wav: Any,
-        sample_rate: int,
-    ) -> StagePayload:
-        if wav is None:
-            raise RuntimeError("Qwen3-TTS speech tokenizer did not return audio")
-
-        if state.ref_code_len:
-            total_len = int(codes.shape[0])
-            cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
-            wav = wav[cut:]
-        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
-        state.audio_samples = None
-        state.sample_rate = int(sample_rate)
-        state.audio_codes = None
-
-        payload = store_state(payload, state)
-        payload.data.update(audio_payload)
-        payload.data["sample_rate"] = state.sample_rate
-        payload.data["modality"] = "audio"
-        usage = build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        return payload
-
-    def _vocode(payload: StagePayload) -> StagePayload:
-        state, codes = _prepare_vocoder_item(payload)
-        wavs, sample_rate = tokenizer.decode([{"audio_codes": codes}])
-        wav = wavs[0] if wavs else None
-        return _store_vocoder_result(payload, state, codes, wav, sample_rate)
-
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        items = [_prepare_vocoder_item(payload) for payload in payloads]
-        wavs, sample_rate = tokenizer.decode(
-            [{"audio_codes": codes} for _, codes in items]
-        )
-        if len(wavs) != len(items):
-            raise RuntimeError(
-                f"Qwen3-TTS speech tokenizer returned {len(wavs)} audios for {len(items)} requests"
-            )
-        return [
-            _store_vocoder_result(payload, state, codes, wav, sample_rate)
-            for payload, (state, codes), wav in zip(payloads, items, wavs)
-        ]
-
-    return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=_vocode_batch,
+    return _Qwen3TTSVocoder(tokenizer).build_scheduler(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

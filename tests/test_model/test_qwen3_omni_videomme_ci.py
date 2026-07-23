@@ -20,6 +20,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.test_model.omni_router_utils import (
@@ -35,9 +36,9 @@ VIDEOMME_MIN_ACCURACY = 0.58
 
 _VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 1.087,
-        "output_tok_per_req_s": 8.6,
-        "latency_mean_s": 12.684,
+        "throughput_qps": 1.106,
+        "output_tok_per_req_s": 8.7,
+        "latency_mean_s": 12.682,
     },
 }
 VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
@@ -76,12 +77,17 @@ def test_videomme_accuracy_and_speed(
         )
 
     summary = results["summary"]
-    print_videomme_accuracy_summary(summary, config.model)
+    dataset_label = format_benchmark_dataset_label(
+        dataset="videomme-ci-50",
+        repo_id=config.repo_id,
+    )
+    print_videomme_accuracy_summary(summary, config.model, dataset=dataset_label)
     print_speed_summary(
         results["speed"],
         config.model,
         CONCURRENCY,
         title="Video-MME Speed",
+        dataset=dataset_label,
     )
     total = summary.get("total_samples", 0)
     checks = MetricCheckCollector("Video-MME accuracy and speed")

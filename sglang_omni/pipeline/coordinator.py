@@ -127,9 +127,7 @@ class Coordinator:
         for request_id, info in list(self._requests.items()):
             info.state = RequestState.FAILED
             info.error = message
-            future = self._completion_futures.get(request_id)
-            if future is not None and not future.done():
-                future.set_exception(RuntimeError(message))
+            self._reject_completion_future(request_id, RuntimeError(message))
             queue = self._stream_queues.get(request_id)
             if queue is not None:
                 await queue.put(
@@ -418,6 +416,19 @@ class Coordinator:
             entry_info.control_endpoint,
         )
 
+    def _reject_completion_future(self, request_id: str, exc: BaseException) -> None:
+        # Note: (Akazaakane) Non-streaming callers await the completion future,
+        # so errors must be propagated with set_exception(). Streaming callers
+        # receive errors through the stream queue and never await that future;
+        # cancel it instead to avoid "Future exception was never retrieved".
+        future = self._completion_futures.get(request_id)
+        if future is None or future.done():
+            return
+        if request_id in self._stream_queues:
+            future.cancel()
+        else:
+            future.set_exception(exc)
+
     async def abort(self, request_id: str) -> bool:
         """Abort a request.
 
@@ -445,10 +456,9 @@ class Coordinator:
         info.state = RequestState.ABORTED
 
         # Resolve future with error
-        if request_id in self._completion_futures:
-            self._completion_futures[request_id].set_exception(
-                asyncio.CancelledError(f"Request {request_id} aborted")
-            )
+        self._reject_completion_future(
+            request_id, asyncio.CancelledError(f"Request {request_id} aborted")
+        )
         if request_id in self._stream_queues:
             await self._stream_queues[request_id].put(
                 CompleteMessage(
@@ -521,10 +531,9 @@ class Coordinator:
                 AbortMessage(request_id=request_id)
             )
             self._partial_results.pop(request_id, None)
-            if request_id in self._completion_futures:
-                future = self._completion_futures[request_id]
-                if not future.done():
-                    future.set_exception(RuntimeError(msg.error or "Unknown error"))
+            self._reject_completion_future(
+                request_id, RuntimeError(msg.error or "Unknown error")
+            )
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
             self._requests.pop(request_id, None)

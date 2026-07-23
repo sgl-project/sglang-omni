@@ -19,15 +19,16 @@ from benchmarks.metrics.transcribe_diarize_metrics import (
     split_clean_by_speaker,
 )
 
-EVAL_SCRIPT_PATH = (
-    Path(__file__).resolve().parents[3] / "benchmarks/eval/eval_transcribe_diarize.py"
+BENCHMARK_SCRIPT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "benchmarks/eval/benchmark_asr_transcribe_diarize.py"
 )
 
 
-def _load_eval_module():
+def _load_benchmark_module():
     spec = importlib.util.spec_from_file_location(
-        "eval_transcribe_diarize_entry",
-        EVAL_SCRIPT_PATH,
+        "benchmark_asr_transcribe_diarize_entry",
+        BENCHMARK_SCRIPT_PATH,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -37,7 +38,7 @@ def _load_eval_module():
 
 
 def test_parse_args_defaults_to_movies800times_preset() -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     args = module.parse_args([])
 
@@ -49,7 +50,7 @@ def test_parse_args_defaults_to_movies800times_preset() -> None:
 
 
 def test_parse_args_uses_aishell4_long_preset() -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     args = module.parse_args(["--dataset", "aishell4_long"])
 
@@ -60,11 +61,24 @@ def test_parse_args_uses_aishell4_long_preset() -> None:
     assert args.output_dir == module.AISHELL4_LONG_OUTPUT_DIR
 
 
+def test_parse_args_uses_googletime_preset() -> None:
+    module = _load_benchmark_module()
+
+    args = module.parse_args(["--dataset", "googletime"])
+
+    assert args.dataset == "googletime"
+    assert args.repo_id == module.GOOGLETIME_REPO_ID
+    assert args.max_samples is None
+    assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
+    assert args.output_dir == module.GOOGLETIME_OUTPUT_DIR
+
+
 @pytest.mark.parametrize(
     ("dataset", "expected_sample_count"),
     [
         ("movies800times", 800),
         ("aishell4_long", 20),
+        ("googletime", 25),
     ],
 )
 def test_load_samples_uses_dataset_expected_sample_count(
@@ -72,7 +86,7 @@ def test_load_samples_uses_dataset_expected_sample_count(
     dataset: str,
     expected_sample_count: int,
 ) -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
     captured_kwargs: dict[str, object] = {}
 
     def fake_load_movies800_samples(**kwargs: object) -> list[object]:
@@ -173,7 +187,7 @@ def test_compute_diarization_metrics_marks_missing_timestamp_prediction_invalid(
 
 
 def test_build_metrics_section_prints_timestamp_metrics() -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     section = module._build_metrics_section(
         "diarization_metrics_percent",
@@ -220,7 +234,7 @@ def test_compute_diarization_metrics_partitions_cer_above_50_percent() -> None:
 
 
 def test_build_key_metrics_section_prints_partitioned_cer_metrics() -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     section = module._build_key_metrics_section(
         {
@@ -239,7 +253,7 @@ def test_build_key_metrics_section_prints_partitioned_cer_metrics() -> None:
 
 
 def test_build_key_metrics_section_prints_selected_metrics() -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     section = module._build_key_metrics_section(
         {
@@ -278,7 +292,7 @@ def test_extract_prediction_text_prefers_top_level_text_for_timestamps() -> None
 def test_eval_saves_and_loads_aishell4_long_raw_asr_results(
     tmp_path: Path,
 ) -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     args = Namespace(
         dataset="aishell4_long",
@@ -334,7 +348,7 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    module = _load_eval_module()
+    module = _load_benchmark_module()
 
     args = Namespace(
         dataset="aishell4_long",

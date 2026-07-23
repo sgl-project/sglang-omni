@@ -176,7 +176,7 @@ Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
 For manual multi-GPU placement, use the example script:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
@@ -217,7 +217,7 @@ sgl-omni serve \
 The speech server launcher exposes the same per-stage controls:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
@@ -267,6 +267,31 @@ SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
   --model-name qwen3-omni \
   --port 8008
 ```
+
+## Single-GPU AutoRound INT4 Thinker on H100/H20
+
+SGLang-Omni also supports AutoRound INT4 quantized Qwen3-Omni checkpoints.
+AutoRound uses a 4-bit quantization scheme with group size 128, significantly
+reducing memory footprint compared to BF16 or FP8.
+
+The public AutoRound checkpoint quantizes the thinker transformer layers. In
+speech mode, the talker and code2wav stages load as BF16 from the same
+checkpoint. For one-GPU H100/H20 colocated launch, use the colocated config
+with the AutoRound checkpoint:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --model-path Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound \
+  --port 8008
+```
+
+AutoRound quantization provides:
+- **~50% memory reduction** compared to BF16 (from ~60GB to ~30GB)
+- **~25% memory reduction** compared to FP8 (from ~40GB to ~30GB)
+- **Accuracy at ultra-low bit widths**: maintains high accuracy even at 2–4 bits, requiring minimal tuning effort thanks to its sign-gradient descent optimization.
 
 ### Image and Text Input
 

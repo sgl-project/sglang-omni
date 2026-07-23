@@ -552,16 +552,10 @@ def assert_cer_partitioned(
     *,
     max_cer_no_spk_below_50_percent: float | None = None,
     max_n_above_50_cer: int | None = None,
+    min_n_above_50_cer: int | None = None,
     collector: MetricCheckCollector | None = None,
 ) -> None:
-    """Verify partitioned CER metrics from transcribe-diarize eval output.
-
-    max_cer_no_spk_below_50_percent bounds corpus-level CER computed only
-    over samples whose per-sample CER is at most 50% (percent units, e.g. 6.75).
-
-    max_n_above_50_cer bounds the count of samples with per-sample CER
-    above 50% (catastrophic outliers such as runaway decoding loops).
-    """
+    """Verify partitioned CER metrics from transcribe-diarize eval output."""
     checks = _metric_collector(collector, "partitioned CER")
     if max_cer_no_spk_below_50_percent is not None:
         cer_below_50 = diarization_metrics_percent.get("cer_no_spk_below_50_corpus")
@@ -580,7 +574,7 @@ def assert_cer_partitioned(
                 f"{max_cer_no_spk_below_50_percent:.4f}%",
             )
 
-    if max_n_above_50_cer is not None:
+    if min_n_above_50_cer is not None or max_n_above_50_cer is not None:
         n_above_50 = diarization_metrics_percent.get("n_above_50_pct_cer")
         if n_above_50 is None:
             checks.fail("Missing n_above_50_pct_cer in diarization metrics")
@@ -589,10 +583,18 @@ def assert_cer_partitioned(
                 isinstance(n_above_50, int) and not isinstance(n_above_50, bool),
                 f"n_above_50_pct_cer must be int, got {type(n_above_50).__name__}",
             )
-            checks.check(
-                n_above_50 <= max_n_above_50_cer,
-                f"{n_above_50} samples have CER>50% > threshold {max_n_above_50_cer}",
-            )
+            if min_n_above_50_cer is not None:
+                checks.check(
+                    n_above_50 >= min_n_above_50_cer,
+                    f"{n_above_50} samples have CER>50% < threshold "
+                    f"{min_n_above_50_cer}",
+                )
+            if max_n_above_50_cer is not None:
+                checks.check(
+                    n_above_50 <= max_n_above_50_cer,
+                    f"{n_above_50} samples have CER>50% > threshold "
+                    f"{max_n_above_50_cer}",
+                )
     _assert_metric_collector_if_local(collector, checks)
 
 

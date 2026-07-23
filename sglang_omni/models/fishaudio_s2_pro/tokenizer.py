@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S2-Pro tokenizer adapter wrapping HuggingFace PreTrainedTokenizerFast.
+"""Inference-only S2-Pro prompt encoding.
 
-S2-Pro uses Qwen3 chat-format prompts built via the ``Conversation`` class:
+S2-Pro uses Qwen3 chat-format prompts:
 - System message: reference text + VQ codes (voice cloning)
 - User message: target text to synthesize
 - Assistant message: ``<|voice|>`` modality marker (generation starts here)
@@ -18,6 +18,8 @@ from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
+    IM_START_TOKEN,
+    MODALITY_VOICE_TOKEN,
     SEMANTIC_TOKEN_TEMPLATE,
 )
 
@@ -33,10 +35,42 @@ class Reference:
     vq_codes: torch.Tensor | None = None
 
 
+class _InferencePromptEncoder:
+    """Accumulate the tensor fields consumed by the Fish serving path."""
+
+    def __init__(self, tokenizer: PreTrainedTokenizerFast) -> None:
+        self._tokenizer = tokenizer
+        self._token_segments: list[torch.Tensor] = []
+        self._vq_mask_segments: list[torch.Tensor] = []
+        self._vq_parts: list[torch.Tensor] = []
+
+    def append_text(self, text: str) -> None:
+        tokens = torch.tensor(self._tokenizer.encode(text), dtype=torch.int)
+        self._token_segments.append(tokens)
+        self._vq_mask_segments.append(torch.zeros_like(tokens, dtype=torch.bool))
+
+    def append_vq(self, codes: torch.Tensor) -> None:
+        codes = codes.clone().to(torch.int)
+        tokens = torch.tensor(
+            self._tokenizer.convert_tokens_to_ids(
+                [SEMANTIC_TOKEN_TEMPLATE.format(i=code) for code in codes[0].int()]
+            ),
+            dtype=torch.int,
+        )
+        self._token_segments.append(tokens)
+        self._vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))
+        self._vq_parts.append(codes)
+
+    def finish(self) -> dict[str, Any]:
+        return {
+            "input_ids": torch.cat(self._token_segments, dim=0),
+            "vq_mask_tokens": torch.cat(self._vq_mask_segments, dim=0),
+            "vq_parts": self._vq_parts,
+        }
+
+
 class S2ProTokenizerAdapter:
-    """
-    Builds Qwen3 chat-format prompts using the ``Conversation`` class
-    """
+    """Build the inference prompt fields consumed by S2-Pro serving."""
 
     def __init__(self, hf_tokenizer: PreTrainedTokenizerFast) -> None:
         self._tok = hf_tokenizer
@@ -62,82 +96,49 @@ class S2ProTokenizerAdapter:
         speaker: int | str = 0,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Build an S2-Pro prompt using Qwen3 chat format."""
-        from sglang_omni.models.fishaudio_s2_pro.fish_speech.content_sequence import (
-            TextPart,
-            VQPart,
-        )
-        from sglang_omni.models.fishaudio_s2_pro.fish_speech.conversation import (
-            Conversation,
-            Message,
-        )
+        """Build an S2-Pro inference prompt using Qwen3 chat format."""
+        if references:
+            for index, ref in enumerate(references):
+                codes = ref.vq_codes
+                if codes is None:
+                    continue
+                shape = tuple(codes.shape)
+                if codes.ndim != 2 or shape[0] != num_codebooks:
+                    raise ValueError(
+                        f"Reference {index} VQ codes must have shape "
+                        f"({num_codebooks}, T); got {shape}"
+                    )
 
-        conversation = Conversation()
+        encoder = _InferencePromptEncoder(self._tok)
 
         # System message: reference audio for voice cloning
         if references:
-            system_parts: list = []
-            all_codes = []
-
-            system_parts.append(
-                TextPart(
-                    text="convert the provided text to speech reference to the following:\n\nText:\n",
-                    cal_loss=False,
-                )
+            encoder.append_text(f"{IM_START_TOKEN}system\n")
+            encoder.append_text(
+                "convert the provided text to speech reference to the following:\n\nText:\n"
             )
+            all_codes: list[torch.Tensor] = []
 
             for ref in references:
                 ref_text = f"<|speaker:{speaker}|>{ref.text}" if ref.text else ""
                 if ref_text:
-                    system_parts.append(TextPart(text=ref_text, cal_loss=False))
+                    encoder.append_text(ref_text)
                 if ref.vq_codes is not None:
                     all_codes.append(ref.vq_codes)
 
-            system_parts.append(TextPart(text="\n\nSpeech:\n", cal_loss=False))
+            encoder.append_text("\n\nSpeech:\n")
 
             if all_codes:
-                combined = torch.cat(all_codes, dim=1)
-                system_parts.append(VQPart(codes=combined, cal_loss=False))
+                encoder.append_vq(torch.cat(all_codes, dim=1))
 
-            conversation.append(
-                Message(
-                    role="system",
-                    parts=system_parts,
-                    cal_loss=False,
-                    add_im_start=True,
-                    add_im_end=True,
-                )
-            )
+            encoder.append_text(f"{IM_END_TOKEN}\n")
 
         # User message: text to synthesize
         text_with_tag = f"<|speaker:{speaker}|>{text}"
-        conversation.append(
-            Message(
-                role="user",
-                parts=[TextPart(text=text_with_tag, cal_loss=False)],
-                cal_loss=False,
-                add_im_start=True,
-                add_im_end=True,
-            )
-        )
+        encoder.append_text(f"{IM_START_TOKEN}user\n")
+        encoder.append_text(text_with_tag)
+        encoder.append_text(f"{IM_END_TOKEN}\n")
 
         # Assistant message: voice modality marker (generation starts after this)
-        conversation.append(
-            Message(
-                role="assistant",
-                parts=[],
-                cal_loss=False,
-                modality="voice",
-                add_im_start=True,
-                add_im_end=False,
-            )
-        )
-
-        encoded = conversation.encode(self._tok, add_shift=False)
-        vq_parts_list = encoded.vq_parts  # list of [num_codebooks, T_i]
-
-        return {
-            "input_ids": encoded.tokens,
-            "vq_mask_tokens": encoded.vq_mask_tokens,
-            "vq_parts": vq_parts_list,
-        }
+        encoder.append_text(f"{IM_START_TOKEN}assistant\n{MODALITY_VOICE_TOKEN}")
+        return encoder.finish()

@@ -1,74 +1,114 @@
 # Communication
 
-For the communication among stages in sglang-omni, the control plane moves small
-coordination messages over ZMQ; the data plane uses relay for cross-process
-tensors and tensor-like blobs, with process-local shortcuts for selected
-same-process edges.
+For communication among stages in sglang-omni, ZMQ carries coordination and
+serialized control metadata while `sglang_omni.comm` owns the data movement
+contract. Stage code routes by stage name. The comm router chooses same-process
+object passing, direct PyTorch CUDA IPC when same-placement processes use
+compatible CUDA device ordinals, pooled CUDA IPC for other same-node GPU edges,
+SHM for local CPU relay movement, or Mooncake for configured cross-node
+movement.
 
 The main implementation entry points are:
 
 
 | File                                            | Role                                                                  |
 | ------------------------------------------------- | ----------------------------------------------------------------------- |
+| `sglang_omni/comm/data_ref.py`                  | Typed relay `DataRef` carried by `DataReadyMessage.data_ref`          |
+| `sglang_omni/comm/router.py`                    | Locality and transport selection                                      |
+| `sglang_omni/comm/engine.py`                    | Stage-facing communication facade                                     |
+| `sglang_omni/comm/stage_io.py`                  | Payload and stream tensor packing/unpacking                           |
 | `sglang_omni/pipeline/control_plane.py`         | ZMQ sockets, msgpack serialization, stage/coordinator message routing |
-| `sglang_omni/pipeline/relay_io.py`              | Stage-facing payload and stream transfer helpers                      |
 | `sglang_omni/pipeline/local_dispatch.py`        | Same-process Python object dispatch between colocated stages          |
 | `sglang_omni/relay/base.py`                     | Backend interface and backend registry                                |
+| `sglang_omni/relay/cuda_ipc.py`                 | Sender-owned CUDA pool, slot allocation, copies, and completion       |
 | `sglang_omni/relay/{shm,nccl,nixl,mooncake}.py` | Concrete relay backends                                               |
 | `sglang_omni/proto/messages.py`                 | Control-plane message types                                           |
 
-## Two Planes
+## Transfer Model
 
 ```mermaid
 sequenceDiagram
     participant A as Stage A
+    participant L as Local Dispatcher
     participant R as Relay
     participant Z as ZMQ Control Plane
     participant B as Stage B
 
-    A->>R: put tensor buffer or blob
-    A->>Z: DataReadyMessage(metadata)
-    Z->>B: receive DataReadyMessage
-    B->>R: get tensor buffer or blob
+    alt Same process
+        A->>L: send Python object
+        L->>B: receive Python object
+    else Direct PyTorch CUDA IPC
+        A->>Z: DataReadyMessage(header and CUDA handles)
+        Z->>B: receive handles and header
+        B->>B: import producer CUDA storage
+        Note over A,B: no relay ACK
+    else Relay-backed
+        A->>R: put tensor buffer
+        A->>Z: DataReadyMessage(data_ref)
+        Z->>B: receive DataReadyMessage
+        B->>R: get tensor buffer or blob
+        B->>Z: DataAckMessage
+        Z->>A: receive completion ACK
+    end
 ```
 
 
-| Plane                     | Transport                    | Carries                                                                                                      |
-| --------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Control                   | ZMQ`PUSH/PULL`               | `SubmitMessage`, `DataReadyMessage`, `CompleteMessage`, `StreamMessage`, `ShutdownMessage`, profiler control |
-| Broadcast control         | ZMQ`PUB/SUB`                 | `AbortMessage`                                                                                               |
-| Data                      | Relay backend                | Full`StagePayload` tensor buffers and cross-GPU stream blobs                                                 |
-| Same-process fast path    | LOCAL_OBJECT                 | Full`StagePayload` objects and stream chunks passed by Python reference within one OS process                |
-| Same-GPU stream fast path | CUDA IPC via`ForkingPickler` | Stream chunks and stream metadata tensors when sender and receiver share the same primary GPU                |
+| Path                     | Transport      | Carries                                                                                                      |
+| ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------ |
+| Coordination             | ZMQ `PUSH/PULL` | `SubmitMessage`, `DataReadyMessage`, `CompleteMessage`, `StreamMessage`, `ShutdownMessage`, profiler control |
+| Broadcast coordination   | ZMQ `PUB/SUB`   | `AbortMessage`                                                                                               |
+| Same-process movement    | LOCAL_OBJECT   | Full `StagePayload` objects and stream chunks passed by Python reference within one OS process                |
+| Same-placement direct GPU movement | PyTorch CUDA IPC | CUDA storage handles plus ordinary payload or stream control metadata                              |
+| Same-node pooled GPU movement | CUDA IPC relay | Packed payload tensor buffers, CUDA stream chunks, and stream metadata tensors                         |
+| Local CPU relay movement | SHM relay      | Full payload tensor buffers and stream chunks that are not CUDA-local                                        |
+| Cross-node movement      | Mooncake relay | Full payload tensor buffers and stream chunks over Mooncake-selected transport                               |
 
-`DataReadyMessage.shm_metadata` is the bridge between the planes. The field name
-is historical; today it carries generic relay metadata, not only shared-memory
-metadata. The message itself may also carry stream fields such as `chunk_id`,
-`is_done`, and `error`.
+`DataReadyMessage.data_ref` carries either a direct PyTorch CUDA IPC envelope or
+a typed relay `DataRef`. A direct envelope contains a pickled payload header or
+stream metadata together with PyTorch CUDA storage handles. A relay `DataRef`
+contains the object id, data kind, transport, layout, backend buffer reference,
+tensor layout, and optional stream metadata. Backend-owned details from
+`RelayOperation.metadata` live under `DataRef.buffer.info`.
 
 ## Normal Payload Flow
 
 The coordinator submits the first `StagePayload` directly to the entry stage in a
-`SubmitMessage`. After that, stage-to-stage payloads normally use relay. A
-same-process edge may use LOCAL_OBJECT instead when the runtime has registered
-the target in the same OS process and the route is safe for reference passing.
+`SubmitMessage`. After that, a stage-to-stage payload uses LOCAL_OBJECT, direct
+PyTorch CUDA IPC, or a relay according to the edge and payload.
 
-1. The sender calls `relay_io.write_payload(relay, request_id, payload)`.
-2. `write_payload()` recursively extracts tensors from `payload.data`, replaces
-   them with placeholders, pickles the tensor-free `StagePayload`, and
-   concatenates tensors into one `uint8` buffer.
+For direct CUDA IPC, `Stage` extracts CUDA tensor leaves, pickles the remaining
+`StagePayload` as ordinary control metadata, and serializes each CUDA tensor with
+PyTorch's CUDA multiprocessing reducer. It then sends one `DataReadyMessage`
+containing those storage handles. The receiver maps the producer allocations and
+restores the payload without a relay buffer. This path has no relay
+`DataAckMessage`. Its lifetime is carried by PyTorch's CUDA IPC ownership
+mechanism.
+
+Ordinary direct-payload headers are ZMQ control metadata. Their size is not tied
+to the pooled CUDA relay's slot size, and a large header is not split into relay
+slots or application messages.
+
+For a relay-backed payload:
+
+1. The sender asks `CommRouter` for the edge transport and calls
+   `CommEngine.send_payload(...)`.
+2. The send worker calls `stage_io.write_payload()`, which recursively extracts
+   tensors from `payload.data`, replaces them with placeholders, pickles the
+   tensor-free `StagePayload`, and concatenates tensors into one `uint8` buffer.
 3. The sender calls `relay.put_async()` for that buffer and sends a
-   `DataReadyMessage` containing:
-   - `relay_info`: backend-specific metadata from `RelayOperation.metadata`
-   - `payload_pickle`: base64-encoded `StagePayload` without tensors
-   - `tensor_info`: path, shape, dtype, offset, and byte size for each tensor
+   `DataReadyMessage(data_ref=...)` containing a `DataRef` with:
+   - `buffer.info`: backend-specific metadata from `RelayOperation.metadata`
+   - `header`: base64-encoded `StagePayload` without tensors
+   - `tensors`: path, shape, dtype, offset, and byte size for each tensor
 4. The receiver handles the message in `Stage._on_data_ready()`, calls
-   `relay_io.read_payload()`, waits for `relay.get_async()`, restores tensors,
+   `CommEngine.read_payload()`, waits for `relay.get_async()`, restores tensors,
    and passes the payload through the stage input handler.
-5. If fan-in is complete, the stage enqueues an `IncomingMessage` into
+5. The receiver sends one `DataAckMessage`. The sender then releases the
+   operations retained for the logical envelope.
+6. If fan-in is complete, the stage enqueues an `IncomingMessage` into
    `scheduler.inbox`.
 
-The payload relay format is intentionally backend-neutral. Backends only need to
+The relay payload format is intentionally backend-neutral. Backends only need to
 move a flat tensor buffer and return metadata that another backend instance can
 use for `get_async()`.
 
@@ -77,8 +117,12 @@ process-local dispatcher, which invokes `receive_local_payload()` on the target
 stage with the projected `StagePayload` object itself. This is a direct Python
 reference transfer, not serialization. Receivers must treat the payload, nested
 data containers, tensors, stream chunks, and metadata as read-only. The object
-must also stay valid for the receiver's scheduler queue lifetime; senders and
+must also stay valid for the receiver's scheduler queue lifetime. Senders and
 projection functions must not mutate or recycle objects after dispatch.
+
+Request and control objects should retain parameters needed downstream, but they
+should not retain consumed bulk media across later stage hops. The stage that
+turns raw media into canonical pipeline state owns releasing those references.
 
 For full payloads, LOCAL_OBJECT is allowed for single-target same-process routes.
 For fan-out, it is allowed only when each projected payload is a `StagePayload`
@@ -89,17 +133,19 @@ read-only.
 ## Streaming Flow
 
 Streaming is used for producer-consumer edges such as thinker to talker hidden
-states or talker to vocoder codec codes. The stage layer exposes one sending
-helper, `relay_io.send_stream_chunk()`, because the sender must choose the
-transport path.
+states or talker to vocoder code tensors. The stage layer exposes one sending
+helper, `CommEngine.send_stream_chunk()`, and the router chooses the transport.
 
-For same-GPU stream targets:
+For same-node GPU targets:
 
-- runtime prep detects targets whose sender and receiver share the same
-  primary GPU
-- `send_stream_chunk()` serializes the chunk with `ForkingPickler`
-- CUDA tensors are shared through CUDA IPC instead of copied through relay
-- the `DataReadyMessage` carries `_ipc=True` metadata and a `chunk_id`
+- namespace-compatible processes on the same placement may send CUDA chunks as
+  direct PyTorch CUDA IPC envelopes
+- direct stream metadata may contain CUDA tensors and ordinary inline values,
+  but not CPU tensors, and the direct codec retains a separate 64 KiB inline
+  metadata admission limit
+- other same-node GPU edges use the pooled CUDA IPC relay
+- a pooled stream `DataReadyMessage` carries a `DataRef` with
+  `transport="cuda_ipc"` and a `chunk_id`
 
 For same-process stream targets:
 
@@ -107,10 +153,10 @@ For same-process stream targets:
 - the receiver gets the original Python object and metadata by reference
 - the same read-only and lifetime caveats as payload LOCAL_OBJECT apply
 
-For cross-GPU stream targets:
+For nonlocal stream targets:
 
-- the chunk is written with `write_blob()`
-- tensor-valued metadata is extracted and written as separate blob transfers
+- the chunk is written with `write_tensor()`
+- tensor-valued metadata is extracted and written as separate `DataRef`s
 - the control message is sent before waiting for pending put operations
 - the receiver reads the blob in `Stage._on_stream_chunk()` and enqueues a
   `stream_chunk` message into `scheduler.inbox`
@@ -145,21 +191,28 @@ control message. Both put and get operations expose
 `await wait_for_completion(timeout=...)`. Stages keep the operation alive until
 the transfer is safe to release.
 
-## Backends
+The CUDA IPC relay owns a bounded sender-side GPU pool. Its allocation granule
+defaults to 64 KiB and is configurable with `cuda_ipc_slot_size_kb`. A tensor may
+reserve several contiguous slots, but those slots remain one logical transfer.
+The sender publishes one `DataReadyMessage`, the receiver copies from the
+exported pool range, and one logical `DataAckMessage` releases the complete
+range. The slots are allocator granularity, not application-level pagination.
 
-`PipelineConfig.relay_backend` accepts `shm`, `nccl`, `nixl`, or `mooncake`.
-`RelayConfig` can override slot size, credits, rank, world size, and device per
-stage. If no per-stage relay config is provided, runtime prep infers the relay
-device from stage placement. For `shm`, it keeps relay buffers on CPU because
-the backend copies through host shared memory.
+## Transport Selection
 
+There is no public backend selector. `CommRouter` derives the transport from
+stage locality and placement:
 
-| Backend    | Current behavior                                                                                                                                                            |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shm`      | Creates a Python shared-memory block, copies tensor bytes into it, and lets the receiver copy out and unlink the block. Useful for local process transfer and CPU fallback. |
-| `nccl`     | Uses`torch.distributed` NCCL `isend`/`irecv` with explicit send and receive rank topology. Useful for GPU-to-GPU transfer inside an NCCL world.                             |
-| `nixl`     | Uses a preallocated registered memory pool, NIXL agent metadata, remote reads, completion notifications, and credits for safe buffer reuse.                                 |
-| `mooncake` | Uses Mooncake Transfer Engine with a registered memory pool, P2P session metadata, protocol selection, notifications, and credits.                                          |
+| Transport | Selection rule |
+| --- | --- |
+| `local_object` | Source and target stages share one OS process and the payload is eligible for direct local dispatch. |
+| Direct PyTorch CUDA IPC | Source and target share one placement, are in separate processes, and the runtime can prove compatible process-local CUDA ordinals. The payload or stream chunk must also be direct-codec eligible. |
+| `cuda_ipc` | Same-node GPU edge that does not use direct PyTorch CUDA IPC. The pooled relay supports same-GPU and cross-GPU movement. |
+| `shm` | Same-node host/CPU transfer where the selected edge is not GPU-to-GPU. |
+| `mooncake` | Cross-node stage edges listed as remote. Mooncake owns protocol selection for those transfers. |
+
+`CommConfig` can tune slot size, credits, and Mooncake connection options per
+stage. It does not select a transport backend.
 
 Each backend owns only transport mechanics. It does not route requests, perform
 fan-in, choose downstream stages, or interpret model payloads.
@@ -172,7 +225,11 @@ The stage layer follows a simple ownership rule:
   when required by the backend
 - receiver allocates the destination buffer, waits for the get operation,
   restores the payload, and calls `relay.cleanup(request_id)`
-- LOCAL_OBJECT has no backend cleanup; sender and receiver share Python object
+- a pooled CUDA IPC sender retains its complete slot range until the receiver's
+  one logical ACK marks every operation for the envelope complete
+- direct PyTorch CUDA IPC has no relay ACK and relies on PyTorch's imported
+  storage lifetime
+- LOCAL_OBJECT has no backend cleanup. Sender and receiver share Python object
   references, so correctness depends on read-only use until the receiver is done
 - aborts call `relay.cleanup(request_id)` from the stage abort path
 - stage shutdown calls `relay.close()`

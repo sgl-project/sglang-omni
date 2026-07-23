@@ -89,6 +89,21 @@ def compute_mel_spectrogram(
         )
 
 
+def _compute_mel_features_for_waveform(
+    waveform: np.ndarray,
+    ds_kernel_size: int,
+    ds_stride: int,
+) -> tuple[torch.Tensor, int, int]:
+    mel = compute_mel_spectrogram(waveform)
+    mel_len = mel.shape[0]
+    audio_token_count = estimate_audio_feature_length(
+        mel_len,
+        ds_kernel_size,
+        ds_stride,
+    )
+    return torch.from_numpy(mel).float(), mel_len, audio_token_count
+
+
 def estimate_audio_feature_length(
     mel_frames: int,
     ds_kernel_size: int = 1,
@@ -513,17 +528,27 @@ class MingPreprocessor:
         mel_lengths_list: list[int] = []
         audio_token_counts: list[int] = []
 
-        for waveform in waveforms:
-            mel = compute_mel_spectrogram(waveform)
-            mel_features_list.append(torch.from_numpy(mel).float())
-            mel_lengths_list.append(mel.shape[0])
-            audio_token_counts.append(
-                estimate_audio_feature_length(
-                    mel.shape[0],
-                    getattr(self._audio_config, "ds_kernel_size", 1),
-                    getattr(self._audio_config, "ds_stride", 1),
-                )
+        if waveforms:
+            ds_kernel_size = getattr(self._audio_config, "ds_kernel_size", 1)
+            ds_stride = getattr(self._audio_config, "ds_stride", 1)
+
+            mel_results = await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        _compute_mel_features_for_waveform,
+                        waveform,
+                        ds_kernel_size,
+                        ds_stride,
+                    )
+                    for waveform in waveforms
+                ],
+                return_exceptions=False,
             )
+
+            for mel_tensor, mel_len, audio_token_count in mel_results:
+                mel_features_list.append(mel_tensor)
+                mel_lengths_list.append(mel_len)
+                audio_token_counts.append(audio_token_count)
 
         # Build prompt with placeholder counts and token IDs
         prompt_text, input_ids, audio_positions = self._build_prompt(

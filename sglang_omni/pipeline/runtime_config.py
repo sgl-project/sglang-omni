@@ -131,50 +131,30 @@ def prepare_pipeline_runtime(
     )
 
 
-def build_relay_config(
+def build_comm_config(
     stage_cfg: StageConfig,
-    global_cfg: PipelineConfig,
 ) -> dict:
-    relay_cfg = stage_cfg.relay
-    if relay_cfg is not None:
+    comm_cfg = stage_cfg.comm
+    if comm_cfg is not None:
         return {
-            "relay_type": global_cfg.relay_backend,
-            "slot_size_mb": relay_cfg.slot_size_mb,
-            "credits": relay_cfg.credits,
-            "rank": relay_cfg.rank,
-            "world_size": relay_cfg.world_size,
-            "gpu_id": parse_gpu_id(relay_cfg.device),
+            "slot_size_mb": comm_cfg.slot_size_mb,
+            "credits": comm_cfg.credits,
+            "cuda_ipc_slot_size_kb": comm_cfg.cuda_ipc_slot_size_kb,
+            "cuda_ipc_pool_size_mb": comm_cfg.cuda_ipc_pool_size_mb,
+            "mooncake_protocol": comm_cfg.mooncake_protocol,
+            "mooncake_hostname": comm_cfg.mooncake_hostname,
+            "mooncake_device_name": comm_cfg.mooncake_device_name,
         }
 
-    if global_cfg.relay_backend == "shm":
-        gpu_id = None
-    else:
-        gpu = stage_cfg.gpu
-        if gpu is None:
-            gpu_id = None
-        elif isinstance(gpu, list):
-            gpu_id = gpu[0]
-        else:
-            gpu_id = gpu
-
     return {
-        "relay_type": global_cfg.relay_backend,
         "slot_size_mb": 512,
         "credits": 2,
-        "rank": None,
-        "world_size": None,
-        "gpu_id": gpu_id,
+        "cuda_ipc_slot_size_kb": 64,
+        "cuda_ipc_pool_size_mb": None,
+        "mooncake_protocol": "rdma",
+        "mooncake_hostname": None,
+        "mooncake_device_name": "",
     }
-
-
-def parse_gpu_id(device: str) -> int | None:
-    if device == "cpu":
-        return None
-    if device == "cuda":
-        return 0
-    if device.startswith("cuda:"):
-        return int(device.split(":", 1)[1])
-    raise ValueError(f"Unsupported device string: {device}")
 
 
 def allocate_endpoints(

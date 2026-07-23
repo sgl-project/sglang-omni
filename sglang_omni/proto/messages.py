@@ -4,124 +4,149 @@
 from dataclasses import dataclass
 from typing import Any
 
+import msgspec
+
 from sglang_omni.proto.admin import AdminOperation, AdminResult
 from sglang_omni.proto.request import StagePayload
 
 
 @dataclass
 class DataReadyMessage:
-    """Notify next stage that data is ready.
-
-    Supports different metadata formats:
-    - Simple dict (for current NixlRelay with transfer_info)
-    - SHMMetadata (for backward compatibility)
-    - RdmaMetadata (for other relay types)
-    """
+    """Notify next stage that a data-plane object is ready."""
 
     request_id: str
     from_stage: str
     to_stage: str
-    shm_metadata: Any  # Can be dict, SHMMetadata, or RdmaMetadata
+    data_ref: dict[str, Any] | None
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        # Handle different metadata types
-        if isinstance(self.shm_metadata, dict):
-            # Simple dict (current NixlRelay format)
-            metadata_dict = self.shm_metadata.copy()
-            metadata_dict["_type"] = "dict"  # Mark as simple dict
-        elif hasattr(self.shm_metadata, "to_dict"):
-            # SHMMetadata
-            metadata_dict = self.shm_metadata.to_dict()
-        elif hasattr(self.shm_metadata, "model_dump"):
-            # RdmaMetadata (Pydantic BaseModel)
-            metadata_dict = self.shm_metadata.model_dump()
-            metadata_dict["_type"] = "RdmaMetadata"  # Mark as RdmaMetadata
-        else:
-            # Fallback: try to convert to dict
-            metadata_dict = (
-                dict(self.shm_metadata)
-                if hasattr(self.shm_metadata, "__dict__")
-                else {}
+        _require_str(self.request_id, "request_id")
+        _require_str(self.from_stage, "from_stage")
+        _require_str(self.to_stage, "to_stage")
+        _require_bool(self.is_done, "is_done")
+        if self.is_done and self.error is not None:
+            raise ValueError("stream signal cannot be both done and error")
+        if self.is_done or self.error is not None:
+            if self.data_ref is not None:
+                raise ValueError("stream signal must not carry data_ref")
+            if self.chunk_id is not None:
+                raise ValueError("stream signal must not carry chunk_id")
+        elif not isinstance(self.data_ref, dict):
+            raise TypeError(
+                "DataReadyMessage.data_ref must be dict for data messages, got "
+                f"{type(self.data_ref).__name__}"
             )
-
         d = {
             "type": "data_ready",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
-            "shm_metadata": metadata_dict,
         }
+        if self.data_ref is not None:
+            d["data_ref"] = self.data_ref.copy()
         if self.chunk_id is not None:
+            _require_non_negative_int(self.chunk_id, "chunk_id")
             d["chunk_id"] = self.chunk_id
         if self.is_done:
             d["is_done"] = True
         if self.error is not None:
+            _require_str(self.error, "error")
             d["error"] = self.error
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
-        metadata_dict = d["shm_metadata"]
-
-        # Determine metadata type based on _type field first
-        metadata_type = metadata_dict.get("_type", "")
-
-        if metadata_type == "dict" or "transfer_info" in metadata_dict:
-            # Simple dict format (current NixlRelay design)
-            # Remove _type marker if present
-            metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
-        elif metadata_type == "RdmaMetadata":
-            # Try to import RdmaMetadata if available
-            try:
-                from sglang_omni.relay.operations.nixl import RdmaMetadata
-
-                clean_dict = {
-                    k: v
-                    for k, v in metadata_dict.items()
-                    if k not in ["_type", "shm_segments"]
-                }
-                metadata = RdmaMetadata(**clean_dict)
-            except (ImportError, Exception):
-                # Fallback to dict if RdmaMetadata not available
-                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
-        elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
-            # Try to import SHMMetadata if available
-            try:
-                from sglang_omni.relay.nixl import SHMMetadata
-
-                metadata = SHMMetadata.from_dict(metadata_dict)
-            except (ImportError, Exception):
-                # Fallback to dict if SHMMetadata not available
-                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
-        elif "descriptors" in metadata_dict:
-            # Has descriptors but no _type - try RdmaMetadata first, fallback to dict
-            try:
-                from sglang_omni.relay.operations.nixl import RdmaMetadata
-
-                clean_dict = {
-                    k: v
-                    for k, v in metadata_dict.items()
-                    if k not in ["_type", "shm_segments"]
-                }
-                metadata = RdmaMetadata(**clean_dict)
-            except (ImportError, Exception):
-                # Fallback to dict
-                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
-        else:
-            # Default: use as dict (for current NixlRelay)
-            metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
+        request_id = _require_str(d.get("request_id"), "request_id")
+        from_stage = _require_str(d.get("from_stage"), "from_stage")
+        to_stage = _require_str(d.get("to_stage"), "to_stage")
+        data_ref = d.get("data_ref")
+        raw_is_done = d.get("is_done", False)
+        is_done = _require_bool(raw_is_done, "is_done")
+        error = d.get("error")
+        if error is not None:
+            error = _require_str(error, "error")
+        if is_done and error is not None:
+            raise ValueError("stream signal cannot be both done and error")
+        if is_done or error is not None:
+            if data_ref is not None:
+                raise ValueError("stream signal must not carry data_ref")
+            if "chunk_id" in d:
+                raise ValueError("stream signal must not carry chunk_id")
+        elif not isinstance(data_ref, dict):
+            raise TypeError(
+                "data_ready data_ref must be dict for data messages, got "
+                f"{type(data_ref).__name__}"
+            )
+        chunk_id = d.get("chunk_id")
+        if chunk_id is not None:
+            _require_non_negative_int(chunk_id, "chunk_id")
 
         return cls(
-            request_id=d["request_id"],
-            from_stage=d["from_stage"],
-            to_stage=d["to_stage"],
-            shm_metadata=metadata,
-            chunk_id=d.get("chunk_id"),
-            is_done=d.get("is_done", False),
-            error=d.get("error"),
+            request_id=request_id,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            data_ref=data_ref,
+            chunk_id=chunk_id,
+            is_done=is_done,
+            error=error,
+        )
+
+
+class DataAckMessage(msgspec.Struct):
+    """Receiver completion for one data-plane object."""
+
+    request_id: str
+    from_stage: str
+    to_stage: str
+    object_id: str
+    success: bool = True
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        _require_str(self.request_id, "request_id")
+        _require_str(self.from_stage, "from_stage")
+        _require_str(self.to_stage, "to_stage")
+        _require_str(self.object_id, "object_id")
+        if not isinstance(self.success, bool):
+            raise TypeError("success must be bool")
+        if self.success:
+            if self.error is not None:
+                raise ValueError("successful data ack must not carry error")
+        else:
+            _require_str(self.error, "error")
+        d: dict[str, Any] = {
+            "type": "data_ack",
+            "request_id": self.request_id,
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "object_id": self.object_id,
+            "success": self.success,
+        }
+        if self.error is not None:
+            d["error"] = self.error
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DataAckMessage":
+        success = d.get("success")
+        if not isinstance(success, bool):
+            raise TypeError("data_ack success must be bool")
+        error = d.get("error")
+        if success:
+            if error is not None:
+                raise ValueError("successful data_ack must not carry error")
+        else:
+            error = _require_str(error, "error")
+        return cls(
+            request_id=_require_str(d.get("request_id"), "request_id"),
+            from_stage=_require_str(d.get("from_stage"), "from_stage"),
+            to_stage=_require_str(d.get("to_stage"), "to_stage"),
+            object_id=_require_str(d.get("object_id"), "object_id"),
+            success=success,
+            error=error,
         )
 
 
@@ -317,6 +342,7 @@ def parse_message(
 ) -> (
     AdminMessage
     | AdminResultMessage
+    | DataAckMessage
     | DataReadyMessage
     | AbortMessage
     | CompleteMessage
@@ -330,6 +356,8 @@ def parse_message(
     msg_type = d.get("type")
     if msg_type == "data_ready":
         return DataReadyMessage.from_dict(d)
+    elif msg_type == "data_ack":
+        return DataAckMessage.from_dict(d)
     elif msg_type == "abort":
         return AbortMessage.from_dict(d)
     elif msg_type == "complete":
@@ -350,3 +378,21 @@ def parse_message(
         return AdminResultMessage.from_dict(d)
     else:
         raise ValueError(f"Unknown message type: {msg_type}")
+
+
+def _require_str(value: Any, name: str) -> str:
+    if not isinstance(value, str) or value == "":
+        raise TypeError(f"{name} must be a non-empty str")
+    return value
+
+
+def _require_bool(value: Any, name: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"{name} must be bool")
+    return value
+
+
+def _require_non_negative_int(value: Any, name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise TypeError(f"{name} must be a non-negative int")
+    return value

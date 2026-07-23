@@ -18,17 +18,24 @@ from sglang.srt.managers.schedule_batch import (
     MultimodalDataItem,
     MultimodalInputs,
 )
+from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.whisper import WhisperEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
+    WhisperEncoderCudaGraphRunner,
+)
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
+
+_ENCODER_CACHE_MAX_ENTRIES = 64
 
 
 class VQAdaptor(nn.Module):
@@ -83,12 +90,90 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             prefix=add_prefix("model.language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._encoder_cache: Optional[StageOutputCache] = None
+        self._encoder_graph_runner = None
+        self._compiled_encoder = None
+        self._compiled_chunk_buckets: frozenset[int] = frozenset()
+        self._compiled_input_feature_len = 0
+
+    def init_encoder_cache(self, max_bytes: int) -> None:
+        self._encoder_cache = (
+            StageOutputCache(
+                max_size=_ENCODER_CACHE_MAX_ENTRIES,
+                max_bytes=max_bytes,
+                cache_device="cpu",
+            )
+            if max_bytes and max_bytes > 0
+            else None
+        )
 
     def get_input_embeddings(self):
         return self.language_model.get_input_embeddings()
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
+
+    def init_encoder_graphs(self, chunk_buckets, input_feature_len: int) -> None:
+        """Capture per-chunk-count CUDA graphs for the Whisper encoder.
+
+        Called from the stage factory after the model is on-device and CUDA
+        graphs are enabled. input_feature_len is the fixed length of the
+        encoder's input_features time axis for one 30s window
+        (WhisperFeatureExtractor.nb_max_frames).
+        """
+        buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
+        if not buckets:
+            return
+        runner = WhisperEncoderCudaGraphRunner(
+            self.whisper_encoder,
+            num_mel_bins=int(self.config.audio_config.num_mel_bins),
+            input_feature_len=int(input_feature_len),
+        )
+        runner.capture(buckets)
+        self._encoder_graph_runner = runner
+
+    def compile_encoder(self, chunk_buckets, input_feature_len: int) -> None:
+        """torch.compile the Whisper encoder, warming one specialization per
+        chunk-count bucket.
+
+        Mutually exclusive with ``init_encoder_graphs``. ``dynamic=False``
+        matches shape exactly, so an off-bucket chunk count or frame length --
+        or a bucket whose warmup fails -- falls back to eager. Default mode
+        only: reduce-overhead's cudagraph trees corrupt memory alongside the
+        decode CUDA graphs that always run in this process.
+
+        TODO(yichi): investigate whether reduce-overhead can coexist with the
+        decode CUDA graphs (e.g. cudagraph pool isolation or capture ordering)
+        and reclaim its kernel-launch savings.
+        """
+        buckets = sorted({int(b) for b in (chunk_buckets or []) if int(b) >= 1})
+        if not buckets:
+            return
+        set_torch_compile_config()
+        self._compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
+        self._compiled_input_feature_len = int(input_feature_len)
+        p = next(self.whisper_encoder.parameters())
+        frames = int(input_feature_len)
+        num_mel_bins = int(self.config.audio_config.num_mel_bins)
+        pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
+        warmed: list[int] = []
+        with torch.no_grad():
+            for n in buckets:
+                feats = torch.zeros(
+                    n, num_mel_bins, frames, device=p.device, dtype=p.dtype
+                )
+                try:
+                    for _ in range(3):
+                        self._compiled_encoder(feats, pos, None)
+                except Exception as exc:
+                    logger.warning(
+                        f"MOSS-TD encoder torch.compile warmup failed for "
+                        f"chunks={n}: {exc}; that chunk count will run eager"
+                    )
+                    continue
+                warmed.append(n)
+        self._compiled_chunk_buckets = frozenset(warmed)
+        logger.info(f"MOSS-TD encoder torch.compile warmed buckets={warmed}")
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
@@ -103,7 +188,23 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        # NOTE: sglang's mm dispatch calls this per request, so len(items) is always 1 today.
+        cache = self._encoder_cache
+        key = getattr(items[0], "hash", None) if len(items) == 1 else None
+        if cache is not None and key is not None:
+            cached = cache.get(str(key))
+            if cached is not None:
+                device = next(self.vq_adaptor.parameters()).device
+                return cached.to(device, non_blocking=True)
+            output = self._get_audio_feature_uncached(items, forward_batch)
+            cache.put(str(key), output)
+            return output
+        return self._get_audio_feature_uncached(items, forward_batch)
+
+    def _get_audio_feature_uncached(
+        self,
+        items: List[MultimodalDataItem],
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor:
         merge_size = int(self.config.audio_merge_size)
         device = next(self.whisper_encoder.parameters()).device
         encoder_dtype = next(self.whisper_encoder.parameters()).dtype
@@ -167,9 +268,22 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_len, device=device, dtype=torch.long
             )
-            features = self.whisper_encoder(
-                batched_features, encoder_position_ids, forward_batch
-            )
+            if (
+                self._compiled_encoder is not None
+                and batched_features.shape[0] in self._compiled_chunk_buckets
+                and batched_features.shape[-1] == self._compiled_input_feature_len
+            ):
+                features = self._compiled_encoder(
+                    batched_features, encoder_position_ids, forward_batch
+                )
+            elif self._encoder_graph_runner is not None:
+                features = self._encoder_graph_runner.run(
+                    batched_features, encoder_position_ids, forward_batch
+                )
+            else:
+                features = self.whisper_encoder(
+                    batched_features, encoder_position_ids, forward_batch
+                )
 
             adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
             merged = [

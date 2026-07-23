@@ -237,7 +237,11 @@ class NcclRelay(Relay):
         logger.info(f"[{engine_id}] Rank {rank}: Warmup complete. Ready.")
 
     async def put_async(
-        self, tensor: torch.Tensor, request_id: str = None, dst_rank: int = None
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
     ) -> PutOperation:
         if dst_rank is None:
             if len(self.connection.send_ranks) == 1:

@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 _FAILED_BATCH_RESULT = object()
 
+_ABORTED_REQUEST_ID_LIMIT = 10000
+_ABORTED_REQUEST_ID_RETAINED = 5000
+
 
 class _NoOpSender:
     """Stub for send_to_detokenizer — stream_output handles emission."""
@@ -115,8 +118,11 @@ class OmniScheduler:
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 2,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -130,6 +136,8 @@ class OmniScheduler:
         self._stream_chunk_handler = stream_chunk_handler
         self._stream_done_handler = stream_done_handler
         self._abort_callback = abort_callback
+        self._shutdown_callback = shutdown_callback
+        self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
@@ -189,6 +197,19 @@ class OmniScheduler:
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         if model_runner is not None:
             model_runner._async_enabled = enable_async_decode
+
+        # Note: (maydomine) coalescing gate: hold prefill until K requests wait
+        # or the oldest has waited T ms; 0 disables.
+        if int(prefill_coalesce_requests) > 1 and int(server_args.tp_size) > 1:
+            logger.warning(
+                "Prefill admission coalescing is disabled for "
+                f"tp_size={server_args.tp_size}: the wait deadline reads each "
+                "rank's local clock, so ranks could disagree on expiry and "
+                "break lockstep scheduling"
+            )
+            prefill_coalesce_requests = 0
+        self.prefill_coalesce_requests = int(prefill_coalesce_requests)
+        self.prefill_coalesce_wait_s = float(prefill_coalesce_wait_ms) / 1e3
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -370,6 +391,7 @@ class OmniScheduler:
 
         self._running = False
         self._aborted_request_ids: set[str] = set()
+        self._aborted_request_id_order: deque[str] = deque()
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
@@ -721,6 +743,8 @@ class OmniScheduler:
                 stage=None,
                 event_name="scheduler_queue_enter",
             )
+            if not hasattr(req, "_coalesce_enqueue_t"):
+                req._coalesce_enqueue_t = time.perf_counter()
             self.waiting_queue.append(req)
 
         if request_admission_lock_held:
@@ -810,6 +834,27 @@ class OmniScheduler:
             )
         )
 
+    def get_new_batch_prefill(self):
+        # Note: (maydomine) batch prefill admissions to amortize the fixed step
+        # cost; the oldest-request deadline survives partial admission and aborts.
+        if self.prefill_coalesce_requests <= 1 or self.chunked_req is not None:
+            return _Upstream.get_new_batch_prefill(self)
+        if self.running_batch is None or self.running_batch.is_empty():
+            return _Upstream.get_new_batch_prefill(self)
+        waiting = self.waiting_queue
+        if not waiting or len(waiting) >= self.prefill_coalesce_requests:
+            return _Upstream.get_new_batch_prefill(self)
+        now = time.perf_counter()
+        oldest = now
+        for req in waiting:
+            t = getattr(req, "_coalesce_enqueue_t", None)
+            if t is None:
+                t = req._coalesce_enqueue_t = now
+            oldest = min(oldest, t)
+        if now - oldest >= self.prefill_coalesce_wait_s:
+            return _Upstream.get_new_batch_prefill(self)
+        return None
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
@@ -856,12 +901,13 @@ class OmniScheduler:
         the sync and async (resolve) paths. ``skip_rids`` suppresses emission
         for requests already finished in an earlier step (the lookahead
         overrun) — emitting their extra chunk would corrupt the downstream
-        vocoder's delayed-code stream."""
+        vocoder's delayed-code stream. Aborted requests are suppressed for the
+        same reason: an abort landing mid-step must not ship one more chunk."""
         if self._stream_output_builder is None:
             return
         for sched_req in sched_output.requests:
             rid = sched_req.request_id
-            if rid in skip_rids:
+            if rid in skip_rids or rid in self._aborted_request_ids:
                 continue
             req_output = mr_output.outputs[rid]
             emitted_any = False
@@ -971,6 +1017,21 @@ class OmniScheduler:
                 continue
 
             rid = req.rid
+            if rid in self._aborted_request_ids:
+                # note (Gaokai): an abort landing mid-step finishes here via
+                # FINISH_ABORT; run the cleanup abort() deferred (callbacks are
+                # idempotent) and drop the stale terminal result so it cannot
+                # resurrect the request downstream.
+                if self._abort_callback is not None:
+                    try:
+                        self._abort_callback(rid)
+                    except Exception:
+                        logger.exception(
+                            "OmniScheduler: abort cleanup failed for %s", rid
+                        )
+                self._first_emit_done.discard(rid)
+                self._prefill_start_done.discard(rid)
+                continue
 
             # Build result payload from the Req
             data = req._omni_data
@@ -1043,13 +1104,24 @@ class OmniScheduler:
                 self._event_loop_normal()
         finally:
             self._scheduler_thread_id = None
-            self._shutdown_request_build_executor()
+            try:
+                self._shutdown_request_build_executor()
+            finally:
+                self._shutdown_resources()
 
     def event_loop(self) -> None:
         self.start()
 
     def stop(self) -> None:
         self._running = False
+        self._shutdown_resources()
+
+    def _shutdown_resources(self) -> None:
+        with self._shutdown_lock:
+            callback = self._shutdown_callback
+            self._shutdown_callback = None
+        if callback is not None:
+            callback()
 
     def _shutdown_request_build_executor(self) -> None:
         executor = self._request_build_executor
@@ -1065,7 +1137,18 @@ class OmniScheduler:
             else False
         )
         with self._request_admission_lock:
-            self._aborted_request_ids.add(request_id)
+            if request_id not in self._aborted_request_ids:
+                if len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
+                    # note (Gaokai): evict oldest-first so a still-quiescing
+                    # abort survives.
+                    while (
+                        len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_RETAINED
+                    ):
+                        self._aborted_request_ids.discard(
+                            self._aborted_request_id_order.popleft()
+                        )
+                self._aborted_request_ids.add(request_id)
+                self._aborted_request_id_order.append(request_id)
             pending = self._pending_request_builds.pop(request_id, None)
             if pending is not None:
                 pending[2].cancel()
@@ -1726,6 +1809,28 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
+    def _free_overrun_step_slots(self, out_cache_loc, drop_indices) -> None:
+        """Free the per-step decode KV slot for rows whose request finished or
+        retracted in a prior step (the lookahead overrun): ``prepare_for_decode``
+        allocated it but ``cache_finished_req`` truncates below it, so it leaks.
+
+        Only under RadixCache + page_size=1; ChunkCache/paged already free the slot
+        with the request, so compensating here would double-free — hence the gate.
+        """
+        if not drop_indices:
+            return
+        if self.page_size != 1 or self.server_args.disable_radix_cache:
+            return
+        if out_cache_loc is None:
+            logger.warning("overrun step-slot free skipped: out_cache_loc is None")
+            return
+        assert max(drop_indices) < out_cache_loc.numel(), (
+            f"overrun drop index {max(drop_indices)} out of range "
+            f"({out_cache_loc.numel()} step slots)"
+        )
+        idx = torch.tensor(drop_indices, dtype=torch.long, device=out_cache_loc.device)
+        self.token_to_kv_pool_allocator.free(out_cache_loc[idx])
+
     def _drop_stale_overrun(self, batch):
         """Drop reqs finished OR retracted by the just-completed drain from the
         stale fast-path batch, so run_batch does not forward/finalize them again
@@ -1741,7 +1846,13 @@ class OmniScheduler:
         if not any(drop):
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
+        out_cache_loc = batch.out_cache_loc
+        self._free_overrun_step_slots(
+            out_cache_loc, [i for i, d in enumerate(drop) if d]
+        )
         batch.filter_batch(keep_indices=keep)
+        if out_cache_loc is not None:
+            batch.out_cache_loc = out_cache_loc[keep]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:
@@ -1764,6 +1875,16 @@ class OmniScheduler:
                 self._resolve_pending_async()
                 time.sleep(0.001)
                 continue
+
+            if (
+                self._async_pending is not None
+                and self.is_mixed_chunk
+                and (
+                    self.chunked_req is not None
+                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                )
+            ):
+                self._resolve_pending_async()
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch

@@ -8,6 +8,8 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset mmmu
     python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
     python -m benchmarks.dataset.prepare --dataset mmsu
+    python -m benchmarks.dataset.prepare --dataset mmau-mini
+    python -m benchmarks.dataset.prepare --dataset mmar
     python -m benchmarks.dataset.prepare --dataset videomme
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
@@ -29,6 +31,9 @@ DATASETS: dict[str, str] = {
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
     "mmsu-ci-2000": "zhaochenyang20/mmsu-ci-2000",
+    "mmau": "lmms-lab/mmau",
+    "mmau-mini": "lmms-lab/mmau:test_mini",
+    "mmar": "BoJack/MMAR",
     "videomme": "zhaochenyang20/Video_MME",
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
@@ -39,6 +44,7 @@ DATASETS: dict[str, str] = {
 def download_dataset(repo_id: str, *, quiet: bool = False) -> None:
     """Pre-warm the HuggingFace ``datasets`` cache for *repo_id*."""
     from datasets import get_dataset_config_names, load_dataset
+    from huggingface_hub import hf_hub_download
 
     if not quiet:
         logger.info(f"Pre-warming HuggingFace cache for {repo_id} ...")
@@ -47,6 +53,17 @@ def download_dataset(repo_id: str, *, quiet: bool = False) -> None:
         config_names = get_dataset_config_names(repo_id)
         for config_name in config_names:
             load_dataset(repo_id, config_name, split="validation")
+    elif repo_id == "BoJack/MMAR":
+        load_dataset(repo_id)
+        hf_hub_download(repo_id, "mmar-audio.tar.gz", repo_type="dataset")
+    elif repo_id.startswith("lmms-lab/mmau:"):
+        dataset_id, split = repo_id.split(":", 1)
+        load_dataset(
+            dataset_id,
+            split=split,
+            data_files={split: f"data/{split}-*.parquet"},
+            verification_mode="no_checks",
+        )
     else:
         load_dataset(repo_id)
 

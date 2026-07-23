@@ -56,10 +56,12 @@ def disable_proxy() -> Generator[None, None, None]:
         os.environ.update(saved_env)
 
 
+PROXY_ENV_KEYS = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+
+
 def no_proxy_env() -> dict[str, str]:
     """Return a copy of os.environ with proxy variables removed, for subprocess use."""
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+    return {k: v for k, v in os.environ.items() if k.lower() not in PROXY_ENV_KEYS}
 
 
 def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
@@ -91,11 +93,21 @@ def wait_for_gpu_memory_release(
     wait_timeout_seconds: int | None = None,
     poll_seconds: int | None = None,
 ) -> None:
-    """Kill orphan GPU processes and block until every GPU is below threshold."""
+    """Kill orphan GPU processes on this job's GPUs; wait until they are idle.
+
+    Requires CUDA_VISIBLE_DEVICES (physical ids) so concurrent calibration
+    groups cannot wipe each other. Single-tenant CI may omit it when
+    GITHUB_ACTIONS=true.
+    """
     if not GPU_CLEANUP_SCRIPT.exists():
         raise FileNotFoundError(f"GPU cleanup script missing: {GPU_CLEANUP_SCRIPT}")
 
     env = os.environ.copy()
+    if not env.get("CUDA_VISIBLE_DEVICES") and env.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError(
+            "wait_for_gpu_memory_release requires CUDA_VISIBLE_DEVICES "
+            "(physical GPU ids owned by this job) when not on GitHub Actions"
+        )
     env["OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB"] = str(
         memory_threshold_mb
         if memory_threshold_mb is not None
@@ -112,6 +124,7 @@ def wait_for_gpu_memory_release(
 
     print(
         f"[gpu cleanup] running ensure_gpus_idle "
+        f"scope={env.get('CUDA_VISIBLE_DEVICES', 'ci-unscoped')} "
         f"(threshold={env['OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB']} MiB)...",
         flush=True,
     )
@@ -165,9 +178,14 @@ def start_server_from_cmd(
     timeout: int = STARTUP_TIMEOUT,
     env: dict[str, str] | None = None,
     tee: bool = False,
+    strip_proxy: bool = False,
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
     process_env = os.environ.copy()
+    if strip_proxy:
+        for key in list(process_env):
+            if key.lower() in PROXY_ENV_KEYS:
+                del process_env[key]
     if env is not None:
         process_env.update(env)
     if log_file is None:

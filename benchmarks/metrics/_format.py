@@ -20,6 +20,26 @@ def print_speed_metric_line(lw: int, label: str, metrics: dict, key: str) -> Non
     print(f"  {label:<{lw}} {value}")
 
 
+def format_benchmark_dataset_label(
+    *,
+    dataset: str | None = None,
+    repo_id: str | None = None,
+    split: str | None = None,
+) -> str | None:
+    """Build a single dataset label for benchmark/CI summary headers."""
+    if dataset and repo_id:
+        detail = repo_id if not split else f"{repo_id}, {split}"
+        return f"{dataset} ({detail})"
+    if repo_id:
+        return repo_id if not split else f"{repo_id} ({split})"
+    return dataset
+
+
+def print_benchmark_dataset_line(label_width: int, dataset: str | None) -> None:
+    if dataset:
+        print(f"  {'Dataset:':<{label_width}} {dataset}")
+
+
 def print_accuracy_breakdown(
     title: str,
     breakdown: dict[str, dict[str, Any]],

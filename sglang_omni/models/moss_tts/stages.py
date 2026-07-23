@@ -28,6 +28,7 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
@@ -130,26 +131,15 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
-    return create_sglang_tts_engine_executor(*args, **kwargs)
+create_tts_engine_executor = create_sglang_tts_engine_executor
 
 
-def create_vocoder_executor(
-    model_path: str,
-    *,
-    device: str = "cuda:0",
-    gpu_id: int | None = None,
-    dtype: str = "float32",
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 2,
-) -> SimpleScheduler:
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
-    processor = _load_moss_processor(model_path, device=device, dtype=dtype)
+class _MossTTSVocoder(BatchVocoderBase):
+    def __init__(self, processor: Any, device: str) -> None:
+        self._processor = processor
+        self._device = device
 
-    def _prepare_vocoder_item(
-        payload: StagePayload,
-    ) -> tuple[MossTTSState, torch.Tensor]:
+    def prepare_item(self, payload: StagePayload) -> tuple[MossTTSState, torch.Tensor]:
         state = load_state(payload)
         if state.delayed_audio_codes is None:
             raise RuntimeError("MOSS-TTS vocoder requires delayed_audio_codes")
@@ -159,13 +149,14 @@ def create_vocoder_executor(
         return state, delayed_codes
 
     def _decode_audio(
+        self,
         state: MossTTSState,
         delayed_codes: torch.Tensor,
     ) -> tuple[torch.Tensor, int]:
-        delayed_codes = delayed_codes.to(device=device, dtype=torch.long)
+        delayed_codes = delayed_codes.to(device=self._device, dtype=torch.long)
         audio_pad_code = int(
             getattr(
-                getattr(processor, "model_config", None),
+                getattr(self._processor, "model_config", None),
                 "audio_pad_code",
                 1024,
             )
@@ -177,7 +168,7 @@ def create_vocoder_executor(
         )
         decoded = []
         for segment in segments:
-            decoded.extend(processor.decode_audio_codes([segment]))
+            decoded.extend(self._processor.decode_audio_codes([segment]))
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         waveforms = [
@@ -185,9 +176,11 @@ def create_vocoder_executor(
         ]
         waveform = torch.cat(waveforms, dim=0)
         sample_rate = int(
-            getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
+            getattr(getattr(self._processor, "model_config", None), "sampling_rate", 0)
             or getattr(
-                getattr(getattr(processor, "audio_tokenizer", None), "config", None),
+                getattr(
+                    getattr(self._processor, "audio_tokenizer", None), "config", None
+                ),
                 "sampling_rate",
                 0,
             )
@@ -196,7 +189,13 @@ def create_vocoder_executor(
         )
         return waveform, sample_rate
 
-    def _store_vocoder_result(
+    async def decode_batch(
+        self, items: list[tuple[MossTTSState, torch.Tensor]]
+    ) -> list[tuple[torch.Tensor, int]]:
+        return [self._decode_audio(state, codes) for state, codes in items]
+
+    def store_result(
+        self,
         payload: StagePayload,
         state: MossTTSState,
         wav: torch.Tensor,
@@ -214,17 +213,21 @@ def create_vocoder_executor(
             payload.data["usage"] = usage
         return payload
 
-    def _vocode(payload: StagePayload) -> StagePayload:
-        state, delayed_codes = _prepare_vocoder_item(payload)
-        wav, sample_rate = _decode_audio(state, delayed_codes)
-        return _store_vocoder_result(payload, state, wav, sample_rate)
 
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return [_vocode(payload) for payload in payloads]
+def create_vocoder_executor(
+    model_path: str,
+    *,
+    device: str = "cuda:0",
+    gpu_id: int | None = None,
+    dtype: str = "float32",
+    max_batch_size: int = 8,
+    max_batch_wait_ms: int = 2,
+) -> SimpleScheduler:
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
+    processor = _load_moss_processor(model_path, device=device, dtype=dtype)
 
-    return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=_vocode_batch,
+    return _MossTTSVocoder(processor, device).build_scheduler(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

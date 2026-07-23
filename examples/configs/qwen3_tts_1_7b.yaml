@@ -1,3 +1,2 @@
 config_cls: Qwen3TTSPipelineConfig
 model_path: Qwen/Qwen3-TTS-12Hz-1.7B-Base
-relay_backend: shm

@@ -22,6 +22,8 @@ _PKG = "sglang_omni.models.moss_tts_local"
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
 _COLOCATED_CODEC_MEM_RESERVE = 0.15
 _AR_MEM_FRACTION_STATIC = 0.85
+_REF_AUDIO_CACHE_MAX_ITEMS = 8192
+_REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 
 def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
@@ -44,12 +46,7 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={
-                "device": codec_device,
-                "ref_audio_cache": True,
-                "ref_audio_cache_max_items": 8192,
-                "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
-            },
+            factory_args={"device": codec_device},
             gpu=0,
             next="tts_engine",
         ),
@@ -107,9 +104,22 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     cuda_graph: bool = True
     cuda_graph_frames: list[int] | None = None
     cuda_graph_min_free_gb: float = 3.0
+    ref_audio_cache: bool = True
+    ref_audio_cache_max_items: int = _REF_AUDIO_CACHE_MAX_ITEMS
+    ref_audio_cache_max_bytes: int = _REF_AUDIO_CACHE_MAX_BYTES
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
+        if self.ref_audio_cache_max_items < 1:
+            raise ValueError(
+                "ref_audio_cache_max_items must be >= 1; got "
+                f"{self.ref_audio_cache_max_items}"
+            )
+        if self.ref_audio_cache_max_bytes < 1:
+            raise ValueError(
+                "ref_audio_cache_max_bytes must be >= 1; got "
+                f"{self.ref_audio_cache_max_bytes}"
+            )
         if self.cuda_graph_min_free_gb < 0:
             raise ValueError(
                 "cuda_graph_min_free_gb must be >= 0 (0 disables the VRAM headroom "
@@ -127,6 +137,14 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                     f"cuda_graph_frames entries must be positive ints (>= 1); got {invalid}"
                 )
         for stage in self.stages:
+            if stage.factory.endswith("create_preprocessing_executor"):
+                stage.factory_args.setdefault("ref_audio_cache", self.ref_audio_cache)
+                stage.factory_args.setdefault(
+                    "ref_audio_cache_max_items", self.ref_audio_cache_max_items
+                )
+                stage.factory_args.setdefault(
+                    "ref_audio_cache_max_bytes", self.ref_audio_cache_max_bytes
+                )
             if stage.factory.endswith("create_vocoder_executor"):
                 stage.factory_args.setdefault("cuda_graph", self.cuda_graph)
                 stage.factory_args.setdefault(

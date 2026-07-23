@@ -182,6 +182,7 @@ def build_evaluation_payload(
     *,
     repo_id: str = MOVIES800_REPO_ID,
     split: str = "validation",
+    dataset: str | None = None,
 ) -> EvaluationPayload:
     result_by_id = {result.request_id: result for result in outputs}
     successful_rows: list[DiarizationRow] = []
@@ -308,6 +309,7 @@ def build_evaluation_payload(
     }
     return {
         "config": {
+            "dataset": dataset,
             "repo_id": repo_id,
             "split": split,
             "model_path": model_path,

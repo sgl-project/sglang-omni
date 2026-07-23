@@ -13,6 +13,7 @@ from sglang_omni.proto import (
     AdminMessage,
     AdminResultMessage,
     CompleteMessage,
+    DataAckMessage,
     DataReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 ControlMessage = (
     AdminMessage
     | AdminResultMessage
+    | DataAckMessage
     | DataReadyMessage
     | AbortMessage
     | CompleteMessage
@@ -261,6 +263,7 @@ class StageControlPlane:
         self,
     ) -> (
         AdminMessage
+        | DataAckMessage
         | DataReadyMessage
         | SubmitMessage
         | ShutdownMessage
@@ -275,6 +278,7 @@ class StageControlPlane:
             msg,
             (
                 DataReadyMessage,
+                DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
                 ProfilerStartMessage,
@@ -286,9 +290,12 @@ class StageControlPlane:
         raise ValueError(f"Unexpected message type: {type(msg)}")
 
     async def send_to_stage(
-        self, next_stage: str, next_stage_endpoint: str, msg: DataReadyMessage
+        self,
+        next_stage: str,
+        next_stage_endpoint: str,
+        msg: DataReadyMessage | DataAckMessage,
     ) -> None:
-        """Send data ready notification to next stage."""
+        """Send a stage-to-stage control message."""
         if next_stage not in self._next_stage_sockets:
             sock = PushSocket(next_stage_endpoint)
             await sock.connect()

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ASR benchmark on SeedTTS reference audio (issue #646).
+# Author:
+# chenyang zhao: https://github.com/zhaochenyang20
+# PoTaTo-Mika: https://github.com/PoTaTo-Mika
+"""ASR concurrency benchmark on SeedTTS reference audio (issue #646).
 
-This script transcribes the SeedTTS reference audio clips directly
-and compare them with reference scripts.
-
-Author:
-chenyang zhao: https://github.com/zhaochenyang20
+This script transcribes SeedTTS reference clips directly through a running ASR
+router and reports WER, throughput, latency, RTF, and worker routing balance.
+It supports both Qwen3-ASR and Fun-ASR-Nano through ``--model-path``.
 
 Usage:
 
@@ -32,6 +33,47 @@ Usage:
     # Quick local smoke on a 20-sample subset:
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 3
+
+    # Run the same sweep against Fun-ASR-Nano:
+    python -m sglang_omni.cli serve \
+        --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+    python -m benchmarks.eval.benchmark_asr_seedtts \
+        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+        --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+
+Reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
+4080 SUPER 32 GB, DP=1, three repeats plus one discarded warmup per level):
+
+* At concurrency 32, Qwen3-ASR-1.7B reached 55.07 samples/s with 0.577 s mean
+  latency, 0.1247 mean RTF, and 0.0130 corpus WER.
+* At concurrency 32, Fun-ASR-Nano reached 40.66 samples/s with 0.784 s mean
+  latency, 0.1696 mean RTF, and 0.0171 corpus WER.
+* At concurrency 1, Fun-ASR-Nano had roughly half the mean latency and RTF of
+  Qwen3-ASR (0.081 s vs. 0.165 s; 0.0175 vs. 0.0359).
+
+Both models saturated near concurrency 32. Fun-ASR completed every request at
+all measured levels; Qwen3-ASR skipped 72 requests at concurrency 64 on the
+single GPU. Audio duration was 4.69 s mean, 4.53 s median, and 8.81 s maximum.
+
+Reference results on a single H100 80 GB (bf16, DP=1, three repeats plus one
+discarded warmup per level):
+
+* Fun-ASR-Nano on the full SeedTTS EN set (1088 clips): 26.44 samples/s with
+  0.038 s mean latency at concurrency 1, saturating near 127.5 samples/s at
+  concurrency 16 through 32, with 0.0171 corpus WER at every level through 32.
+  The higher concurrency 64 figure counts completed samples only, after
+  request shedding.
+* Fun-ASR-Nano on the full SeedTTS ZH set (2020 clips): 167.4 samples/s at
+  concurrency 32 with 0.190 s mean latency and 0.0135 corpus WER at every
+  level through 32.
+* Qwen3-ASR-1.7B on the same GPU and EN set: 97.9 samples/s at concurrency 32
+  with 0.324 s mean latency and 0.0122 corpus WER. Fun-ASR-Nano was about 30
+  percent faster at saturation, and at concurrency 1 kept 0.038 s mean latency
+  versus 0.099 s for Qwen3-ASR, consistent with the 4080S comparison above.
+
+On the H100 both languages shed roughly 2 to 5 percent of requests at
+concurrency 64 with HTTP 500, because a single worker admits at most 16
+pending request builds. The full tables live in docs/cookbook/fun_asr.md.
 """
 
 from __future__ import annotations
@@ -47,6 +89,7 @@ import requests
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.asr import (
+    FUN_ASR_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
@@ -221,7 +264,7 @@ def parse_args() -> argparse.Namespace:
         "--port",
         type=int,
         required=True,
-        help="Port of the running Qwen3-ASR SGLang Omni router.",
+        help="Port of the running ASR SGLang Omni router.",
     )
     parser.add_argument(
         "--meta",
@@ -244,7 +287,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         default=QWEN3_ASR_MODEL_PATH,
-        help="ASR model id served by the router.",
+        help=(
+            "ASR model id served by the router. Defaults to "
+            f"{QWEN3_ASR_MODEL_PATH}; use "
+            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
+        ),
     )
     parser.add_argument(
         "--warmup",

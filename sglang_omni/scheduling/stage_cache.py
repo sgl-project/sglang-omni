@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ def _detach_value(value: Any, *, device: torch.device | None) -> Any:
 def _value_size_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
+    if isinstance(value, (bytes, bytearray)):
+        return len(value)
     if isinstance(value, dict):
         return sum(_value_size_bytes(item) for item in value.values())
     if isinstance(value, (list, tuple)):
@@ -48,6 +51,10 @@ class StageOutputCache:
         cache_device: torch.device | str | None = None,
         size_fn: Callable[[Any], int] | None = None,
     ) -> None:
+        if max_size is not None and max_size < 0:
+            raise ValueError("max_size must be non-negative")
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
@@ -57,51 +64,76 @@ class StageOutputCache:
         self.current_bytes = 0
         self.eviction_count = 0
         self._size_fn = size_fn or _value_size_bytes
+        self._lock = threading.Lock()
 
     def get(self, key: str | None) -> Any | None:
         if key is None:
             return None
         key = str(key)
-        entry = self._cache.get(key)
-        if entry is None:
-            return None
-        self._cache.move_to_end(key)
-        return entry.data
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            self._cache.move_to_end(key)
+            return entry.data
 
     def put(self, key: str | None, data: Any) -> None:
         if key is None:
             return
         key = str(key)
         size_bytes = self._size_fn(data)
-        old_entry = self._cache.pop(key, None)
-        if old_entry is not None:
-            self.current_bytes -= old_entry.size_bytes
-        if self.max_bytes is not None and size_bytes > self.max_bytes:
-            return
-        self._cache[key] = _CacheEntry(
-            data=_detach_value(data, device=self.cache_device),
-            size_bytes=size_bytes,
-        )
-        self.current_bytes += size_bytes
-        self._cache.move_to_end(key)
-        self._evict_over_budget()
+        with self._lock:
+            old_entry = self._cache.pop(key, None)
+            if old_entry is not None:
+                self.current_bytes -= old_entry.size_bytes
+            if self.max_bytes is not None and size_bytes > self.max_bytes:
+                return
+            self._cache[key] = _CacheEntry(
+                data=_detach_value(data, device=self.cache_device),
+                size_bytes=size_bytes,
+            )
+            self.current_bytes += size_bytes
+            self._cache.move_to_end(key)
+            self._evict_over_budget()
 
     def clear(self) -> None:
-        self._cache.clear()
-        self.current_bytes = 0
+        with self._lock:
+            self._cache.clear()
+            self.current_bytes = 0
+
+    def remove_if_same(self, key: str | None, expected_data: Any) -> bool:
+        """Remove a key only if it still holds the observed object."""
+        if key is None:
+            return False
+        key = str(key)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None or entry.data is not expected_data:
+                return False
+            del self._cache[key]
+            self.current_bytes -= entry.size_bytes
+            return True
 
     def remove_if(self, predicate: Callable[[str], bool]) -> int:
+        # Evaluate the predicate outside the lock: it runs arbitrary caller code
+        # and may re-enter this cache, which would deadlock the non-reentrant
+        # lock. Snapshot keys, test them lock-free, then re-acquire to delete.
+        with self._lock:
+            keys = list(self._cache)
+        to_remove = [key for key in keys if predicate(key)]
         removed = 0
-        for key in list(self._cache):
-            if not predicate(key):
-                continue
-            entry = self._cache.pop(key)
-            self.current_bytes -= entry.size_bytes
-            removed += 1
+        with self._lock:
+            for key in to_remove:
+                entry = self._cache.pop(key, None)
+                if entry is None:
+                    continue
+                self.current_bytes -= entry.size_bytes
+                removed += 1
         return removed
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
     def _evict_over_budget(self) -> None:
         while self.max_size is not None and len(self._cache) > self.max_size:

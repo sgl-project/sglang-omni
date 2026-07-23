@@ -219,6 +219,16 @@ class CompletedSpeechClient:
         self.aborted.append(request_id)
 
 
+def _session_config(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "session.config",
+        "model": "tts",
+        "voice": "default",
+    }
+    payload.update(overrides)
+    return payload
+
+
 class RecordingWebSocket:
     def __init__(
         self,
@@ -232,6 +242,7 @@ class RecordingWebSocket:
         self.receive_after_bytes = receive_after_bytes
         self.application_state = WebSocketState.CONNECTED
         self.client_state = WebSocketState.CONNECTED
+        self.close_count = 0
         self.sent_text: list[dict[str, Any]] = []
         self.sent_bytes: list[bytes] = []
 
@@ -258,6 +269,7 @@ class RecordingWebSocket:
         raise AssertionError("unreachable")
 
     async def close(self) -> None:
+        self.close_count += 1
         self.application_state = WebSocketState.DISCONNECTED
         self.client_state = WebSocketState.DISCONNECTED
 
@@ -306,6 +318,34 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
     assert client_impl.generated_prompts == ["Hello.", "Second"]
 
 
+def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
+    async def run() -> None:
+        speech_service = SpeechRequestValidator(default_model="served-model")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=StreamingSpeechClient(),
+            speech_service=speech_service,
+        )
+
+        config = await session._parse_config(
+            {"type": "session.config", "response_format": "pcm"}
+        )
+        prepared = session.config_prepared_request
+
+        assert config.model is None
+        assert config.voice == "default"
+        assert prepared is not None
+        generate_request = speech_service.build_generate_request(
+            prepared.request,
+            validate=False,
+            reference_descriptors=prepared.reference_descriptors,
+        )
+        assert generate_request.model == "served-model"
+        assert generate_request.metadata["tts_params"]["voice"] == "default"
+
+    asyncio.run(run())
+
+
 def test_speech_websocket_rejects_missing_initial_config() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
@@ -321,7 +361,7 @@ def test_speech_websocket_rejects_binary_client_frames() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
 
         websocket.send_bytes(b"not-json-text")
@@ -341,6 +381,8 @@ def test_speech_websocket_supports_non_streaming_sentence_frames() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "response_format": "wav",
                 "stream_audio": False,
             }
@@ -362,7 +404,7 @@ def test_speech_websocket_stream_audio_defaults_to_non_streaming() -> None:
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "wav"})
+        websocket.send_json(_session_config(response_format="wav"))
         configured = websocket.receive_json()
         assert configured["type"] == "session.configured"
         assert configured["stream_audio"] is False
@@ -379,7 +421,7 @@ def test_speech_websocket_unknown_message_type_is_recoverable() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "unexpected"})
         event = websocket.receive_json()
@@ -408,6 +450,8 @@ def test_speech_websocket_rejects_stringified_config_types(
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 field_name: value,
                 "response_format": "pcm",
             }
@@ -436,6 +480,8 @@ def test_speech_websocket_rejects_non_positive_duration_fields(
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 field_name: value,
                 "response_format": "pcm",
             }
@@ -453,6 +499,8 @@ def test_speech_websocket_streaming_accepts_speed() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
                 "speed": 1.1,
@@ -477,6 +525,8 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }
@@ -494,6 +544,25 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
     asyncio.run(run())
 
 
+def test_speech_websocket_teardown_skips_close_after_application_close() -> None:
+    async def run() -> None:
+        websocket = RecordingWebSocket()
+        websocket.application_state = WebSocketState.DISCONNECTED
+        websocket.client_state = WebSocketState.CONNECTED
+        session = SpeechWebSocketSession(
+            websocket,
+            client=CompletedSpeechClient(),
+            speech_service=SpeechRequestValidator(default_model="tts"),
+        )
+
+        await session.teardown()
+
+        assert session.closed is True
+        assert websocket.close_count == 0
+
+    asyncio.run(run())
+
+
 def test_speech_websocket_preserves_explicit_generation_params() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="tts")
@@ -507,6 +576,8 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
                 "temperature": 0.7,
@@ -534,7 +605,7 @@ def test_speech_websocket_rejects_oversized_sentence_before_generation() -> None
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json(
             {
@@ -561,6 +632,8 @@ def test_speech_websocket_stream_start_uses_chunk_sample_rate() -> None:
         websocket.send_json(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }
@@ -579,7 +652,7 @@ def test_speech_websocket_non_streaming_start_uses_result_sample_rate() -> None:
     )
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json({"type": "session.config", "response_format": "pcm"})
+        websocket.send_json(_session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "input.text", "text": "Hello."})
         start = websocket.receive_json()
@@ -807,6 +880,8 @@ def test_speech_websocket_reuses_prepared_session_references() -> None:
         session.config = await session._parse_config(
             {
                 "type": "session.config",
+                "model": "tts",
+                "voice": "default",
                 "stream_audio": True,
                 "response_format": "pcm",
             }

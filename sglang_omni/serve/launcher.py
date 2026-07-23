@@ -378,6 +378,13 @@ async def _run_server(
             supports_uploaded_voice_references=(
                 pipeline_config.supports_uploaded_voice_references()
             ),
+            required_speech_reference_count=(
+                pipeline_config.required_speech_reference_count
+            ),
+            speech_reference_text_required=(
+                pipeline_config.speech_reference_text_required
+            ),
+            additional_speech_languages=pipeline_config.additional_speech_languages,
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,

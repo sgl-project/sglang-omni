@@ -498,7 +498,7 @@ def _log_transcribe_result(
             )
         return
 
-    # note (aaron): only warn for post-generation transcription failures.
+    # only warn for post-generation transcription failures.
     # Generation failures are surfaced at speed-benchmark time and already logged.
     if entry.get("is_success", False):
         logger.warning(

@@ -2,38 +2,30 @@
 
 from __future__ import annotations
 
-import queue
-from collections import deque
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from sglang_omni.models.fishaudio_s2_pro.fish_scheduler import (
-    FishIterationController,
-    FishScheduler,
-)
 from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     FishS2ProModelRunner,
     collect_s2pro_step_outputs,
 )
 from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     S2ProSGLangRequestData,
+    make_tts_scheduler_adapters,
     validate_s2pro_top_k,
 )
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
-from sglang_omni.scheduling.messages import IncomingMessage
-from sglang_omni.scheduling.types import (
-    ModelRunnerOutput,
-    RequestOutput,
-    SchedulerOutput,
-    SchedulerRequest,
-    SchedulerStatus,
-)
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishModel,
     FakeFishReq,
+    FakeFishTokenizer,
     make_s2pro_payload,
+    make_s2pro_state,
 )
 
 IM_END_TOKEN_ID = 151645
@@ -89,120 +81,8 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
     )
 
 
-class _FakePlanner:
-    def __init__(self) -> None:
-        self.recorded = None
-
-    def select_requests(self, waiting, running):
-        del running
-        return list(waiting)
-
-    def build_batch(self, requests):
-        return SimpleNamespace(request_ids=[request.request_id for request in requests])
-
-    def record_last_batch(self, batch_data) -> None:
-        self.recorded = batch_data
-
-
-class _FakeResourceManager:
-    def __init__(self) -> None:
-        self.freed: list[str] = []
-
-    def free(self, request) -> None:
-        self.freed.append(request.request_id)
-
-
-def make_fish_scheduler() -> FishScheduler:
-    def request_builder(payload):
-        return SimpleNamespace(
-            req=FakeFishReq(rid=payload.request_id),
-            stage_payload=payload,
-            output_codes=[torch.tensor([[100], [1], [2]], dtype=torch.long)],
-            previous_semantic_tokens=[],
-            last_codebook_values=None,
-            latest_stream_code_chunk=None,
-            max_new_tokens=4,
-            input_ids=[1, 2, 3],
-        )
-
-    def result_adapter(data):
-        payload = make_s2pro_payload(request_id=data.req.rid)
-        payload.data = {"output_ids": list(data.req.output_ids)}
-        return payload
-
-    scheduler = FishScheduler(
-        tree_cache=SimpleNamespace(cache_unfinished_req=lambda req: None),
-        req_to_token_pool=SimpleNamespace(),
-        token_to_kv_pool_allocator=SimpleNamespace(),
-        prefill_manager=SimpleNamespace(),
-        decode_manager=SimpleNamespace(),
-        server_args=SimpleNamespace(),
-        model_runner=SimpleNamespace(),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
-        im_end_token_id=99,
-        max_new_tokens=4,
-    )
-    scheduler.batch_planner = _FakePlanner()
-    scheduler.resource_manager = _FakeResourceManager()
-    return scheduler
-
-
-def test_fish_scheduler_lifecycle_abort_and_iteration_contracts() -> None:
-    """Preserves chunked iteration state, finished emission, and abort cleanup."""
-    request = SchedulerRequest(
-        request_id="chunked",
-        data=SimpleNamespace(
-            req=FakeFishReq(is_chunked=2),
-            output_codes=[],
-            previous_semantic_tokens=[],
-        ),
-    )
-    controller = FishIterationController(
-        tree_cache=SimpleNamespace(cache_unfinished_req=lambda req: None),
-        im_end_token_id=99,
-        max_new_tokens=4,
-    )
-    controller.update_request(request, 10)
-    assert request.data.req.is_chunked == 1
-    assert request.data.req.output_ids == []
-
-    scheduler = make_fish_scheduler()
-    scheduler.process_input_requests([make_s2pro_payload(request_id="req-1")])
-    batch = scheduler.schedule()
-    finished = scheduler.update(
-        batch,
-        ModelRunnerOutput(outputs={"req-1": RequestOutput("req-1", data=99)}),
-    )
-    scheduler.emit_finished(finished)
-    message = scheduler.outbox.get_nowait()
-    assert batch.request_ids == ["req-1"]
-    assert scheduler.resource_manager.freed == ["req-1"]
-    assert message.type == "result"
-    assert message.data.data["output_ids"] == [99]
-
-    scheduler.process_input_requests([make_s2pro_payload(request_id="req-2")])
-    scheduler.abort("req-2")
-    scheduler.inbox.put(
-        IncomingMessage("req-2", "new_request", make_s2pro_payload(request_id="req-2"))
-    )
-    assert scheduler.recv_requests() == []
-    scheduler._cleanup_aborted_requests()
-    assert "req-2" not in scheduler._requests
-
-
-class _CountingTreeCache:
-    def __init__(self) -> None:
-        self.cached_requests = 0
-
-    def cache_unfinished_req(self, req, *args, **kwargs) -> None:
-        del req, args, kwargs
-        self.cached_requests += 1
-
-
 def _make_s2pro_request(request_id: str, *, is_chunked: int = 0) -> SchedulerRequest:
     req = FakeFishReq(is_chunked=is_chunked)
-    req.finished = lambda: False
     return SchedulerRequest(
         request_id=request_id,
         data=SimpleNamespace(
@@ -224,14 +104,6 @@ def _make_s2pro_request(request_id: str, *, is_chunked: int = 0) -> SchedulerReq
     )
 
 
-def _stream_payload(request_id: str, *, stream: bool = True):
-    return make_s2pro_payload(request_id=request_id, params={"stream": stream})
-
-
-def _code(value: int = 1) -> torch.Tensor:
-    return torch.full((11, 1), value, dtype=torch.long)
-
-
 def _collect_s2pro_step(
     requests: list[SchedulerRequest],
     code_rows: list[list[int]],
@@ -249,17 +121,6 @@ def _collect_s2pro_step(
         rep_history_len=rep_history_len,
     )
     return result
-
-
-def _update_request_from_step(
-    controller: FishIterationController,
-    request: SchedulerRequest,
-    result: SimpleNamespace,
-    row_idx: int = 0,
-) -> int:
-    token_id = int(result.next_token_ids[row_idx].item())
-    controller.update_request(request, token_id)
-    return token_id
 
 
 def test_fish_s2pro_audio_timestep_updates_audio_and_stream_state() -> None:
@@ -625,19 +486,14 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
 
 
 def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
     request = _make_s2pro_request("req-terminal")
 
-    result = _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
-    _update_request_from_step(controller, request, result)
+    _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
     request.data.latest_stream_code_chunk = None
 
     result = _collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
-    eos_token = _update_request_from_step(controller, request, result)
 
-    assert controller.is_finished(request, eos_token)
-    assert request.data.req.output_ids == [SEMANTIC_TOKEN_ID, IM_END_TOKEN_ID]
+    assert int(result.next_token_ids[0].item()) == IM_END_TOKEN_ID
     assert len(request.data.output_codes) == 1
     assert torch.equal(
         request.data.output_codes[0],
@@ -646,90 +502,32 @@ def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
     assert request.data.latest_stream_code_chunk is None
     assert request.data.previous_semantic_tokens == [SEMANTIC_TOKEN_ID]
     assert torch.equal(request.data.last_codebook_values, torch.tensor([11, 22]))
-    assert tree_cache.cached_requests == 1
 
 
 def test_fish_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
     request = _make_s2pro_request("req-immediate-terminal")
 
     result = _collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
-    eos_token = _update_request_from_step(controller, request, result)
 
-    assert controller.is_finished(request, eos_token)
-    assert request.data.req.output_ids == [IM_END_TOKEN_ID]
+    assert int(result.next_token_ids[0].item()) == IM_END_TOKEN_ID
     assert request.data.output_codes == []
     assert request.data.latest_stream_code_chunk is None
     assert request.data.previous_semantic_tokens == []
     assert request.data.last_codebook_values is None
-    assert tree_cache.cached_requests == 0
-
-
-def test_fish_s2pro_emit_finished_errors_before_vocoder_for_empty_codes() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
-    request = _make_s2pro_request("req-immediate-terminal")
-
-    result = _collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
-    _update_request_from_step(controller, request, result)
-
-    def result_adapter(data):
-        del data
-        raise AssertionError("empty output_codes must not route to result_adapter")
-
-    scheduler = FishScheduler(
-        tree_cache=tree_cache,
-        req_to_token_pool=None,
-        token_to_kv_pool_allocator=None,
-        prefill_manager=None,
-        decode_manager=None,
-        server_args=SimpleNamespace(max_running_requests=1),
-        model_runner=None,
-        request_builder=None,
-        result_adapter=result_adapter,
-        im_end_token_id=IM_END_TOKEN_ID,
-        max_new_tokens=2048,
-    )
-    scheduler._submit_times[request.request_id] = 1.0
-    scheduler._requests[request.request_id] = request
-
-    scheduler.emit_finished([request])
-    output = scheduler.outbox.get_nowait()
-
-    assert output.request_id == request.request_id
-    assert output.type == "error"
-    assert isinstance(output.data, ValueError)
-    assert "S2-Pro generated no audio codec tokens" in str(output.data)
-    assert scheduler._submit_times == {}
-    assert request.request_id not in scheduler._requests
 
 
 def test_fish_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
     audio_request = _make_s2pro_request("req-audio")
     terminal_request = _make_s2pro_request("req-terminal")
 
-    result = _collect_s2pro_step(
+    _collect_s2pro_step(
         [audio_request, terminal_request],
         [
             [SEMANTIC_TOKEN_ID, 11, 22],
             [IM_END_TOKEN_ID, 33, 44],
         ],
     )
-    audio_token = _update_request_from_step(controller, audio_request, result, 0)
-    terminal_token = _update_request_from_step(
-        controller,
-        terminal_request,
-        result,
-        1,
-    )
 
-    assert not controller.is_finished(audio_request, audio_token)
-    assert controller.is_finished(terminal_request, terminal_token)
-    assert audio_request.data.req.output_ids == [SEMANTIC_TOKEN_ID]
-    assert terminal_request.data.req.output_ids == [IM_END_TOKEN_ID]
     assert len(audio_request.data.output_codes) == 1
     assert terminal_request.data.output_codes == []
     assert torch.equal(
@@ -745,301 +543,157 @@ def test_fish_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> Non
     assert terminal_request.data.previous_semantic_tokens == []
     assert torch.equal(audio_request.data.last_codebook_values, torch.tensor([11, 22]))
     assert terminal_request.data.last_codebook_values is None
-    assert tree_cache.cached_requests == 1
 
 
 def test_fish_s2pro_chunked_step_does_not_mutate_decode_state() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
     request = _make_s2pro_request("req-chunked", is_chunked=1)
 
-    result = _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
-    semantic_token = _update_request_from_step(controller, request, result)
+    _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
 
-    assert not controller.is_finished(request, semantic_token)
-    assert request.data.req.is_chunked == 0
-    assert request.data.req.output_ids == []
     assert request.data.output_codes == []
     assert request.data.latest_stream_code_chunk is None
     assert request.data.previous_semantic_tokens == []
     assert request.data.last_codebook_values is None
-    assert tree_cache.cached_requests == 0
 
 
-def test_fish_s2pro_max_tokens_sets_length_finish_reason() -> None:
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
-    request = _make_s2pro_request("req-length")
-    request.data.max_new_tokens = 1
+def test_fish_tts_request_builder_maps_finish_contract_onto_req() -> None:
+    request_builder, _, _ = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer(),
+        max_new_tokens_cap=4,
+    )
+    payload = make_s2pro_payload(
+        make_s2pro_state(max_new_tokens=6), request_id="req-contract"
+    )
 
-    result = _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
-    semantic_token = _update_request_from_step(controller, request, result)
+    data = request_builder(payload)
 
-    assert controller.is_finished(request, semantic_token)
-    assert request.data.finish_reason == "length"
+    assert data.req.rid == "req-contract"
+    assert data.req.sampling_params.stop_token_ids == {99}
+    assert data.req.eos_token_ids == {99}
+    assert data.req.sampling_params.max_new_tokens == 4
+    assert data.max_new_tokens == 4
+    assert data.req.vocab_size == 640
+    assert data.engine_start_s > 0.0
+    assert data.stage_payload is payload
+
+    same_ref = request_builder(
+        make_s2pro_payload(make_s2pro_state(max_new_tokens=6), request_id="req-again")
+    )
+    assert data.req.extra_key == same_ref.req.extra_key is not None
+
+    other_cb1 = request_builder(
+        make_s2pro_payload(
+            make_s2pro_state(vq_parts=[torch.tensor([[1], [3]], dtype=torch.long)]),
+            request_id="req-other-ref",
+        )
+    )
+    assert other_cb1.req.extra_key != data.req.extra_key
+
+    no_ref = request_builder(
+        make_s2pro_payload(make_s2pro_state(vq_parts=None), request_id="req-zero-shot")
+    )
+    assert no_ref.req.extra_key is None
 
 
-def test_fish_scheduler_emits_code_chunks_only_for_streaming_requests() -> None:
-    class _IterationController:
-        def update_request(self, request, output_token_id) -> None:
-            pass
+def test_fish_tts_request_builder_clamps_budget_to_context() -> None:
+    request_builder, _, _ = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer(), context_length=8
+    )
+    data = request_builder(
+        make_s2pro_payload(make_s2pro_state(max_new_tokens=6), request_id="req-clamp")
+    )
+    # note (Gaokai): 8 (context) - 1 - 3 (prompt ids)
+    assert data.req.sampling_params.max_new_tokens == 4
 
-        def is_finished(self, request, output_token_id) -> bool:
-            return False
 
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler.outbox = queue.Queue()
+def test_fish_tts_result_adapter_maps_finish_reason_and_engine_time() -> None:
+    request_builder, result_adapter, _ = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer()
+    )
+    data = request_builder(make_s2pro_payload(request_id="req-result"))
+    data.output_codes = [torch.tensor([[100], [1], [2]], dtype=torch.long)]
+    data.finish_reason = "length"
+
+    payload = result_adapter(data)
+
+    assert payload.data["finish_reason"] == "length"
+    assert payload.data["engine_time_s"] > 0.0
+    assert payload.data["completion_tokens"] == 1
+    assert payload.data["prompt_tokens"] == 3
+
+    data.finish_reason = None
+    assert result_adapter(data).data["finish_reason"] == "stop"
+
+
+def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length() -> None:
+    """Budget exhaustion runs the upstream length path end-to-end: the Req
+    finishes with FINISH_LENGTH and the scheduler maps it onto the terminal
+    Fish payload."""
+    request_builder, result_adapter, _ = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer()
+    )
+    data = request_builder(
+        make_s2pro_payload(make_s2pro_state(max_new_tokens=2), request_id="req-length")
+    )
+    req = data.req
+    req._omni_data = data
+
+    for value in (200, 201):
+        assert not req.finished()
+        req.output_ids.append(value)
+        data.output_codes.append(torch.tensor([[value], [5]], dtype=torch.long))
+        req.check_finished()
+    assert req.finished()
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
     scheduler._aborted_request_ids = set()
-    scheduler.iteration_controller = _IterationController()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._result_adapter = result_adapter
+    scheduler.server_args = SimpleNamespace(weight_version=None)
 
-    stream_codes = _code(7)
-    stream_req = SchedulerRequest(
-        request_id="stream",
-        status=SchedulerStatus.RUNNING,
-        data=SimpleNamespace(
-            stage_payload=_stream_payload("stream", stream=True),
-            latest_stream_code_chunk=stream_codes,
+    scheduler.stream_output([req])
+
+    message = scheduler.outbox.get_nowait()
+    assert message.type == "result"
+    assert message.data.data["finish_reason"] == "length"
+    assert message.data.data["completion_tokens"] == 2
+
+
+def test_fish_tts_result_adapter_raises_for_empty_codes() -> None:
+    request_builder, result_adapter, _ = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer()
+    )
+    data = request_builder(make_s2pro_payload(request_id="req-empty"))
+
+    with pytest.raises(ValueError, match="S2-Pro generated no audio codec tokens"):
+        result_adapter(data)
+
+
+def test_fish_tts_stream_output_builder_gates_and_clears_chunks() -> None:
+    _, _, stream_output_builder = make_tts_scheduler_adapters(
+        tokenizer=FakeFishTokenizer()
+    )
+    codes = torch.full((11, 1), 7, dtype=torch.long)
+
+    stream_data = SimpleNamespace(
+        stage_payload=make_s2pro_payload(request_id="stream", params={"stream": True}),
+        latest_stream_code_chunk=codes,
+    )
+    messages = stream_output_builder("stream", stream_data, None)
+    assert len(messages) == 1
+    assert messages[0].type == "stream"
+    assert messages[0].target == "vocoder"
+    assert messages[0].metadata == {"modality": "audio_codes"}
+    assert messages[0].data is codes
+    assert stream_data.latest_stream_code_chunk is None
+    assert stream_output_builder("stream", stream_data, None) == []
+
+    non_stream_data = SimpleNamespace(
+        stage_payload=make_s2pro_payload(
+            request_id="non-stream", params={"stream": False}
         ),
+        latest_stream_code_chunk=torch.full((11, 1), 8, dtype=torch.long),
     )
-    non_stream_req = SchedulerRequest(
-        request_id="non-stream",
-        status=SchedulerStatus.RUNNING,
-        data=SimpleNamespace(
-            stage_payload=_stream_payload("non-stream", stream=False),
-            latest_stream_code_chunk=_code(8),
-        ),
-    )
-
-    finished = scheduler.update(
-        SchedulerOutput(
-            requests=[stream_req, non_stream_req],
-            batch_data=None,
-        ),
-        ModelRunnerOutput(
-            outputs={
-                "stream": RequestOutput("stream", data=1),
-                "non-stream": RequestOutput("non-stream", data=1),
-            }
-        ),
-    )
-
-    assert finished == []
-    out = scheduler.outbox.get_nowait()
-    assert out.request_id == "stream"
-    assert out.type == "stream"
-    assert out.target == "vocoder"
-    assert out.data is stream_codes
-    assert stream_req.data.latest_stream_code_chunk is None
-    assert scheduler.outbox.empty()
-
-
-def test_fish_scheduler_abort_during_update_suppresses_stream_chunk() -> None:
-    freed = []
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler.outbox = queue.Queue()
-    scheduler._aborted_request_ids = set()
-    scheduler._requests = {}
-    scheduler._waiting = deque()
-    scheduler._running_ids = ["req"]
-    scheduler._submit_times = {"req": 1.0}
-    scheduler._inflight_request_ids = set()
-    scheduler.resource_manager = SimpleNamespace(
-        free=lambda request: freed.append(request.request_id)
-    )
-
-    class _IterationController:
-        def update_request(self, request, output_token_id) -> None:
-            del request, output_token_id
-            scheduler.abort("req")
-
-        def is_finished(self, request, output_token_id) -> bool:
-            del request, output_token_id
-            return True
-
-    scheduler.iteration_controller = _IterationController()
-    request = SchedulerRequest(
-        request_id="req",
-        status=SchedulerStatus.RUNNING,
-        data=SimpleNamespace(
-            stage_payload=_stream_payload("req", stream=True),
-            latest_stream_code_chunk=_code(9),
-        ),
-    )
-    scheduler._requests["req"] = request
-
-    finished = scheduler.update(
-        SchedulerOutput(requests=[request], batch_data=None),
-        ModelRunnerOutput(outputs={"req": RequestOutput("req", data=1)}),
-    )
-
-    assert finished == []
-    assert freed == ["req"]
-    assert scheduler.outbox.empty()
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._running_ids
-
-
-def test_fish_scheduler_emit_finished_suppresses_aborted_result() -> None:
-    adapted = []
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler.outbox = queue.Queue()
-    scheduler._aborted_request_ids = {"req"}
-    scheduler._requests = {}
-    scheduler._submit_times = {"req": 1.0}
-
-    def _result_adapter(data):
-        adapted.append(data)
-        return _stream_payload("req")
-
-    scheduler._result_adapter = _result_adapter
-    request = SchedulerRequest(
-        request_id="req",
-        status=SchedulerStatus.FINISHED,
-        data=SimpleNamespace(req=SimpleNamespace(output_ids=[1])),
-    )
-    scheduler._requests["req"] = request
-
-    scheduler.emit_finished([request])
-
-    assert adapted == []
-    assert scheduler.outbox.empty()
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._submit_times
-
-
-def test_fish_scheduler_finish_preserves_abort_marker_for_emit_suppression() -> None:
-    freed = []
-    adapted = []
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler.outbox = queue.Queue()
-    scheduler._aborted_request_ids = {"req"}
-    scheduler._requests = {}
-    scheduler._waiting = deque()
-    scheduler._running_ids = ["req"]
-    scheduler._submit_times = {"req": 1.0}
-    scheduler.resource_manager = SimpleNamespace(
-        free=lambda request: freed.append(request.request_id)
-    )
-    scheduler._result_adapter = lambda data: adapted.append(data) or _stream_payload(
-        "req"
-    )
-    request = SchedulerRequest(
-        request_id="req",
-        status=SchedulerStatus.RUNNING,
-        data=SimpleNamespace(req=SimpleNamespace(output_ids=[1])),
-    )
-    scheduler._requests["req"] = request
-
-    scheduler._finish_request(request)
-    scheduler.emit_finished([request])
-
-    assert freed == ["req"]
-    assert adapted == []
-    assert scheduler.outbox.empty()
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._submit_times
-
-
-def test_fish_scheduler_abort_cleanup_frees_waiting_request_resources() -> None:
-    freed = []
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler._aborted_request_ids = set()
-    scheduler._requests = {}
-    scheduler._waiting = deque(["req"])
-    scheduler._running_ids = []
-    scheduler._submit_times = {"req": 1.0}
-    scheduler._inflight_request_ids = set()
-    scheduler.resource_manager = SimpleNamespace(
-        free=lambda request: freed.append(request.request_id)
-    )
-    request = SchedulerRequest("req", data=SimpleNamespace())
-    scheduler._requests["req"] = request
-
-    scheduler.abort("req")
-
-    assert freed == []
-    assert request.status == SchedulerStatus.ABORTED
-    assert "req" in scheduler._requests
-
-    scheduler._cleanup_aborted_requests()
-
-    assert freed == ["req"]
-    assert request.status == SchedulerStatus.ABORTED
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._waiting
-    assert "req" in scheduler._aborted_request_ids
-    assert "req" not in scheduler._submit_times
-
-
-def test_fish_scheduler_abort_defers_inflight_resource_free_until_update() -> None:
-    freed = []
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler._aborted_request_ids = set()
-    scheduler._requests = {}
-    scheduler._waiting = deque()
-    scheduler._running_ids = ["req"]
-    scheduler._submit_times = {"req": 1.0}
-    scheduler._inflight_request_ids = {"req"}
-    scheduler.resource_manager = SimpleNamespace(
-        free=lambda request: freed.append(request.request_id)
-    )
-    request = SchedulerRequest(
-        "req",
-        status=SchedulerStatus.RUNNING,
-        data=SimpleNamespace(),
-    )
-    scheduler._requests["req"] = request
-
-    scheduler.abort("req")
-
-    assert freed == []
-    assert request.status == SchedulerStatus.ABORTED
-    assert "req" in scheduler._requests
-
-    scheduler._cleanup_aborted_requests()
-    assert freed == []
-    assert "req" in scheduler._requests
-
-    finished = scheduler.update(
-        SchedulerOutput(requests=[request], batch_data=None),
-        ModelRunnerOutput(outputs={}),
-    )
-
-    assert finished == []
-    assert freed == ["req"]
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._running_ids
-    assert "req" not in scheduler._submit_times
-
-
-def test_fish_scheduler_batch_exception_cleans_finished_request() -> None:
-    scheduler = FishScheduler.__new__(FishScheduler)
-    scheduler.outbox = queue.Queue()
-    scheduler._aborted_request_ids = set()
-    scheduler._requests = {}
-    scheduler._waiting = deque()
-    scheduler._running_ids = []
-    scheduler._submit_times = {"req": 1.0}
-    scheduler._inflight_request_ids = set()
-    scheduler.resource_manager = SimpleNamespace(free=lambda request: None)
-
-    request = SchedulerRequest(
-        "req",
-        status=SchedulerStatus.FINISHED,
-        data=SimpleNamespace(),
-    )
-    scheduler._requests["req"] = request
-    error = RuntimeError("adapter failed")
-
-    scheduler._handle_batch_exception(
-        SchedulerOutput(requests=[request], batch_data=None),
-        error,
-    )
-
-    out = scheduler.outbox.get_nowait()
-    assert out.request_id == "req"
-    assert out.type == "error"
-    assert out.data is error
-    assert "req" not in scheduler._requests
-    assert "req" not in scheduler._submit_times
-    assert "req" not in scheduler._aborted_request_ids
+    assert stream_output_builder("non-stream", non_stream_data, None) == []

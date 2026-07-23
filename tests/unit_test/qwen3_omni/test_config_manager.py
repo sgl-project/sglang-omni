@@ -79,6 +79,30 @@ def test_config_manager_dotted_parallelism_override_updates_tp_size_alias() -> N
     assert thinker.gpu == [0, 1]
 
 
+def test_config_manager_named_tp_size_override_updates_parallelism_alias() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config(
+        {"stages.thinker.tp_size": 2, "stages.thinker.gpu": [0, 1]}
+    )
+    thinker = _stage(merged, "thinker")
+
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
+
+
+def test_config_manager_named_parallelism_override_updates_tp_size_alias() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config(
+        {"stages.thinker.parallelism.tp": 2, "stages.thinker.gpu": [0, 1]}
+    )
+    thinker = _stage(merged, "thinker")
+
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
+
+
 def test_config_manager_rejects_trailing_key_without_value() -> None:
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
 

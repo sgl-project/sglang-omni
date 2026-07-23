@@ -66,6 +66,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
     AdminRequestBase,
@@ -91,6 +92,8 @@ from sglang_omni.serve.protocol import (
     RolloutSamplingParams,
     SpeechBatchResponse,
     TranscriptionResponse,
+    TranscriptionTextDeltaEvent,
+    TranscriptionTextDoneEvent,
     TranscriptionUsage,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
@@ -122,6 +125,9 @@ MAX_VOICE_UPLOAD_BODY_BYTES = (
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
+    "accepts audio up to",
+    "max_new_tokens must be",
+    "multimodal_train_inputs",
 )
 
 
@@ -179,6 +185,9 @@ def create_app(
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
+    required_speech_reference_count: int | None = None,
+    speech_reference_text_required: bool = False,
+    additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -195,6 +204,11 @@ def create_app(
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
             lowered into backend reference-audio requests.
+        required_speech_reference_count: Exact reference count required before
+            dispatching a speech request to the backend.
+        speech_reference_text_required: Whether each speech reference requires
+            a transcript.
+        additional_speech_languages: Pipeline-specific accepted languages.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` TTS
@@ -233,6 +247,9 @@ def create_app(
             requires_uploaded_voice_for_named_voice
         ),
         supports_uploaded_voice_references=supports_uploaded_voice_references,
+        required_speech_reference_count=required_speech_reference_count,
+        speech_reference_text_required=speech_reference_text_required,
+        additional_speech_languages=additional_speech_languages,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -843,6 +860,29 @@ async def _chat_stream(
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
+def _explicit_generation_params(request: Any) -> list[str]:
+    fields_set = getattr(request, "model_fields_set", set())
+    return sorted(
+        field
+        for field in (
+            "max_new_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+        )
+        if field in fields_set and getattr(request, field, None) is not None
+    )
+
+
+def _record_explicit_generation_params(
+    metadata: dict[str, Any],
+    explicit_fields: list[str],
+) -> None:
+    if explicit_fields:
+        metadata[EXPLICIT_GENERATION_PARAMS_KEY] = explicit_fields
+
+
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
     # Parse stop sequences
@@ -912,6 +952,10 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["video_max_pixels"] = req.video_max_pixels
     if req.video_total_pixels is not None:
         metadata["video_total_pixels"] = req.video_total_pixels
+    _record_explicit_generation_params(
+        metadata,
+        _explicit_generation_params(req),
+    )
 
     extra_params: dict[str, Any] = {}
     for field_name, value in (
@@ -984,20 +1028,19 @@ def _register_generate(app: FastAPI) -> None:
 
 
 def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
-    kwargs: dict[str, Any] = {
-        key: value
-        for key, value in (
-            ("temperature", params.temperature),
-            ("top_p", params.top_p),
-            ("top_k", params.top_k),
-            ("min_p", params.min_p),
-            ("repetition_penalty", params.repetition_penalty),
-            ("stop_token_ids", params.stop_token_ids),
-            ("seed", params.seed),
-            ("max_new_tokens", params.max_new_tokens),
-        )
-        if value is not None
-    }
+    kwargs: dict[str, Any] = {}
+    for key, value in (
+        ("temperature", params.temperature),
+        ("top_p", params.top_p),
+        ("top_k", params.top_k),
+        ("min_p", params.min_p),
+        ("repetition_penalty", params.repetition_penalty),
+        ("stop_token_ids", params.stop_token_ids),
+        ("seed", params.seed),
+        ("max_new_tokens", params.max_new_tokens),
+    ):
+        if value is not None:
+            kwargs[key] = value
     if params.stop is not None:
         kwargs["stop"] = (
             [params.stop] if isinstance(params.stop, str) else list(params.stop)
@@ -1028,6 +1071,11 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         "return_routed_experts": req.return_routed_experts,
         "return_indexer_topk": req.return_indexer_topk,
     }
+    metadata = dict(req.metadata) if req.metadata else {}
+    _record_explicit_generation_params(
+        metadata,
+        _explicit_generation_params(req.sampling_params),
+    )
 
     return GenerateRequest(
         model=req.model,
@@ -1043,7 +1091,12 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         output_modalities=(
             req.output_modalities if req.output_modalities is not None else ["text"]
         ),
-        metadata=dict(req.metadata) if req.metadata else {},
+        multimodal_train_inputs=(
+            req.multimodal_train_inputs.model_dump()
+            if req.multimodal_train_inputs is not None
+            else None
+        ),
+        metadata=metadata,
     )
 
 
@@ -1511,6 +1564,7 @@ def _register_transcriptions(app: FastAPI) -> None:
         response_format: str = Form(default="json"),
         temperature: float | None = Form(default=None),
         max_new_tokens: int | None = Form(default=None, ge=1),
+        stream: bool = Form(default=False),
     ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
@@ -1521,6 +1575,41 @@ def _register_transcriptions(app: FastAPI) -> None:
         audio_bytes = await file.read()
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+
+        normalized_response_format = response_format.strip().lower()
+        if stream:
+            if normalized_response_format not in {"json", "text"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "stream=true supports only response_format 'json' or "
+                        f"'text', got {response_format!r}"
+                    ),
+                )
+            gen_req = build_transcription_generate_request(
+                audio_bytes=audio_bytes,
+                filename=file.filename,
+                content_type=file.content_type,
+                model=model or default_model,
+                language=language,
+                prompt=prompt,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
+                stream=True,
+            )
+            adapter = resolve_adapter(getattr(app.state, "architectures", None))
+            duration_s = _probe_audio_duration(audio_bytes)
+            return StreamingResponse(
+                _transcription_stream(
+                    client,
+                    gen_req,
+                    request_id=request_id,
+                    adapter=adapter,
+                    duration_s=duration_s,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
+            )
 
         gen_req = build_transcription_generate_request(
             audio_bytes=audio_bytes,
@@ -1536,13 +1625,16 @@ def _register_transcriptions(app: FastAPI) -> None:
         try:
             result = await client.completion(gen_req, request_id=request_id)
         except ClientError as exc:
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             logger.exception("Error transcribing audio for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         text = result.text
-        normalized_response_format = response_format.strip().lower()
         if normalized_response_format == "text":
             return PlainTextResponse(text)
         if normalized_response_format not in {"json", "verbose_json"}:
@@ -1577,6 +1669,45 @@ def _register_transcriptions(app: FastAPI) -> None:
         )
 
 
+async def _transcription_stream(
+    client: Client,
+    gen_req: GenerateRequest,
+    *,
+    request_id: str,
+    adapter: Any,
+    duration_s: float,
+) -> AsyncIterator[str]:
+    """SSE generator for streaming transcriptions.
+
+    Emits OpenAI-style transcript.text.delta events for each partial text
+    chunk, then a terminal transcript.text.done event carrying the full
+    post-processed transcript.
+    """
+    final_text: str | None = None
+    try:
+        async for chunk in client.generate(gen_req, request_id=request_id):
+            if chunk.finish_reason is not None:
+                if isinstance(chunk.text, str) and chunk.text:
+                    final_text = chunk.text
+                continue
+            if chunk.modality == "text" and chunk.text:
+                event = TranscriptionTextDeltaEvent(delta=chunk.text)
+                yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+    except Exception as exc:
+        logger.exception("Error streaming transcription for request %s", request_id)
+        payload = {"type": "error", "error": {"message": str(exc)}}
+        yield f"data: {json.dumps(payload)}\n\n"
+        return
+
+    text = adapter.postprocess_text(final_text or "")
+    usage = (
+        TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
+    )
+    done_event = TranscriptionTextDoneEvent(text=text, usage=usage)
+    yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+
+
 def _probe_audio_duration(audio_bytes: bytes) -> float:
     """Best-effort audio duration (seconds) from raw upload bytes.
 
@@ -1605,17 +1736,24 @@ def build_transcription_generate_request(
     prompt: str | None,
     temperature: float | None,
     max_new_tokens: int | None = None,
+    stream: bool = False,
 ) -> GenerateRequest:
     params: dict[str, Any] = {"task": "transcribe"}
+    metadata: dict[str, Any] = {"task": "asr"}
+    explicit_fields: list[str] = []
     if language is not None:
         params["language"] = language
     if prompt is not None:
         params["prompt"] = prompt
-    # note (aaron): the client layer fills in the SamplingParams default of 1.0
-    # when this key is absent. 0.0 (greedy) matches the OpenAI API, see issue #959.
-    params["temperature"] = temperature if temperature is not None else 0.0
+    if temperature is not None:
+        explicit_fields.append("temperature")
     if max_new_tokens is not None:
-        params["max_new_tokens"] = max_new_tokens
+        explicit_fields.append("max_new_tokens")
+    _record_explicit_generation_params(metadata, sorted(explicit_fields))
+    sampling = SamplingParams(
+        temperature=temperature if temperature is not None else 0.0,
+        max_new_tokens=max_new_tokens,
+    )
 
     return GenerateRequest(
         model=model,
@@ -1624,8 +1762,9 @@ def build_transcription_generate_request(
             "filename": filename,
             "content_type": content_type,
         },
+        sampling=sampling,
         extra_params=params,
-        stream=False,
+        stream=stream,
         output_modalities=["text"],
-        metadata={"task": "asr"},
+        metadata=metadata,
     )

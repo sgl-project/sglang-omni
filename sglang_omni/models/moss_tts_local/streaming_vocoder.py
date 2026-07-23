@@ -18,24 +18,28 @@ import torch
 
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.models.moss_tts_local.vocoder_decoder import MossTTSLocalVocoderDecoder
-from sglang_omni.models.tts_streaming import (
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+    StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
 )
-from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.pipeline_state import build_usage
-from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
 _SOURCE_HINT = "MOSS-TTS Local"
+_SESSION_RESERVED_OFFLINE_SLOTS = 1
 
 
 class _CodecStreamSession:
-    """Persistent batched ``codec.streaming()`` session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
+    """Persistent batched ``codec.streaming()`` session with slot bookkeeping.
+
+    Live requests hold stream slots for their lifetime. Offline work always has
+    reserved slots and can also borrow currently idle stream slots. All methods
+    run on the scheduler-loop thread.
+    """
 
     def __init__(
         self, codec: Any, *, stream_slots: int, offline_slots: int, n_vq: int
@@ -47,6 +51,7 @@ class _CodecStreamSession:
         self._n_vq = int(n_vq)
         self._device = next(codec.parameters()).device
         self._free_stream_slots = list(range(self._stream_slots))
+        self._stream_slots_in_use: set[int] = set()
         self._closed = False
         self._cg_runner: Any | None = None
         # Capture is attempted at most once per session; a low-VRAM skip must not re-probe per step.
@@ -111,12 +116,17 @@ class _CodecStreamSession:
     def acquire(self) -> int | None:
         if not self._free_stream_slots:
             return None
-        return self._free_stream_slots.pop()
+        slot = self._free_stream_slots.pop()
+        self._stream_slots_in_use.add(slot)
+        return slot
 
     def release(self, slot: int) -> None:
         if self._closed:
             return
+        if slot not in self._stream_slots_in_use:
+            raise RuntimeError(f"MOSS vocoder stream slot {slot} is not leased")
         self._reset_slots([slot])
+        self._stream_slots_in_use.remove(slot)
         self._free_stream_slots.append(slot)
 
     def close(self) -> None:
@@ -148,14 +158,19 @@ class _CodecStreamSession:
             self._batch_size, dtype=torch.bool, device=self._device
         )
         reset_mask[slots] = True
+        reset_states = 0
 
         def _reset(module: Any) -> None:
+            nonlocal reset_states
             state = getattr(module, "_streaming_state", None)
             if state is not None:
                 state.reset(reset_mask.to(state.device))
+                reset_states += 1
 
         with torch.no_grad():
             self._codec.apply(_reset)
+        if reset_states == 0:
+            raise RuntimeError("MOSS vocoder session has no resettable streaming state")
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         """Advance participating slots by one uniform-length step. ``slot_codes`` maps slot -> ``[n_vq, T]`` (same T); returns slot -> ``[channels, samples]`` float32 CPU audio."""
@@ -225,40 +240,76 @@ class _CodecStreamSession:
         return out
 
     def decode_offline(
-        self, codes_list: list[torch.Tensor], *, max_step_frames: int
+        self,
+        codes_list: list[torch.Tensor],
+        *,
+        max_step_frames: int,
+        max_batch_size: int,
     ) -> list[torch.Tensor]:
         """Decode complete utterances ``[n_vq, T]`` through offline slots in the
         persistent codec session."""
+        if not codes_list:
+            return []
         wavs: list[torch.Tensor] = []
-        for wave_start in range(0, len(codes_list), self._offline_slots):
-            wave = codes_list[wave_start : wave_start + self._offline_slots]
-            slots = [self._stream_slots + i for i in range(len(wave))]
-            self._reset_slots(slots)
-            cursors = [0] * len(wave)
-            chunks: list[list[torch.Tensor]] = [[] for _ in wave]
-            while True:
-                remaining = [
-                    int(codes.shape[1]) - cur for codes, cur in zip(wave, cursors)
-                ]
-                positive = [r for r in remaining if r > 0]
-                if not positive:
-                    break
-                if any(r >= max_step_frames for r in positive):
-                    step_t = max_step_frames
+        reserved = list(range(self._stream_slots, self._batch_size))
+        requested_wave_size = min(max(int(max_batch_size), 1), len(codes_list))
+        borrow_count = min(
+            max(requested_wave_size - len(reserved), 0),
+            len(self._free_stream_slots),
+        )
+        borrowed = self._free_stream_slots[-borrow_count:] if borrow_count else []
+        if borrowed:
+            del self._free_stream_slots[-borrow_count:]
+        available = reserved + borrowed
+        # Note(Chenchen Hong): Under stream saturation, offline batches degrade
+        # to serial waves and block the scheduler pump until decoding completes.
+        wave_size = min(requested_wave_size, len(available))
+        decode_succeeded = False
+        try:
+            for wave_start in range(0, len(codes_list), wave_size):
+                wave = codes_list[wave_start : wave_start + wave_size]
+                slots = available[: len(wave)]
+                self._reset_slots(slots)
+                cursors = [0] * len(wave)
+                chunks: list[list[torch.Tensor]] = [[] for _ in wave]
+                while True:
+                    remaining = [
+                        int(codes.shape[1]) - cur for codes, cur in zip(wave, cursors)
+                    ]
+                    positive = [r for r in remaining if r > 0]
+                    if not positive:
+                        break
+                    if any(r >= max_step_frames for r in positive):
+                        step_t = max_step_frames
+                    else:
+                        step_t = min(positive)
+                    plan = {
+                        slots[i]: wave[i][:, cursors[i] : cursors[i] + step_t]
+                        for i, rem in enumerate(remaining)
+                        if rem >= step_t
+                    }
+                    decoded = self.step(plan)
+                    for i in range(len(wave)):
+                        if slots[i] in plan:
+                            chunks[i].append(decoded[slots[i]])
+                            cursors[i] += step_t
+                for item_chunks in chunks:
+                    wavs.append(torch.cat(item_chunks, dim=-1))
+            decode_succeeded = True
+        finally:
+            if borrowed:
+                try:
+                    self._reset_slots(borrowed)
+                except Exception:
+                    logger.exception(
+                        "MOSS vocoder failed to reset borrowed stream slots %s; "
+                        "quarantining them",
+                        borrowed,
+                    )
+                    if decode_succeeded:
+                        raise
                 else:
-                    step_t = min(positive)
-                plan = {
-                    slots[i]: wave[i][:, cursors[i] : cursors[i] + step_t]
-                    for i, rem in enumerate(remaining)
-                    if rem >= step_t
-                }
-                decoded = self.step(plan)
-                for i in range(len(wave)):
-                    if slots[i] in plan:
-                        chunks[i].append(decoded[slots[i]])
-                        cursors[i] += step_t
-            for item_chunks in chunks:
-                wavs.append(torch.cat(item_chunks, dim=-1))
+                    self._free_stream_slots.extend(borrowed)
         return wavs
 
 
@@ -269,13 +320,21 @@ class _LocalStreamState:
     n_vq: int | None = None
     initial_chunk_frames: int = 0
     threshold: int = 0
-    emitted_any: bool = False
 
 
-class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
+@dataclass
+class _CoalescedStepPlan:
+    step_t: int
+    slot_codes: dict[int, torch.Tensor]
+
+
+class MossTTSLocalStreamingVocoderScheduler(
+    StreamingVocoderBase[_LocalStreamState, _CoalescedStepPlan]
+):
     """Decode MOSS-TTS Local codec rows incrementally on the v2 codec."""
 
     _can_batch_stream_chunks = True
+    _stream_chunk_batch_distinct_requests = True
 
     def __init__(
         self,
@@ -283,7 +342,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         *,
         n_vq: int,
         sample_rate: int,
-        stream_slots: int = 8,
+        stream_slots: int = 15,
         stream_chunk_frames: int = 25,
         initial_chunk_frames: int = 5,
         coalesce_floor_frames: int = 5,
@@ -334,9 +393,11 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             0, min(int(coalesce_floor_frames), int(stream_chunk_frames))
         )
         self._max_step_frames = int(max_step_frames)
-        self._offline_slots = max(int(max_batch_size), 1)
+        # Pure non-streaming traffic closes the idle session and uses the packed
+        # batch path. Keep one overflow lane for progress while streams are live
+        # instead of reserving half of every streaming CUDA graph for that case.
+        self._offline_slots = _SESSION_RESERVED_OFFLINE_SLOTS
         self._n_vq = int(n_vq)
-        self._sample_rate = int(sample_rate)
         self._session: _CodecStreamSession | None = None
         self._session_used_by_streaming = False
         self._cuda_graph = bool(cuda_graph)
@@ -353,102 +414,82 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                     f"cuda_graph_frames exceed max_step_frames={self._max_step_frames}: "
                     f"{too_large}"
                 )
-        self._stream_states: dict[str, _LocalStreamState] = {}
         super().__init__(
             self._vocode,
             batch_compute_fn=self._vocode_batch,
+            sample_rate=sample_rate,
+            stream_source_hint=_SOURCE_HINT,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
 
-    def start(self) -> None:
-        # Graphs are captured in the factory (warmup_now) before this serving loop runs.
-        try:
-            super().start()
-        finally:
-            self._close_streaming_session()
+    def on_serving_stop(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+        self._session_used_by_streaming = False
 
-    def stop(self) -> None:
-        was_running = self._running
-        super().stop()
-        if not was_running:
-            self._close_streaming_session()
+    def create_stream_state(self, request_id: str) -> _LocalStreamState:
+        del request_id
+        return _LocalStreamState()
 
-    def _close_streaming_session(self) -> None:
-        with self._state_lock:
-            self._stream_states.clear()
-            if self._session is not None:
-                self._session.close()
-                self._session = None
-            self._session_used_by_streaming = False
-
-    # --- Streaming hooks ---
-
-    def is_streaming_payload(self, payload: StagePayload) -> bool:
-        params = payload.request.params
-        if not isinstance(params, dict):
-            raise TypeError(
-                f"MOSS-TTS Local request params must be a dict, got "
-                f"{type(params).__name__}"
+    def latch_stream_contract(
+        self,
+        request_id: str,
+        state: _LocalStreamState,
+        source: StagePayload | Mapping[str, Any],
+        *,
+        origin: str,
+    ) -> None:
+        if origin == "payload":
+            params = (
+                source.request.params
+                if isinstance(source.request.params, dict)
+                else None
             )
-        return bool(params.get("stream", False))
+            self._latch_thresholds(request_id, state, params)
+            return
+        metadata: Mapping[str, Any] = source
+        n_vq = metadata.get("n_vq")
+        if n_vq is not None:
+            n_vq = int(n_vq)
+            if state.n_vq is not None and state.n_vq != n_vq:
+                raise ValueError(
+                    f"MOSS-TTS Local stream n_vq changed for {request_id!r}: "
+                    f"{state.n_vq} -> {n_vq}"
+                )
+            state.n_vq = n_vq
+        if state.threshold == 0:
+            self._latch_thresholds(request_id, state, metadata)
 
-    def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        state = self._stream_states.setdefault(request_id, _LocalStreamState())
-        params = (
-            payload.request.params if isinstance(payload.request.params, dict) else None
-        )
-        self._latch_thresholds(state, params)
-
-    def on_stream_chunk(
-        self, request_id: str, item: StreamItem
-    ) -> list[OutgoingMessage]:
-        self._ingest_chunk(request_id, item)
-        self._pump_streams()
-        return []
-
-    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
-        failed: list[str] = []
-        with self._state_lock:
-            for request_id, item in items:
-                if self._is_aborted(request_id):
-                    continue
-                try:
-                    self._ingest_chunk(request_id, item)
-                except Exception as exc:
-                    self._emit_error(request_id, exc)
-                    self._abort_state(request_id)
-                    failed.append(request_id)
-            self._pump_streams()
-        # Run the external abort callback off the GPU-serializing lock, matching the serving loop.
-        for request_id in failed:
-            self._cleanup_aborted_request(request_id)
-
-    def _ingest_chunk(self, request_id: str, item: StreamItem) -> None:
-        state = self._stream_states.setdefault(request_id, _LocalStreamState())
-        self._latch_stream_metadata(request_id, state, item.metadata)
-
-        row = item.data
-        if not isinstance(row, torch.Tensor):
-            raise TypeError(
-                f"MOSS-TTS Local stream chunk for {request_id!r} must carry a "
-                f"torch.Tensor, got {type(row).__name__}"
-            )
-        row = row.to(dtype=torch.long)
+    def validate_chunk(
+        self, request_id: str, state: _LocalStreamState, codes: torch.Tensor
+    ) -> torch.Tensor:
+        del request_id
+        codes = codes.to(dtype=torch.long)
         n_vq = state.n_vq if state.n_vq is not None else self._n_vq
-        if row.ndim != 1 or int(row.shape[0]) < n_vq + 1:
+        if codes.ndim != 1 or int(codes.shape[0]) < n_vq + 1:
             raise ValueError(
                 f"MOSS-TTS Local stream chunk must be a 1-D row with at least "
-                f"{n_vq + 1} channels (text + codes), got {tuple(row.shape)}"
+                f"{n_vq + 1} channels (text + codes), got {tuple(codes.shape)}"
             )
         # Row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
-        state.pending.append(row[1 : 1 + n_vq])
+        return codes[1 : 1 + n_vq]
+
+    def ingest(
+        self, request_id: str, state: _LocalStreamState, codes: torch.Tensor
+    ) -> None:
+        del request_id
+        state.pending.append(codes)
         self._ensure_slot(state)
 
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        payload = self._stream_payloads[request_id]
-        state = self._stream_states.setdefault(request_id, _LocalStreamState())
-
+    def decode_delta(
+        self, request_id: str, state: _LocalStreamState, *, is_final: bool
+    ) -> torch.Tensor | None:
+        """Stream-done drain: pending frames go through the request's session
+        slot (released afterwards) or the offline lane when slot-starved;
+        steady-state chunks decode through the coalesced step hooks instead."""
+        del request_id, is_final
         audio_parts: list[torch.Tensor] = []
         if state.slot is None and state.pending:
             # Slot-starved: every frame is still buffered, decode offline.
@@ -456,7 +497,9 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             state.pending = []
             audio_parts.extend(
                 self._ensure_session_graphed().decode_offline(
-                    [codes], max_step_frames=self._max_step_frames
+                    [codes],
+                    max_step_frames=self._max_step_frames,
+                    max_batch_size=self._max_batch_size,
                 )
             )
         elif state.slot is not None:
@@ -468,18 +511,30 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 audio_parts.append(session.step({state.slot: codes})[state.slot])
             session.release(state.slot)
             state.slot = None
+        if not audio_parts:
+            return None
+        return torch.cat(audio_parts, dim=-1)
 
-        if not audio_parts and not state.emitted_any:
-            fallback = self._decode_payload_codes(payload)
-            if fallback is not None:
-                audio_parts.append(fallback)
+    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+        del request_id
+        return audio_waveform_payload(
+            waveform.detach().to("cpu", torch.float32),
+            sample_rate=self._sample_rate,
+            modality="audio",
+            source_hint=f"{_SOURCE_HINT} streaming",
+            keep_channels=True,
+        )
 
-        messages: list[OutgoingMessage] = []
-        if audio_parts:
-            audio = torch.cat(audio_parts, dim=-1)
-            state.emitted_any = True
-            messages.append(self._chunk_message(request_id, audio))
+    def fallback_full_decode(
+        self, request_id: str, payload: StagePayload, state: _LocalStreamState
+    ) -> torch.Tensor | None:
+        del request_id, state
+        return self._decode_payload_codes(payload)
 
+    def final_result_data(
+        self, request_id: str, payload: StagePayload, state: _LocalStreamState
+    ) -> dict[str, Any]:
+        del request_id, state
         final_data: dict[str, Any] = {
             "modality": "audio",
             "sample_rate": self._sample_rate,
@@ -487,25 +542,82 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         usage = build_usage(MossTTSLocalState.from_dict(payload.data))
         if usage is not None:
             final_data["usage"] = usage
-        messages.append(
-            OutgoingMessage(
-                request_id=request_id,
-                type="result",
-                data=StagePayload(
-                    request_id=payload.request_id,
-                    request=payload.request,
-                    data=final_data,
-                ),
-            )
-        )
-        return messages
+        return final_data
 
-    def clear_stream_state(self, request_id: str) -> None:
-        state = self._stream_states.pop(request_id, None)
-        if state is not None and state.slot is not None and self._session is not None:
+    def release_stream_resources(
+        self, request_id: str, state: _LocalStreamState
+    ) -> None:
+        del request_id
+        if state.slot is not None and self._session is not None:
             self._session.release(state.slot)
 
-    # --- Streaming internals ---
+    def select_step_participants(self) -> list[tuple[str, _LocalStreamState]]:
+        """Every stream whose buffer crossed its threshold is due; due streams
+        coalesce with peers above the join floor into one forward."""
+        join_floor = max(
+            1, min(self._coalesce_floor_frames or 5, self._stream_chunk_frames)
+        )
+        slotted = [
+            (request_id, state)
+            for request_id, state in self._stream_state_items()
+            if state.slot is not None and state.threshold > 0
+        ]
+        due = [
+            entry for entry in slotted if len(entry[1].pending) >= entry[1].threshold
+        ]
+        if not due:
+            return []
+        floor = min(
+            min(len(state.pending) for _, state in due),
+            join_floor,
+        )
+        return [
+            entry
+            for entry in slotted
+            if self._can_join_coalesced_step(entry[0], entry[1], floor)
+        ]
+
+    def build_step_plan(
+        self, participants: list[tuple[str, _LocalStreamState]]
+    ) -> _CoalescedStepPlan:
+        """Uniform step capped at the steady chunk size and any un-emitted
+        participant's first-chunk threshold; the base pump re-pumps remainder."""
+        step_t = min(
+            min(len(state.pending) for _, state in participants),
+            self._stream_chunk_frames,
+        )
+        for request_id, state in participants:
+            if not self._stream_has_emitted(request_id):
+                step_t = min(step_t, state.threshold)
+        return _CoalescedStepPlan(
+            step_t=step_t,
+            slot_codes={
+                state.slot: torch.stack(state.pending[:step_t], dim=1)
+                for _, state in participants
+            },
+        )
+
+    def run_step(
+        self,
+        participants: list[tuple[str, _LocalStreamState]],
+        plan: _CoalescedStepPlan,
+    ) -> dict[str, torch.Tensor]:
+        decoded = self._ensure_session().step(plan.slot_codes)
+        out: dict[str, torch.Tensor] = {}
+        for request_id, state in participants:
+            del state.pending[: plan.step_t]
+            state.threshold = self._stream_chunk_frames
+            out[request_id] = decoded[state.slot]
+        return out
+
+    def _can_join_coalesced_step(
+        self, request_id: str, state: _LocalStreamState, floor: int
+    ) -> bool:
+        if len(state.pending) >= state.threshold:
+            return True
+        if not self._stream_has_emitted(request_id):
+            return False
+        return len(state.pending) >= floor
 
     def _ensure_session(self) -> _CodecStreamSession:
         if self._session is None:
@@ -590,40 +702,11 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             self._session_used_by_streaming = True
             state.slot = self._ensure_session_graphed().acquire()
 
-    def _latch_stream_metadata(
+    def _latch_thresholds(
         self,
         request_id: str,
         state: _LocalStreamState,
-        metadata: dict[str, Any] | None,
-    ) -> None:
-        if not isinstance(metadata, dict):
-            raise RuntimeError(
-                f"MOSS-TTS Local stream chunk for {request_id!r} is missing metadata"
-            )
-        if metadata.get("modality") not in (None, "audio_codes"):
-            raise ValueError(
-                f"MOSS-TTS Local stream chunk modality must be audio_codes, got "
-                f"{metadata.get('modality')!r}"
-            )
-        if metadata.get("stream") is not True:
-            raise RuntimeError(
-                f"MOSS-TTS Local stream chunk for {request_id!r} must include "
-                "metadata['stream'] == True"
-            )
-        n_vq = metadata.get("n_vq")
-        if n_vq is not None:
-            n_vq = int(n_vq)
-            if state.n_vq is not None and state.n_vq != n_vq:
-                raise ValueError(
-                    f"MOSS-TTS Local stream n_vq changed for {request_id!r}: "
-                    f"{state.n_vq} -> {n_vq}"
-                )
-            state.n_vq = n_vq
-        if state.threshold == 0:
-            self._latch_thresholds(state, metadata)
-
-    def _latch_thresholds(
-        self, state: _LocalStreamState, params: Mapping[str, Any] | None
+        params: Mapping[str, Any] | None,
     ) -> None:
         explicit = (
             isinstance(params, Mapping)
@@ -637,90 +720,10 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             )
         else:
             state.initial_chunk_frames = self._default_initial_chunk_frames
-        if state.initial_chunk_frames > 0 and not state.emitted_any:
+        if state.initial_chunk_frames > 0 and not self._stream_has_emitted(request_id):
             state.threshold = state.initial_chunk_frames
         else:
             state.threshold = self._stream_chunk_frames
-
-    def _pump_streams(self) -> None:
-        """Decode every stream whose buffer crossed its threshold; due streams coalesce with peers above the join floor into one forward. A failed step fails and aborts all its participants."""
-        join_floor = max(
-            1, min(self._coalesce_floor_frames or 5, self._stream_chunk_frames)
-        )
-        while True:
-            slotted = [
-                (request_id, state)
-                for request_id, state in self._stream_states.items()
-                if state.slot is not None and state.threshold > 0
-            ]
-            due = [
-                entry
-                for entry in slotted
-                if len(entry[1].pending) >= entry[1].threshold
-            ]
-            if not due:
-                return
-            floor = min(
-                min(len(state.pending) for _, state in due),
-                join_floor,
-            )
-            participants = [
-                entry
-                for entry in slotted
-                if self._can_join_coalesced_step(entry[1], floor)
-            ]
-            # Cap at the steady chunk size (= CUDA-graph capture ceiling) so coalesced backlogs
-            # stay on the graphed fast path; the while-loop re-pumps any remainder.
-            step_t = min(
-                min(len(state.pending) for _, state in participants),
-                self._stream_chunk_frames,
-            )
-            plan: dict[int, torch.Tensor] = {}
-            for _, state in participants:
-                plan[state.slot] = torch.stack(state.pending[:step_t], dim=1)
-            try:
-                decoded = self._ensure_session().step(plan)
-            except Exception as exc:
-                logger.exception(
-                    "MOSS-TTS Local streaming decode step failed; aborting %d "
-                    "participating request(s)",
-                    len(participants),
-                )
-                for request_id, _ in participants:
-                    self._emit_error(request_id, exc)
-                    self.abort(request_id)
-                return
-            for request_id, state in participants:
-                del state.pending[:step_t]
-                state.emitted_any = True
-                state.threshold = self._stream_chunk_frames
-                if not self._is_aborted(request_id):
-                    self.outbox.put(
-                        self._chunk_message(request_id, decoded[state.slot])
-                    )
-
-    @staticmethod
-    def _can_join_coalesced_step(state: _LocalStreamState, floor: int) -> bool:
-        if len(state.pending) >= state.threshold:
-            return True
-        if not state.emitted_any:
-            return False
-        return len(state.pending) >= floor
-
-    def _chunk_message(self, request_id: str, audio: torch.Tensor) -> OutgoingMessage:
-        data = audio_waveform_payload(
-            audio.detach().to("cpu", torch.float32),
-            sample_rate=self._sample_rate,
-            modality="audio",
-            source_hint=f"{_SOURCE_HINT} streaming",
-            keep_channels=True,
-        )
-        return OutgoingMessage(
-            request_id=request_id,
-            type="stream",
-            data=data,
-            metadata={"modality": "audio"},
-        )
 
     def _decode_payload_codes(self, payload: StagePayload) -> torch.Tensor | None:
         state = MossTTSLocalState.from_dict(payload.data)
@@ -732,10 +735,10 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         codes = rows[:, : self._n_vq].transpose(0, 1).contiguous()
         self._session_used_by_streaming = True
         return self._ensure_session_graphed().decode_offline(
-            [codes], max_step_frames=self._max_step_frames
+            [codes],
+            max_step_frames=self._max_step_frames,
+            max_batch_size=self._max_batch_size,
         )[0]
-
-    # --- Non-streaming path ---
 
     def _prepare_codes(
         self, payload: StagePayload
@@ -839,7 +842,9 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         # every session access on the same lock.
         with self._state_lock:
             wavs = self._session.decode_offline(
-                channels_first, max_step_frames=self._max_step_frames
+                channels_first,
+                max_step_frames=self._max_step_frames,
+                max_batch_size=self._max_batch_size,
             )
         return [wav.detach().to("cpu", torch.float32).contiguous() for wav in wavs]
 

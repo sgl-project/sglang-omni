@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import math
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -21,6 +22,104 @@ try:
     from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None
+
+
+# note (Zhang Yiyang): FA3 local-window attention diverges from SDPA when one
+# varlen sequence spans multiple 128-token query tiles. Pack each tile as an
+# independent sequence in one kernel launch.
+_FA3_LOCAL_WINDOW_QUERY_TILE_SIZE = 128
+
+
+@dataclass(frozen=True)
+class _LocalCausalFlashPlan:
+    cu_seqlens_q: torch.Tensor
+    cu_seqlens_k: torch.Tensor
+    kv_indices: torch.Tensor | None
+    max_seqlen_q: int
+    max_seqlen_k: int
+    context: int
+
+
+def _build_local_causal_flash_plan(
+    cu_seqlens: torch.Tensor,
+    *,
+    context: int,
+    query_chunk_size: int = _FA3_LOCAL_WINDOW_QUERY_TILE_SIZE,
+) -> _LocalCausalFlashPlan:
+    if context <= 0:
+        raise ValueError(f"local causal context must be positive, got {context}")
+    if query_chunk_size <= 0:
+        raise ValueError(f"query_chunk_size must be positive, got {query_chunk_size}")
+
+    sequence_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to("cpu").tolist()
+    q_lengths: list[int] = []
+    k_lengths: list[int] = []
+    key_starts: list[int] = []
+    packed_offset = 0
+    kv_cursor = 0
+    needs_kv_gather = False
+    for sequence_length in sequence_lengths:
+        sequence_length = int(sequence_length)
+        for query_start in range(0, sequence_length, query_chunk_size):
+            query_end = min(query_start + query_chunk_size, sequence_length)
+            key_start = max(0, query_start - context + 1)
+            key_end = query_end
+            q_lengths.append(query_end - query_start)
+            k_lengths.append(key_end - key_start)
+            absolute_key_start = packed_offset + key_start
+            absolute_key_end = packed_offset + key_end
+            key_starts.append(absolute_key_start)
+            needs_kv_gather |= absolute_key_start != kv_cursor
+            kv_cursor = absolute_key_end
+        packed_offset += sequence_length
+
+    if not q_lengths:
+        raise ValueError("local causal flash plan requires at least one query token")
+
+    q_lengths_tensor = torch.tensor(
+        q_lengths, device=cu_seqlens.device, dtype=torch.int32
+    )
+    k_lengths_tensor = torch.tensor(
+        k_lengths, device=cu_seqlens.device, dtype=torch.int32
+    )
+    cu_seqlens_q = torch.zeros(
+        len(q_lengths) + 1, device=cu_seqlens.device, dtype=torch.int32
+    )
+    cu_seqlens_k = torch.zeros_like(cu_seqlens_q)
+    cu_seqlens_q[1:] = torch.cumsum(q_lengths_tensor, dim=0)
+    cu_seqlens_k[1:] = torch.cumsum(k_lengths_tensor, dim=0)
+    kv_indices = None
+    if needs_kv_gather or kv_cursor != packed_offset:
+        packed_kv_length = sum(k_lengths)
+        k_lengths_long = k_lengths_tensor.to(torch.long)
+        key_starts_tensor = torch.tensor(
+            key_starts, device=cu_seqlens.device, dtype=torch.long
+        )
+        chunk_offsets = key_starts_tensor - cu_seqlens_k[:-1].to(torch.long)
+        repeated_offsets = torch.repeat_interleave(
+            chunk_offsets,
+            k_lengths_long,
+            output_size=packed_kv_length,
+        )
+        kv_indices = (
+            torch.arange(packed_kv_length, device=cu_seqlens.device, dtype=torch.long)
+            + repeated_offsets
+        )
+    return _LocalCausalFlashPlan(
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        kv_indices=kv_indices,
+        max_seqlen_q=max(q_lengths),
+        max_seqlen_k=max(k_lengths),
+        context=context,
+    )
+
+
+def _gather_local_flash_kv(
+    x: torch.Tensor,
+    kv_indices: torch.Tensor | None,
+) -> torch.Tensor:
+    return x if kv_indices is None else x.index_select(0, kv_indices)
 
 
 class _PositionIdsCache:
@@ -189,7 +288,12 @@ def _apply_cached_packed_rope(
 class MossTTSLocalAttention(nn.Module):
     """MOSS local-causal self attention over dense or packed decoder frames."""
 
-    def __init__(self, source: nn.Module) -> None:
+    def __init__(
+        self,
+        source: nn.Module,
+        *,
+        packed_rope_cache: _MossPackedRopeCache | None = None,
+    ) -> None:
         super().__init__()
         object.__setattr__(self, "source", source)
         self.in_proj = source.in_proj
@@ -209,7 +313,9 @@ class MossTTSLocalAttention(nn.Module):
         self.rope = source.rope
         self._flash_attn_varlen = flash_attn_varlen_func
         max_period = self.rope.max_period if self.rope is not None else 10000.0
-        self._packed_rope_cache = _MossPackedRopeCache(max_period=max_period)
+        self._packed_rope_cache = packed_rope_cache or _MossPackedRopeCache(
+            max_period=max_period
+        )
 
     def resolve_attention_implementation(self, x: torch.Tensor) -> str:
         if (
@@ -234,6 +340,7 @@ class MossTTSLocalAttention(nn.Module):
         max_seqlen: int | None = None,
         position_ids: torch.Tensor | None = None,
         input_lengths: torch.Tensor | None = None,
+        local_flash_plan: _LocalCausalFlashPlan | None = None,
     ) -> torch.Tensor:
         backend = self.resolve_attention_implementation(query)
         if backend == "flash_attention_2":
@@ -252,6 +359,7 @@ class MossTTSLocalAttention(nn.Module):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 position_ids=position_ids,
+                local_flash_plan=local_flash_plan,
             )
         if query.dim() != 3:
             raise ValueError(
@@ -303,6 +411,7 @@ class MossTTSLocalAttention(nn.Module):
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
         position_ids: torch.Tensor,
+        local_flash_plan: _LocalCausalFlashPlan | None,
     ) -> torch.Tensor:
         q, k, v = self._project_qkv(x)
         q, k = self._apply_packed_rope(
@@ -312,6 +421,32 @@ class MossTTSLocalAttention(nn.Module):
             max_positions=max_seqlen,
         )
         assert self._flash_attn_varlen is not None
+        if self.causal and self.context is not None:
+            context = int(self.context)
+            plan = local_flash_plan or _build_local_causal_flash_plan(
+                cu_seqlens,
+                context=context,
+            )
+            if plan.context != context:
+                raise ValueError(
+                    f"local flash plan context {plan.context} does not match "
+                    f"attention context {context}"
+                )
+            packed_k = _gather_local_flash_kv(k, plan.kv_indices)
+            packed_v = _gather_local_flash_kv(v, plan.kv_indices)
+            out = self._flash_attn_varlen(
+                q.contiguous(),
+                packed_k.contiguous(),
+                packed_v.contiguous(),
+                plan.cu_seqlens_q,
+                plan.cu_seqlens_k,
+                plan.max_seqlen_q,
+                plan.max_seqlen_k,
+                causal=True,
+                window_size=self._flash_window_size(),
+            )
+            return self.out_proj(out.reshape(x.shape[0], self.embed_dim))
+
         out = self._flash_attn_varlen(
             q.contiguous(),
             k.contiguous(),
@@ -336,7 +471,12 @@ class MossTTSLocalAttention(nn.Module):
 class MossTTSLocalTransformerLayer(nn.Module):
     """One MOSS vocoder transformer layer."""
 
-    def __init__(self, source: nn.Module) -> None:
+    def __init__(
+        self,
+        source: nn.Module,
+        *,
+        packed_rope_cache: _MossPackedRopeCache | None = None,
+    ) -> None:
         super().__init__()
         object.__setattr__(self, "source", source)
         self.norm1 = source.norm1
@@ -344,7 +484,10 @@ class MossTTSLocalTransformerLayer(nn.Module):
         self.layer_scale_1 = source.layer_scale_1
         self.layer_scale_2 = source.layer_scale_2
         self.ffn = source.ffn
-        self.self_attn = MossTTSLocalAttention(source.self_attn)
+        self.self_attn = MossTTSLocalAttention(
+            source.self_attn,
+            packed_rope_cache=packed_rope_cache,
+        )
         assert (
             isinstance(self.ffn, nn.Sequential) and len(self.ffn) >= 3
         ), "MOSS vocoder transformer layer requires Linear-GELU-Linear FFN"
@@ -365,8 +508,15 @@ class MossTTSLocalTransformer(nn.Module):
     def __init__(self, source: nn.Module) -> None:
         super().__init__()
         object.__setattr__(self, "source", source)
+        packed_rope_cache = _MossPackedRopeCache(max_period=source.max_period)
         self.layers = nn.ModuleList(
-            [MossTTSLocalTransformerLayer(layer) for layer in source.layers]
+            [
+                MossTTSLocalTransformerLayer(
+                    layer,
+                    packed_rope_cache=packed_rope_cache,
+                )
+                for layer in source.layers
+            ]
         )
         self.positional_embedding = source.positional_embedding
         self.positional_scale = float(source.positional_scale)
@@ -437,12 +587,20 @@ class MossTTSLocalProjectedTransformer(nn.Module):
                     packed_x, valid_mask, cu_seqlens, position_ids = (
                         _pack_padded_sequence(x, input_lengths)
                     )
+                first_attention = self.transformer.layers[0].self_attn
+                local_flash_plan = None
+                if first_attention.causal and first_attention.context is not None:
+                    local_flash_plan = _build_local_causal_flash_plan(
+                        cu_seqlens,
+                        context=int(first_attention.context),
+                    )
                 packed_x = self.transformer(
                     packed_x,
                     cu_seqlens=cu_seqlens,
                     max_seqlen=max_valid_seqlen,
                     position_ids=position_ids,
                     input_lengths=input_lengths,
+                    local_flash_plan=local_flash_plan,
                     **kwargs,
                 )
                 x = (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 
 import pytest
 
@@ -304,5 +305,143 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
             await future
         assert coordinator._requests == {}
         assert coordinator._partial_results == {}
+
+    asyncio.run(_run())
+
+
+async def _drive_stream_until_registered(coordinator: Coordinator, request_id: str):
+    """Start consuming a stream and return (task, error_sink, future) once the
+    request's completion future has been created."""
+    error_sink: list[str] = []
+
+    async def _consume() -> None:
+        try:
+            async for _msg in coordinator.stream(request_id, "hello"):
+                pass
+        except RuntimeError as exc:
+            error_sink.append(str(exc))
+
+    task = asyncio.create_task(_consume())
+    for _ in range(100):
+        if request_id in coordinator._completion_futures:
+            break
+        await asyncio.sleep(0)
+    future = coordinator._completion_futures[request_id]
+    return task, error_sink, future
+
+
+def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception() -> (
+    None
+):
+    """Aborting a streaming request cancels its completion future instead of
+    setting an exception no one retrieves, so the event loop never reports a
+    'Future exception was never retrieved' error."""
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        loop = asyncio.get_running_loop()
+        handler_contexts: list = []
+        loop.set_exception_handler(
+            lambda _loop, context: handler_contexts.append(context)
+        )
+
+        task, error_sink, future = await _drive_stream_until_registered(
+            coordinator, "req-1"
+        )
+
+        assert await coordinator.abort("req-1") is True
+        await asyncio.wait_for(task, timeout=1)
+
+        # Stream terminated via its queue; the future is cancelled rather than
+        # carrying an un-retrieved exception.
+        assert error_sink == ["aborted"]
+        assert future.cancelled() is True
+        assert "req-1" not in coordinator._completion_futures
+
+        # Dropping the future must not trip the loop's exception handler.
+        del future
+        gc.collect()
+        assert not any(
+            "never retrieved" in str(ctx.get("message", "")) for ctx in handler_contexts
+        )
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
+    """A coordinator failure reaches the stream without leaving an exception
+    on its unused completion future."""
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        loop = asyncio.get_running_loop()
+        handler_contexts: list = []
+        loop.set_exception_handler(
+            lambda _loop, context: handler_contexts.append(context)
+        )
+
+        task, error_sink, future = await _drive_stream_until_registered(
+            coordinator, "req-1"
+        )
+
+        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+        await asyncio.wait_for(task, timeout=1)
+
+        assert error_sink == ["stage died"]
+        assert future.cancelled() is True
+        assert "req-1" not in coordinator._completion_futures
+
+        del future
+        gc.collect()
+        assert not any(
+            "never retrieved" in str(ctx.get("message", "")) for ctx in handler_contexts
+        )
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stream_stage_failure_cancels_future() -> None:
+    """A stage failure on a streaming request cancels the completion future
+    (which the stream consumer never awaits) rather than setting an exception
+    that would be reported as never retrieved."""
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        task, error_sink, future = await _drive_stream_until_registered(
+            coordinator, "req-1"
+        )
+
+        await coordinator._handle_completion(
+            CompleteMessage("req-1", "decode", False, error="boom")
+        )
+        await asyncio.wait_for(task, timeout=1)
+
+        assert error_sink == ["boom"]
+        assert future.cancelled() is True
+        assert "req-1" not in coordinator._completion_futures
 
     asyncio.run(_run())

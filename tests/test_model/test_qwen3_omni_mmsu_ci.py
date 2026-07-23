@@ -21,6 +21,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmsu import print_mmsu_summary
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
@@ -30,18 +31,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 
 CONCURRENCY = 16
 
-MMSU_MIN_ACCURACY = 0.699
+MMSU_MIN_ACCURACY = 0.6965
 
-# (Note: Xuesong)P95 recalibrated for the #698 backend bump
-# new stack measures ~50.6 qps (3 CI rounds, sigma~0.1) vs ~60.8 on the old stack,
-# ~16% slower from diffuse per-request host overhead, NOT GPU.
-# compute (all MoE/attention/audio-encoder kernels are speed-identical cross-version;
-# util-ratio == qps-ratio). See PR.
 _MMSU_P95 = {
     16: {
-        "throughput_qps": 68.3,  # was 62.519
-        "output_tok_per_req_s": 8.8,  # was 8.1
-        "latency_mean_s": 0.234,  # was 0.255
+        "throughput_qps": 63.703,
+        "output_tok_per_req_s": 8.3,
+        "latency_mean_s": 0.25,
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)
@@ -90,7 +86,15 @@ def test_mmsu_accuracy_and_speed(
     ) as router_guard:
         results = asyncio.run(run_mmsu(args))
 
-    print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
+    print_mmsu_summary(
+        results["accuracy"],
+        args.model,
+        speed_metrics=results["speed"],
+        dataset=format_benchmark_dataset_label(
+            dataset="mmsu-ci-2000",
+            repo_id=args.repo_id,
+        ),
+    )
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)

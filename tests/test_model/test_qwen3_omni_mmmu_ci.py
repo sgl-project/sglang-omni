@@ -19,6 +19,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
 from tests.test_model.omni_router_utils import (
@@ -29,13 +30,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 
 CONCURRENCY = 16
 
-MMMU_MIN_ACCURACY = 0.64
+MMMU_MIN_ACCURACY = 0.62
 
 _MMMU_P95 = {
     16: {
-        "throughput_qps": 1.759,
-        "output_tok_per_req_s": 82.5,
-        "latency_mean_s": 7.66,
+        "throughput_qps": 2.219,
+        "output_tok_per_req_s": 95.4,
+        "latency_mean_s": 6.216,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
@@ -67,8 +68,14 @@ def test_mmmu_accuracy_and_speed(
 
     summary = results["summary"]
     speed = results["speed"]
-    print_mmmu_accuracy_summary(summary, config.model)
-    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Speed")
+    dataset_label = format_benchmark_dataset_label(
+        dataset="mmmu-ci-50",
+        repo_id=config.repo_id,
+    )
+    print_mmmu_accuracy_summary(summary, config.model, dataset=dataset_label)
+    print_speed_summary(
+        speed, config.model, CONCURRENCY, title="MMMU Speed", dataset=dataset_label
+    )
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)

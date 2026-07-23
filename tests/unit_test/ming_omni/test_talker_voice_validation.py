@@ -288,6 +288,46 @@ def _fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
     return SimpleNamespace(encoder=encoder, config=config)
 
 
+def _run_process_segment_with_chunk_lengths(
+    chunk_lengths: list[int],
+    *,
+    text: str = "Hi.",
+    sample_rate: int = 10,
+    stream: bool = True,
+):
+    import torch as _torch
+
+    talker = object.__new__(MingOmniTalker)
+    talker.normalizer = SimpleNamespace(normalize=lambda value: value)
+    talker.patch_size = 2
+    detok = _fake_detokenizer(sample_rate=sample_rate)
+
+    def fake_tts_job(**_kwargs):
+        for chunk_length in chunk_lengths:
+            yield {"tts_speech": _torch.zeros(1, chunk_length, dtype=_torch.float32)}
+
+    talker.tts_job = fake_tts_job
+    return list(
+        MingOmniTalker._process_segment(
+            talker,
+            text,
+            prompt=None,
+            instruction=None,
+            spk_emb=None,
+            audio_detokenizer=detok,
+            prompt_text=None,
+            prompt_wav_lat=None,
+            prompt_wav_emb=None,
+            stream=stream,
+            count=0,
+            cache_position={},
+            max_length=50,
+            wds_lg_zh=6.07,
+            wds_lg_en=16,
+        )
+    )
+
+
 def test_process_segment_streams_every_internal_segment():
     import torch as _torch
 
@@ -358,6 +398,62 @@ def test_process_segment_streams_every_internal_segment():
     assert "1_3" in cache_position
     assert first_outputs[0][2][0] == 0
     assert second_outputs[0][2][0] == len("First segment.")
+
+
+def test_process_segment_single_chunk_below_duration_guard():
+    outputs = _run_process_segment_with_chunk_lengths([10], text="Longer text.")
+
+    assert len(outputs) == 1
+    assert outputs[0][0].shape == (1, 10)
+
+
+def test_process_segment_multi_chunk_below_duration_guard():
+    outputs = _run_process_segment_with_chunk_lengths(
+        [10, 15, 20], text="This segment is long enough to keep streaming."
+    )
+
+    assert [item[0].shape[-1] for item in outputs] == [10, 15, 20]
+
+
+def test_process_segment_stops_after_chunk_that_crosses_duration_guard():
+    outputs = _run_process_segment_with_chunk_lengths([15, 10, 10], text="Hi.")
+
+    assert [item[0].shape[-1] for item in outputs] == [15, 10]
+
+
+def test_process_segment_duration_guard_applies_without_streaming():
+    outputs = _run_process_segment_with_chunk_lengths(
+        [15, 10, 10], text="Hi.", stream=False
+    )
+
+    assert [item[0].shape[-1] for item in outputs] == [15, 10]
+
+
+def test_process_segment_duration_guard_preserves_strict_two_second_boundary():
+    outputs = _run_process_segment_with_chunk_lengths([20, 5, 5], text="Hi.")
+
+    assert [item[0].shape[-1] for item in outputs] == [20, 5]
+
+
+def test_process_segment_empty_generation_has_no_outputs():
+    outputs = _run_process_segment_with_chunk_lengths([], text="Hi.")
+
+    assert outputs == []
+
+
+def test_process_segment_duration_guard_does_not_concat_per_chunk(monkeypatch):
+    import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
+
+    def fail_cat(*_args, **_kwargs):
+        raise AssertionError("duration guard must not concatenate all_wavs")
+
+    monkeypatch.setattr(talker_mod.torch, "cat", fail_cat)
+
+    outputs = _run_process_segment_with_chunk_lengths(
+        [10, 10, 10], text="This segment is long enough to keep streaming."
+    )
+
+    assert len(outputs) == 3
 
 
 def test_tts_job_stream_applies_silence_holder(monkeypatch):

@@ -4,6 +4,7 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -22,9 +23,7 @@ from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
 )
-from sglang_omni.models.qwen3_omni.quantization import (
-    convert_fp8_weight_scale_inv_for_sglang,
-)
+from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -34,6 +33,7 @@ from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
+    MRotaryEmbedding,
     QuantizationConfig,
     ReplicatedLinear,
     RMSNorm,
@@ -44,6 +44,8 @@ from sglang_omni.vendor.sglang.layers import (
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
+
+logger = logging.getLogger(__name__)
 
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
@@ -61,6 +63,101 @@ def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         batch, num_kv_heads, n_rep, seq_len, head_dim
     )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
+
+
+class _PredictorDecodeGraph:
+    """CUDA graph for one Qwen3-Omni predictor single-token decode bucket."""
+
+    def __init__(
+        self,
+        model: "Qwen3OmniTalker",
+        batch_size: int,
+        code_dtype: torch.dtype,
+    ) -> None:
+        self.model = model
+        self.batch_size = batch_size
+        self.code_dtype = code_dtype
+        device = model._predictor_input_buffer.device
+        hidden_size = model._predictor_input_buffer.shape[-1]
+        dtype = model._predictor_input_buffer.dtype
+
+        self.layer0_codes = torch.zeros(
+            batch_size,
+            1,
+            dtype=code_dtype,
+            device=device,
+        )
+        self.talker_hidden = torch.zeros(
+            batch_size,
+            1,
+            hidden_size,
+            dtype=dtype,
+            device=device,
+        )
+        self.graph = torch.cuda.CUDAGraph()
+        self.result_codes: torch.Tensor | None = None
+        self.summed_embeddings: torch.Tensor | None = None
+        self._capture()
+
+    @torch.no_grad()
+    def _capture(self) -> None:
+        device = self.layer0_codes.device
+        with torch.cuda.device(device):
+            warmup_stream = torch.cuda.Stream(device=device)
+            current_stream = torch.cuda.current_stream(device=device)
+            warmup_stream.wait_stream(current_stream)
+            with torch.cuda.stream(warmup_stream):
+                for _ in range(2):
+                    self.model._code_predictor_forward_incremental_eager(
+                        self.layer0_codes,
+                        self.talker_hidden,
+                    )
+            current_stream.wait_stream(warmup_stream)
+
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(current_stream)
+            with torch.cuda.graph(
+                self.graph,
+                stream=capture_stream,
+                capture_error_mode="thread_local",
+            ):
+                self.result_codes, self.summed_embeddings = (
+                    self.model._code_predictor_forward_incremental_eager(
+                        self.layer0_codes,
+                        self.talker_hidden,
+                    )
+                )
+            current_stream.wait_stream(capture_stream)
+
+        if self.result_codes is None or self.summed_embeddings is None:
+            raise RuntimeError("Qwen3-Omni predictor CUDA graph captured no outputs")
+
+    @torch.no_grad()
+    def replay(
+        self,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        live_batch_size = layer0_codes.shape[0]
+        if live_batch_size > self.batch_size:
+            raise ValueError(
+                "Qwen3-Omni predictor CUDA graph bucket is too small: "
+                f"bucket={self.batch_size}, live={live_batch_size}"
+            )
+
+        with torch.cuda.device(self.layer0_codes.device):
+            self.layer0_codes[:live_batch_size].copy_(layer0_codes)
+            self.talker_hidden[:live_batch_size].copy_(talker_hidden)
+            if live_batch_size < self.batch_size:
+                self.layer0_codes[live_batch_size:].zero_()
+                self.talker_hidden[live_batch_size:].zero_()
+            self.graph.replay()
+        assert self.result_codes is not None
+        assert self.summed_embeddings is not None
+        return (
+            self.result_codes[:live_batch_size],
+            self.summed_embeddings[:live_batch_size],
+        )
 
 
 class ResizeMLP(nn.Module):
@@ -739,7 +836,10 @@ class Qwen3OmniTalker(nn.Module):
     ):
         super().__init__()
         if not isinstance(config, Qwen3OmniMoeTalkerConfig):
+            self.root_config = config
             config = Qwen3OmniMoeTalkerConfig(**config.talker_config.to_dict())
+        else:
+            self.root_config = config
         self.config = config
 
         # Projection MLPs (thinker hidden -> talker hidden)
@@ -764,6 +864,12 @@ class Qwen3OmniTalker(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
+        # True only if the backbone uses MRotaryEmbedding (3D positions).
+        # Otherwise it uses a plain RotaryEmbedding that needs 1D positions.
+        self._uses_mrope = any(
+            isinstance(layer.self_attn.rotary_emb, MRotaryEmbedding)
+            for layer in self.model.layers
+        )
         self.codec_head = ReplicatedLinear(
             config.text_config.hidden_size,
             config.text_config.vocab_size,
@@ -780,7 +886,8 @@ class Qwen3OmniTalker(nn.Module):
         device = self.model.codec_embedding.weight.device
         hidden_size = config.text_config.hidden_size
         predictor_len = config.num_code_groups + 1
-        max_batch_size = get_global_server_args().max_running_requests
+        server_args = get_global_server_args()
+        max_batch_size = server_args.max_running_requests
         self._cp_enabled = self.model._cp_enabled
         self._feedback_buffer = self.model._feedback_buffer
         self._feedback_mask = self.model._feedback_mask
@@ -861,6 +968,29 @@ class Qwen3OmniTalker(nn.Module):
             dtype=torch.int64,
             device=device,
         )
+        # Note (akazaakane): int64-typed; rows 0-3 hold floats bit-cast via
+        # .view(torch.float64) so one copy covers both float and int params.
+        # Note (akazaakane): device="cpu" is required — model init runs under
+        # a cuda default-device context, and only CPU tensors can be pinned.
+        self._sampling_staging_cpu = torch.zeros(
+            6,
+            max_batch_size,
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=device.type == "cuda",
+        )
+        self._sampling_staging_gpu = torch.zeros(
+            6,
+            max_batch_size,
+            dtype=torch.int64,
+            device=device,
+        )
+        self._sampling_staging_event = (
+            torch.cuda.Event() if device.type == "cuda" else None
+        )
+        self._decode_prep_rids: list | None = None
+        self._decode_prep_out_lens: list[int] = []
+        self._decode_prep_rep_rows: torch.Tensor | None = None
         self._output_codes = torch.zeros(
             max_batch_size,
             config.num_code_groups,
@@ -873,6 +1003,16 @@ class Qwen3OmniTalker(nn.Module):
             device=device,
             dtype=self.model.codec_embedding.weight.dtype,
         )
+        self._predictor_decode_graph_batch_sizes = (
+            self._normalize_predictor_decode_graph_batch_sizes(
+                server_args,
+                max_batch_size=max_batch_size,
+            )
+        )
+        self._predictor_decode_graphs: dict[
+            tuple[int, torch.dtype], _PredictorDecodeGraph
+        ] = {}
+        self._predictor_decode_graph_disabled: set[tuple[int, torch.dtype]] = set()
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -893,9 +1033,39 @@ class Qwen3OmniTalker(nn.Module):
             next_code = next_code.unsqueeze(-1)
         return next_code
 
+    def _reuse_decode_buffers(self, requests: list) -> bool:
+        # Note (akazaakane): sampling params/suppress mask are static per
+        # request, so only the repetition mask needs updating here.
+        prev_rids = self._decode_prep_rids
+        if prev_rids is None or len(prev_rids) != len(requests):
+            return False
+        prev_lens = self._decode_prep_out_lens
+        for row_idx, sched_req in enumerate(requests):
+            req = sched_req.data.req
+            if req.rid != prev_rids[row_idx]:
+                return False
+            out_len = len(req.output_ids) if req.output_ids else 0
+            if out_len != prev_lens[row_idx] + 1:
+                return False
+
+        rep_rows = self._decode_prep_rep_rows
+        if rep_rows is not None:
+            self._repetition_mask[rep_rows, self._sampled_token_ids[rep_rows]] = True
+        for row_idx in range(len(prev_lens)):
+            prev_lens[row_idx] += 1
+        return True
+
+    def invalidate_decode_buffers(self) -> None:
+        # Note (akazaakane): a prefill's sampled token bypasses
+        # _sampled_token_ids, so the fast path must not run right after one.
+        self._decode_prep_rids = None
+
     def prepare_decode_buffers(self, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
+            return
+
+        if self._reuse_decode_buffers(requests):
             return
 
         device = self._repetition_mask.device
@@ -958,37 +1128,67 @@ class Qwen3OmniTalker(nn.Module):
                     sup_rows.extend([row_idx] * len(valid_sup))
                     sup_toks.extend(valid_sup)
 
-        rep_pen_dtype = self._repetition_penalties.dtype
-        self._repetition_penalties[:batch_size, 0] = torch.tensor(
-            rep_penalties, dtype=rep_pen_dtype, device=device
+        if self._sampling_staging_event is not None:
+            # Note (akazaakane): guards the prior async copy still reading
+            # this buffer before we overwrite it.
+            self._sampling_staging_event.synchronize()
+        staging_cpu = self._sampling_staging_cpu
+        staging_cpu_f64 = staging_cpu.view(torch.float64)
+        staging_cpu_f64[0, :batch_size] = torch.tensor(
+            rep_penalties, dtype=torch.float64
         )
-        self._sampling_temperatures[:batch_size, 0] = torch.tensor(
-            temperatures, dtype=self._sampling_temperatures.dtype, device=device
+        staging_cpu_f64[1, :batch_size] = torch.tensor(
+            temperatures, dtype=torch.float64
         )
-        self._sampling_top_ps[:batch_size] = torch.tensor(
-            top_ps, dtype=self._sampling_top_ps.dtype, device=device
+        staging_cpu_f64[2, :batch_size] = torch.tensor(top_ps, dtype=torch.float64)
+        staging_cpu_f64[3, :batch_size] = torch.tensor(min_ps, dtype=torch.float64)
+        staging_cpu[4, :batch_size] = torch.tensor(top_ks, dtype=torch.int64)
+        staging_cpu[5, :batch_size] = torch.tensor(sampling_seeds, dtype=torch.int64)
+        staging_gpu = self._sampling_staging_gpu
+        staging_gpu.copy_(staging_cpu, non_blocking=True)
+        if self._sampling_staging_event is not None:
+            self._sampling_staging_event.record()
+        staging_gpu_f64 = staging_gpu.view(torch.float64)
+        self._repetition_penalties[:batch_size, 0].copy_(
+            staging_gpu_f64[0, :batch_size]
         )
-        self._sampling_top_ks[:batch_size] = torch.tensor(
-            top_ks, dtype=self._sampling_top_ks.dtype, device=device
+        self._sampling_temperatures[:batch_size, 0].copy_(
+            staging_gpu_f64[1, :batch_size]
         )
-        self._sampling_min_ps[:batch_size] = torch.tensor(
-            min_ps, dtype=self._sampling_min_ps.dtype, device=device
-        )
-        self._sampling_seeds[:batch_size] = torch.tensor(
-            sampling_seeds, dtype=self._sampling_seeds.dtype, device=device
-        )
+        self._sampling_top_ps[:batch_size].copy_(staging_gpu_f64[2, :batch_size])
+        self._sampling_min_ps[:batch_size].copy_(staging_gpu_f64[3, :batch_size])
+        self._sampling_top_ks[:batch_size].copy_(staging_gpu[4, :batch_size])
+        self._sampling_seeds[:batch_size].copy_(staging_gpu[5, :batch_size])
 
         if rep_rows:
+            rep_pairs = torch.tensor(
+                rep_rows + rep_toks, dtype=torch.long, device=device
+            )
             self._repetition_mask[
-                torch.tensor(rep_rows, dtype=torch.long, device=device),
-                torch.tensor(rep_toks, dtype=torch.long, device=device),
+                rep_pairs[: len(rep_rows)], rep_pairs[len(rep_rows) :]
             ] = True
 
         if sup_rows:
+            sup_pairs = torch.tensor(
+                sup_rows + sup_toks, dtype=torch.long, device=device
+            )
             self._suppress_mask[
-                torch.tensor(sup_rows, dtype=torch.long, device=device),
-                torch.tensor(sup_toks, dtype=torch.long, device=device),
+                sup_pairs[: len(sup_rows)], sup_pairs[len(sup_rows) :]
             ] = True
+
+        self._decode_prep_rids = [sched_req.data.req.rid for sched_req in requests]
+        self._decode_prep_out_lens = [
+            len(sched_req.data.req.output_ids) if sched_req.data.req.output_ids else 0
+            for sched_req in requests
+        ]
+        rep_active_rows = [
+            row_idx for row_idx, penalty in enumerate(rep_penalties) if penalty != 1.0
+        ]
+        self._decode_prep_rep_rows = (
+            torch.tensor(rep_active_rows, dtype=torch.long, device=device)
+            if rep_active_rows
+            else None
+        )
 
     def prepare_input_embeds(
         self,
@@ -1052,6 +1252,9 @@ class Qwen3OmniTalker(nn.Module):
         Returns:
             LogitsProcessorOutput with codec logits
         """
+        if forward_batch.forward_mode.is_extend():
+            self.invalidate_decode_buffers()
+
         if input_embeds is not None and not input_embeds_are_projected:
             # Prefill: project thinker hidden states → talker dimension
             deepstack_hidden = input_deepstack_embeds
@@ -1065,8 +1268,12 @@ class Qwen3OmniTalker(nn.Module):
             else:
                 input_embeds = self.prepare_input_embeds(thinker_embeds=input_embeds)
 
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
+        # Use 3D mrope_positions only when the backbone is mrope; the plain
+        # RotaryEmbedding path needs the 1D positions instead.
+        if self._uses_mrope and forward_batch.mrope_positions is not None:
+            positions = forward_batch.mrope_positions.contiguous()
+        else:
+            positions = forward_batch.positions
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -1220,6 +1427,128 @@ class Qwen3OmniTalker(nn.Module):
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the predictor one token at a time using a per-layer single-turn KV cache."""
+        if layer0_codes.ndim == 1:
+            layer0_codes = layer0_codes.unsqueeze(1)
+        if talker_hidden.ndim == 2:
+            talker_hidden = talker_hidden.unsqueeze(1)
+
+        batch_size, seq_len = layer0_codes.shape
+        if talker_hidden.shape[:2] != (batch_size, seq_len):
+            raise ValueError(
+                "talker_hidden shape must align with layer0_codes: "
+                f"{tuple(talker_hidden.shape)} vs {tuple(layer0_codes.shape)}"
+            )
+        if self._can_use_predictor_decode_graph(
+            layer0_codes=layer0_codes,
+            talker_hidden=talker_hidden,
+            seq_len=seq_len,
+        ):
+            graph_result = self._code_predictor_forward_single_token_graph(
+                layer0_codes=layer0_codes,
+                talker_hidden=talker_hidden,
+                batch_size=batch_size,
+                code_dtype=layer0_codes.dtype,
+            )
+            if graph_result is not None:
+                return graph_result
+
+        return self._code_predictor_forward_incremental_eager(
+            layer0_codes=layer0_codes,
+            talker_hidden=talker_hidden,
+        )
+
+    def _can_use_predictor_decode_graph(
+        self,
+        *,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+        seq_len: int,
+    ) -> bool:
+        if seq_len != 1:
+            return False
+        if layer0_codes.dtype not in (torch.int, torch.long):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
+            return False
+        if torch.cuda.is_current_stream_capturing():
+            return False
+        return True
+
+    @staticmethod
+    def _normalize_predictor_decode_graph_batch_sizes(
+        server_args: object,
+        *,
+        max_batch_size: int,
+    ) -> tuple[int, ...]:
+        raw_batch_sizes = getattr(server_args, "cuda_graph_bs", None)
+        if raw_batch_sizes is None:
+            raw_batch_sizes = (max_batch_size,)
+
+        normalized = sorted(
+            {
+                int(batch_size)
+                for batch_size in raw_batch_sizes
+                if 1 <= int(batch_size) <= int(max_batch_size)
+            }
+        )
+        if not normalized or normalized[-1] < int(max_batch_size):
+            normalized.append(int(max_batch_size))
+        return tuple(normalized)
+
+    def _predictor_decode_graph_bucket_size(self, batch_size: int) -> int | None:
+        for bucket_size in self._predictor_decode_graph_batch_sizes:
+            if bucket_size >= batch_size:
+                return bucket_size
+        return None
+
+    def _code_predictor_forward_single_token_graph(
+        self,
+        *,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+        batch_size: int,
+        code_dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | None:
+        bucket_size = self._predictor_decode_graph_bucket_size(batch_size)
+        if bucket_size is None:
+            return None
+
+        key = (bucket_size, code_dtype)
+        if key in self._predictor_decode_graph_disabled:
+            return None
+
+        graph = self._predictor_decode_graphs.get(key)
+        if graph is None:
+            try:
+                graph = _PredictorDecodeGraph(self, bucket_size, code_dtype)
+            except Exception:
+                self._predictor_decode_graph_disabled.add(key)
+                logger.warning(
+                    "Disabling Qwen3-Omni predictor CUDA graph for "
+                    "batch_size=%s dtype=%s",
+                    bucket_size,
+                    code_dtype,
+                    exc_info=True,
+                )
+                return None
+            self._predictor_decode_graphs[key] = graph
+            logger.info(
+                "Captured Qwen3-Omni predictor CUDA graph for batch_size=%s "
+                "dtype=%s",
+                bucket_size,
+                code_dtype,
+            )
+
+        return graph.replay(layer0_codes, talker_hidden)
+
+    def _code_predictor_forward_incremental_eager(
+        self,
+        layer0_codes: torch.Tensor,
+        talker_hidden: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Eager predictor implementation used for prefill and graph fallback."""
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
         if talker_hidden.ndim == 2:
@@ -1439,6 +1768,10 @@ class Qwen3OmniTalker(nn.Module):
             num_experts=self.config.text_config.num_experts,
         )
 
+        preprocess_weight = get_weight_preprocessor(
+            self.root_config, fp8_scale_inverted=True
+        )
+
         for name, loaded_weight in weights:
             # Support both monolithic (talker.xxx) and split (xxx) checkpoints
             if name.startswith("talker."):
@@ -1453,9 +1786,7 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
-                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                            mapped, loaded_weight
-                        )
+                        loaded_weight = preprocess_weight(mapped, loaded_weight)
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
@@ -1468,9 +1799,7 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
-                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                            mapped, loaded_weight
-                        )
+                        loaded_weight = preprocess_weight(mapped, loaded_weight)
                         param.weight_loader(
                             param,
                             loaded_weight,
@@ -1486,7 +1815,5 @@ class Qwen3OmniTalker(nn.Module):
             # 3. Direct parameter loading
             param = params_dict.get(name)
             if param is not None:
-                loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
-                    name, loaded_weight
-                )
+                loaded_weight = preprocess_weight(name, loaded_weight)
                 param.weight_loader(param, loaded_weight)

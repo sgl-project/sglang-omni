@@ -314,20 +314,6 @@ def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> 
         _stop_scheduler(scheduler, thread)
 
 
-def test_streaming_vocoder_zero_chunk_done_before_payload_finalizes() -> None:
-    scheduler, thread = _start_scheduler()
-    try:
-        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
-        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
-        final = scheduler.outbox.get(timeout=2.0)
-        assert final.type == "result"
-        assert final.request_id == "req"
-        with pytest.raises(queue.Empty):
-            scheduler.outbox.get(timeout=0.2)
-    finally:
-        _stop_scheduler(scheduler, thread)
-
-
 def test_streaming_vocoder_final_payload_preserves_usage_and_authoritative_audio() -> (
     None
 ):
@@ -597,37 +583,6 @@ def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
     assert out.request_id == "other"
     assert out.type == "result"
     assert scheduler.outbox.empty()
-
-
-def test_non_streaming_vocoder_batch_stops_before_streaming_request() -> None:
-    scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
-        device="cpu",
-        stream_overlap_tokens=1,
-        stream_crossfade_samples=0,
-        max_batch_wait_ms=0,
-    )
-    first = IncomingMessage(
-        "nonstream-a",
-        "new_request",
-        _payload("nonstream-a", stream=False),
-    )
-    scheduler.inbox.put(
-        IncomingMessage("stream-b", "new_request", _payload("stream-b", stream=True))
-    )
-    scheduler.inbox.put(
-        IncomingMessage(
-            "nonstream-c",
-            "new_request",
-            _payload("nonstream-c", stream=False),
-        )
-    )
-
-    batch = scheduler._collect_new_request_batch(first)
-
-    assert [msg.request_id for msg in batch] == ["nonstream-a"]
-    assert scheduler._next_message().request_id == "stream-b"
-    assert scheduler._next_message().request_id == "nonstream-c"
 
 
 def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> None:

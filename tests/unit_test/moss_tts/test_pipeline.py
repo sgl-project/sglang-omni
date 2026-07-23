@@ -7,6 +7,7 @@ import sys
 import types
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -141,7 +142,12 @@ def test_moss_tts_config_and_registry_contracts() -> None:
 
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     from sglang_omni.models.moss_tts import request_builders, stages
-    from sglang_omni.scheduling import bootstrap, omni_scheduler, sglang_backend
+    from sglang_omni.scheduling import (
+        bootstrap,
+        engine_factory,
+        omni_scheduler,
+        sglang_backend,
+    )
 
     captured: dict[str, object] = {"build_kwargs": []}
 
@@ -201,7 +207,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     fake_model_runner_module.MossTTSModelRunner = FakeMossTTSModelRunner
 
     monkeypatch.setattr(
-        stages, "resolve_moss_checkpoint", lambda model_path: model_path
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
     monkeypatch.setattr(
         request_builders,
@@ -266,29 +272,78 @@ def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None
     assert server_args_overrides["torch_compile_max_bs"] == 4
 
 
-def test_moss_tts_state_round_trip_keeps_tensors_native() -> None:
-    codes = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
-    state = MossTTSState(
-        text="hello",
-        ref_audio="ref.wav",
-        ref_text="reference",
-        language="en",
-        instructions="warm",
-        token_count=180,
-        generation_kwargs={"max_new_tokens": 64},
-        delayed_audio_codes=codes,
-        assistant_start_length=2,
-    )
-    restored = MossTTSState.from_dict(state.to_dict())
+def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang_omni.models.moss_tts import stages
 
-    assert restored.text == "hello"
-    assert restored.ref_audio == "ref.wav"
-    assert restored.ref_text == "reference"
-    assert restored.language == "en"
-    assert restored.instructions == "warm"
-    assert restored.token_count == 180
-    assert torch.equal(restored.delayed_audio_codes, codes)
-    assert restored.assistant_start_length == 2
+    decoded_segments: list[list[list[int]]] = []
+
+    class FakeProcessor:
+        model_config = SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
+
+        def decode_audio_codes(self, segments):
+            decoded_segments.extend(segment.tolist() for segment in segments)
+            offset = float(len(decoded_segments) * 10)
+            return [torch.tensor([offset, offset + 1], dtype=torch.float32)]
+
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_processor",
+        lambda *args, **kwargs: FakeProcessor(),
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        max_batch_size=2,
+        max_batch_wait_ms=4,
+    )
+    first = make_payload(inputs="first")
+    first.data = MossTTSState(
+        delayed_audio_codes=torch.tensor(
+            [
+                [1, 1024],
+                [2, 3],
+                [1024, 4],
+                [1024, 1024],
+            ],
+            dtype=torch.long,
+        ),
+        prompt_tokens=3,
+        completion_tokens=5,
+    ).to_dict()
+    second = make_payload(inputs="second")
+    second.data = MossTTSState(
+        delayed_audio_codes=torch.tensor(
+            [
+                [5, 1024],
+                [6, 7],
+                [1024, 8],
+                [1024, 1024],
+            ],
+            dtype=torch.long,
+        ),
+    ).to_dict()
+
+    results = asyncio.run(scheduler._batch_fn([first, second]))
+
+    assert scheduler._max_batch_size == 2
+    assert scheduler._max_batch_wait_s == pytest.approx(0.004)
+    assert decoded_segments == [
+        [[1, 3], [2, 4]],
+        [[5, 7], [6, 8]],
+    ]
+    first_audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
+    second_audio = np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32)
+    assert first_audio.tolist() == [10.0, 11.0]
+    assert second_audio.tolist() == [20.0, 21.0]
+    assert results[0].data["sample_rate"] == 16000
+    assert results[0].data["modality"] == "audio"
+    assert "delayed_audio_codes" not in results[0].data
+    assert results[0].data["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 5,
+        "total_tokens": 8,
+    }
 
 
 def test_moss_tts_maps_references_token_count_and_deterministic_defaults() -> None:
@@ -943,10 +998,13 @@ def test_moss_preprocess_discards_handoff_after_abort(
     monkeypatch.setattr(rb, "_prepare_moss_tts_request", fake_prepare)
     try:
         rb.set_moss_tts_preprocessing_context(processor=object())
-        rb.preprocess_moss_tts_payload(payload)
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "abort-me" not in rb._PREPARED_REQUESTS
-            assert not rb._PREPARED_REQUESTS
+        result = rb.preprocess_moss_tts_payload(payload)
+        # note (Yue Yin): dropped handoff must not carry a marker the AR stage would
+        # pop as missing state.
+        assert rb._MOSS_TTS_PREPARED_MARKER not in result.data
+        snap = rb._QUEUE.snapshot()
+        assert "abort-me" not in snap.prepared
+        assert not snap.prepared
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -1016,13 +1074,12 @@ def test_moss_preprocess_pre_start_abort_does_not_block(
         rb.set_moss_tts_preprocessing_context(processor=object())
         # Abort for a request that never started preprocessing: no tombstone.
         rb.cleanup_prepared_moss_tts_request("ghost")
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert not rb._ABORTED_REQUESTS
+        assert not rb._QUEUE.snapshot().aborted
         # The same id can still run a normal preprocess and publish its handoff.
         rb.preprocess_moss_tts_payload(make_payload(inputs="hello", request_id="ghost"))
-        with rb._PREPARED_REQUESTS_LOCK:
-            assert "ghost" in rb._PREPARED_REQUESTS
-            assert not rb._ABORTED_REQUESTS
-            assert not rb._INFLIGHT_REQUESTS
+        snap = rb._QUEUE.snapshot()
+        assert "ghost" in snap.prepared
+        assert not snap.aborted
+        assert not snap.inflight
     finally:
         rb.clear_moss_tts_preprocessing_context()

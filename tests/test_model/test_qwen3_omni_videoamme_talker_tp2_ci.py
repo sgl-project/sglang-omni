@@ -24,6 +24,7 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
@@ -48,7 +49,7 @@ MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0548
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0196
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
@@ -56,18 +57,22 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0.0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.058,
-        "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 170.36,
-        "rtf_mean": 12.8415,
+        "throughput_qps": 0.115,
+        "output_tok_per_req_s": 0.6,
+        "latency_mean_s": 83.996,
+        "rtf_mean": 5.9082,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
-# note (Yue Yin, Chenyang): 0.55-calibrated latency baseline (146.7 gate) is
-# unreachable on the #765 0.40 OOM-fix config (~148s); pin the gate to 155
-
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 155
+VIDEOAMME_TALKER_TP2_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="videoamme-ci-50",
+    repo_id=DATASETS["videoamme-ci-50"],
+)
+VIDEOAMME_TALKER_TP2_WER_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="videoamme-ci-50 (talker output WER)",
+    repo_id=DATASETS["videoamme-ci-50"],
+)
 
 
 @dataclass
@@ -164,12 +169,14 @@ def test_videoamme_talker_tp2_accuracy_and_speed(
         summary,
         "qwen3-omni",
         title="Video-AMME Talker TP=2 Accuracy",
+        dataset=VIDEOAMME_TALKER_TP2_DATASET_LABEL,
     )
     print_speed_summary(
         talker_eval_artifacts.speed,
         "qwen3-omni",
         CONCURRENCY,
         title="Video-AMME Talker TP=2 Speed",
+        dataset=VIDEOAMME_TALKER_TP2_DATASET_LABEL,
     )
 
     failed = summary.get("failed", 0)
@@ -214,7 +221,11 @@ def test_videoamme_talker_tp2_wer(
         asr_router_port=qwen3_asr_wer_router.port,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
-    print_wer_summary(wer["summary"], "qwen3-omni")
+    print_wer_summary(
+        wer["summary"],
+        "qwen3-omni",
+        dataset=VIDEOAMME_TALKER_TP2_WER_DATASET_LABEL,
+    )
     persist_wer_in_benchmark_results(
         wer_eval_artifacts.audio_dir, wer, "videoamme_results.json"
     )

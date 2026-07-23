@@ -97,7 +97,17 @@ def handle_batch_success(
             error="batch endpoint succeeded + failed does not equal total",
         )
         return
-    expected_item_failures = _expected_batch_item_failures(scenario)
+    expected_item_failures = _expected_batch_item_failures(
+        scenario,
+        batch_size=batch_size,
+    )
+    if expected_item_failures is None:
+        _mark_protocol_error(
+            result,
+            status="invalid_benchmark_scenario",
+            error="batch scenario expected_item_failures must contain valid item indexes",
+        )
+        return
     expected_failed = len(expected_item_failures)
     if failed != expected_failed or succeeded != total - expected_failed:
         _mark_protocol_error(
@@ -153,7 +163,24 @@ def handle_batch_success(
     _mark_success(result, capability="pass")
 
 
-def _expected_batch_item_failures(scenario: Scenario) -> set[int]:
+def _expected_batch_item_failures(
+    scenario: Scenario,
+    *,
+    batch_size: int,
+) -> set[int] | None:
+    explicit_failures = scenario.planned_metadata.get("expected_item_failures")
+    if isinstance(explicit_failures, list):
+        failures: set[int] = set()
+        for index in explicit_failures:
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index >= batch_size
+            ):
+                return None
+            failures.add(index)
+        return failures
     items = scenario.payload.get("items", [])
     if not isinstance(items, list):
         return set()

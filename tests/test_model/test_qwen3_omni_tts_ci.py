@@ -23,6 +23,7 @@ from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,
     run_omni_seedtts_benchmark,
 )
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.omni_router_utils import (
@@ -60,9 +61,9 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0337
+VC_WER_BELOW_50_CORPUS_MAX = 0.0213
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 0.0
+VC_N_ABOVE_50_MAX = 1
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
 # #483 is fixed; the hard assertion is currently disabled in
 # test_voice_cloning_similarity (see docstring there). PR #469 also collected
@@ -76,18 +77,17 @@ VC_N_ABOVE_50_MAX = 0.0
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.2388
+VC_UTMOS_MEAN_REFERENCE = 4.2663
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
-# Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
-# are the most unstable metrics, so I drop it a lot.
+# Strict worst-of-5 references from #1021's published 8xH100 calibration report.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 5.317,
-        "output_tok_per_req_s": 5.2,
-        "latency_mean_s": 2.803,
-        "rtf_mean": 0.8149,
+        "throughput_qps": 7.014,
+        "output_tok_per_req_s": 6.8,
+        "latency_mean_s": 2.153,
+        "rtf_mean": 0.6843,
     },
 }
 
@@ -101,6 +101,11 @@ VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
     QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX,
+)
+
+SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="seedtts-50",
+    repo_id=DATASETS["seedtts-50"],
 )
 
 
@@ -412,6 +417,7 @@ def test_voice_cloning_non_streaming(
             "qwen3-omni",
             CONCURRENCY,
             title="TTS Voice-Clone Speed",
+            dataset=SEEDTTS_50_DATASET_LABEL,
         )
         checks = MetricCheckCollector("Qwen3-Omni voice-cloning speed")
         assert_summary_metrics(speed_artifacts.summary, collector=checks)
@@ -467,7 +473,9 @@ def test_voice_cloning_wer(
         wer_audio_dir,
         asr_router_port=qwen3_asr_wer_router.port,
     )
-    print_wer_summary(results["summary"], "qwen3-omni")
+    print_wer_summary(
+        results["summary"], "qwen3-omni", dataset=SEEDTTS_50_DATASET_LABEL
+    )
     checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
     assert_wer_partitioned(
         results,

@@ -28,6 +28,9 @@ class RequestInfo:
     error: str | None = None
 
 
+EXPLICIT_GENERATION_PARAMS_KEY = "explicit_generation_params"
+
+
 @dataclass
 class OmniRequest:
     """User-facing request with inputs and parameters."""

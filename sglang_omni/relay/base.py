@@ -44,6 +44,8 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
         try:
             if relay_type == "nccl":
                 from .nccl import NcclRelay  # noqa
+            elif relay_type == "cuda_ipc":
+                from .cuda_ipc import CudaIpcRelay  # noqa
             elif relay_type == "shm":
                 from .shm import ShmRelay  # noqa
             elif relay_type == "nixl":
@@ -87,16 +89,32 @@ class RelayOperation(ABC):
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         """Asynchronously waits for the transfer or copy to complete."""
 
+    def mark_receiver_done(self) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support receiver ack"
+        )
+
+    def mark_receiver_failed(self, exc: BaseException) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support receiver ack"
+        )
+
 
 class Relay(ABC):
     """Abstract interface for data transfer backends (SHM, RDMA, etc.)."""
 
     @abstractmethod
     async def put_async(
-        self, tensor: torch.Tensor, request_id: str = None, dst_rank: int = None
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
     ) -> RelayOperation:
         """
         Asynchronously sends a tensor.
+        ``receiver_id`` names the destination import owner when a backend
+        resource carries one-consumer ownership.
         Returns an operation handle containing metadata for the receiver.
         """
 

@@ -1,3 +1,2 @@
 config_cls: MossTTSLocalPipelineConfig
 model_path: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
-relay_backend: shm

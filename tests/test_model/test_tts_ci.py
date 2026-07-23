@@ -43,7 +43,9 @@ from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
 )
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_saved_tts_speed_summary
+from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.conftest import (
     TTS_STAGE_CONSISTENCY,
     TTS_STAGE_NONSTREAM,
@@ -75,6 +77,15 @@ _MODEL_NAME, _TTS_CI_PRESET = select_tts_ci_preset()
 _PRESET = _TTS_CI_PRESET.model
 _THRESHOLDS = _TTS_CI_PRESET.thresholds
 TTS_MODEL_PATH = _PRESET.model_path
+
+SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="seedtts-50",
+    repo_id=DATASETS["seedtts-50"],
+)
+SEEDTTS_DATASET_LABEL = format_benchmark_dataset_label(
+    dataset="seedtts",
+    repo_id=DATASETS["seedtts"],
+)
 
 STARTUP_TIMEOUT = _PRESET.startup_timeout
 BENCHMARK_TIMEOUT = 600
@@ -132,6 +143,7 @@ def _print_saved_tts_speed_summary(
         TTS_MODEL_PATH,
         concurrency=concurrency,
         generation_mode=mode,
+        dataset=SEEDTTS_50_DATASET_LABEL,
     )
     assert printed, f"Failed to print TTS speed summary from {results_path}"
 
@@ -899,6 +911,11 @@ def test_voice_cloning_wer(
             asr_router_port=qwen3_asr_wer_router.port,
             concurrency=concurrency,
         )
+        print_wer_summary(
+            results["summary"],
+            TTS_MODEL_PATH,
+            dataset=SEEDTTS_DATASET_LABEL,
+        )
         _assert_full_seedtts_en_wer_results(
             results,
             label=f"TTS non-stream c{concurrency}",
@@ -981,6 +998,12 @@ def test_voice_cloning_streaming_wer(
             stream=True,
             asr_router_port=qwen3_asr_wer_router.port,
             concurrency=concurrency,
+        )
+        print_wer_summary(
+            results["summary"],
+            TTS_MODEL_PATH,
+            generation_mode="streaming",
+            dataset=SEEDTTS_DATASET_LABEL,
         )
         _assert_full_seedtts_en_wer_results(
             results,

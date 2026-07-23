@@ -61,6 +61,8 @@ from benchmarks.benchmarker.data import RequestResult
 from benchmarks.metrics._format import (
     SPEED_LABEL_WIDTH,
     SPEED_LINE_WIDTH,
+    format_benchmark_dataset_label,
+    print_benchmark_dataset_line,
     print_speed_metric_line,
 )
 
@@ -211,6 +213,7 @@ def print_speed_summary(
     model_name: str,
     concurrency: int | None = None,
     title: str = "Speed Benchmark Result",
+    dataset: str | None = None,
 ) -> None:
     lw = SPEED_LABEL_WIDTH
     w = SPEED_LINE_WIDTH
@@ -218,6 +221,7 @@ def print_speed_summary(
     print(f"{title:^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
+    print_benchmark_dataset_line(lw, dataset)
     if concurrency is not None:
         print(f"  {'Concurrency:':<{lw}} {concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
@@ -296,6 +300,7 @@ def print_saved_tts_speed_summary(
     *,
     concurrency: int | None = None,
     generation_mode: str | None = None,
+    dataset: str | None = None,
 ) -> bool:
     """Print TTS speed metrics from ``speed_results.json`` when present."""
     speed_results = load_tts_speed_results(output_dir)
@@ -310,6 +315,15 @@ def print_saved_tts_speed_summary(
         saved_config = speed_results.get("config") or {}
         concurrency = saved_config.get("concurrency")
 
+    saved_config = speed_results.get("config") or {}
+    dataset_label = dataset or format_benchmark_dataset_label(
+        dataset=saved_config.get("dataset")
+        or saved_config.get("testset")
+        or saved_config.get("meta"),
+        repo_id=saved_config.get("repo_id"),
+        split=saved_config.get("split"),
+    )
+
     title = "TTS Speed Benchmark Result"
     if generation_mode:
         title = f"TTS Speed Benchmark Result ({generation_mode})"
@@ -319,6 +333,7 @@ def print_saved_tts_speed_summary(
         model_name,
         concurrency=concurrency,
         title=title,
+        dataset=dataset_label,
     )
     return True
 

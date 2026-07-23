@@ -85,6 +85,7 @@ def _decode_chunks(session, slot_seqs, chunk_t):
     return {s: torch.cat(parts[s], dim=-1) for s in slots}
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_some_graphs_captured(session_bundle):
     _, _, _, captured = session_bundle
     # If zero captured, the whole line is eager-only (no prize) -- surface it loudly.

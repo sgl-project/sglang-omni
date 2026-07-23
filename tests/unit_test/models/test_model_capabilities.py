@@ -16,6 +16,13 @@ from sglang_omni.models.model_capabilities import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 EXPECTED_TTS_CAPABILITIES = {
+    "AudarTTSForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=False,
+        supports_torch_compile=False,
+    ),
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
@@ -50,6 +57,13 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+    ),
+    "BailingMMNativeForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
     ),
     "VoxtralTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,

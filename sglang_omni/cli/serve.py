@@ -26,7 +26,13 @@ _ASYNC_DECODE_FACTORIES = frozenset(
         "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.qwen3_omni.stages."
         "create_sglang_thinker_executor_from_config",
+        "sglang_omni.models.moss_transcribe_diarize.stages."
+        "create_sglang_moss_transcribe_diarize_executor",
+        "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
     }
+)
+_ASYNC_DECODE_SUPPORTED_MODELS = (
+    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, and Fun-ASR"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -781,38 +787,26 @@ def apply_partial_start_cli_overrides(
                 "--talker-partial-start currently supports only Qwen3-Omni "
                 f"talker; stage {stage.name!r} uses factory {stage.factory!r}"
             )
-    _apply_stage_factory_args_override(
+    _apply_factory_args_updates(
         pipeline_config,
-        stage_name=stage_name,
-        updates={"enable_partial_start": mode == "on"},
-        reason=f"talker partial-start mode to {mode!r}",
-        flag_name="--talker-partial-start",
+        matching_stages,
+        {"enable_partial_start": mode == "on"},
     )
     return pipeline_config
 
 
-def _apply_stage_factory_args_override(
+def _apply_factory_args_updates(
     pipeline_config: PipelineConfig,
-    *,
-    stage_name: str,
+    stages: list[StageConfig],
     updates: dict[str, object],
-    reason: str,
-    supported_factories: frozenset[str] | None = None,
-    flag_name: str | None = None,
 ) -> None:
-    matching_stages = _find_matching_stages(
-        pipeline_config,
-        stage_name=stage_name,
-        reason=reason,
-    )
-    for stage in matching_stages:
-        if supported_factories is not None and stage.factory not in supported_factories:
-            display_flag = flag_name or reason
-            raise typer.BadParameter(
-                f"{display_flag} currently supports only Higgs TTS and "
-                f"MOSS-TTS-Local; stage {stage.name!r} uses factory "
-                f"{stage.factory!r}"
-            )
+    """Apply factory_args + runtime_overrides updates to the given stages.
+
+    Callers compute their own matching stages (by stage_name for partial-start,
+    by factory for decode-mode) and pass them in; the update logic lives here
+    once so a signature change can't miss a copy.
+    """
+    for stage in stages:
         factory_args = dict(stage.factory_args or {})
         factory_args.update(updates)
         stage.factory_args = factory_args
@@ -844,28 +838,18 @@ def apply_decode_mode_cli_overrides(
         updates["async_decode_min_batch_size"] = int(async_lookahead_min_batch_size)
     if not updates:
         return pipeline_config
-    # note (jiaxin deng): resolve by factory so the override reaches whichever
-    # async-decode stage the pipeline has (tts_engine for Higgs/MOSS, thinker for
-    # Qwen3-Omni), instead of a single hardcoded stage name.
-    stage_names = [
-        stage.name
+    matching_stages = [
+        stage
         for stage in pipeline_config.stages
         if stage.factory in _ASYNC_DECODE_FACTORIES
     ]
-    if not stage_names:
+    if not matching_stages:
         raise typer.BadParameter(
-            "--decode-mode/--async-lookahead-min-batch-size is not supported by "
-            "this pipeline (no async-decode-capable stage)"
+            "--decode-mode/--async-lookahead-min-batch-size currently supports "
+            f"only {_ASYNC_DECODE_SUPPORTED_MODELS}; no stage in this pipeline "
+            "uses a supported factory"
         )
-    for stage_name in stage_names:
-        _apply_stage_factory_args_override(
-            pipeline_config,
-            stage_name=stage_name,
-            updates=updates,
-            reason="decode mode override",
-            supported_factories=_ASYNC_DECODE_FACTORIES,
-            flag_name="--decode-mode/--async-lookahead-min-batch-size",
-        )
+    _apply_factory_args_updates(pipeline_config, matching_stages, updates)
     return pipeline_config
 
 
@@ -1160,12 +1144,12 @@ def serve(
             "--decode-mode",
             "--decode_mode",
             help=(
-                "Decode execution mode for the tts_engine stage: "
+                "Decode execution mode for the supported generation stage: "
                 "async|sync. Omit this flag to use the pipeline config default "
                 "(async for Higgs TTS). Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
-                "the next GPU forward. Available for Higgs TTS and "
-                "MOSS-TTS-Local."
+                "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
+                "MOSS-Transcribe-Diarize, and Fun-ASR."
             ),
         ),
     ] = None,
@@ -1189,6 +1173,18 @@ def serve(
             help=(
                 "Override SGLang generation stage max_running_requests. "
                 "Omit to use the pipeline config default."
+            ),
+        ),
+    ] = None,
+    max_total_tokens: Annotated[
+        int | None,
+        typer.Option(
+            "--max-total-tokens",
+            "--max_total_tokens",
+            min=1,
+            help=(
+                "Cap the SGLang generation-stage KV pool to an exact token "
+                "count. Values above the profiled capacity do not increase it."
             ),
         ),
     ] = None,
@@ -1283,6 +1279,8 @@ def serve(
     generation_server_args_overrides: dict[str, object] = {}
     if max_running_requests is not None:
         generation_server_args_overrides["max_running_requests"] = max_running_requests
+    if max_total_tokens is not None:
+        generation_server_args_overrides["max_total_tokens"] = max_total_tokens
     if cuda_graph_max_bs is not None:
         generation_server_args_overrides["cuda_graph_max_bs"] = cuda_graph_max_bs
     if generation_server_args_overrides:
@@ -1292,7 +1290,7 @@ def serve(
         if generation_stage_name is None:
             _raise_unsupported_flag(
                 merged_config,
-                "--max-running-requests/--cuda-graph-max-bs",
+                "--max-running-requests/--max-total-tokens/--cuda-graph-max-bs",
             )
         _apply_stage_server_args_override(
             merged_config,

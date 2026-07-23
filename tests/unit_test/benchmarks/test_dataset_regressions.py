@@ -209,26 +209,27 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
 
     assert config["test_globs"] == [
         "tests/test_model/test_asr_ci_multi_speaker.py",
-        "tests/test_model/test_asr_ci_seedtts.py",
+        "tests/test_model/test_asr_ci_fun_asr.py",
     ]
     assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
     assert config["gpus_per_test"] == {
         "test_asr_ci_multi_speaker.py": 2,
-        "test_asr_ci_seedtts.py": 2,
+        "test_asr_ci_fun_asr.py": 2,
     }
     assert config["hf_model_ids_by_test"] == {
         "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
-        "test_asr_ci_seedtts.py": ["Qwen/Qwen3-ASR-1.7B"],
+        "test_asr_ci_fun_asr.py": ["FunAudioLLM/Fun-ASR-Nano-2512-hf"],
     }
     assert {
         "zhaochenyang20/movies800time",
         "zhaochenyang20/AISHELL4",
+        "zhaochenyang20/googletime",
         "zhaochenyang20/seed-tts-eval-arrow",
     }.issubset(config["hf_datasets"])
 
     assert set(config["metric_sources"]) == {
         "test_asr_ci_multi_speaker.py",
-        "test_asr_ci_seedtts.py",
+        "test_asr_ci_fun_asr.py",
     }
     assert (
         config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
@@ -239,17 +240,24 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         == "diarization_metrics_percent.cer"
     )
     assert (
-        config["metric_sources"]["test_asr_ci_seedtts.py"]["paths"]["corpus_wer"]
+        config["metric_sources"]["test_asr_ci_fun_asr.py"]["variants"]["en"]["paths"][
+            "corpus_wer"
+        ]
         == "summary.corpus_wer"
     )
 
     assert set(stages) == {
         "aishell4_long_diarization",
         "aishell4_long_speed",
+        "googletime_diarization",
+        "googletime_speed",
         "multi_speaker_diarization",
         "multi_speaker_speed",
-        "seedtts_wer",
-        "seedtts_speed",
+        "multi_speaker_stream_diarization",
+        "multi_speaker_stream_speed",
+        "fun_asr_en_wer",
+        "fun_asr_en_speed",
+        "fun_asr_zh_wer",
     }
     assert stages["multi_speaker_diarization"]["test"] == (
         "tests/test_model/test_asr_ci_multi_speaker.py"
@@ -260,26 +268,69 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     assert stages["aishell4_long_diarization"]["expected_samples"] == 20
     assert (
         stages["aishell4_long_diarization"]["metrics"]["cer_percent"]["source"]
-        == "AISHELL4_LONG_CER_PERCENT_MAX"
+        == "AISHELL4_LONG_CER_PERCENT_REF"
+    )
+    assert (
+        stages["aishell4_long_speed"]["metrics"]["throughput_qps"]["source"]
+        == "AISHELL4_LONG_THROUGHPUT_QPS_REF"
     )
     assert (
         stages["aishell4_long_speed"]["metrics"]["throughput_qps"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_aishell4_long_results.json"
     )
-    assert stages["seedtts_wer"]["test"] == "tests/test_model/test_asr_ci_seedtts.py"
-    assert stages["seedtts_wer"]["expected_samples"] == 1088
+    assert stages["googletime_diarization"]["expected_samples"] == 25
+    assert (
+        stages["googletime_diarization"]["metrics"]["cer_percent"]["source"]
+        == "GOOGLETIME_CER_PERCENT_REF"
+    )
+    assert (
+        stages["googletime_diarization"]["metrics"]["n_above_50_pct_cer"]["source"]
+        == "GOOGLETIME_N_ABOVE_50_CER_REF"
+    )
+    assert (
+        stages["googletime_diarization"]["metrics"]["cer_no_spk_below_50_corpus"][
+            "source"
+        ]
+        == "GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_REF"
+    )
+    assert (
+        stages["googletime_speed"]["metrics"]["throughput_qps"]["source"]
+        == "GOOGLETIME_THROUGHPUT_QPS_REF"
+    )
+    assert (
+        stages["googletime_speed"]["metrics"]["throughput_qps"]["json_file"]
+        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_googletime_results.json"
+    )
+    assert stages["multi_speaker_stream_diarization"]["expected_samples"] == 800
+    assert (
+        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["source"]
+        == "MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF"
+    )
+    assert (
+        stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["json_file"]
+        == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
+    )
+    assert stages["fun_asr_en_wer"]["test"] == "tests/test_model/test_asr_ci_fun_asr.py"
+    assert stages["fun_asr_en_wer"]["expected_samples"] == 1088
+    assert stages["fun_asr_zh_wer"]["expected_samples"] == 2020
+    assert (
+        stages["fun_asr_zh_wer"]["metrics"]["corpus_wer"]["json_file"]
+        == "fun_asr_zh_results.json"
+    )
+    assert "throughput_qps" in stages["fun_asr_en_speed"]["metrics"]
 
 
-def test_tune_ci_threshold_tts_config_no_longer_owns_asr_ci_stages() -> None:
+def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:
     config = yaml.safe_load((_MODELS_DIR / "tts/config.yaml").read_text())
     stages = yaml.safe_load((_MODELS_DIR / "tts/stages.yaml").read_text())
 
-    assert config["test_globs"] == ["tests/test_model/test_tts_ci.py"]
+    expected_tests = [
+        "tests/test_model/test_tts_ci.py",
+        "tests/test_model/test_tts_serving_ci.py",
+    ]
+    assert config["test_globs"] == expected_tests
     assert "test_asr_ci.py" not in config.get("gpus_per_test", {})
     assert "test_asr_ci.py" not in config.get("hf_model_ids_by_test", {})
     assert "test_asr_ci.py" not in config.get("metric_sources", {})
-    assert len(stages) == 12
-    assert all(
-        stage["test"] == "tests/test_model/test_tts_ci.py" for stage in stages.values()
-    )
+    assert {stage["test"] for stage in stages.values()} == set(expected_tests)
     assert not any(stage_key.startswith("qwen3_asr") for stage_key in stages)

@@ -12,8 +12,10 @@ from benchmarks.tts_serving.metrics import ScenarioResult
 from benchmarks.tts_serving.scenarios import (
     BATCH_OVERSIZED_SIZE,
     BATCH_SIZES,
-    LENGTH_EXTREME_TEXTS,
+    LENGTH_EXTREME_CASES,
+    LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
     MALFORMED_CASE_NAMES,
+    MAX_SPEECH_INPUT_CHARS,
     MULTILINGUAL_TEXTS,
     REFERENCE_FAILURES,
     RESPONSE_FORMATS,
@@ -29,7 +31,11 @@ from benchmarks.tts_serving.scenarios import (
     Scenario,
     scenario_set_hash,
 )
-from benchmarks.tts_serving.spec import BenchmarkSpec, redact_sensitive_metadata
+from benchmarks.tts_serving.spec import (
+    BenchmarkSpec,
+    redact_sensitive_metadata,
+    workload_spec_hash,
+)
 
 
 def build_results_report(
@@ -51,12 +57,15 @@ def build_results_report(
     capabilities = _endpoint_capabilities(results, operation_capabilities)
     category_counts = Counter(result.category for result in results)
     status_counts = Counter(result.status for result in results)
-    latencies = [r.latency_s for r in results if r.latency_s > 0]
-    ttfas = [r.ttfa_s for r in results if r.ttfa_s is not None]
-    rtfs = [r.rtf for r in results if r.rtf > 0]
-    queue_waits = [r.queue_wait_s for r in results if r.queue_wait_s is not None]
+    successful_results = _performance_results(results)
+    latencies = [r.latency_s for r in successful_results if r.latency_s > 0]
+    ttfas = [r.ttfa_s for r in successful_results if r.ttfa_s is not None]
+    rtfs = [r.rtf for r in successful_results if r.rtf > 0]
+    queue_waits = [
+        r.queue_wait_s for r in successful_results if r.queue_wait_s is not None
+    ]
     generator_lags = [
-        r.generator_lag_s for r in results if r.generator_lag_s is not None
+        r.generator_lag_s for r in successful_results if r.generator_lag_s is not None
     ]
     load_generation_valid = not any(
         result.load_generator_lagged or result.load_generator_saturated
@@ -85,9 +94,10 @@ def build_results_report(
         and _is_benchmark_passed(spec, results, capabilities)
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "scenario_schema_version": SCENARIO_SCHEMA_VERSION,
         "scenario_set_hash": scenario_set_hash(scenarios) if scenarios else None,
+        "workload_spec_hash": workload_spec_hash(spec),
         "harness_status": harness_status,
         "harness_error": harness_error,
         "overall": {
@@ -160,11 +170,13 @@ def build_results_report(
             ),
             "load_generation_error": _load_generation_error(results),
             "rtf": _summary(rtfs),
-            "rtf_sampled_formats": ["wav", "pcm"],
-            "rtf_unsupported_format_counts": _rtf_unsupported_format_counts(results),
+            "rtf_sampled_formats": list(RESPONSE_FORMATS),
+            "rtf_missing_duration_format_counts": (
+                _rtf_missing_duration_format_counts(results)
+            ),
             "rtf_note": (
-                "RTF is computed only when audio duration can be derived from WAV "
-                "headers or raw PCM byte counts; compressed responses are excluded."
+                "RTF is computed when response validation derives a positive "
+                "audio duration."
             ),
             "status_counts": dict(status_counts),
             "http_status_counts": dict(
@@ -182,6 +194,8 @@ def build_results_report(
             "endpoint_mix": dict(Counter(result.endpoint for result in results)),
             "by_category": _by_category(spec, results),
             "by_stage": _by_stage(spec, results),
+            "by_workload": _by_workload(spec, results),
+            "by_stage_and_workload": _by_stage_and_workload(spec, results),
             "by_endpoint": _by_endpoint(spec, results),
             "by_operation": _by_operation(spec, results),
             "by_configured_concurrency": _by_configured_concurrency(spec, results),
@@ -269,6 +283,7 @@ def _endpoint_capabilities(
 def _summary(values: list[float]) -> dict[str, float | None]:
     if not values:
         return {
+            "min": None,
             "mean": None,
             "p50": None,
             "p95": None,
@@ -278,6 +293,7 @@ def _summary(values: list[float]) -> dict[str, float | None]:
         }
     values_sorted = sorted(values)
     return {
+        "min": min(values_sorted),
         "mean": statistics.fmean(values_sorted),
         "p50": _percentile(values_sorted, 0.50),
         "p95": _percentile(values_sorted, 0.95),
@@ -315,6 +331,39 @@ def _by_stage(
     return {
         stage_id: _result_group_summary(spec, stage_results)
         for stage_id, stage_results in sorted(grouped.items())
+    }
+
+
+def _by_workload(
+    spec: BenchmarkSpec,
+    results: list[ScenarioResult],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[ScenarioResult]] = defaultdict(list)
+    for result in results:
+        if result.workload is not None:
+            grouped[result.workload].append(result)
+    return {
+        workload: _result_group_summary(spec, workload_results)
+        for workload, workload_results in sorted(grouped.items())
+    }
+
+
+def _by_stage_and_workload(
+    spec: BenchmarkSpec,
+    results: list[ScenarioResult],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    grouped: dict[str, dict[str, list[ScenarioResult]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for result in results:
+        if result.workload is not None:
+            grouped[result.stage_id or "unknown"][result.workload].append(result)
+    return {
+        stage_id: {
+            workload: _result_group_summary(spec, workload_results)
+            for workload, workload_results in sorted(by_workload.items())
+        }
+        for stage_id, by_workload in sorted(grouped.items())
     }
 
 
@@ -453,11 +502,9 @@ def _coverage_failures(
     for endpoint in sorted(enabled_endpoint_set - generated_endpoint_set):
         failures.append(_coverage_gap(f"{endpoint}.enabled", [endpoint]))
     if "speech" in enabled_endpoint_set:
-        failures.extend(_speech_coverage_failures(scenarios))
-    if "speech_stream" in enabled_endpoint_set and not _has_capability(
-        scenarios, "speech.stream"
-    ):
-        failures.append(_coverage_gap("speech.stream", ["speech.stream"]))
+        failures.extend(_speech_coverage_failures(spec, scenarios))
+    if "speech_stream" in enabled_endpoint_set:
+        failures.extend(_speech_stream_coverage_failures(scenarios))
     if "batch" in enabled_endpoint_set:
         failures.extend(_batch_coverage_failures(scenarios))
     if "voices" in enabled_endpoint_set:
@@ -504,6 +551,8 @@ def _coverage_matrix(
 
     if "speech" in enabled_endpoint_set:
         rows.extend(_speech_coverage_matrix(spec, scenarios))
+    if "speech_stream" in enabled_endpoint_set:
+        rows.extend(_speech_stream_coverage_matrix(spec, scenarios))
     if "batch" in enabled_endpoint_set:
         rows.extend(_batch_coverage_matrix(spec, scenarios))
     if "voices" in enabled_endpoint_set:
@@ -542,6 +591,11 @@ def _speech_coverage_matrix(
     speech_scenarios = [
         scenario for scenario in scenarios if scenario.endpoint == "speech"
     ]
+    (
+        long_prefill_expected,
+        long_prefill_observed,
+        long_prefill_missing,
+    ) = _long_prefill_decode_coverage(spec, speech_scenarios)
     rows = [
         _coverage_matrix_row(
             spec,
@@ -595,6 +649,7 @@ def _speech_coverage_matrix(
                 {
                     "valid_reference",
                     "valid_base64_ref_audio",
+                    "valid_structured_references",
                     "valid_file_ref_audio",
                     "x_vector_only_mode",
                     *(case for case, _ in REFERENCE_FAILURES),
@@ -604,6 +659,7 @@ def _speech_coverage_matrix(
             expected=[
                 "valid_reference",
                 "valid_base64_ref_audio",
+                "valid_structured_references",
                 "valid_file_ref_audio",
                 "x_vector_only_mode",
                 *(case for case, _ in REFERENCE_FAILURES),
@@ -624,13 +680,18 @@ def _speech_coverage_matrix(
         _coverage_matrix_row(
             spec,
             "speech.length_extremes",
-            tested=not _value_coverage_gap(
-                "speech.length_extremes",
-                {len(text) for text in LENGTH_EXTREME_TEXTS},
-                _metadata_values(speech_scenarios, "input_chars"),
-            ),
-            expected=sorted({len(text) for text in LENGTH_EXTREME_TEXTS}),
-            observed=sorted(_metadata_values(speech_scenarios, "input_chars")),
+            tested=not _length_extreme_missing(speech_scenarios),
+            expected=_length_extreme_rows(LENGTH_EXTREME_CASES),
+            observed=_observed_length_extreme_rows(speech_scenarios),
+            missing=_length_extreme_missing(speech_scenarios),
+        ),
+        _coverage_matrix_row(
+            spec,
+            "speech.long_prefill_decode",
+            tested=not long_prefill_missing,
+            expected=long_prefill_expected,
+            observed=long_prefill_observed,
+            missing=long_prefill_missing,
         ),
         _coverage_matrix_row(
             spec,
@@ -687,8 +748,38 @@ def _speech_coverage_matrix(
                 }
             ),
         ),
+        _coverage_matrix_row(
+            spec,
+            "speech.disconnect",
+            tested=_has_capability(speech_scenarios, "speech.disconnect"),
+            expected=["speech.disconnect"],
+            observed=_capabilities_for(speech_scenarios, {"speech.disconnect"}),
+        ),
     ]
     return rows
+
+
+def _speech_stream_coverage_matrix(
+    spec: BenchmarkSpec,
+    scenarios: list[Scenario],
+) -> list[dict[str, Any]]:
+    stream_scenarios = [
+        scenario for scenario in scenarios if scenario.endpoint == "speech_stream"
+    ]
+    return [
+        _coverage_matrix_row(
+            spec,
+            capability,
+            tested=_has_capability(stream_scenarios, capability),
+            expected=[capability],
+            observed=_capabilities_for(stream_scenarios, {capability}),
+        )
+        for capability in (
+            "speech.stream",
+            "speech.stream.validation",
+            "speech.stream_disconnect",
+        )
+    ]
 
 
 def _batch_coverage_matrix(
@@ -715,11 +806,18 @@ def _batch_coverage_matrix(
             "batch.cases",
             tested=not _value_coverage_gap(
                 "batch.cases",
-                {"all_valid", "item_error", "item_overrides"},
+                {"all_valid", "disconnect", "item_error", "item_overrides"},
                 _metadata_values(batch_scenarios, "batch_case"),
             ),
-            expected=["all_valid", "item_error", "item_overrides"],
+            expected=["all_valid", "disconnect", "item_error", "item_overrides"],
             observed=sorted(_metadata_values(batch_scenarios, "batch_case")),
+        ),
+        _coverage_matrix_row(
+            spec,
+            "batch.disconnect",
+            tested=_has_capability(batch_scenarios, "batch.disconnect"),
+            expected=["batch.disconnect"],
+            observed=_capabilities_for(batch_scenarios, {"batch.disconnect"}),
         ),
     ]
 
@@ -852,6 +950,20 @@ def _voice_coverage_matrix(
         ),
         _coverage_matrix_row(
             spec,
+            "voices.named_speech",
+            tested=_has_capability(voice_scenarios, "voices.named_speech"),
+            expected=["voices.named_speech"],
+            observed=_capabilities_for(voice_scenarios, {"voices.named_speech"}),
+        ),
+        _coverage_matrix_row(
+            spec,
+            "voices.named_batch",
+            tested=_has_capability(voice_scenarios, "voices.named_batch"),
+            expected=["voices.named_batch"],
+            observed=_capabilities_for(voice_scenarios, {"voices.named_batch"}),
+        ),
+        _coverage_matrix_row(
+            spec,
             "voices.speaker_cap",
             tested=(
                 configured_speaker_cap_count > 0
@@ -970,6 +1082,7 @@ def _coverage_matrix_row(
     tested: bool,
     expected: list[Any],
     observed: list[Any],
+    missing: list[Any] | None = None,
     gap_status: str = "coverage_gap",
     gap_error: str | None = None,
     out_of_scope_reason: str | None = None,
@@ -977,27 +1090,31 @@ def _coverage_matrix_row(
     if tested:
         status = "tested"
         reason = None
-        missing: list[Any] = []
+        missing_values: list[Any] = []
         error = None
     elif out_of_scope_reason:
         status = "out_of_scope"
         reason = out_of_scope_reason
-        missing = []
+        missing_values = []
         error = None
     else:
         status = gap_status
         reason = None
-        missing = sorted(set(expected) - set(observed), key=str)
+        missing_values = (
+            missing
+            if missing is not None
+            else sorted(set(expected) - set(observed), key=str)
+        )
         error = (
             gap_error
-            or f"enabled benchmark contract is missing required coverage: {missing}"
+            or f"enabled benchmark contract is missing required coverage: {missing_values}"
         )
     return {
         "contract": contract,
         "status": status,
         "expected": expected,
         "observed": observed,
-        "missing": missing,
+        "missing": missing_values,
         "reason": reason,
         "error": error,
     }
@@ -1010,11 +1127,14 @@ def _enabled_endpoint_set(spec: BenchmarkSpec) -> set[str]:
     return endpoint_set
 
 
-def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+def _speech_coverage_failures(
+    spec: BenchmarkSpec, scenarios: list[Scenario]
+) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     speech_scenarios = [
         scenario for scenario in scenarios if scenario.endpoint == "speech"
     ]
+    _, _, long_prefill_missing = _long_prefill_decode_coverage(spec, speech_scenarios)
     languages = {language for language, _ in MULTILINGUAL_TEXTS}
     failures.extend(
         _value_coverage_gap(
@@ -1044,19 +1164,20 @@ def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]
             _metadata_values(speech_scenarios, "speed_boundary"),
         )
     )
-    failures.extend(
-        _value_coverage_gap(
-            "speech.length_extremes",
-            {len(text) for text in LENGTH_EXTREME_TEXTS},
-            _metadata_values(speech_scenarios, "input_chars"),
+    length_extreme_missing = _length_extreme_missing(speech_scenarios)
+    if length_extreme_missing:
+        failures.append(_coverage_gap("speech.length_extremes", length_extreme_missing))
+    if long_prefill_missing:
+        failures.append(
+            _coverage_gap("speech.long_prefill_decode", long_prefill_missing)
         )
-    )
     failures.extend(
         _value_coverage_gap(
             "speech.reference_cases",
             {
                 "valid_reference",
                 "valid_base64_ref_audio",
+                "valid_structured_references",
                 "valid_file_ref_audio",
                 "x_vector_only_mode",
                 *(case for case, _ in REFERENCE_FAILURES),
@@ -1090,7 +1211,26 @@ def _speech_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]
                 ["speech.openai_sdk_error"],
             )
         )
+    if not _has_capability(speech_scenarios, "speech.disconnect"):
+        failures.append(_coverage_gap("speech.disconnect", ["speech.disconnect"]))
     return failures
+
+
+def _speech_stream_coverage_failures(
+    scenarios: list[Scenario],
+) -> list[dict[str, Any]]:
+    stream_scenarios = [
+        scenario for scenario in scenarios if scenario.endpoint == "speech_stream"
+    ]
+    return [
+        _coverage_gap(capability, [capability])
+        for capability in (
+            "speech.stream",
+            "speech.stream.validation",
+            "speech.stream_disconnect",
+        )
+        if not _has_capability(stream_scenarios, capability)
+    ]
 
 
 def _batch_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
@@ -1108,10 +1248,12 @@ def _batch_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
     failures.extend(
         _value_coverage_gap(
             "batch.cases",
-            {"all_valid", "item_error", "item_overrides"},
+            {"all_valid", "disconnect", "item_error", "item_overrides"},
             _metadata_values(batch_scenarios, "batch_case"),
         )
     )
+    if not _has_capability(batch_scenarios, "batch.disconnect"):
+        failures.append(_coverage_gap("batch.disconnect", ["batch.disconnect"]))
     return failures
 
 
@@ -1153,6 +1295,9 @@ def _voice_coverage_failures(
                     ["voices.upload_metadata"],
                 )
             )
+        for capability in ("voices.named_speech", "voices.named_batch"):
+            if not _has_capability(regular_voice_scenarios, capability):
+                failures.append(_coverage_gap(capability, [capability]))
     if cap_stage_ids and voice_upload_coverage["speaker_cap_attempts"] <= 0:
         failures.append(_coverage_gap("voices.speaker_cap", ["speaker_cap_sequence"]))
     if _configured_voice_cache_pressure_voice_count(spec) and not _has_capability(
@@ -1295,6 +1440,85 @@ def _has_capability(scenarios: list[Scenario], capability_key: str) -> bool:
     return any(scenario.capability_key == capability_key for scenario in scenarios)
 
 
+def _observed_length_extreme_rows(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+    expected_keys = set(LENGTH_EXTREME_CASES)
+    observed_keys = []
+    for scenario in scenarios:
+        if scenario.category != "speech_length_extreme":
+            continue
+        metadata = scenario.planned_metadata
+        key = (metadata.get("length_case"), metadata.get("input_chars"))
+        if key in expected_keys:
+            observed_keys.append(key)
+    return _length_extreme_rows(
+        sorted(set(observed_keys), key=lambda item: str(item[0]))
+    )
+
+
+def _length_extreme_missing(scenarios: list[Scenario]) -> list[dict[str, Any]]:
+    observed = {
+        (row["length_case"], row["input_chars"])
+        for row in _observed_length_extreme_rows(scenarios)
+    }
+    missing = [key for key in LENGTH_EXTREME_CASES if key not in observed]
+    return _length_extreme_rows(missing)
+
+
+def _length_extreme_rows(
+    keys: tuple[tuple[str, int], ...] | list[tuple[str, int]]
+) -> list[dict[str, Any]]:
+    return [
+        {"length_case": length_case, "input_chars": input_chars}
+        for length_case, input_chars in keys
+    ]
+
+
+def _long_prefill_decode_coverage(
+    spec: BenchmarkSpec, scenarios: list[Scenario]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    expected_keys = [
+        (stage.id, MAX_SPEECH_INPUT_CHARS, LONG_PREFILL_DECODE_MAX_NEW_TOKENS)
+        for stage in spec.params.load_stages
+        if "speech" in (stage.enabled_endpoints or spec.params.enabled_endpoints)
+    ]
+    observed_keys = set()
+    for scenario in scenarios:
+        metadata = scenario.planned_metadata
+        if (
+            metadata.get("stress_case") == "long_prefill_decode"
+            and metadata.get("input_chars") == MAX_SPEECH_INPUT_CHARS
+            and metadata.get("max_new_tokens") == LONG_PREFILL_DECODE_MAX_NEW_TOKENS
+        ):
+            observed_keys.add(
+                (
+                    scenario.stage_id,
+                    metadata["input_chars"],
+                    metadata["max_new_tokens"],
+                )
+            )
+    observed = [key for key in expected_keys if key in observed_keys]
+    missing = [key for key in expected_keys if key not in observed_keys]
+    return (
+        _long_prefill_decode_rows(expected_keys),
+        _long_prefill_decode_rows(observed),
+        _long_prefill_decode_rows(missing),
+    )
+
+
+def _long_prefill_decode_rows(
+    keys: list[tuple[str, int, int]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "stage_id": stage_id,
+            "stress_case": "long_prefill_decode",
+            "input_chars": input_chars,
+            "max_new_tokens": max_new_tokens,
+        }
+        for stage_id, input_chars, max_new_tokens in keys
+    ]
+
+
 def _capabilities_for(
     scenarios: list[Scenario],
     capability_keys: set[str],
@@ -1401,15 +1625,40 @@ def _configured_voice_speaker_cap_count(spec: BenchmarkSpec) -> int:
 def _result_group_summary(
     spec: BenchmarkSpec, results: list[ScenarioResult]
 ) -> dict[str, Any]:
-    latencies = [result.latency_s for result in results if result.latency_s > 0]
-    ttfas = [result.ttfa_s for result in results if result.ttfa_s is not None]
-    rtfs = [result.rtf for result in results if result.rtf > 0]
+    successful_results = _performance_results(results)
+    latencies = [
+        result.latency_s for result in successful_results if result.latency_s > 0
+    ]
+    ttfas = [
+        result.ttfa_s for result in successful_results if result.ttfa_s is not None
+    ]
+    rtfs = [result.rtf for result in successful_results if result.rtf > 0]
+    inter_chunks = [
+        interval for result in successful_results for interval in result.inter_chunk_s
+    ]
+    prompt_tokens = [
+        float(result.prompt_tokens)
+        for result in successful_results
+        if result.prompt_tokens is not None
+    ]
+    completion_tokens = [
+        float(result.completion_tokens)
+        for result in successful_results
+        if result.completion_tokens is not None
+    ]
+    audio_durations = [
+        result.audio_duration_s
+        for result in successful_results
+        if result.audio_duration_s > 0
+    ]
     queue_waits = [
-        result.queue_wait_s for result in results if result.queue_wait_s is not None
+        result.queue_wait_s
+        for result in successful_results
+        if result.queue_wait_s is not None
     ]
     generator_lags = [
         result.generator_lag_s
-        for result in results
+        for result in successful_results
         if result.generator_lag_s is not None
     ]
     planned_starts = [
@@ -1430,6 +1679,24 @@ def _result_group_summary(
         if first_start is not None and last_completion is not None
         else None
     )
+    performance_first_start = min(
+        (
+            result.actual_start_s
+            for result in successful_results
+            if result.actual_start_s
+        ),
+        default=None,
+    )
+    performance_last_completion = max(
+        (result.completed_s for result in successful_results if result.completed_s),
+        default=None,
+    )
+    performance_wall_time_s = (
+        performance_last_completion - performance_first_start
+        if performance_first_start is not None
+        and performance_last_completion is not None
+        else None
+    )
     planned_window_s = (
         max(planned_starts) - min(planned_starts) if len(planned_starts) > 1 else None
     )
@@ -1437,6 +1704,8 @@ def _result_group_summary(
     failed = len(results) - succeeded
     return {
         "total": len(results),
+        "successful_request_count": len(successful_results),
+        "metric_sample_counts": _metric_sample_counts(successful_results),
         "succeeded": succeeded,
         "failed": failed,
         "wall_time_s": wall_time_s,
@@ -1480,10 +1749,19 @@ def _result_group_summary(
             else None
         ),
         "achieved_rps": (
-            len(results) / wall_time_s if wall_time_s and wall_time_s > 0 else None
+            len(successful_results) / performance_wall_time_s
+            if performance_wall_time_s
+            and performance_wall_time_s > 0
+            and successful_results
+            else None
         ),
         "latency_s": _summary(latencies),
         "ttfa_s": _summary(ttfas),
+        "inter_chunk_s": _summary(inter_chunks),
+        "prompt_tokens": _summary(prompt_tokens),
+        "completion_tokens": _summary(completion_tokens),
+        "audio_duration_s": _summary(audio_durations),
+        "output_tok_per_req_s": _output_tok_per_req_s(successful_results),
         "queue_wait_s": _summary(queue_waits),
         "generator_lag_s": _summary(generator_lags),
         "rtf": _summary(rtfs),
@@ -1507,6 +1785,50 @@ def _roll_up_endpoint_capability(statuses: list[str]) -> str:
     return _roll_up_capability(statuses)
 
 
+def _metric_sample_counts(results: list[ScenarioResult]) -> dict[str, int]:
+    return {
+        "latency_s": sum(result.latency_s > 0 for result in results),
+        "ttfa_s": sum(result.ttfa_s is not None for result in results),
+        "inter_chunk_s": sum(bool(result.inter_chunk_s) for result in results),
+        "prompt_tokens": sum(result.prompt_tokens is not None for result in results),
+        "completion_tokens": sum(
+            result.completion_tokens is not None for result in results
+        ),
+        "audio_duration_s": sum(result.audio_duration_s > 0 for result in results),
+        "output_tok_per_req_s": sum(
+            result.completion_tokens is not None
+            and result.engine_time_s is not None
+            and result.engine_time_s > 0
+            for result in results
+        ),
+        "generation_metrics_complete": sum(
+            result.prompt_tokens is not None
+            and result.completion_tokens is not None
+            and result.engine_time_s is not None
+            and result.engine_time_s > 0
+            and result.audio_duration_s > 0
+            for result in results
+        ),
+        "rtf": sum(result.rtf > 0 for result in results),
+    }
+
+
+def _output_tok_per_req_s(results: list[ScenarioResult]) -> float | None:
+    measured = [
+        result
+        for result in results
+        if result.completion_tokens is not None
+        and result.engine_time_s is not None
+        and result.engine_time_s > 0
+    ]
+    total_engine_time_s = sum(result.engine_time_s or 0.0 for result in measured)
+    if not measured or total_engine_time_s <= 0:
+        return None
+    return (
+        sum(result.completion_tokens or 0 for result in measured) / total_engine_time_s
+    )
+
+
 def _admission_status_counts(results: list[ScenarioResult]) -> dict[str, int]:
     counts = Counter()
     for result in results:
@@ -1519,6 +1841,17 @@ def _admission_status_counts(results: list[ScenarioResult]) -> dict[str, int]:
     return dict(counts)
 
 
+def _performance_results(results: list[ScenarioResult]) -> list[ScenarioResult]:
+    return [
+        result
+        for result in results
+        if result.success
+        if result.status == "ok"
+        if result.endpoint != "voices"
+        if not result.was_cancelled
+    ]
+
+
 def _load_generation_error(results: list[ScenarioResult]) -> str | None:
     if any(result.load_generator_saturated for result in results):
         return "scheduled arrivals saturated the benchmark client concurrency cap"
@@ -1527,16 +1860,13 @@ def _load_generation_error(results: list[ScenarioResult]) -> str | None:
     return None
 
 
-def _rtf_unsupported_format_counts(results: list[ScenarioResult]) -> dict[str, int]:
+def _rtf_missing_duration_format_counts(
+    results: list[ScenarioResult],
+) -> dict[str, int]:
     counts = Counter()
     for result in results:
         response_format = (result.response_format or "").lower()
-        if (
-            response_format
-            and response_format not in {"wav", "pcm"}
-            and result.audio_bytes > 0
-            and result.rtf == 0
-        ):
+        if response_format and result.audio_bytes > 0 and result.rtf == 0:
             counts[response_format] += 1
     return dict(counts)
 

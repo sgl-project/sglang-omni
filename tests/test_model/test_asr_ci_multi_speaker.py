@@ -1,26 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """Multi-speaker ASR/diarization CI for MOSS-Transcribe-Diarize.
 
-The test reuses the movies800 benchmark path and runs two single-GPU workers
-behind the managed router, matching the DP=2 shape used by other ASR/TTS CI
-stages.
+The test reuses the movies800 / aishell4_long / googletime benchmark path and
+runs two single-GPU workers behind the managed router, matching the DP=2 shape
+used by other ASR/TTS CI stages.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from benchmarks.eval.eval_transcribe_diarize import (
+from benchmarks.eval.benchmark_asr_transcribe_diarize import (
     AISHELL4_REPO_ID,
+    GOOGLETIME_REPO_ID,
     MODEL_PATH,
     run_eval,
 )
+from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.transcribe_diarize_metrics import (
     print_diarization_accuracy_summary,
     print_diarization_speed_summary,
@@ -45,31 +47,95 @@ MOSS_TD_CONCURRENCY = 16
 MOSS_TD_WARMUP_REQUESTS = 0
 MOSS_TD_CI_SAMPLES = 800
 MOSS_TD_AISHELL4_LONG_CI_SAMPLES = 20
+MOSS_TD_GOOGLETIME_CI_SAMPLES = 25
 MOSS_TD_STARTUP_TIMEOUT = 600
 MOSS_TD_MEM_FRACTION_STATIC = 0.80
 MOSS_TD_LONG_MAX_NEW_TOKENS = 65536
 
-# Worst-of-N reference values calibrated by tune.py.
-MOSS_TD_CER_PERCENT_REF = 21.66645481123681
-MOSS_TD_CER_NO_SPK_PERCENT_REF = 21.66645481123681
-MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF: float | None = 4.7008752910945155
-MOSS_TD_N_ABOVE_50_CER_MAX: int | None = 30
-MOSS_TD_CP_CER_PERCENT_REF = 29.170903775263763
-MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_REF = 21.66645481123681
-MOSS_TD_DELTA_CER_PERCENT_REF = 7.50444896402695
-# Speaker-timestamp DER (diarization error rate, already a percentage in the
-# result JSON). None until the first DER calibration fills in the reference.
-MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF: float | None = 21.704891749630097
+
+MOSS_TD_CER_PERCENT_REF = 5.8058980551671535
+MOSS_TD_CER_NO_SPK_PERCENT_REF = 5.8058980551671535
+MOSS_TD_CER_NO_SPK_BELOW_50_PERCENT_REF: float | None = 4.976211906904976
+MOSS_TD_N_ABOVE_50_CER_REF: int | None = 29
+MOSS_TD_CP_CER_PERCENT_REF = 13.211834244311682
+MOSS_TD_CER_NO_SPK_CP_VALID_PERCENT_REF = 5.8058980551671535
+MOSS_TD_DELTA_CER_PERCENT_REF = 7.421825346383629
+MOSS_TD_SPEAKER_TIMESTAMP_DER_PERCENT_REF: float | None = 21.011564782231943
 MOSS_TD_CER_VALID_SAMPLES_MIN: int | None = 784
 MOSS_TD_CP_CER_VALID_SAMPLES_MIN: int | None = 784
-MOSS_TD_THROUGHPUT_QPS_REF = 29.991
-MOSS_TD_LATENCY_MEAN_S_REF = 0.465
-MOSS_TD_LATENCY_P95_S_REF = 0.857
-MOSS_TD_RTF_MEAN_REF = 0.0465
-MOSS_TD_RTF_P95_REF = 0.0612
+MOSS_TD_THROUGHPUT_QPS_REF = 39.671
+MOSS_TD_LATENCY_MEAN_S_REF = 0.333
+MOSS_TD_LATENCY_P95_S_REF = 0.702
+MOSS_TD_RTF_MEAN_REF = 0.0366
+MOSS_TD_RTF_P95_REF = 0.0473
+
+AISHELL4_LONG_CER_PERCENT_REF = 13.801266201727444
+AISHELL4_LONG_CER_NO_SPK_PERCENT_REF = 13.801266201727444
+AISHELL4_LONG_CP_CER_PERCENT_REF = 14.04630173742391
+AISHELL4_LONG_DELTA_CER_PERCENT_REF = 0.26055814881750794
+AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_PERCENT_REF = 9.557172277711036
+AISHELL4_LONG_THROUGHPUT_QPS_REF = 0.069
+AISHELL4_LONG_LATENCY_MEAN_S_REF = 161.985
+AISHELL4_LONG_LATENCY_P95_S_REF = 208.915
+AISHELL4_LONG_RTF_MEAN_REF = 0.0708
+AISHELL4_LONG_RTF_P95_REF = 0.0926
+
+
+GOOGLETIME_CER_PERCENT_REF = 32.98946954391862
+GOOGLETIME_CER_NO_SPK_PERCENT_REF = 32.98946954391862
+GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_REF: float | None = 31.813485220089945
+GOOGLETIME_N_ABOVE_50_CER_REF: int | None = 1
+GOOGLETIME_CP_CER_PERCENT_REF = 33.81712644294662
+GOOGLETIME_DELTA_CER_PERCENT_REF = 0.8360002145423984
+GOOGLETIME_SPEAKER_TIMESTAMP_DER_PERCENT_REF = 31.168548796685062
+GOOGLETIME_THROUGHPUT_QPS_REF = 0.047
+GOOGLETIME_LATENCY_MEAN_S_REF = 250.903
+GOOGLETIME_LATENCY_P95_S_REF = 273.908
+GOOGLETIME_RTF_MEAN_REF = 0.0973
+GOOGLETIME_RTF_P95_REF = 0.1247
+
+# Note (guozhihao): Streaming emits partial deltas, so keep its refs separate
+# from non-streaming thresholds to avoid mixing latency and accuracy baselines.
+MOSS_TD_STREAM_CER_PERCENT_REF: float | None = 5.832909622473624
+MOSS_TD_STREAM_CER_NO_SPK_PERCENT_REF: float | None = 5.832909622473624
+MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_REF: float | None = 5.003536067892504
+
+# note (chenyang): It's quite unstable for the MOSS_TD_STREAM_N_ABOVE_50_CER_MAX
+# We keep it fixed to 31 and no need to change it during calibration.
+MOSS_TD_STREAM_N_ABOVE_50_CER_MAX: int | None = 31
+MOSS_TD_STREAM_CP_CER_PERCENT_REF: float | None = 13.04976484047286
+MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_REF: float | None = 5.832909622473624
+MOSS_TD_STREAM_DELTA_CER_PERCENT_REF: float | None = 7.251811363925256
+MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_REF: float | None = 20.96720953947172
+MOSS_TD_STREAM_CER_VALID_SAMPLES_MIN: int | None = 784
+MOSS_TD_STREAM_CP_CER_VALID_SAMPLES_MIN: int | None = 784
+MOSS_TD_STREAM_THROUGHPUT_QPS_REF: float | None = 42.444
+MOSS_TD_STREAM_LATENCY_MEAN_S_REF: float | None = 0.318
+MOSS_TD_STREAM_LATENCY_P95_S_REF: float | None = 0.643
+MOSS_TD_STREAM_RTF_MEAN_REF: float | None = 0.034
+MOSS_TD_STREAM_RTF_P95_REF: float | None = 0.0429
+MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF: float | None = 0.0515
+MOSS_TD_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.0628
 
 THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1
+
+# Note (chenyang): AISHELL4-long runs only 20 samples, so a single straggler
+#  or a flipped orderline sample moves the aggregate metrics far more than
+# the 800-sample movies800 corpus. Widen its slack accordingly.
+AISHELL4_LONG_THRESHOLD_SLACK_HIGHER = 0.8
+AISHELL4_LONG_THRESHOLD_SLACK_LOWER = 1.2
+
+# Note (chenyang): GoogleTime runs only 25 long podcast samples, so widen
+# slack the same way as AISHELL4-long.
+GOOGLETIME_THRESHOLD_SLACK_HIGHER = 0.8
+GOOGLETIME_THRESHOLD_SLACK_LOWER = 1.2
+
+MOSS_TD_N_ABOVE_50_CER_MAX: int | None = (
+    math.ceil(MOSS_TD_N_ABOVE_50_CER_REF * THRESHOLD_SLACK_LOWER)
+    if MOSS_TD_N_ABOVE_50_CER_REF is not None
+    else None
+)
 
 MOSS_TD_CER_PERCENT_MAX: float | None = round(
     MOSS_TD_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4
@@ -111,16 +177,149 @@ MOSS_TD_RTF_MEAN_MAX: float | None = round(
 MOSS_TD_RTF_P95_MAX: float | None = round(
     MOSS_TD_RTF_P95_REF * THRESHOLD_SLACK_LOWER, 4
 )
-AISHELL4_LONG_CER_PERCENT_MAX: float | None = 13.435930414342895
-AISHELL4_LONG_CER_NO_SPK_PERCENT_MAX: float | None = 13.435930414342895
-AISHELL4_LONG_CP_CER_PERCENT_MAX: float | None = 13.9315452761362
-AISHELL4_LONG_DELTA_CER_PERCENT_MAX: float | None = 0.5155725072346462
-AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_PERCENT_MAX: float | None = 12.388339964922126
-AISHELL4_LONG_THROUGHPUT_QPS_MIN: float | None = 0.059
-AISHELL4_LONG_LATENCY_MEAN_S_MAX: float | None = 199.827
-AISHELL4_LONG_LATENCY_P95_S_MAX: float | None = 259.394
-AISHELL4_LONG_RTF_MEAN_MAX: float | None = 0.0874
-AISHELL4_LONG_RTF_P95_MAX: float | None = 0.1164
+MOSS_TD_STREAM_CER_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_CER_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_CER_NO_SPK_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_CER_NO_SPK_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_CER_NO_SPK_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_CP_CER_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_CP_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_CP_CER_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_DELTA_CER_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_DELTA_CER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_DELTA_CER_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_MAX: float | None = (
+    round(MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_REF is not None
+    else None
+)
+MOSS_TD_STREAM_THROUGHPUT_QPS_MIN: float | None = (
+    round(MOSS_TD_STREAM_THROUGHPUT_QPS_REF * THRESHOLD_SLACK_HIGHER, 3)
+    if MOSS_TD_STREAM_THROUGHPUT_QPS_REF is not None
+    else None
+)
+MOSS_TD_STREAM_LATENCY_MEAN_S_MAX: float | None = (
+    round(MOSS_TD_STREAM_LATENCY_MEAN_S_REF * THRESHOLD_SLACK_LOWER, 3)
+    if MOSS_TD_STREAM_LATENCY_MEAN_S_REF is not None
+    else None
+)
+MOSS_TD_STREAM_LATENCY_P95_S_MAX: float | None = (
+    round(MOSS_TD_STREAM_LATENCY_P95_S_REF * THRESHOLD_SLACK_LOWER, 3)
+    if MOSS_TD_STREAM_LATENCY_P95_S_REF is not None
+    else None
+)
+MOSS_TD_STREAM_RTF_MEAN_MAX: float | None = (
+    round(MOSS_TD_STREAM_RTF_MEAN_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_RTF_MEAN_REF is not None
+    else None
+)
+MOSS_TD_STREAM_RTF_P95_MAX: float | None = (
+    round(MOSS_TD_STREAM_RTF_P95_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_RTF_P95_REF is not None
+    else None
+)
+MOSS_TD_STREAM_TEXT_TTFT_P95_S_MAX: float | None = (
+    round(MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_TEXT_TTFT_P95_S_REF is not None
+    else None
+)
+MOSS_TD_STREAM_INTER_CHUNK_P95_S_MAX: float | None = (
+    round(MOSS_TD_STREAM_INTER_CHUNK_P95_S_REF * THRESHOLD_SLACK_LOWER, 4)
+    if MOSS_TD_STREAM_INTER_CHUNK_P95_S_REF is not None
+    else None
+)
+AISHELL4_LONG_CER_PERCENT_MAX: float | None = round(
+    AISHELL4_LONG_CER_PERCENT_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 4
+)
+AISHELL4_LONG_CER_NO_SPK_PERCENT_MAX: float | None = round(
+    AISHELL4_LONG_CER_NO_SPK_PERCENT_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 4
+)
+AISHELL4_LONG_CP_CER_PERCENT_MAX: float | None = round(
+    AISHELL4_LONG_CP_CER_PERCENT_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 4
+)
+AISHELL4_LONG_DELTA_CER_PERCENT_MAX: float | None = None
+AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_PERCENT_MAX: float | None = round(
+    AISHELL4_LONG_SPEAKER_TIMESTAMP_DER_PERCENT_REF
+    * AISHELL4_LONG_THRESHOLD_SLACK_LOWER,
+    4,
+)
+AISHELL4_LONG_THROUGHPUT_QPS_MIN: float | None = round(
+    AISHELL4_LONG_THROUGHPUT_QPS_REF * AISHELL4_LONG_THRESHOLD_SLACK_HIGHER, 3
+)
+AISHELL4_LONG_LATENCY_MEAN_S_MAX: float | None = round(
+    AISHELL4_LONG_LATENCY_MEAN_S_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 3
+)
+AISHELL4_LONG_LATENCY_P95_S_MAX: float | None = round(
+    AISHELL4_LONG_LATENCY_P95_S_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 3
+)
+AISHELL4_LONG_RTF_MEAN_MAX: float | None = round(
+    AISHELL4_LONG_RTF_MEAN_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 4
+)
+AISHELL4_LONG_RTF_P95_MAX: float | None = round(
+    AISHELL4_LONG_RTF_P95_REF * AISHELL4_LONG_THRESHOLD_SLACK_LOWER, 4
+)
+
+GOOGLETIME_CER_PERCENT_MAX: float | None = round(
+    GOOGLETIME_CER_PERCENT_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+)
+GOOGLETIME_CER_NO_SPK_PERCENT_MAX: float | None = round(
+    GOOGLETIME_CER_NO_SPK_PERCENT_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+)
+GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_MAX: float | None = (
+    round(
+        GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+    )
+    if GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_REF is not None
+    else None
+)
+GOOGLETIME_N_ABOVE_50_CER_MIN: int | None = 0
+GOOGLETIME_N_ABOVE_50_CER_MAX: int | None = (
+    math.ceil(GOOGLETIME_N_ABOVE_50_CER_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER)
+    if GOOGLETIME_N_ABOVE_50_CER_REF is not None
+    else None
+)
+GOOGLETIME_CP_CER_PERCENT_MAX: float | None = round(
+    GOOGLETIME_CP_CER_PERCENT_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+)
+GOOGLETIME_DELTA_CER_PERCENT_MAX: float | None = None
+GOOGLETIME_SPEAKER_TIMESTAMP_DER_PERCENT_MAX: float | None = round(
+    GOOGLETIME_SPEAKER_TIMESTAMP_DER_PERCENT_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER,
+    4,
+)
+GOOGLETIME_THROUGHPUT_QPS_MIN: float | None = round(
+    GOOGLETIME_THROUGHPUT_QPS_REF * GOOGLETIME_THRESHOLD_SLACK_HIGHER, 3
+)
+GOOGLETIME_LATENCY_MEAN_S_MAX: float | None = round(
+    GOOGLETIME_LATENCY_MEAN_S_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 3
+)
+GOOGLETIME_LATENCY_P95_S_MAX: float | None = round(
+    GOOGLETIME_LATENCY_P95_S_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 3
+)
+GOOGLETIME_RTF_MEAN_MAX: float | None = round(
+    GOOGLETIME_RTF_MEAN_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+)
+GOOGLETIME_RTF_P95_MAX: float | None = round(
+    GOOGLETIME_RTF_P95_REF * GOOGLETIME_THRESHOLD_SLACK_LOWER, 4
+)
 
 
 def _require_cuda() -> None:
@@ -154,6 +353,18 @@ def aishell4_long_samples():
 
 
 @pytest.fixture(scope="module")
+def googletime_samples():
+    return load_movies800_samples(
+        repo_id=GOOGLETIME_REPO_ID,
+        split="validation",
+        audio_column="audio",
+        expected_column="transcription",
+        max_samples=None,
+        expected_sample_count=MOSS_TD_GOOGLETIME_CI_SAMPLES,
+    )
+
+
+@pytest.fixture(scope="module")
 def moss_td_router_server(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> ManagedRouterHandle:
@@ -182,6 +393,7 @@ def moss_td_router_server(
 def test_moss_transcribe_diarize_multi_speaker_datasets(
     movies800times_samples,
     aishell4_long_samples,
+    googletime_samples,
     moss_td_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
@@ -197,7 +409,16 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
         f"Expected {MOSS_TD_AISHELL4_LONG_CI_SAMPLES} aishell4_long samples, "
         f"got {len(aishell4_long_samples)}",
     )
-    if not movies800times_samples or not aishell4_long_samples:
+    checks.check(
+        len(googletime_samples) == MOSS_TD_GOOGLETIME_CI_SAMPLES,
+        f"Expected {MOSS_TD_GOOGLETIME_CI_SAMPLES} googletime samples, "
+        f"got {len(googletime_samples)}",
+    )
+    if (
+        not movies800times_samples
+        or not aishell4_long_samples
+        or not googletime_samples
+    ):
         checks.assert_all()
 
     with router_worker_traffic_guard(
@@ -210,32 +431,66 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
             request_timeout_s=300,
             max_new_tokens=None,
         )
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        aishell4_future = executor.submit(
-            _run_transcribe_diarize,
+    movies800times_results = _build_results(
+        samples=movies800times_samples,
+        outputs=movies800times_outputs,
+        wall_clock_s=movies800times_wall_clock_s,
+        repo_id=MOVIES800_REPO_ID,
+    )
+    _print_and_save_results(
+        results=movies800times_results,
+        tmp_path=tmp_path,
+        filename="moss_transcribe_diarize_results.json",
+        router_ready_s=moss_td_router_server.router_ready_s,
+    )
+    _assert_movies800times_results(
+        checks,
+        movies800times_results,
+        movies800times_router_guard,
+    )
+
+    with router_worker_traffic_guard(
+        moss_td_router_server,
+        label="MOSS-Transcribe-Diarize movies800times stream",
+    ) as movies800times_stream_router_guard:
+        movies800times_stream_outputs, movies800times_stream_wall_clock_s = (
+            _run_transcribe_diarize(
+                movies800times_samples,
+                moss_td_router_server=moss_td_router_server,
+                request_timeout_s=300,
+                max_new_tokens=None,
+                stream=True,
+            )
+        )
+    movies800times_stream_results = _build_results(
+        samples=movies800times_samples,
+        outputs=movies800times_stream_outputs,
+        wall_clock_s=movies800times_stream_wall_clock_s,
+        repo_id=MOVIES800_REPO_ID,
+    )
+    _print_and_save_results(
+        results=movies800times_stream_results,
+        tmp_path=tmp_path,
+        filename="moss_transcribe_diarize_stream_results.json",
+        router_ready_s=moss_td_router_server.router_ready_s,
+        stream=True,
+    )
+    _assert_movies800times_stream_results(
+        checks,
+        movies800times_stream_results,
+        movies800times_stream_router_guard,
+    )
+
+    with router_worker_traffic_guard(
+        moss_td_router_server,
+        label="MOSS-Transcribe-Diarize aishell4_long",
+    ):
+        aishell4_outputs, aishell4_wall_clock_s = _run_transcribe_diarize(
             aishell4_long_samples,
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=1800,
             max_new_tokens=MOSS_TD_LONG_MAX_NEW_TOKENS,
         )
-        movies800times_results = _build_results(
-            samples=movies800times_samples,
-            outputs=movies800times_outputs,
-            wall_clock_s=movies800times_wall_clock_s,
-            repo_id=MOVIES800_REPO_ID,
-        )
-        _print_and_save_results(
-            results=movies800times_results,
-            tmp_path=tmp_path,
-            filename="moss_transcribe_diarize_results.json",
-            router_ready_s=moss_td_router_server.router_ready_s,
-        )
-        _assert_movies800times_results(
-            checks,
-            movies800times_results,
-            movies800times_router_guard,
-        )
-        aishell4_outputs, aishell4_wall_clock_s = aishell4_future.result()
     aishell4_results = _build_results(
         samples=aishell4_long_samples,
         outputs=aishell4_outputs,
@@ -249,6 +504,30 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
         router_ready_s=moss_td_router_server.router_ready_s,
     )
     _assert_aishell4_long_results(checks, aishell4_results)
+
+    with router_worker_traffic_guard(
+        moss_td_router_server,
+        label="MOSS-Transcribe-Diarize googletime",
+    ):
+        googletime_outputs, googletime_wall_clock_s = _run_transcribe_diarize(
+            googletime_samples,
+            moss_td_router_server=moss_td_router_server,
+            request_timeout_s=1800,
+            max_new_tokens=MOSS_TD_LONG_MAX_NEW_TOKENS,
+        )
+    googletime_results = _build_results(
+        samples=googletime_samples,
+        outputs=googletime_outputs,
+        wall_clock_s=googletime_wall_clock_s,
+        repo_id=GOOGLETIME_REPO_ID,
+    )
+    _print_and_save_results(
+        results=googletime_results,
+        tmp_path=tmp_path,
+        filename="moss_transcribe_diarize_googletime_results.json",
+        router_ready_s=moss_td_router_server.router_ready_s,
+    )
+    _assert_googletime_results(checks, googletime_results)
     checks.assert_all()
 
 
@@ -258,6 +537,7 @@ def _run_transcribe_diarize(
     moss_td_router_server: ManagedRouterHandle,
     request_timeout_s: int,
     max_new_tokens: int | None,
+    stream: bool = False,
 ):
     return asyncio.run(
         run_eval(
@@ -271,8 +551,19 @@ def _run_transcribe_diarize(
             disable_tqdm=False,
             request_timeout_s=request_timeout_s,
             max_new_tokens=max_new_tokens,
+            stream=stream,
         )
     )
+
+
+def _dataset_preset(repo_id: str) -> str:
+    if repo_id == MOVIES800_REPO_ID:
+        return "movies800times"
+    if repo_id == AISHELL4_REPO_ID:
+        return "aishell4_long"
+    if repo_id == GOOGLETIME_REPO_ID:
+        return "googletime"
+    return repo_id
 
 
 def _build_results(
@@ -290,6 +581,18 @@ def _build_results(
         concurrency=MOSS_TD_CONCURRENCY,
         repo_id=repo_id,
         split="validation",
+        dataset=_dataset_preset(repo_id),
+    )
+
+
+def _dataset_label_from_results(results) -> str | None:
+    config = results.get("config", {})
+    if not isinstance(config, dict):
+        return None
+    return format_benchmark_dataset_label(
+        dataset=config.get("dataset"),
+        repo_id=config.get("repo_id"),
+        split=config.get("split"),
     )
 
 
@@ -299,20 +602,26 @@ def _print_and_save_results(
     tmp_path: Path,
     filename: str,
     router_ready_s: float,
+    stream: bool = False,
 ) -> None:
     summary = results["summary"]
     speed = results["speed"]
     diarization_metrics = results["diarization_metrics"]
+    dataset_label = _dataset_label_from_results(results)
+    if stream and dataset_label:
+        dataset_label = f"{dataset_label} [stream]"
     print_diarization_accuracy_summary(
         summary=summary,
         diarization_metrics=diarization_metrics,
         model_name=MOSS_TD_CI_MODEL_PATH,
         concurrency=MOSS_TD_CONCURRENCY,
+        dataset=dataset_label,
     )
     print_diarization_speed_summary(
         speed=speed,
         model_name=MOSS_TD_CI_MODEL_PATH,
         concurrency=MOSS_TD_CONCURRENCY,
+        dataset=dataset_label,
     )
 
     results_path = tmp_path / filename
@@ -448,6 +757,156 @@ def _assert_movies800times_results(
     )
 
 
+def _assert_movies800times_stream_results(
+    checks: MetricCheckCollector,
+    results,
+    router_guard,
+) -> None:
+    summary = results["summary"]
+    speed = results["speed"]
+    diarization_percent = results["diarization_metrics_percent"]
+    total = summary["total_samples"]
+    evaluated = summary["evaluated"]
+    failed_requests = speed.get("failed_requests")
+    checks.check(
+        total == MOSS_TD_CI_SAMPLES,
+        f"Expected {MOSS_TD_CI_SAMPLES}, got {total}",
+    )
+    checks.check(
+        evaluated == total,
+        f"Expected all streaming samples evaluated, got {evaluated}/{total}",
+    )
+    checks.check(
+        failed_requests == 0,
+        f"Expected 0 streaming failed requests, got {failed_requests}",
+    )
+    checks.check(
+        diarization_percent.get("count") == total,
+        f"Expected streaming diarization count {total}, "
+        f"got {diarization_percent.get('count')}",
+    )
+    checks.check(
+        speed.get("text_ttft_p95_s") is not None,
+        "Expected streaming text_ttft_p95_s in speed metrics",
+    )
+    checks.check(
+        speed.get("inter_chunk_p95_s") is not None,
+        "Expected streaming inter_chunk_p95_s in speed metrics",
+    )
+    _check_optional_max(
+        checks,
+        "stream cer",
+        diarization_percent.get("cer"),
+        MOSS_TD_STREAM_CER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "stream cer_no_spk",
+        diarization_percent.get("cer_no_spk"),
+        MOSS_TD_STREAM_CER_NO_SPK_PERCENT_MAX,
+        unit="%",
+    )
+    assert_cer_partitioned(
+        diarization_percent,
+        max_cer_no_spk_below_50_percent=MOSS_TD_STREAM_CER_NO_SPK_BELOW_50_PERCENT_MAX,
+        max_n_above_50_cer=MOSS_TD_STREAM_N_ABOVE_50_CER_MAX,
+        collector=checks,
+    )
+    _check_optional_max(
+        checks,
+        "stream cp_cer",
+        diarization_percent.get("cp_cer"),
+        MOSS_TD_STREAM_CP_CER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "stream cer_no_spk_cp_valid",
+        diarization_percent.get("cer_no_spk_cp_valid"),
+        MOSS_TD_STREAM_CER_NO_SPK_CP_VALID_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "stream delta_cer",
+        diarization_percent.get("delta_cer"),
+        MOSS_TD_STREAM_DELTA_CER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "stream speaker_timestamp_der",
+        diarization_percent.get("speaker_timestamp_der"),
+        MOSS_TD_STREAM_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_min(
+        checks,
+        "stream cer_valid_samples",
+        diarization_percent.get("cer_valid_samples"),
+        MOSS_TD_STREAM_CER_VALID_SAMPLES_MIN,
+    )
+    _check_optional_min(
+        checks,
+        "stream cp_cer_valid_samples",
+        diarization_percent.get("cp_cer_valid_samples"),
+        MOSS_TD_STREAM_CP_CER_VALID_SAMPLES_MIN,
+    )
+    _check_optional_min(
+        checks,
+        "stream throughput_qps",
+        speed.get("throughput_qps"),
+        MOSS_TD_STREAM_THROUGHPUT_QPS_MIN,
+    )
+    _check_optional_max(
+        checks,
+        "stream latency_mean_s",
+        speed.get("latency_mean_s"),
+        MOSS_TD_STREAM_LATENCY_MEAN_S_MAX,
+        unit="s",
+    )
+    _check_optional_max(
+        checks,
+        "stream latency_p95_s",
+        speed.get("latency_p95_s"),
+        MOSS_TD_STREAM_LATENCY_P95_S_MAX,
+        unit="s",
+    )
+    _check_optional_max(
+        checks,
+        "stream rtf_mean",
+        speed.get("rtf_mean"),
+        MOSS_TD_STREAM_RTF_MEAN_MAX,
+    )
+    _check_optional_max(
+        checks,
+        "stream rtf_p95",
+        speed.get("rtf_p95"),
+        MOSS_TD_STREAM_RTF_P95_MAX,
+    )
+    _check_optional_max(
+        checks,
+        "stream text_ttft_p95_s",
+        speed.get("text_ttft_p95_s"),
+        MOSS_TD_STREAM_TEXT_TTFT_P95_S_MAX,
+        unit="s",
+    )
+    _check_optional_max(
+        checks,
+        "stream inter_chunk_p95_s",
+        speed.get("inter_chunk_p95_s"),
+        MOSS_TD_STREAM_INTER_CHUNK_P95_S_MAX,
+        unit="s",
+    )
+    checks.check_assertion(
+        "stream router traffic",
+        router_guard.assert_served,
+        min_total_requests=total,
+        min_worker_share=0.40,
+    )
+
+
 def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None:
     summary = results["summary"]
     speed = results["speed"]
@@ -488,13 +947,21 @@ def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None
         AISHELL4_LONG_CP_CER_PERCENT_MAX,
         unit="%",
     )
-    _check_optional_max(
-        checks,
-        "aishell4_long delta_cer",
-        diarization_percent.get("delta_cer"),
-        AISHELL4_LONG_DELTA_CER_PERCENT_MAX,
-        unit="%",
-    )
+    if AISHELL4_LONG_DELTA_CER_PERCENT_MAX is None:
+        # Note (chenyang): Report-only: delta_cer on 20 samples is noisy,
+        #  so we log the value for observability but do not assert on it.
+        print(
+            "[report-only] aishell4_long delta_cer="
+            f"{diarization_percent.get('delta_cer')}%"
+        )
+    else:
+        _check_optional_max(
+            checks,
+            "aishell4_long delta_cer",
+            diarization_percent.get("delta_cer"),
+            AISHELL4_LONG_DELTA_CER_PERCENT_MAX,
+            unit="%",
+        )
     _check_optional_max(
         checks,
         "aishell4_long speaker_timestamp_der",
@@ -533,6 +1000,109 @@ def _assert_aishell4_long_results(checks: MetricCheckCollector, results) -> None
         "aishell4_long rtf_p95",
         speed.get("rtf_p95"),
         AISHELL4_LONG_RTF_P95_MAX,
+    )
+
+
+def _assert_googletime_results(checks: MetricCheckCollector, results) -> None:
+    summary = results["summary"]
+    speed = results["speed"]
+    diarization_percent = results["diarization_metrics_percent"]
+    total = summary["total_samples"]
+    evaluated = summary["evaluated"]
+    failed_requests = speed.get("failed_requests")
+    checks.check(
+        total == MOSS_TD_GOOGLETIME_CI_SAMPLES,
+        f"Expected {MOSS_TD_GOOGLETIME_CI_SAMPLES} googletime samples, got {total}",
+    )
+    checks.check(
+        evaluated == total,
+        f"Expected all googletime samples evaluated, got {evaluated}/{total}",
+    )
+    checks.check(
+        failed_requests == 0,
+        f"Expected 0 googletime failed requests, got {failed_requests}",
+    )
+    _check_optional_max(
+        checks,
+        "googletime cer",
+        diarization_percent.get("cer"),
+        GOOGLETIME_CER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_max(
+        checks,
+        "googletime cer_no_spk",
+        diarization_percent.get("cer_no_spk"),
+        GOOGLETIME_CER_NO_SPK_PERCENT_MAX,
+        unit="%",
+    )
+    assert_cer_partitioned(
+        diarization_percent,
+        max_cer_no_spk_below_50_percent=GOOGLETIME_CER_NO_SPK_BELOW_50_PERCENT_MAX,
+        min_n_above_50_cer=GOOGLETIME_N_ABOVE_50_CER_MIN,
+        max_n_above_50_cer=GOOGLETIME_N_ABOVE_50_CER_MAX,
+        collector=checks,
+    )
+    _check_optional_max(
+        checks,
+        "googletime cp_cer",
+        diarization_percent.get("cp_cer"),
+        GOOGLETIME_CP_CER_PERCENT_MAX,
+        unit="%",
+    )
+    if GOOGLETIME_DELTA_CER_PERCENT_MAX is None:
+        # Note (chenyang): Report-only: delta_cer on 25 samples is noisy,
+        # so we log the value for observability but do not assert on it.
+        print(
+            "[report-only] googletime delta_cer="
+            f"{diarization_percent.get('delta_cer')}%"
+        )
+    else:
+        _check_optional_max(
+            checks,
+            "googletime delta_cer",
+            diarization_percent.get("delta_cer"),
+            GOOGLETIME_DELTA_CER_PERCENT_MAX,
+            unit="%",
+        )
+    _check_optional_max(
+        checks,
+        "googletime speaker_timestamp_der",
+        diarization_percent.get("speaker_timestamp_der"),
+        GOOGLETIME_SPEAKER_TIMESTAMP_DER_PERCENT_MAX,
+        unit="%",
+    )
+    _check_optional_min(
+        checks,
+        "googletime throughput_qps",
+        speed.get("throughput_qps"),
+        GOOGLETIME_THROUGHPUT_QPS_MIN,
+    )
+    _check_optional_max(
+        checks,
+        "googletime latency_mean_s",
+        speed.get("latency_mean_s"),
+        GOOGLETIME_LATENCY_MEAN_S_MAX,
+        unit="s",
+    )
+    _check_optional_max(
+        checks,
+        "googletime latency_p95_s",
+        speed.get("latency_p95_s"),
+        GOOGLETIME_LATENCY_P95_S_MAX,
+        unit="s",
+    )
+    _check_optional_max(
+        checks,
+        "googletime rtf_mean",
+        speed.get("rtf_mean"),
+        GOOGLETIME_RTF_MEAN_MAX,
+    )
+    _check_optional_max(
+        checks,
+        "googletime rtf_p95",
+        speed.get("rtf_p95"),
+        GOOGLETIME_RTF_P95_MAX,
     )
 
 

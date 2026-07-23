@@ -28,7 +28,7 @@ class S2ProPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process="preprocessing",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             next="tts_engine",
         ),
