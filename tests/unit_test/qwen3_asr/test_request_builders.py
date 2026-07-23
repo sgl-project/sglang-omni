@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 import sglang_omni.models.qwen3_asr.request_builders as request_builders
@@ -115,6 +116,27 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     assert data.prompt_token_ids[start : end + 1] == (
         [audio_item.pad_value] * num_audio_tokens
     )
+
+
+def test_qwen3_asr_request_builder_rejects_undecodable_audio(monkeypatch) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: (_ for _ in ()).throw(RuntimeError("decode failed")),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-invalid",
+        request=OmniRequest(inputs={"audio_bytes": b"not-audio"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        request_builder(payload)
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:

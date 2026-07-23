@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -25,6 +26,21 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import (
+    format_bytes_gib,
+    get_process_gpu_memory_bytes,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _log_memory_checkpoint(checkpoint: str, gpu_id: int) -> None:
+    logger.info(
+        "Qwen3-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+        checkpoint,
+        gpu_id,
+        format_bytes_gib(get_process_gpu_memory_bytes(gpu_id)),
+    )
 
 
 def create_sglang_qwen3_asr_executor(
@@ -62,12 +78,15 @@ def create_sglang_qwen3_asr_executor(
         "sampling_backend": "pytorch",
         "dtype": dtype,
     }
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    mm_backend_reason = "explicit override"
     if mm_attention_backend is not None:
         defaults["mm_attention_backend"] = mm_attention_backend
     else:
-        sm_version = get_visible_gpu_sm_version(gpu_id)
-        if sm_version is not None and sm_version >= 100:
+        mm_backend_reason = "SGLang automatic selection"
+        if sm_version == 89 or (sm_version is not None and sm_version >= 100):
             defaults["mm_attention_backend"] = "triton_attn"
+            mm_backend_reason = f"validated capability policy for SM{sm_version}"
     overrides = build_generation_batch_overrides(
         max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
@@ -83,6 +102,23 @@ def create_sglang_qwen3_asr_executor(
         model_name="Qwen3-ASR",
         server_args=server_args,
     )
+    logger.info(
+        "Qwen3-ASR runtime profile: sm=%s dtype=%s attention_backend=%s "
+        "mm_attention_backend=%s mm_backend_reason=%s cuda_graph=%s "
+        "cuda_graph_bs=%s torch_compile=%s max_running_requests=%s "
+        "mem_fraction_static=%s",
+        sm_version,
+        server_args.dtype,
+        server_args.attention_backend,
+        server_args.mm_attention_backend,
+        mm_backend_reason,
+        not server_args.disable_cuda_graph,
+        server_args.cuda_graph_bs,
+        server_args.enable_torch_compile,
+        server_args.max_running_requests,
+        server_args.mem_fraction_static,
+    )
+    _log_memory_checkpoint("pre_model_load", gpu_id)
 
     want_cuda_graph, (
         model_worker,
@@ -97,9 +133,11 @@ def create_sglang_qwen3_asr_executor(
         gpu_id,
         model_arch_override="Qwen3ASRForConditionalGeneration",
     )
+    _log_memory_checkpoint("post_static_allocation", gpu_id)
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
+    _log_memory_checkpoint("post_cuda_graph_capture", gpu_id)
 
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
 

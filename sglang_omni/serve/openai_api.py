@@ -126,6 +126,7 @@ _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",
+    "could not decode the uploaded audio",
     "max_new_tokens must be",
 )
 
@@ -1382,7 +1383,9 @@ async def _speech_audio_response(
             if disconnect_task in done:
                 if not next_chunk_task.done():
                     await _cancel_task_bounded(next_chunk_task)
-                await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+                await _abort_and_close_generation_stream(
+                    client, request_id, chunk_stream
+                )
                 stream_closed = True
                 raise asyncio.CancelledError
 
@@ -1408,11 +1411,11 @@ async def _speech_audio_response(
             raise RuntimeError("No audio output generated from the pipeline.")
     except asyncio.CancelledError:
         if not stream_closed:
-            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            await _abort_and_close_generation_stream(client, request_id, chunk_stream)
         raise
     except Exception:
         if not stream_completed:
-            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            await _abort_and_close_generation_stream(client, request_id, chunk_stream)
         else:
             await _close_async_iterator_if_supported(chunk_stream)
         raise
@@ -1448,7 +1451,9 @@ async def _speech_audio_response(
             active_request = False
         finally:
             if active_request:
-                await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+                await _abort_and_close_generation_stream(
+                    client, request_id, chunk_stream
+                )
             else:
                 await _close_async_iterator_if_supported(chunk_stream)
 
@@ -1537,7 +1542,7 @@ async def _close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None
     await close()
 
 
-async def _abort_and_close_speech_stream(
+async def _abort_and_close_generation_stream(
     client: Client,
     request_id: str,
     stream: AsyncIterator[Any],
@@ -1678,8 +1683,11 @@ async def _transcription_stream(
     post-processed transcript.
     """
     final_text: str | None = None
+    stream = client.generate(gen_req, request_id=request_id)
+    stream_completed = False
+    stream_closed = False
     try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
+        async for chunk in stream:
             if chunk.finish_reason is not None:
                 if isinstance(chunk.text, str) and chunk.text:
                     final_text = chunk.text
@@ -1687,11 +1695,23 @@ async def _transcription_stream(
             if chunk.modality == "text" and chunk.text:
                 event = TranscriptionTextDeltaEvent(delta=chunk.text)
                 yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        stream_completed = True
+    except asyncio.CancelledError:
+        await _abort_and_close_generation_stream(client, request_id, stream)
+        stream_closed = True
+        raise
     except Exception as exc:
+        await _abort_and_close_generation_stream(client, request_id, stream)
+        stream_closed = True
         logger.exception("Error streaming transcription for request %s", request_id)
         payload = {"type": "error", "error": {"message": str(exc)}}
         yield f"data: {json.dumps(payload)}\n\n"
         return
+    finally:
+        if stream_completed:
+            await _close_async_iterator_if_supported(stream)
+        elif not stream_closed:
+            await _abort_and_close_generation_stream(client, request_id, stream)
 
     text = adapter.postprocess_text(final_text or "")
     usage = (

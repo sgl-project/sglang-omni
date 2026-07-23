@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from types import SimpleNamespace
 
 import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -24,6 +27,10 @@ def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["request_build_max_workers"] == 2
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert "request_build_max_backlog" not in config.stages[0].factory_args
+    assert Qwen3ASRPipelineConfig.mem_fraction_role_to_stage() == {"asr": "asr"}
+    assert Qwen3ASRPipelineConfig.generation_sglang_role_to_stage() == {
+        "generation": "asr"
+    }
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3ASRForConditionalGeneration")
         is Qwen3ASRPipelineConfig
@@ -57,6 +64,20 @@ def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
     assert signature.parameters["enable_torch_compile"].default is False
 
 
+def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = ConfigManager.from_file(
+        str(repo_root / "examples/configs/qwen3_asr_rtx4090.yaml")
+    ).config
+    stage = config.stages[0]
+
+    factory_args = resolve_stage_static_factory_args(stage, config)
+
+    assert factory_args["dtype"] == "bfloat16"
+    assert factory_args["max_running_requests"] == 16
+    assert factory_args["server_args_overrides"]["mem_fraction_static"] == 0.65
+
+
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
 
@@ -73,7 +94,12 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         qwen3_asr_stages,
         "get_visible_gpu_sm_version",
-        lambda gpu_id: None,
+        lambda gpu_id: 89,
+    )
+    monkeypatch.setattr(
+        qwen3_asr_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 0,
     )
     monkeypatch.setattr(qwen3_asr_stages, "init_mm_embedding_cache", lambda size: None)
     monkeypatch.setattr(
@@ -99,7 +125,12 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
-        return SimpleNamespace(**overrides)
+        values = {
+            "attention_backend": "flashinfer",
+            "mm_attention_backend": None,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
         model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
@@ -128,3 +159,4 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert build_kwargs["mm_attention_backend"] == "triton_attn"

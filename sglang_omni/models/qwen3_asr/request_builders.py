@@ -142,7 +142,13 @@ def make_qwen3_asr_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
-        audio = _load_audio(_audio_source_from_payload(payload))
+        try:
+            audio = _load_audio(_audio_source_from_payload(payload))
+        except Exception as exc:
+            raise ValueError(
+                "Qwen3-ASR could not decode the uploaded audio; provide a valid "
+                "audio file."
+            ) from exc
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
         fingerprint = audio_fingerprint(audio)
 
@@ -160,9 +166,9 @@ def make_qwen3_asr_scheduler_adapters(
             return_tensors="pt",
             return_attention_mask=True,
             padding="longest",
-            truncation=True,
+            truncation=False,
         )
-        features = extracted.input_features  # [128, true_frames] (<= 3000)
+        features = extracted.input_features  # [128, true_frames]
         feature_attention_mask = getattr(extracted, "attention_mask", None)
         if feature_attention_mask is None:
             # WhisperFeatureExtractor normally returns one; fall back to all-valid.

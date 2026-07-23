@@ -15,6 +15,14 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"asr": "asr"}
+
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "asr"}
+
     model_path: str
     entry_stage: str = "asr"
     stages: list[StageConfig] = [
