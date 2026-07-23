@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -555,6 +556,22 @@ async def test_launcher_stops_runner_when_server_raises(
         )
 
     server_serve.assert_awaited_once()
+
+
+def test_pipeline_uvicorn_server_consumes_handled_sigterm() -> None:
+    from sglang_omni.serve import launcher
+
+    server = launcher._PipelineUvicornServer(
+        launcher.uvicorn.Config(FastAPI(), port=8000)
+    )
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    with server.capture_signals():
+        server.handle_exit(signal.SIGTERM, None)
+        assert server.should_exit
+
+    assert server._captured_signals == []
+    assert signal.getsignal(signal.SIGTERM) is original_handler
 
 
 @pytest.mark.asyncio

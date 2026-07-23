@@ -25,6 +25,7 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _speech_audio_response,
+    _transcription_stream,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
@@ -267,6 +268,29 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+
+class BlockingStreamingTranscriptionClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request
+        yield GenerateChunk(
+            request_id=request_id or "transcription-1",
+            modality="text",
+            text="hello",
+            finish_reason=None,
+        )
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class _IdentityTranscriptionAdapter:
+    def postprocess_text(self, text: str) -> str:
+        return text
 
 
 class AdminClient:
@@ -1016,6 +1040,34 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_transcription_stream_aborts_when_consumer_closes() -> None:
+    transcription_client = BlockingStreamingTranscriptionClient()
+    request = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="Qwen/Qwen3-ASR-1.7B",
+        language="en",
+        prompt=None,
+        temperature=None,
+        stream=True,
+    )
+    stream = _transcription_stream(
+        transcription_client,
+        request,
+        request_id="transcription-disconnect",
+        adapter=_IdentityTranscriptionAdapter(),
+        duration_s=1.0,
+    )
+
+    first_event = await anext(stream)
+    assert "transcript.text.delta" in first_event
+    await stream.aclose()
+
+    assert transcription_client.aborted == ["transcription-disconnect"]
 
 
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
