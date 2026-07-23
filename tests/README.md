@@ -51,6 +51,10 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_emit_snapshot.py
+    │   ├── test_talker_feedback_write.py
+    │   ├── test_talker_row_ownership.py
+    │   ├── test_talker_token_readback.py
     │   └── test_text_template.py
     ├── ming_omni/
     │   ├── test_omni_serve.py
