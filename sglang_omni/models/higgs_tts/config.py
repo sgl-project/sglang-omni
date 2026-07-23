@@ -24,6 +24,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     drives the AR loop on the sglang backbone with the precomputed embed
     pasted at ``-100`` placeholder positions; vocoder reverses the delay
     pattern and decodes to waveform via the higgs-audio-v2-tokenizer codec.
+
+    Preprocessing and audio_encoder share a dedicated process so reference
+    waveforms stay on the local handoff while their host work is isolated from
+    the autoregressive engine.
     """
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
@@ -41,13 +45,13 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             next="audio_encoder",
         ),
         StageConfig(
             name="audio_encoder",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_audio_encoder_executor",
             factory_args={"device": "cuda"},
             gpu=0,
