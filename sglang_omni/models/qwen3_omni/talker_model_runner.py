@@ -116,10 +116,16 @@ class QwenTalkerModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        bs = len(requests)
+        # Note:(Wenyao Gao) one batched clone per buffer, not one per row: the
+        # snapshot must be a fresh allocation so its rows survive the next
+        # in-graph write to the fixed-address _output_codes/_output_embeds.
+        codes_snap = self.model._output_codes[:bs].detach().clone()
+        embeds_snap = self.model._output_embeds[:bs].detach().clone()
         for idx, sched_req in enumerate(requests):
             req = schedule_batch.reqs[idx]
-            code_chunk = self.model._output_codes[idx].detach().clone()
-            feedback_row = self.model._output_embeds[idx].detach().clone()
+            code_chunk = codes_snap[idx]
+            feedback_row = embeds_snap[idx]
             # Tell code2wav whether to forward audio chunks to the Coordinator.
             stage_payload = sched_req.data.stage_payload
             is_streaming = bool(
