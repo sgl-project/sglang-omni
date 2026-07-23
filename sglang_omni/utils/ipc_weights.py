@@ -276,6 +276,12 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # LLaDA2's denoise-loop state (mask filling, per-step KV rewrite) lives in
     # per-replica scheduler and pool state, never in registered tensors.
     "LLaDA2MoeModelLM": WeightSharePolicy(),
+    # Qwen3-TTS stages decode feedback into this dual-registered embedding
+    # (deduped canonical name); its other scratch tensors are unregistered and
+    # the external speech tokenizer never enters the module tree.
+    "Qwen3TTSTalker": WeightSharePolicy(
+        private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
+    ),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches

@@ -104,7 +104,8 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 | Voxtral TTS (`VoxtralSGLangTTSModel`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (~3.4B backbone + acoustic transformer) | none registered (decode staging is an unregistered plain tensor by design) | mutation audit + shared protocol tests |
 | Fish S2-Pro (`S2ProSGLangTextModel`) | Supported (audited; same-GPU DP e2e pending) | slow-AR backbone (dominant weight mass) | none registered (staging unregistered; the fast-AR decoder attaches after export and stays per replica) | mutation audit + shared protocol tests; rope truncation made in-place for the share contract |
 | LLaDA2 (`LLaDA2MoeModelLM`) | Supported (audited; same-GPU DP e2e pending) | MoE backbone + lm head (denoise state lives outside registered tensors) | none identified | mutation audit incl. the installed dllm loop + shared protocol tests; image encoder stays per replica |
-| Qwen3-TTS | Rejected | — | — | same staging pattern, but its runtime module tree includes external `qwen_tts` components the in-repo audit cannot close |
+| Qwen3-TTS (`Qwen3TTSTalker`) | Supported (audited; same-GPU DP e2e pending) | backbone + speaker encoder (read-only in tree) | `model._decode_feedback_embedding.weight` (per-step decode staging) | mutation audit incl. the installed `qwen_tts` package; the speech tokenizer never enters the manifest and loads per replica |
+| Ming-Omni thinker (`BailingMoeV2ForCausalLM`) | Rejected | — | — | spot-checked only; needs its own audit before the Ming-Omni pipeline can share |
 | all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
 
 For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.

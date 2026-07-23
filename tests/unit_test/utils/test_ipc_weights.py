@@ -282,14 +282,15 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "VoxtralSGLangTTSModel": frozenset(),
         "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
+        "Qwen3TTSTalker": frozenset({"model._decode_feedback_embedding.weight"}),
     }
     assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_private)
     for arch, private in expected_private.items():
         policy = ipc_weights.validate_weight_share_architecture([arch])
         assert policy.private_tensor_names == private
-    # Note (Jiaxin Deng): Qwen3-TTS carries the same scratch pattern but its
-    # runtime tree includes external qwen_tts modules, unaudited; stays rejected.
-    for bad in ([], ["A", "B"], ["Qwen3TTSTalker"], [""], None):
+    # Note (Jiaxin Deng): the Ming-Omni thinker is gate-reachable but only
+    # spot-checked, so it must stay rejected until fully audited.
+    for bad in ([], ["A", "B"], ["BailingMoeV2ForCausalLM"], [""], None):
         with pytest.raises(WeightShareError):
             ipc_weights.validate_weight_share_architecture(bad)
 
