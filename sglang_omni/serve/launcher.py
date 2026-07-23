@@ -60,13 +60,22 @@ logger = logging.getLogger(__name__)
 
 
 def _find_available_port(host: str, port: int) -> int:
-    """Return *port* if available, otherwise find a free port and warn."""
+    """Return *port* if available, otherwise find a free port and warn.
+
+    SGLANG_OMNI_STRICT_PORT=1 turns the fallback into a hard error: a
+    supervisor that health-checks the requested port (the same-GPU DP
+    launcher) must fail fast instead of silently serving elsewhere.
+    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((host, port))
             return port
-    except OSError:
-        pass
+    except OSError as exc:
+        if (os.environ.get("SGLANG_OMNI_STRICT_PORT") or "").strip() == "1":
+            raise RuntimeError(
+                f"port {port} is already in use on {host} and "
+                "SGLANG_OMNI_STRICT_PORT=1 forbids falling back"
+            ) from exc
     logger.warning(f"Port {port} is already in use on {host}.")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
