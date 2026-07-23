@@ -28,9 +28,7 @@ def _scheduler_output(n: int) -> SimpleNamespace:
 
 
 def _make_processor():
-    sglang_backend = pytest.importorskip(
-        "sglang_omni.scheduling.sglang_backend"
-    )
+    sglang_backend = pytest.importorskip("sglang_omni.scheduling.sglang_backend")
     return sglang_backend.SGLangOutputProcessor()
 
 
@@ -53,9 +51,7 @@ def test_process_prefers_staged_host_copy_and_skips_device_readback():
     host_copy = _CountingIds(host_ref)
     model_output = SimpleNamespace(next_token_ids=device_ids)
 
-    outputs = proc.process(
-        model_output, _scheduler_output(3), host_token_ids=host_copy
-    )
+    outputs = proc.process(model_output, _scheduler_output(3), host_token_ids=host_copy)
 
     assert device_ids.tolist_calls == 0
     assert host_copy.tolist_calls == 1

@@ -91,9 +91,7 @@ def test_two_batched_clones_rows_share_storage() -> None:
 
     assert len(clones) == 2
 
-    code_ptrs = {
-        msg.data.untyped_storage().data_ptr() for msg in runner._outbox.sent
-    }
+    code_ptrs = {msg.data.untyped_storage().data_ptr() for msg in runner._outbox.sent}
     embed_ptrs = {
         req.data.pending_feedback_queue[0].untyped_storage().data_ptr()
         for req in requests
