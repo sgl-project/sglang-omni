@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 import torch
-
 from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
     get_rope_index_qwen3_omni,
 )
+
 from sglang_omni.models.qwen3_omni.mrope_positions import (
     _feat_extract_output_lengths,
     get_rope_index_qwen3_omni_vectorized,
@@ -73,18 +73,16 @@ def _assert_bit_identical(
         f"{(o_pos.float() - f_pos.float()).abs().max().item()}"
     )
     assert o_delta.shape == f_delta.shape, (o_delta.shape, f_delta.shape)
-    assert torch.equal(o_delta.float(), f_delta.float()), (
-        f"delta mismatch: oracle={o_delta} fast={f_delta}"
-    )
+    assert torch.equal(
+        o_delta.float(), f_delta.float()
+    ), f"delta mismatch: oracle={o_delta} fast={f_delta}"
 
 
 def _image_span(grid_thw: list[int]) -> list[int]:
     t, h, w = grid_thw
     image_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
     return (
-        [VISION_START_TOKEN_ID]
-        + [IMAGE_TOKEN_ID] * image_len
-        + [VISION_END_TOKEN_ID]
+        [VISION_START_TOKEN_ID] + [IMAGE_TOKEN_ID] * image_len + [VISION_END_TOKEN_ID]
     )
 
 
@@ -92,19 +90,13 @@ def _video_span(grid_thw: list[int]) -> list[int]:
     t, h, w = grid_thw
     video_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
     return (
-        [VISION_START_TOKEN_ID]
-        + [VIDEO_TOKEN_ID] * video_len
-        + [VISION_END_TOKEN_ID]
+        [VISION_START_TOKEN_ID] + [VIDEO_TOKEN_ID] * video_len + [VISION_END_TOKEN_ID]
     )
 
 
 def _audio_span(audio_seqlen: int) -> list[int]:
     audio_len = _feat_extract_output_lengths(audio_seqlen)
-    return (
-        [AUDIO_START_TOKEN_ID]
-        + [AUDIO_TOKEN_ID] * audio_len
-        + [AUDIO_END_TOKEN_ID]
-    )
+    return [AUDIO_START_TOKEN_ID] + [AUDIO_TOKEN_ID] * audio_len + [AUDIO_END_TOKEN_ID]
 
 
 def _audio_in_video_span(grid_thw: list[int], audio_seqlen: int) -> list[int]:
@@ -221,11 +213,7 @@ def test_mixed_image_video_audio_in_video() -> None:
     vid = [2, 4, 4]
     audio_seqlen = 180
     tokens = (
-        [1]
-        + _image_span(img)
-        + [2]
-        + _audio_in_video_span(vid, audio_seqlen)
-        + [3, 4]
+        [1] + _image_span(img) + [2] + _audio_in_video_span(vid, audio_seqlen) + [3, 4]
     )
     ids = torch.tensor([tokens], dtype=torch.long)
     image_grid = torch.tensor([img], dtype=torch.long)
@@ -270,9 +258,7 @@ def test_compute_mrope_positions_wires_vectorized_path() -> None:
     """``_compute_mrope_positions`` returns the vectorized [3, seq] layout."""
     from types import SimpleNamespace
 
-    from sglang_omni.models.qwen3_omni.request_builders import (
-        _compute_mrope_positions,
-    )
+    from sglang_omni.models.qwen3_omni.request_builders import _compute_mrope_positions
 
     grid = [1, 4, 4]
     tokens = [10] + _image_span(grid) + [11]
@@ -375,9 +361,9 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
 
     # Note (guozhihao): first decode token uses seq_len = prefill + 1.
     seq_after_prefill = len(tokens) + 1
-    assert _decode_pos_from_delta(mm_delta, seq_after_prefill) != _decode_pos_from_delta(
-        lin_delta, seq_after_prefill
-    )
+    assert _decode_pos_from_delta(
+        mm_delta, seq_after_prefill
+    ) != _decode_pos_from_delta(lin_delta, seq_after_prefill)
 
     cfg = _thinker_config_ns()
     assert talker_can_use_linear_mrope(ids.view(-1), model_inputs, cfg) is False

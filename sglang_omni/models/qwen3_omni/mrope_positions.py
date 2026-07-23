@@ -56,9 +56,7 @@ def _feat_extract_output_lengths(input_lengths: int) -> int:
     """Audio encoder output length (matches HF / sglang port)."""
     input_lengths_leave = input_lengths % 100
     feat_lengths = (input_lengths_leave - 1) // 2 + 1
-    return int(
-        ((feat_lengths - 1) // 2 + 1 - 1) // 2 + 1 + (input_lengths // 100) * 13
-    )
+    return int(((feat_lengths - 1) // 2 + 1 - 1) // 2 + 1 + (input_lengths // 100) * 13)
 
 
 def _linear_pos_ids(length: int, st_idx: float) -> np.ndarray:
@@ -90,9 +88,7 @@ def _vision_pos_ids(
     ) + np.float32(st_idx)
 
 
-def _merge_audio_in_video(
-    video_pos: np.ndarray, audio_pos: np.ndarray
-) -> np.ndarray:
+def _merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.ndarray:
     """Merge video/audio columns by temporal id; ties prefer video."""
     # Note (guozhihao): lexsort is bit-identical to the HF/sglang per-token
     # while-loop that appends one column when ``video_t <= audio_t``.
@@ -134,9 +130,7 @@ def get_rope_index_qwen3_omni_vectorized(
     audio_seqlens = kwargs.get("audio_seqlens", None)
     second_per_grids = second_per_grid_ts
 
-    if input_ids is None or (
-        image_grid_thw is None and video_grid_thw is None
-    ):
+    if input_ids is None or (image_grid_thw is None and video_grid_thw is None):
         assert input_ids is not None
         seq_len = input_ids.shape[1]
         position_ids = (
@@ -145,17 +139,15 @@ def get_rope_index_qwen3_omni_vectorized(
             .expand(3, -1, -1)
             .to(input_ids.device)
         )
-        max_position_ids = position_ids.max(0, keepdim=False)[0].max(
-            -1, keepdim=True
-        )[0]
+        max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[
+            0
+        ]
         mrope_position_deltas = max_position_ids + 1 - seq_len
         return position_ids, mrope_position_deltas
 
     device = input_ids.device
     batch_size, seq_len = input_ids.shape[0], input_ids.shape[1]
-    position_ids = torch.zeros(
-        3, batch_size, seq_len, dtype=torch.float, device=device
-    )
+    position_ids = torch.zeros(3, batch_size, seq_len, dtype=torch.float, device=device)
 
     image_grid_np = (
         image_grid_thw.detach().cpu().numpy()
@@ -198,9 +190,7 @@ def get_rope_index_qwen3_omni_vectorized(
             vision_tokens = current_input_ids[vision_start_indices + 1]
             image_nums = int((vision_tokens == image_token_id).sum().item())
             if use_audio_in_video:
-                video_nums = int(
-                    (vision_tokens == audio_start_token_id).sum().item()
-                )
+                video_nums = int((vision_tokens == audio_start_token_id).sum().item())
             else:
                 video_nums = int((vision_tokens == video_token_id).sum().item())
         audio_nums = int((current_input_ids == audio_start_token_id).sum().item())
@@ -290,9 +280,7 @@ def get_rope_index_qwen3_omni_vectorized(
                 t_scale = float(second_per_grids_np[video_idx]) * float(
                     position_id_per_seconds
                 )
-                blocks.append(
-                    _vision_pos_ids(st_idx, grid_t, grid_h, grid_w, t_scale)
-                )
+                blocks.append(_vision_pos_ids(st_idx, grid_t, grid_h, grid_w, t_scale))
                 video_len = int(video_grid_np[video_idx].prod()) // (merge * merge)
                 st += text_len + bos_len + video_len + eos_len
                 video_idx += 1
@@ -309,9 +297,7 @@ def get_rope_index_qwen3_omni_vectorized(
                 t_scale = float(second_per_grids_np[video_idx]) * float(
                     position_id_per_seconds
                 )
-                video_pos = _vision_pos_ids(
-                    st_idx, grid_t, grid_h, grid_w, t_scale
-                )
+                video_pos = _vision_pos_ids(st_idx, grid_t, grid_h, grid_w, t_scale)
                 blocks.append(_merge_audio_in_video(video_pos, audio_pos))
                 video_len = int(video_grid_np[video_idx].prod()) // (merge * merge)
                 st += text_len + bos_len + audio_len + video_len + eos_len
@@ -329,9 +315,7 @@ def get_rope_index_qwen3_omni_vectorized(
 
         llm_positions = np.concatenate(blocks, axis=1).astype(np.float32, copy=False)
         position_ids[:, batch_i, :] = torch.from_numpy(llm_positions)
-        mrope_position_deltas.append(
-            float(llm_positions.max() + 1 - n_tokens)
-        )
+        mrope_position_deltas.append(float(llm_positions.max() + 1 - n_tokens))
 
     deltas = torch.tensor(
         mrope_position_deltas, device=device, dtype=torch.float
