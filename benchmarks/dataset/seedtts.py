@@ -16,6 +16,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID, SEEDTTS_DATASET_REVISION
+
 logger = logging.getLogger(__name__)
 
 _REQUIRED_COLUMNS = {
@@ -35,7 +37,7 @@ class SampleInput:
     target_text: str
 
 
-_STAGED_CACHE: dict[tuple[str, str, int | None], list[SampleInput]] = {}
+_STAGED_CACHE: dict[tuple[str, str, str | None, int | None], list[SampleInput]] = {}
 
 
 def _resolve_staged_audio_path(
@@ -80,6 +82,7 @@ def load_seedtts_samples(
     max_samples: int | None = None,
     *,
     split: str = "en",
+    revision: str | None = None,
 ) -> list[SampleInput]:
     """Load SeedTTS evaluation samples.
 
@@ -91,7 +94,9 @@ def load_seedtts_samples(
     """
     if os.path.isfile(source) or source.endswith(".lst"):
         return _load_from_meta_lst(source, max_samples)
-    return _load_from_arrow(source, split, max_samples)
+    if revision is None and source == SEEDTTS_DATASET_ID:
+        revision = SEEDTTS_DATASET_REVISION
+    return _load_from_arrow(source, split, revision, max_samples)
 
 
 def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]:
@@ -123,22 +128,31 @@ def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]
 
 
 def _load_from_arrow(
-    repo_id: str, split: str, max_samples: int | None
+    repo_id: str,
+    split: str,
+    revision: str | None,
+    max_samples: int | None,
 ) -> list[SampleInput]:
     """Load from a HuggingFace Arrow/Parquet dataset repo."""
-    full_cache_key = (repo_id, split, None)
+    full_cache_key = (repo_id, split, revision, None)
     if full_cache_key in _STAGED_CACHE:
         samples = _STAGED_CACHE[full_cache_key]
         return samples[:max_samples] if max_samples is not None else list(samples)
 
-    cache_key = (repo_id, split, max_samples)
+    cache_key = (repo_id, split, revision, max_samples)
     if cache_key in _STAGED_CACHE:
         return list(_STAGED_CACHE[cache_key])
 
     from datasets import Audio, load_dataset
 
-    logger.info("Loading %s split=%s from HuggingFace ...", repo_id, split)
-    ds = load_dataset(repo_id, split=split)
+    logger.info(
+        "Loading %s split=%s revision=%s from HuggingFace ...",
+        repo_id,
+        split,
+        revision or "default",
+    )
+    load_kwargs = {"revision": revision} if revision else {}
+    ds = load_dataset(repo_id, split=split, **load_kwargs)
 
     missing = _REQUIRED_COLUMNS - set(ds.column_names)
     if missing:
