@@ -261,6 +261,7 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
     "WhisperForConditionalGeneration": WeightSharePolicy(),
+    "FunAsrNanoForConditionalGeneration": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches

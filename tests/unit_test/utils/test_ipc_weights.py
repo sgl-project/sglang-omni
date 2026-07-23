@@ -277,6 +277,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
+        "FunAsrNanoForConditionalGeneration": frozenset(),
     }
     assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_private)
     for arch, private in expected_private.items():
