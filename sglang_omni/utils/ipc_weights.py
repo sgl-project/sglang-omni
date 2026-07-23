@@ -645,6 +645,19 @@ def _validate_payload_schema(payload: Any, file_path: str) -> None:
                 f"weight-share handle {file_path} field {field!r} has wrong type "
                 f"{type(payload[field]).__name__}"
             )
+    for field in ("ipc_names", "private_names"):
+        names = payload[field]
+        if not all(isinstance(n, str) for n in names) or len(set(names)) != len(names):
+            raise WeightShareError(
+                f"weight-share handle {file_path} field {field!r} must hold "
+                "unique tensor names"
+            )
+    for key, blob in payload["value_blobs"].items():
+        if not isinstance(key, str) or not isinstance(blob, (bytes, bytearray)):
+            raise WeightShareError(
+                f"weight-share handle {file_path} value_blobs must map tensor "
+                "names to bytes"
+            )
 
 
 def _load_payload(
@@ -861,6 +874,18 @@ def _alias_from_payload(
         raise WeightShareError(
             f"failed to decode by-value tensors from {file_path}: {exc}"
         ) from exc
+    extra = sorted((set(shared) | set(values)) - set(own_tensors))
+    if extra:
+        raise WeightShareError(
+            f"handle blob in {file_path} carries tensors this model does not "
+            f"register (first 5): {extra[:5]}"
+        )
+    doubled = sorted(set(shared) & set(values))
+    if doubled:
+        raise WeightShareError(
+            f"handle blob in {file_path} lists {doubled[:5]} both as IPC and "
+            "by-value; the export is malformed"
+        )
 
     params = dict(model.named_parameters())
     # Note (Jiaxin Deng): a buffer can be registered under several module paths,
@@ -868,6 +893,7 @@ def _alias_from_payload(
     buffer_paths_by_id: dict[int, list[str]] = {}
     for dotted, buf in model.named_buffers(remove_duplicate=False):
         buffer_paths_by_id.setdefault(id(buf), []).append(dotted)
+    private_ptrs = {n: own_tensors[n].data_ptr() for n in private}
     aliased_bytes = 0
     for name, own in own_tensors.items():
         if name in shared:
@@ -902,12 +928,31 @@ def _alias_from_payload(
                 for dotted in buffer_paths_by_id.get(id(own), [name]):
                     _rebind_buffer(model, dotted, incoming)
             aliased_bytes += incoming.numel() * incoming.element_size()
-        else:
+
+    # Note (Jiaxin Deng): a tensor registered under both a shared and a private
+    # name would have moved with the shared rebinds above; copying into it now
+    # would write per-request state into the leader's storage, so check first.
+    moved_check = _named_shared_tensors(model)
+    for name in sorted(private):
+        current = moved_check.get(name)
+        if (
+            own_tensors[name].data_ptr() != private_ptrs[name]
+            or current is None
+            or current.data_ptr() != private_ptrs[name]
+        ):
+            raise WeightShareError(
+                f"private tensor {name!r} storage moved during shared attach; "
+                "it is cross-registered with a shared tensor and cannot stay "
+                "replica-private"
+            )
+
+    for name, own in own_tensors.items():
+        if name not in shared:
             # Note (Jiaxin Deng): replica-private and non-CUDA tensors are
             # copied into the follower's own storage, never aliased, so the
             # address its CUDA graphs capture stays this replica's.
             with torch.no_grad():
-                own.copy_(incoming.to(own.device))
+                own.copy_(values[name].to(own.device))
 
     record: dict[str, tuple[int, tuple[int, ...], torch.dtype]] = {}
     for name, tensor in _named_shared_tensors(model).items():

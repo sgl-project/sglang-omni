@@ -578,6 +578,71 @@ def test_format_version_1_payload_rejected(tmp_path):
         _attach(TinyModel(), path)
 
 
+def test_cross_registered_private_tensor_rejected(tmp_path):
+    class MixedDup(nn.Module):
+        # Note (Jiaxin Deng): the same tensor object registered under a shared
+        # parameter name and a private buffer name; the shared rebind would
+        # drag the private registration onto leader storage.
+        def __init__(self, seed: int = 0):
+            super().__init__()
+            gen = torch.Generator().manual_seed(seed)
+            self.linear = nn.Linear(4, 3)
+            self.scratch = nn.Parameter(torch.randn(4, 3, generator=gen))
+            self._buffers["scratch_alias"] = self.scratch
+
+    path = str(tmp_path / "MixedDup.weights-ipc")
+    leader = MixedDup(seed=1)
+    original = leader.scratch.detach().clone()
+    _export(leader, path, private_names=frozenset({"scratch_alias"}))
+    with pytest.raises(WeightShareError, match="cross-registered"):
+        _attach(MixedDup(seed=2), path, private_names=frozenset({"scratch_alias"}))
+    # The refusal must land before any private copy writes into the leader.
+    assert torch.equal(leader.scratch.detach(), original)
+
+
+def test_payload_with_unregistered_tensor_rejected(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    tensors = ipc_weights._named_shared_tensors(TinyModel(seed=1))
+    blob = dict(tensors)
+    blob["ghost.weight"] = torch.randn(2)
+    payload = _min_payload(
+        manifest_hash=ipc_weights._manifest_hash(tensors, frozenset()),
+        ipc_blob=IdentitySerializer.serialize(blob),
+        ipc_names=sorted(blob),
+    )
+    with open(path, "wb") as fh:
+        pickle.dump(payload, fh)
+    with pytest.raises(WeightShareError, match="does not register"):
+        _attach(TinyModel(seed=2), path)
+
+
+def test_name_in_both_ipc_and_value_rejected(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    tensors = ipc_weights._named_shared_tensors(TinyModel(seed=1))
+    payload = _min_payload(
+        manifest_hash=ipc_weights._manifest_hash(tensors, frozenset()),
+        ipc_blob=IdentitySerializer.serialize(dict(tensors)),
+        ipc_names=sorted(tensors),
+        value_blobs={
+            "linear.weight": ipc_weights._tensor_to_value_bytes(
+                tensors["linear.weight"]
+            )
+        },
+    )
+    with open(path, "wb") as fh:
+        pickle.dump(payload, fh)
+    with pytest.raises(WeightShareError, match="both as IPC and"):
+        _attach(TinyModel(seed=2), path)
+
+
+def test_schema_rejects_non_string_names(tmp_path):
+    path = str(tmp_path / "TinyModel.weights-ipc")
+    with open(path, "wb") as fh:
+        pickle.dump(_min_payload(ipc_names=[[]]), fh)
+    with pytest.raises(WeightShareError, match="unique tensor names"):
+        _attach(TinyModel(), path)
+
+
 def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
     """The regression the MOSS policy exists for: two replicas stage different
     requests into the same scratch rows. Shared storage lets the second write
