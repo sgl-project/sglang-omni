@@ -31,11 +31,10 @@ class SGLangOutputProcessor:
         model_output: Any,
         scheduler_output: SchedulerOutput,
     ) -> dict[str, RequestOutput]:
-        token_list = (
-            model_output.next_token_ids.tolist()
-            if model_output.next_token_ids is not None
-            else []
-        )
+        ids = getattr(model_output, "_host_token_ids", None)
+        if ids is None:
+            ids = model_output.next_token_ids
+        token_list = ids.tolist() if ids is not None else []
 
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
         if self._capture_hidden:

@@ -95,6 +95,47 @@ class ModelRunner:
         # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
+        self._token_id_host_bufs: list[torch.Tensor] | None = None
+        self._token_id_host_slot: int = 0
+
+    def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
+        # Note:(Wenyao Gao) pinned host copy staged once at sample time so downstream
+        # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
+        if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
+            result._host_token_ids = ids
+            result._host_token_ids_event = None
+            return
+        n = ids.shape[0]
+        buf = self._next_token_id_host_buf(ids, n)
+        buf[:n].copy_(ids[:n], non_blocking=True)
+        event = torch.cuda.Event()
+        event.record()
+        result._host_token_ids = buf[:n]
+        result._host_token_ids_event = event
+
+    def _next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+        # Note:(Wenyao Gao) two buffers ping-ponged so a step's host read never races
+        # the next step's async copy
+        if (
+            self._token_id_host_bufs is None
+            or self._token_id_host_bufs[0].shape[0] < n
+            or self._token_id_host_bufs[0].dtype != like.dtype
+        ):
+            self._token_id_host_bufs = [
+                torch.empty(n, dtype=like.dtype, device="cpu", pin_memory=True)
+                for _ in range(2)
+            ]
+            self._token_id_host_slot = 0
+        buf = self._token_id_host_bufs[self._token_id_host_slot]
+        self._token_id_host_slot ^= 1
+        return buf
+
+    def _resolve_host_token_ids(self, result: Any) -> Any:
+        event = getattr(result, "_host_token_ids_event", None)
+        if event is not None:
+            event.synchronize()
+            result._host_token_ids_event = None
+        return getattr(result, "_host_token_ids", None)
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
         """Return a pinned host staging buffer mirroring ``device_staging``'s
@@ -400,6 +441,7 @@ class ModelRunner:
         if set_output_ids:
             schedule_batch.output_ids = batch_result.next_token_ids
 
+        host_token_ids = self._resolve_host_token_ids(batch_result)
         outputs = self.output_processor.process(batch_result, scheduler_output)
         self.post_process_outputs(batch_result, scheduler_output, outputs)
         skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
@@ -424,6 +466,7 @@ class ModelRunner:
             req_ids=req_ids,
             req_id_to_index=req_id_to_index,
             can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
+            host_token_ids=host_token_ids,
         )
 
     # ------------------------------------------------------------------
