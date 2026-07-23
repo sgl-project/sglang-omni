@@ -232,6 +232,27 @@ python examples/run_omni.py qwen3-speech-server \
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
 
+The thinker admits up to 64 running requests by default. Use the
+thinker-specific flag to lower or raise that limit in either text-only or
+speech mode:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --thinker-max-running-requests 16
+```
+
+`--max-running-requests` continues to target the generation stage, which is the
+talker in the Qwen3-Omni speech pipeline. To configure the thinker through a
+pipeline YAML file instead, use the stage runtime override:
+
+```yaml
+runtime_overrides:
+  thinker:
+    server_args_overrides:
+      max_running_requests: 16
+```
+
 ## Single-GPU FP8 on H100/H20
 
 SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
