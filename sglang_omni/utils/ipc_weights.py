@@ -273,6 +273,9 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # per-step KV buffers) joins the module tree only after export; this empty
     # set holds only while leader export stays at the end of load_model.
     "S2ProSGLangTextModel": WeightSharePolicy(),
+    # LLaDA2's denoise-loop state (mask filling, per-step KV rewrite) lives in
+    # per-replica scheduler and pool state, never in registered tensors.
+    "LLaDA2MoeModelLM": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches

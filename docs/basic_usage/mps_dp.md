@@ -103,6 +103,7 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 | FunASR Nano (`FunAsrNanoForConditionalGeneration`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (encoder recomputes positions per forward) | none identified | mutation audit + shared protocol tests |
 | Voxtral TTS (`VoxtralSGLangTTSModel`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (~3.4B backbone + acoustic transformer) | none registered (decode staging is an unregistered plain tensor by design) | mutation audit + shared protocol tests |
 | Fish S2-Pro (`S2ProSGLangTextModel`) | Supported (audited; same-GPU DP e2e pending) | slow-AR backbone (dominant weight mass) | none registered (staging unregistered; the fast-AR decoder attaches after export and stays per replica) | mutation audit + shared protocol tests; rope truncation made in-place for the share contract |
+| LLaDA2 (`LLaDA2MoeModelLM`) | Supported (audited; same-GPU DP e2e pending) | MoE backbone + lm head (denoise state lives outside registered tensors) | none identified | mutation audit incl. the installed dllm loop + shared protocol tests; image encoder stays per replica |
 | Qwen3-TTS | Rejected | — | — | same staging pattern, but its runtime module tree includes external `qwen_tts` components the in-repo audit cannot close |
 | all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
 
