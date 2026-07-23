@@ -251,8 +251,11 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTTSLocalSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
-    # Ming stages decode feedback the same way MOSS local does; its other
-    # registered tensors, including the row-id buffer, are load or init once.
+    # MOSS delay and Ming stage decode feedback the same way MOSS local does;
+    # their other registered tensors are load or init once.
+    "MossTTSDelaySGLangModel": WeightSharePolicy(
+        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+    ),
     "MingTTSSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),

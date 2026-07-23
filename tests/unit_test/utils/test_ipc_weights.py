@@ -273,6 +273,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
     expected_private = {
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
         "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MossTTSDelaySGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
