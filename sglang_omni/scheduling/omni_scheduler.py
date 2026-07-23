@@ -1907,6 +1907,9 @@ class OmniScheduler:
             batch.filter_batch(keep_indices=keep)
             if out_cache_loc is not None:
                 batch.out_cache_loc = out_cache_loc[keep]
+        if batch.decoding_reqs:
+            kept_ids = {id(r) for r in batch.reqs}
+            batch.decoding_reqs = [r for r in batch.decoding_reqs if id(r) in kept_ids]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:

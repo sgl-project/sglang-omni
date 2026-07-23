@@ -727,6 +727,7 @@ class _DFBatch:
     def __init__(self, reqs):
         self.reqs = list(reqs)
         self.out_cache_loc = torch.arange(100, 100 + len(reqs))
+        self.decoding_reqs = None
 
     def copy(self):
         return _DFBatch(self.reqs)
@@ -934,6 +935,7 @@ class _MixedBatch:
         self.input_embeds = None
         self.replace_embeds = None
         self.token_type_ids = None
+        self.decoding_reqs = None
         self.return_logprob = any(logprob)
         if self.return_logprob:
             self.extend_input_logprob_token_ids = torch.tensor(
@@ -1015,3 +1017,14 @@ def test_drop_stale_overrun_drops_last_logprob_req():
     out = s._drop_stale_overrun(batch)
     assert out.return_logprob is False
     assert out.extend_input_logprob_token_ids is None
+
+
+def test_drop_stale_overrun_filters_decoding_reqs():
+    # dropped folded-decode row must also be removed from decoding_reqs
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
+    batch.decoding_reqs = [batch.reqs[1], batch.reqs[2]]
+    live_decode = batch.reqs[2]
+    out = s._drop_stale_overrun(batch)
+    assert out.decoding_reqs == [live_decode]
