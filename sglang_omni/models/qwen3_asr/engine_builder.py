@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -14,7 +15,12 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import (
+    format_bytes_gib,
+    get_process_gpu_memory_bytes,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder):
@@ -94,11 +100,36 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
-        else:
-            sm_version = get_visible_gpu_sm_version(self.gpu_id)
-            if sm_version is not None and sm_version >= 100:
-                defaults["mm_attention_backend"] = "triton_attn"
         return defaults
+
+    def _log_memory_checkpoint(self, checkpoint: str) -> None:
+        logger.info(
+            "Qwen3-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+            checkpoint,
+            self.gpu_id,
+            format_bytes_gib(get_process_gpu_memory_bytes(self.gpu_id)),
+        )
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        super().validate_before_infrastructure(server_args)
+        logger.info(
+            "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
+            "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
+            "torch_compile=%s max_running_requests=%s mem_fraction_static=%s",
+            getattr(server_args, "dtype", None),
+            getattr(server_args, "attention_backend", None),
+            getattr(server_args, "mm_attention_backend", None),
+            not getattr(server_args, "disable_cuda_graph", False),
+            getattr(server_args, "cuda_graph_bs", None),
+            getattr(server_args, "enable_torch_compile", False),
+            getattr(server_args, "max_running_requests", None),
+            getattr(server_args, "mem_fraction_static", None),
+        )
+        self._log_memory_checkpoint("pre_model_load")
+
+    def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
+        del model, server_args
+        self._log_memory_checkpoint("post_static_allocation")
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if "context_length" in overrides:
@@ -115,6 +146,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del generation_cuda_graph_enabled
+        self._log_memory_checkpoint("post_cuda_graph_capture")
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (luojiaxuan): constructed after SGLang's generation CUDA

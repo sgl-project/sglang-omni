@@ -317,6 +317,27 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     assert data.audio_duration_s == audio_duration_s
 
 
+def test_qwen3_asr_request_builder_rejects_undecodable_audio(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: (_ for _ in ()).throw(RuntimeError("decode failed")),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-invalid",
+        request=OmniRequest(inputs={"audio_bytes": b"not-audio"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        request_builder(payload)
+
+
 def test_qwen3_asr_rejects_full_context_before_mel_extraction(
     monkeypatch,
 ) -> None:

@@ -140,9 +140,15 @@ def make_qwen3_asr_scheduler_adapters(
         language = params.get("language")
         requested_language = "en" if language is None else str(language)
         forced_language = resolve_language(requested_language)
-        prepared = prepare_audio(
-            payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
-        )
+        try:
+            prepared = prepare_audio(
+                payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
+            )
+        except Exception as exc:
+            raise ValueError(
+                "Qwen3-ASR could not decode the uploaded audio; provide a valid "
+                "audio file."
+            ) from exc
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
