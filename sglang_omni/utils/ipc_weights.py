@@ -968,10 +968,11 @@ def _alias_from_payload(
             # Note (Jiaxin Deng): recorded so verify_attachment also catches a
             # private tensor rebound (e.g. onto shared storage) after attach.
             record[name] = (tensor.data_ptr(), tuple(tensor.shape), tensor.dtype)
+    private_count = sum(1 for name in record if name in private)
     logger.info(
-        f"[weight-share] follower attached {len(record)} shared tensors "
-        f"({aliased_bytes / (1 << 30):.2f} GiB aliased, zero-copy) from "
-        f"{file_path}"
+        f"[weight-share] follower attached {len(record) - private_count} shared "
+        f"tensors ({aliased_bytes / (1 << 30):.2f} GiB aliased, zero-copy) + "
+        f"{private_count} replica-private by-value from {file_path}"
     )
     return record
 

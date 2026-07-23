@@ -94,7 +94,7 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 | Architecture | Status | Shared | Replica-private | Validation |
 |---|---|---|---|---|
 | Higgs TTS (`HiggsMultimodalQwen3ForConditionalGeneration`) | Supported | all registered parameters/buffers (no serving-time writes; deterministic post-load hooks stay in place) | none identified | unit + CUDA IPC tests; H100/H200 case studies |
-| MOSS TTS local (`MossTTSLocalSGLangModel`) | Supported (audited; end-to-end DP benchmark pending) | AR backbone, embedding tables, local transformer, rope buffers | `_decode_input_embedding.weight` (per-step decode staging) | unit + CUDA IPC + cross-replica isolation tests |
+| MOSS TTS local (`MossTTSLocalSGLangModel`) | Supported and validated | AR backbone, embedding tables, local transformer, rope buffers (8.44 GiB shared at bf16) | `_decode_input_embedding.weight` (per-step decode staging) | unit + CUDA IPC + isolation tests; H100 DP2+MPS e2e: follower loads 8.7 GiB less, outputs byte-identical to a single replica even under saturated cross-replica load |
 | Qwen3-TTS, Ming TTS | Rejected | — | — | same staging pattern as MOSS, not yet audited end to end |
 | all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
 
