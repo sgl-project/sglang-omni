@@ -254,7 +254,13 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # MTD carries no decode staging scratch: every registered tensor is
     # checkpoint-loaded or an init-computed constant (rope cache).
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
+    "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
 }
+
+# Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches
+# stay bound after load; a bump that rebinds one at serving time (2-D mrope
+# positions, spec decode) would silently orphan followers, so re-audit the
+# rope stack when bumping sglang.
 
 SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
 

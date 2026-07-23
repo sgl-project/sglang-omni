@@ -274,6 +274,7 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
         "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
+        "Qwen3ASRForConditionalGeneration": frozenset(),
     }
     assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_private)
     for arch, private in expected_private.items():
