@@ -2,7 +2,7 @@
 #
 # Notes:
 # - ASR CI is calibrated separately via `--model asr`.
-#   This TTS model owns only `test_tts_ci.py` thresholds.
+#   This model owns the TTS generation and serving threshold tests.
 # - test_tts_ci.py runs the model-dependent TTS stages (nonstream / stream)
 #   controlled by --tts-stage in CI. Calibration does not use CI's random
 #   model pick. It expands every calibration_preset below and runs the full
@@ -40,8 +40,17 @@ hf_model_ids_by_test:
     - "bosonai/higgs-tts-3-4b"
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
+  test_tts_serving_ci.py:
+    - "bosonai/higgs-tts-3-4b"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-arrow"
+hf_datasets_by_test:
+  test_tts_ci.py:
+    - "zhaochenyang20/seed-tts-eval-arrow"
+  test_tts_serving_ci.py: []
+requires_speaker_sim_by_test:
+  test_tts_ci.py: true
+  test_tts_serving_ci.py: false
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
   # H100 CI calibration venv (first match wins).
@@ -62,8 +71,10 @@ auto_env:
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 gpus_per_test:
   test_tts_ci.py: 2
+  test_tts_serving_ci.py: 1
 test_globs:
   - "tests/test_model/test_tts_ci.py"
+  - "tests/test_model/test_tts_serving_ci.py"
 extra_env: {}
 pytest_extra_args:
   test_tts_ci.py:
@@ -142,3 +153,111 @@ metric_sources:
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
           corpus_wer: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_corpus"
+  test_tts_serving_ci.py:
+    observation_validity: "tts-serving-ci0/benchmark_validation.json::valid"
+    allowed_pytest_failure: "tts-serving-ci0/benchmark_validation.json::threshold_assertion_failed"
+    variants:
+      closed16:
+        constant_filter: "^SERVING_CLOSED16_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage.closed-16.successful_request_count"
+          ok: "metrics.by_stage.closed-16.metric_sample_counts.latency_s"
+        paths:
+          throughput_qps: "metrics.by_stage.closed-16.achieved_rps"
+          latency_p95_s: "metrics.by_stage.closed-16.latency_s.p95"
+      ramp:
+        constant_filter: "^SERVING_RAMP_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage.ramp-128.successful_request_count"
+          ok: "metrics.by_stage.ramp-128.metric_sample_counts.latency_s"
+        paths:
+          throughput_qps: "metrics.by_stage.ramp-128.achieved_rps"
+          latency_p95_s: "metrics.by_stage.ramp-128.latency_s.p95"
+      soak:
+        constant_filter: "^SERVING_SOAK_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage.soak-300s.successful_request_count"
+          ok: "metrics.by_stage.soak-300s.metric_sample_counts.latency_s"
+        paths:
+          latency_p95_s: "metrics.by_stage.soak-300s.latency_s.p95"
+      speech_normal:
+        constant_filter: "^SERVING_SPEECH_NORMAL_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.soak-300s.speech_normal.successful_request_count"
+          ok: "metrics.by_stage_and_workload.soak-300s.speech_normal.metric_sample_counts.rtf"
+        paths:
+          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.speech_normal.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.soak-300s.speech_normal.rtf.p95"
+      rest_stream:
+        constant_filter: "^SERVING_REST_STREAM_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.soak-300s.rest_stream.successful_request_count"
+          ok: "metrics.by_stage_and_workload.soak-300s.rest_stream.metric_sample_counts.inter_chunk_s"
+        paths:
+          ttfa_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.ttfa_s.p95"
+          inter_chunk_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.inter_chunk_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.soak-300s.rest_stream.rtf.p95"
+      batch32:
+        constant_filter: "^SERVING_BATCH32_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.successful_request_count"
+          ok: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.metric_sample_counts.latency_s"
+        paths:
+          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.latency_s.p95"
+      ws_normal:
+        constant_filter: "^SERVING_WS_NORMAL_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.successful_request_count"
+          ok: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.metric_sample_counts.ttfa_s"
+        paths:
+          ttfa_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.ttfa_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.latency_s.p95"
+      ws_stream:
+        constant_filter: "^SERVING_WS_STREAM_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.successful_request_count"
+          ok: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.metric_sample_counts.inter_chunk_s"
+        paths:
+          ttfa_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.ttfa_s.p95"
+          inter_chunk_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.inter_chunk_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.rtf.p95"
+      mixed_burst:
+        constant_filter: "^SERVING_MIXED_BURST_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage.mixed-burst-512.successful_request_count"
+          ok: "metrics.by_stage.mixed-burst-512.metric_sample_counts.latency_s"
+        paths:
+          throughput_qps: "metrics.by_stage.mixed-burst-512.achieved_rps"
+          latency_p95_s: "metrics.by_stage.mixed-burst-512.latency_s.p95"
+      long:
+        constant_filter: "^SERVING_LONG_(?!BASELINE_)"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_workload.long_prefill_decode.successful_request_count"
+          ok: "metrics.by_workload.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
+        paths:
+          prompt_tokens_min: "metrics.by_workload.long_prefill_decode.prompt_tokens.min"
+          completion_tokens_min: "metrics.by_workload.long_prefill_decode.completion_tokens.min"
+          latency_p95_s: "metrics.by_workload.long_prefill_decode.latency_s.p95"
+          audio_duration_min_s: "metrics.by_workload.long_prefill_decode.audio_duration_s.min"
+          output_tok_per_req_s: "metrics.by_workload.long_prefill_decode.output_tok_per_req_s"
+      long_baseline:
+        constant_filter: "^SERVING_LONG_BASELINE_"
+        json_file: "tts-serving-ci0/benchmark/results.json"
+        sample_counts:
+          total: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.successful_request_count"
+          ok: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
+        paths:
+          latency_max_s: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.latency_s.max"
+          output_tok_per_req_s: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.output_tok_per_req_s"

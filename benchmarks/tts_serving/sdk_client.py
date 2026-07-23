@@ -30,6 +30,7 @@ async def run_sdk_scenario(spec: BenchmarkSpec, scenario: Scenario) -> ScenarioR
         endpoint=scenario.endpoint,
         category=scenario.category,
         capability_key=scenario.capability_key,
+        workload=scenario.workload,
         expected_success=scenario.expect_success,
         response_format=_scenario_response_format(scenario),
     )

@@ -5,6 +5,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -21,7 +23,10 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 32
     assert config.stages[0].factory_args["max_new_tokens"] == 200
-    assert config.stages[0].factory_args["request_build_max_workers"] == 2
+    assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
+    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
+    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
+    assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunAsrNanoForConditionalGeneration")
@@ -34,7 +39,10 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
 
     assert signature.parameters["max_running_requests"].default == 32
     assert signature.parameters["max_new_tokens"].default == 200
-    assert signature.parameters["request_build_max_workers"].default == 2
+    assert signature.parameters["enable_pre_lm_encoder"].default is True
+    assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
+    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
+    assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
 
 
@@ -66,6 +74,7 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
     validations: list[dict[str, object]] = []
+    adapter_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
         fun_asr_stages.AutoTokenizer,
@@ -88,7 +97,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     monkeypatch.setattr(
         fun_asr_stages,
         "make_fun_asr_scheduler_adapters",
-        lambda **kwargs: (object(), object()),
+        lambda **kwargs: (adapter_kwargs.update(kwargs) or object(), object()),
     )
     monkeypatch.setattr(fun_asr_stages, "ModelRunner", lambda *args, **kwargs: object())
     monkeypatch.setattr(
@@ -100,6 +109,31 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         fun_asr_stages,
         "OmniScheduler",
         SimpleNamespace,
+    )
+    encoder_services = []
+
+    class _EncoderService:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "build_cache_namespace",
+        lambda *args, **kwargs: "test-namespace",
+    )
+
+    def _make_encoder_service(*args, **kwargs):
+        service = _EncoderService()
+        encoder_services.append(service)
+        return service
+
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "FunASRPreLMEncoderService",
+        _make_encoder_service,
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
@@ -150,7 +184,21 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     assert validations == [
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
-    assert scheduler.request_build_max_workers == 2
+    assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
+    assert scheduler.request_build_max_workers == 8
     assert scheduler.request_build_max_pending == 16
     assert scheduler.enable_async_decode is True
     assert scheduler.async_decode_min_batch_size == 2
+    scheduler.shutdown_callback()
+    assert encoder_services[0].close_calls == 1
+
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "OmniScheduler",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("factory failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+
+    assert encoder_services[1].close_calls == 1

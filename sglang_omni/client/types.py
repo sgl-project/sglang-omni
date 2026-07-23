@@ -97,6 +97,7 @@ class GenerateRequest:
 
     # Multi-modal support
     output_modalities: list[str] | None = None
+    multimodal_train_inputs: dict[str, Any] | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -117,6 +118,7 @@ class GenerateRequest:
             "stream": self.stream,
             "max_tokens": self.max_tokens,
             "output_modalities": self.output_modalities,
+            "multimodal_train_inputs": self.multimodal_train_inputs,
             "metadata": dict(self.metadata),
         }
 

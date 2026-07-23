@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import inspect
 from types import SimpleNamespace
 
@@ -285,7 +287,7 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
         data=None,
     )
 
-    out = pre._preprocess_pretokenized(payload, [5, 6, 7])
+    out = asyncio.run(pre._call_impl(payload))
 
     state = Qwen3OmniPipelineState.from_dict(out.data)
     assert state.prompt["input_ids"].tolist() == [5, 6, 7]
@@ -298,6 +300,86 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
         "output_modalities": ["text"],
         "trace": "keep",
     }
+
+
+def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
+    from sglang_omni.client import Client
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.protocol import RolloutGenerateRequest
+
+    def _encode(tensor: torch.Tensor) -> dict[str, object]:
+        tensor = tensor.contiguous()
+        raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
+        return {
+            "dtype": str(tensor.dtype).removeprefix("torch."),
+            "shape": list(tensor.shape),
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+
+    processor_tensors = {
+        "input_features": torch.ones((1, 2, 3)),
+        "feature_attention_mask": torch.ones((1, 2), dtype=torch.long),
+        "pixel_values_videos": torch.ones((2, 2, 3), dtype=torch.bfloat16),
+        "video_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long),
+        "video_second_per_grid": torch.tensor([0.5]),
+    }
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+
+    def _preprocess(tensors: dict[str, torch.Tensor]) -> Qwen3OmniPipelineState:
+        request = RolloutGenerateRequest(
+            input_ids=[7, 102, 103, 8],
+            multimodal_train_inputs={
+                "tensors": {name: _encode(tensor) for name, tensor in tensors.items()},
+            },
+        )
+        payload = StagePayload(
+            request_id="req-processed-mm",
+            request=Client._build_omni_request(
+                _build_rollout_generate_request(request)
+            ),
+            data={},
+        )
+        return Qwen3OmniPipelineState.from_dict(
+            asyncio.run(pre._call_impl(payload)).data
+        )
+
+    state = _preprocess(processor_tensors)
+
+    assert state.prompt["input_ids"].tolist() == [7, 102, 103, 8]
+    audio_inputs = state.encoder_inputs["audio_encoder"]
+    video_inputs = state.encoder_inputs["image_encoder"]
+    assert torch.equal(
+        audio_inputs["input_features"], processor_tensors["input_features"]
+    )
+    assert torch.equal(
+        audio_inputs["feature_attention_mask"],
+        processor_tensors["feature_attention_mask"],
+    )
+    assert torch.equal(
+        video_inputs["pixel_values_videos"],
+        processor_tensors["pixel_values_videos"],
+    )
+    assert torch.equal(
+        video_inputs["video_grid_thw"], processor_tensors["video_grid_thw"]
+    )
+    assert audio_inputs["cache_key"].startswith("processed:")
+    assert video_inputs["cache_key"].startswith("processed:")
+
+    changed_tensors = {
+        **processor_tensors,
+        "pixel_values_videos": torch.zeros_like(
+            processor_tensors["pixel_values_videos"]
+        ),
+    }
+    changed_state = _preprocess(changed_tensors)
+    assert (
+        changed_state.encoder_inputs["image_encoder"]["cache_key"]
+        != video_inputs["cache_key"]
+    )
 
 
 def test_qwen_preprocessor_retries_without_special_token_compat(
@@ -1294,3 +1376,69 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
     assert pad_values["audio"] >= 256
     assert int(req_data.input_ids[1]) == pad_values["audio"]
     assert captured["input_ids"].tolist() == input_ids.tolist()
+
+
+def _encode_processed_tensor(tensor: torch.Tensor) -> dict[str, object]:
+    tensor = tensor.contiguous()
+    raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
+    return {
+        "dtype": str(tensor.dtype).removeprefix("torch."),
+        "shape": list(tensor.shape),
+        "data": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _processed_bundle_state(
+    tensors: dict[str, torch.Tensor],
+) -> Qwen3OmniPipelineState:
+    from sglang_omni.client import Client
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.protocol import RolloutGenerateRequest
+
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    request = RolloutGenerateRequest(
+        input_ids=[7, 101, 103, 8],
+        multimodal_train_inputs={
+            "tensors": {
+                name: _encode_processed_tensor(tensor)
+                for name, tensor in tensors.items()
+            },
+        },
+    )
+    payload = StagePayload(
+        request_id="req-processed-guards",
+        request=Client._build_omni_request(_build_rollout_generate_request(request)),
+        data={},
+    )
+    return Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+
+
+def test_qwen_accepts_miles_image_processor_tensors() -> None:
+    tensors = {
+        "pixel_values": torch.ones((4, 3), dtype=torch.float32),
+        "image_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
+    }
+
+    state = _processed_bundle_state(tensors)
+
+    image_inputs = state.encoder_inputs["image_encoder"]
+    assert torch.equal(image_inputs["pixel_values"], tensors["pixel_values"])
+    assert torch.equal(image_inputs["image_grid_thw"], tensors["image_grid_thw"])
+    assert image_inputs["cache_key"].startswith("processed:")
+    assert state.encoder_inputs["audio_encoder"] == {"_skip": True, "_result": {}}
+
+
+def test_qwen_rejects_metadata_only_processed_bundle() -> None:
+    with pytest.raises(ValueError, match="without pixel_values"):
+        _processed_bundle_state(
+            {"video_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long)}
+        )
+
+
+def test_qwen_rejects_unknown_processed_tensor_names() -> None:
+    with pytest.raises(ValueError, match="unknown multimodal_train_inputs"):
+        _processed_bundle_state({"pixel_values_video": torch.ones((2, 2))})

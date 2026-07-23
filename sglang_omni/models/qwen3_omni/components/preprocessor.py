@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
 from typing import Any
 
 import torch
+import xxhash
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -34,6 +36,14 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
+
+_TRAIN_INPUT_TENSOR_NAMES = frozenset(
+    {
+        **build_image_mm_inputs({}),
+        **build_audio_mm_inputs({}),
+        **build_video_mm_inputs({}),
+    }
+)
 
 
 def _resolve_local_model_dir(model_path: str) -> str:
@@ -318,15 +328,42 @@ class Qwen3OmniPreprocessor:
             payload.request.metadata.pop(key, None)
         return payload
 
-    def _preprocess_pretokenized(
-        self, payload: StagePayload, token_ids: list[int]
+    def _preprocess_train_inputs(
+        self,
+        payload: StagePayload,
+        token_ids: list[int],
+        bundle: dict[str, Any] | None = None,
     ) -> StagePayload:
-        """Build thinker state directly from pre-tokenized prompt ids.
+        """Use Miles' exact token ids and optional processor tensors."""
+        flat_inputs: dict[str, torch.Tensor] = {}
+        processed_cache_key = None
+        if bundle is not None:
+            unknown_names = set(bundle["tensors"]) - _TRAIN_INPUT_TENSOR_NAMES
+            if unknown_names:
+                raise ValueError(
+                    "unknown multimodal_train_inputs tensors: "
+                    + ", ".join(sorted(unknown_names))
+                )
+            cache_parts = []
+            for name in sorted(bundle["tensors"]):
+                spec = bundle["tensors"][name]
+                raw = base64.b64decode(spec["data"])
+                cache_parts.append(
+                    (
+                        name,
+                        spec["dtype"],
+                        spec["shape"],
+                        xxhash.xxh3_64_hexdigest(raw),
+                    )
+                )
+                flat_inputs[name] = torch.frombuffer(
+                    bytearray(raw),
+                    dtype=getattr(torch, spec["dtype"]),
+                ).reshape(spec["shape"])
+            processed_cache_key = "processed:" + xxhash.xxh3_64_hexdigest(
+                json.dumps(cache_parts, separators=(",", ":")).encode()
+            )
 
-        Skips the chat template + HF processor so the thinker runs the exact
-        tokens the RL trainer computes gradients on (text-only; multimodal ids
-        still go through the normal messages path).
-        """
         input_ids = torch.tensor(token_ids, dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
         validate_prompt_seq_len(
@@ -337,23 +374,77 @@ class Qwen3OmniPreprocessor:
             ),
             request_id=payload.request_id,
         )
+
+        full_mm_inputs: dict[str, Any] = {
+            "image": build_image_mm_inputs(flat_inputs),
+            "audio": build_audio_mm_inputs(flat_inputs),
+            "video": build_video_mm_inputs(flat_inputs),
+        }
+        image_encoder_inputs = {
+            name: value
+            for name, value in {
+                **full_mm_inputs["image"],
+                **full_mm_inputs["video"],
+            }.items()
+            if value is not None
+        }
+        audio_encoder_inputs = {
+            name: value
+            for name, value in full_mm_inputs["audio"].items()
+            if value is not None
+        }
+        has_image_payload = (
+            image_encoder_inputs.get("pixel_values") is not None
+            or image_encoder_inputs.get("pixel_values_videos") is not None
+        )
+        has_audio_payload = audio_encoder_inputs.get("input_features") is not None
+        if image_encoder_inputs and not has_image_payload:
+            raise ValueError(
+                "multimodal_train_inputs provides image/video metadata "
+                "without pixel_values or pixel_values_videos"
+            )
+        if audio_encoder_inputs and not has_audio_payload:
+            raise ValueError(
+                "multimodal_train_inputs provides audio metadata "
+                "without input_features"
+            )
+        if processed_cache_key is not None:
+            if image_encoder_inputs:
+                image_encoder_inputs["cache_key"] = processed_cache_key
+            if audio_encoder_inputs:
+                audio_encoder_inputs["cache_key"] = processed_cache_key
         return self._finalize_state(
             payload,
             input_ids=input_ids,
             attention_mask=attention_mask,
             prompt_text="",
-            full_mm_inputs={},
+            full_mm_inputs=full_mm_inputs,
             encoder_inputs={
-                "image_encoder": {"_skip": True, "_result": {}},
-                "audio_encoder": {"_skip": True, "_result": {}},
+                "image_encoder": (
+                    image_encoder_inputs
+                    if has_image_payload
+                    else {"_skip": True, "_result": {}}
+                ),
+                "audio_encoder": (
+                    audio_encoder_inputs
+                    if has_audio_payload
+                    else {"_skip": True, "_result": {}}
+                ),
             },
         )
 
     async def _call_impl(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         if _is_pretokenized_prompt(inputs):
-            return self._preprocess_pretokenized(payload, inputs)
+            return self._preprocess_train_inputs(payload, inputs)
         if isinstance(inputs, dict):
+            multimodal_train_inputs = inputs.get("multimodal_train_inputs")
+            if multimodal_train_inputs is not None:
+                return self._preprocess_train_inputs(
+                    payload,
+                    inputs["input_ids"],
+                    multimodal_train_inputs,
+                )
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_videos = inputs.get("videos") or inputs.get("video")

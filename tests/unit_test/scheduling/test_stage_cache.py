@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 import torch
 
 from sglang_omni.scheduling.stage_cache import StageOutputCache, _value_size_bytes
@@ -26,6 +27,35 @@ def test_stage_output_cache_evicts_on_byte_buffer_size() -> None:
     cache.put("b", {"payload": b"y" * 800})
     assert cache.get("a") is None
     assert cache.get("b") is not None
+
+
+@pytest.mark.parametrize("capacity", ["max_size", "max_bytes"])
+def test_stage_output_cache_rejects_negative_capacity(capacity: str) -> None:
+    with pytest.raises(ValueError, match=rf"{capacity} must be non-negative"):
+        StageOutputCache(**{capacity: -1})
+
+
+@pytest.mark.parametrize("capacity", ["max_size", "max_bytes"])
+def test_stage_output_cache_allows_zero_capacity(capacity: str) -> None:
+    cache = StageOutputCache(**{capacity: 0})
+
+    cache.put("key", b"value")
+
+    assert cache.get("key") is None
+
+
+def test_remove_if_same_preserves_a_replacement() -> None:
+    cache = StageOutputCache()
+    cache.put("key", torch.zeros(1))
+    observed = cache.get("key")
+    cache.put("key", torch.ones(1))
+
+    assert cache.remove_if_same("key", observed) is False
+    assert torch.equal(cache.get("key"), torch.ones(1))
+
+    replacement = cache.get("key")
+    assert cache.remove_if_same("key", replacement) is True
+    assert cache.get("key") is None
 
 
 def test_concurrent_get_put_keeps_byte_accounting_consistent() -> None:
