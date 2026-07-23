@@ -90,6 +90,13 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         super().__init__(compute_fn=None)
         self._payloads = self._stream_payloads
 
+    def start(self) -> None:
+        try:
+            super().start()
+        finally:
+            if self._cuda_graph_runner is not None:
+                self._cuda_graph_runner.log_shape_telemetry(trigger="shutdown")
+
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         del payload
         return True

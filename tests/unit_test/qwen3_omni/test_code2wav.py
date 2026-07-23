@@ -41,6 +41,7 @@ class _FakeCudaGraphRunner:
         self.model = model
         self.replay_error = replay_error
         self.calls: list[tuple[tuple[int, ...], bool]] = []
+        self.telemetry_triggers: list[str] = []
 
     def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
         self.calls.append((tuple(codes.shape), eligible))
@@ -53,6 +54,9 @@ class _FakeCudaGraphRunner:
         if eligible:
             return Code2WavRunResult(output, "eager", key, "key_miss")
         return Code2WavRunResult(output, "eager", None, "ineligible")
+
+    def log_shape_telemetry(self, *, trigger: str) -> None:
+        self.telemetry_triggers.append(trigger)
 
 
 def _activate_event_capture(monkeypatch) -> list[dict]:
@@ -609,6 +613,7 @@ def test_qwen_code2wav_replay_error_reaches_base_abort_without_eager_retry() -> 
 
     assert not worker.is_alive()
     assert runner.calls == [((1, 2, 1), True)]
+    assert runner.telemetry_triggers == ["shutdown"]
     assert model.calls == []
     assert message.request_id == "req-1"
     assert message.type == "error"

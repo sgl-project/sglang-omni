@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -225,6 +226,13 @@ def _codes(
     return backend.mark_cuda(tensor, device=device)
 
 
+@pytest.fixture(autouse=True)
+def _disable_shape_telemetry_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", raising=False)
+
+
 def test_graph_keys_are_the_four_serial_serving_shapes() -> None:
     assert CODE2WAV_GRAPH_KEYS == tuple(
         GraphKey(batch_size=1, frames=frames) for frames in (10, 20, 30, 35)
@@ -308,6 +316,146 @@ def test_stats_report_only_operational_state() -> None:
         "replay_failures": 0,
         "fallback_counts": {},
     }
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off"])
+def test_shape_telemetry_false_values_leave_runtime_stats_unchanged(
+    value: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if value is None:
+        monkeypatch.delenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", raising=False)
+    else:
+        monkeypatch.setenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", value)
+    runner, backend, _model = _build_runner()
+
+    runner.run(_codes(backend, 1, 10))
+
+    assert runner._shape_graph_counts is None
+    assert runner._shape_fallback_counts is None
+    assert runner.stats()["runtime"] == {
+        "graph_replays": 1,
+        "replay_failures": 0,
+        "fallback_counts": {},
+    }
+
+
+def test_shape_telemetry_matches_known_hit_and_fallback_mix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", "1")
+    runner, backend, _model = _build_runner()
+
+    runner.run(_codes(backend, 1, 10))
+    runner.run(_codes(backend, 1, 10))
+    runner.run(_codes(backend, 1, 20))
+    runner.run(_codes(backend, 2, 10))
+    runner.run(_codes(backend, 1, 35), eligible=False)
+
+    assert runner.stats()["runtime"]["shape_telemetry"] == {
+        "total_executions": 5,
+        "graph_replays": 3,
+        "eager_fallbacks": 2,
+        "hit_rate": 0.6,
+        "shapes": [
+            {
+                "batch_size": 1,
+                "frames": 10,
+                "graph_replays": 2,
+                "eager_fallbacks": 0,
+                "fallback_counts": {},
+                "hit_rate": 1.0,
+            },
+            {
+                "batch_size": 1,
+                "frames": 20,
+                "graph_replays": 1,
+                "eager_fallbacks": 0,
+                "fallback_counts": {},
+                "hit_rate": 1.0,
+            },
+            {
+                "batch_size": 1,
+                "frames": 35,
+                "graph_replays": 0,
+                "eager_fallbacks": 1,
+                "fallback_counts": {"ineligible": 1},
+                "hit_rate": 0.0,
+            },
+            {
+                "batch_size": 2,
+                "frames": 10,
+                "graph_replays": 0,
+                "eager_fallbacks": 1,
+                "fallback_counts": {"key_miss": 1},
+                "hit_rate": 0.0,
+            },
+        ],
+    }
+
+
+def test_shape_telemetry_logs_periodically_and_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", "yes")
+    monkeypatch.setattr(
+        code2wav_cuda_graph,
+        "_CODE2WAV_GRAPH_TRACE_REPORT_INTERVAL",
+        2,
+    )
+    runner, backend, _model = _build_runner()
+
+    with caplog.at_level(logging.INFO, logger=code2wav_cuda_graph.__name__):
+        runner.run(_codes(backend, 1, 10))
+        assert not [
+            record for record in caplog.records if "shape telemetry" in record.message
+        ]
+        runner.run(_codes(backend, 2, 10))
+        runner.log_shape_telemetry(trigger="shutdown")
+
+    records = [
+        record for record in caplog.records if "shape telemetry" in record.message
+    ]
+    assert [
+        record.message.split(" trigger=", 1)[1].split(" ", 1)[0] for record in records
+    ] == ["periodic", "shutdown"]
+    snapshots = [json.loads(record.message.split("stats=", 1)[1]) for record in records]
+    assert snapshots[0] == snapshots[1]
+    assert snapshots[0]["total_executions"] == 2
+    assert snapshots[0]["hit_rate"] == 0.5
+
+
+def test_shape_telemetry_tracks_disabled_fallback_after_replay_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_TRACE_CODE2WAV_GRAPH", "1")
+    runner, backend, _model = _build_runner()
+    graph = next(
+        graph
+        for graph in backend.graphs
+        if tuple(graph.static_input.shape) == (1, 16, 10)
+    )
+    graph.fail_replay = RuntimeError("replay exploded")
+
+    with pytest.raises(RuntimeError, match="replay exploded"):
+        runner.run(_codes(backend, 1, 10))
+    runner.run(_codes(backend, 1, 10))
+
+    telemetry = runner.stats()["runtime"]["shape_telemetry"]
+    assert telemetry["total_executions"] == 1
+    assert telemetry["graph_replays"] == 0
+    assert telemetry["eager_fallbacks"] == 1
+    assert telemetry["shapes"] == [
+        {
+            "batch_size": 1,
+            "frames": 10,
+            "graph_replays": 0,
+            "eager_fallbacks": 1,
+            "fallback_counts": {"disabled": 1},
+            "hit_rate": 0.0,
+        }
+    ]
 
 
 def test_all_serving_keys_hit_while_batch_two_misses() -> None:
