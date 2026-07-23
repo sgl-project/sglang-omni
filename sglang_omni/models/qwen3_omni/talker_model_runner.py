@@ -365,11 +365,18 @@ class QwenTalkerModelRunner(ModelRunner):
             self._append_decode_input_history(sched_req.data, combined)
             rows.append(row_idx)
             embeds.append(combined)
-        if rows:
-            rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
-            embeds_stacked = torch.stack(embeds, dim=0)
-            feedback_buffer[rows_t] = embeds_stacked
-            feedback_mask[rows_t] = True
+        if not rows:
+            return
+        embeds_stacked = torch.stack(embeds, dim=0)
+        if len(rows) == batch_size:
+            # Note:(Wenyao Gao) dense steady state: rows is exactly range(batch_size),
+            # so slice-assign and skip the per-frame pageable index H2D
+            feedback_buffer[:batch_size] = embeds_stacked
+            feedback_mask[:batch_size] = True
+            return
+        rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
+        feedback_buffer[rows_t] = embeds_stacked
+        feedback_mask[rows_t] = True
 
     @staticmethod
     def _data_has_next_decode_input(data: Any) -> bool:
