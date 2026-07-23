@@ -102,6 +102,7 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 | MOSS TTS delay (`MossTTSDelaySGLangModel`) | Supported (audited; same-GPU DP e2e pending) | Qwen3-8B backbone, 33 embedding tables and heads (about 19 GiB) | `_decode_input_embedding.weight` (per-step decode staging, same pattern as MOSS local) | mutation audit + shared protocol tests; the float32 vocoder codec (about 10 GB) stays per replica and outside the share |
 | FunASR Nano (`FunAsrNanoForConditionalGeneration`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (encoder recomputes positions per forward) | none identified | mutation audit + shared protocol tests |
 | Voxtral TTS (`VoxtralSGLangTTSModel`) | Supported (audited; same-GPU DP e2e pending) | all registered tensors (~3.4B backbone + acoustic transformer) | none registered (decode staging is an unregistered plain tensor by design) | mutation audit + shared protocol tests |
+| Fish S2-Pro (`S2ProSGLangTextModel`) | Supported (audited; same-GPU DP e2e pending) | slow-AR backbone (dominant weight mass) | none registered (staging unregistered; the fast-AR decoder attaches after export and stays per replica) | mutation audit + shared protocol tests; rope truncation made in-place for the share contract |
 | Qwen3-TTS | Rejected | — | — | same staging pattern, but its runtime module tree includes external `qwen_tts` components the in-repo audit cannot close |
 | all other architectures | Rejected | — | — | adding one requires a post-load mutation audit and a policy entry |
 

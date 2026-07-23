@@ -269,6 +269,10 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # (_decode_input_embed_buffer), so nothing registered is written post-load;
     # that scratch must stay unregistered or this entry needs a private name.
     "VoxtralSGLangTTSModel": WeightSharePolicy(),
+    # Fish's slow-AR staging is unregistered and its fast-AR decoder (with
+    # per-step KV buffers) joins the module tree only after export; this empty
+    # set holds only while leader export stays at the end of load_model.
+    "S2ProSGLangTextModel": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches
