@@ -282,6 +282,11 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "Qwen3TTSTalker": WeightSharePolicy(
         private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
     ),
+    # Qwen3-Omni runs TWO engines per pipeline (thinker + talker), each hitting
+    # this gate, so both stay listed together. The talker keeps its decode
+    # staging in unregistered plain attributes, the Voxtral pattern.
+    "Qwen3OmniThinkerForCausalLM": WeightSharePolicy(),
+    "Qwen3OmniTalker": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches

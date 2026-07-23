@@ -283,6 +283,8 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
         "Qwen3TTSTalker": frozenset({"model._decode_feedback_embedding.weight"}),
+        "Qwen3OmniThinkerForCausalLM": frozenset(),
+        "Qwen3OmniTalker": frozenset(),
     }
     assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_private)
     for arch, private in expected_private.items():
