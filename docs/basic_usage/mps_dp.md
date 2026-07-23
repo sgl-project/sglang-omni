@@ -112,7 +112,9 @@ What this buys: N-1 fewer weight copies (15.2 GiB at DP3), which can fund a four
 - **Restart together.** The leader owns the shared allocations; CUDA IPC mappings die with the exporting process. If replica 0 exits, bring the whole run down (`down`) and start a new run. Never restart replicas individually.
 - **No weight updates.** In-place weight updates (`update_weights_from_disk/tensor/distributed`) are rejected while sharing is active — an update through one replica would corrupt all of them. Redeploy the run to change weights.
 
-A follower transiently allocates its dummy weight copy before the alias step frees it, so peak follower boot memory briefly includes one extra weight copy; this fits whenever the steady-state configuration fits, because the follower's KV pool (allocated after the free) is larger than the transient.
+A follower transiently holds its dummy weight copy before the alias step frees it, so the booting follower's peak briefly includes one extra weight copy on top of the already-running replicas' steady state. At tight caps this transient, not the steady state, is the binding constraint: measured with MOSS local on one 80 GB H100, shared DP3 boots at a 30000-token cap, while at a 60000 cap the third replica's boot transient overflows the card.
+
+Measured MOSS local DP3 on that H100 (24 server cores total, 30000-token cap): shared runs at 66 GB under load with 13 GB headroom and full CUDA-graph coverage, while unshared DP3 fits only at the edge, 79.3 of 79.65 GB with the third replica dropping part of its vocoder graph set to eager. Aggregate throughput was at parity between the two and about 29% above DP2; the sharing win at DP3 is the operating margin, not qps.
 
 ## How We Found This
 
