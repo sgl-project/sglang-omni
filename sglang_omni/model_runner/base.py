@@ -99,7 +99,7 @@ class ModelRunner:
         self._token_id_host_slot: int = 0
 
     def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
-        # Note:(Wenyao Gao) pinned host copy staged once at sample time so downstream
+        # Note (wenyao): pinned host copy staged once at sample time so downstream
         # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
         if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
             result._host_token_ids = ids
@@ -114,7 +114,7 @@ class ModelRunner:
         result._host_token_ids_event = event
 
     def _next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
-        # Note:(Wenyao Gao) two buffers ping-ponged so a step's host read never races
+        # Note (wenyao): two buffers ping-ponged so a step's host read never races
         # the next step's async copy
         return self._pinned_pingpong(
             "_token_id_host_bufs",

@@ -112,7 +112,7 @@ def test_sparse_feedback_row_stays_unwritten() -> None:
 
 
 def test_stale_mask_cannot_leak_into_reused_slot() -> None:
-    # Note:(Wenyao Gao) forward-side mask reset (talker.py:422) needs a real forward; integration-level only
+    # Note (wenyao): forward-side mask reset (talker.py:422) needs a real forward; integration-level only
     n, hidden, code_groups = 2, 3, 2
     model = _fake_model(n, hidden, code_groups)
     model._feedback_mask[:n] = True

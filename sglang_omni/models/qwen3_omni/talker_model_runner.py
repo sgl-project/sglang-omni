@@ -117,7 +117,7 @@ class QwenTalkerModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         bs = len(requests)
-        # Note:(Wenyao Gao) one batched clone per buffer, not one per row: the
+        # Note (wenyao): one batched clone per buffer, not one per row: the
         # snapshot must be a fresh allocation so its rows survive the next
         # in-graph write to the fixed-address _output_codes/_output_embeds.
         codes_snap = self.model._output_codes[:bs].detach().clone()
@@ -369,7 +369,7 @@ class QwenTalkerModelRunner(ModelRunner):
             return
         embeds_stacked = torch.stack(embeds, dim=0)
         if len(rows) == batch_size:
-            # Note:(Wenyao Gao) dense steady state: rows is exactly range(batch_size),
+            # Note (wenyao): dense steady state: rows is exactly range(batch_size),
             # so slice-assign and skip the per-frame pageable index H2D
             feedback_buffer[:batch_size] = embeds_stacked
             feedback_mask[:batch_size] = True
