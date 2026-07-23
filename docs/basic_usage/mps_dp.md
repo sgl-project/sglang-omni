@@ -104,6 +104,19 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 
 For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.
 
+The table above is a safety contract (what may alias, what must stay private, and how far each claim was validated); it deliberately carries no throughput column because performance depends on the deployment configuration (replica count, KV caps, CPU blocks, MPS), not on an architecture's share-safety. The per-model DP measurements live here:
+
+| Model | Same-GPU DP scaling (unshared) | Shared weights per follower | Measured shared-DP posture (80 GB H100) |
+|---|---|---|---|
+| Higgs TTS 3-4B | DP2 1.4 to 1.7x, DP3 1.8 to 2.1x (case study below); H200 DP8 validated | 7.55 GiB | throughput parity at every N in the H200 series |
+| MOSS TTS local | DP2 1.64x, DP3 2.15x (one series, 24 server cores total) | 8.44 GiB | shared DP3 at a 30000 cap runs at 66 GB with 13 GB headroom and full graphs, where unshared DP3 sits at 79.3 of 79.65 GB with partial vocoder-graph fallback; DP3 at a 60000 cap fails both ways (boot transient / arithmetic); DP4 does not fit either way |
+| MOSS Transcribe-Diarize | DP3 about 1.7x (prior series) | 1.75 GiB | shared DP2: leader 7.9, follower 6.1 GB; transcripts identical under cross-replica load |
+| Qwen3-ASR | DP3 about 2.7x (prior series) | 3.83 GiB | shared DP2: leader 9.4, follower 5.4 GB; transcripts identical |
+| Whisper large-v3-turbo | DP3 about 2.1x (prior series) | 1.51 GiB | shared DP2: leader 4.7, follower 3.0 GB; transcripts identical |
+| Ming TTS | not measured | n/a | n/a |
+
+Scaling ratios are internal to their own measurement series (different drivers and dates); do not compare absolute throughput across rows. The pattern: for the ASR models VRAM never binds the replica count, so sharing frees memory without changing the DP ceiling; for large-backbone TTS the share is what buys the operating margin (MOSS) or the fit itself.
+
 ```bash
 WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
   bash examples/mps_dp/launch.sh up
