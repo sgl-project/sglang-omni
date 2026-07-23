@@ -255,6 +255,7 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # checkpoint-loaded or an init-computed constant (rope cache).
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
+    "WhisperForConditionalGeneration": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): the ASR entries assume the pinned sglang's rope caches
