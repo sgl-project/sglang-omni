@@ -208,7 +208,8 @@ class HiggsTTSModelRunner(ModelRunner):
         # request stays in the batch — i.e. until the key changes.
         launch_key = (tuple(req.request_id for req in requests), tuple(rows_py), bs)
         if not (self._syncfree_launch and launch_key == self._cg_launch_key):
-            self._cg_launch_key = None  # Note (Yueying Li): a failed rebuild must not leave a valid key
+            # Note (Yueying Li): a failed rebuild must not leave a valid key
+            self._cg_launch_key = None
             rows_full = rows_py + [model._padding_row] * (bs - n_real)
             model._cg_row_indices[:bs] = torch.tensor(
                 rows_full, dtype=torch.long, device=model._cg_row_indices.device

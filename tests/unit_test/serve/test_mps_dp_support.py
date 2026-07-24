@@ -19,18 +19,12 @@ import pytest
 
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-from sglang_omni.models.llada2_uni.config import LLaDA2UniPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
-from sglang_omni.models.qwen3_omni.config import (
-    Qwen3OmniPipelineConfig,
-    Qwen3OmniSpeechPipelineConfig,
-)
-from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils import ipc_weights
 
