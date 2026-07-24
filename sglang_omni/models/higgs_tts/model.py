@@ -546,7 +546,18 @@ class HiggsTTSModel(nn.Module):
         optionally the untied modality head). Text-backbone loading delegates
         to :meth:`Qwen3ForCausalLM.load_weights`, which does qkv / gate_up
         stacking and lm_head tying internally.
+
+        Weight IPC follower loading is coordinated by ``SGLModelRunner``;
+        calling this method in follower mode is therefore an invalid path.
         """
+        from sglang_omni.distributed.weight_ipc.config import is_weight_ipc_follower
+
+        if is_weight_ipc_follower():
+            raise RuntimeError(
+                "HiggsTTSModel.load_weights() must not be called by a "
+                "weight IPC follower"
+            )
+
         mapper = DiscreteWeightMapper(
             text_prefix_map=_BACKBONE_PREFIX_MAP,
             tie_modality=self._tie_modality,

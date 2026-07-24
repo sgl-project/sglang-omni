@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.distributed.weight_ipc import WeightIpcConfig
+
 
 def create_sglang_infrastructure(
     server_args: Any,
@@ -16,6 +18,7 @@ def create_sglang_infrastructure(
     weight_prefix: str | None = None,
     capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    weight_ipc: WeightIpcConfig | None = None,
 ):
     """Create SGLang worker, memory pools, tree cache, and prefill/decode managers."""
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
@@ -31,6 +34,7 @@ def create_sglang_infrastructure(
             weight_prefix=weight_prefix,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
+            weight_ipc=weight_ipc,
         ),
         server_args=server_args,
         gpu_id=gpu_id,

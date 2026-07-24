@@ -1200,12 +1200,54 @@ def serve(
             ),
         ),
     ] = None,
+    weight_ipc_role: Annotated[
+        str | None,
+        typer.Option(
+            "--weight-ipc-role",
+            "--weight_ipc_role",
+            help=(
+                "Same-GPU AR weight sharing role: off|leader|follower. "
+                "Default off. Requires --weight-ipc-store when not off."
+            ),
+        ),
+    ] = None,
+    weight_ipc_store: Annotated[
+        str | None,
+        typer.Option(
+            "--weight-ipc-store",
+            "--weight_ipc_store",
+            help=(
+                "Directory for the weight-IPC bundle (bundle.pkl + READY). "
+                "Required when --weight-ipc-role is leader or follower."
+            ),
+        ),
+    ] = None,
+    weight_ipc_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--weight-ipc-timeout-s",
+            "--weight_ipc_timeout_s",
+            help="Follower wait timeout for weight-IPC READY (seconds).",
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline."""
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    if weight_ipc_role is not None or weight_ipc_store is not None:
+        from sglang_omni.distributed.weight_ipc import apply_weight_ipc_cli_env
+
+        try:
+            apply_weight_ipc_cli_env(
+                role=weight_ipc_role,
+                store=weight_ipc_store,
+                timeout_s=weight_ipc_timeout_s,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     _validate_colocate_cli_request(
         colocate=colocate,

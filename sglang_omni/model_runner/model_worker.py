@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from sglang_omni.distributed.weight_ipc import (
+    WeightIpcConfig,
+    resolve_weight_ipc_config,
+)
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
     normalize_quant_config,
@@ -26,6 +30,7 @@ class ModelWorkerConfig:
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
+    weight_ipc: WeightIpcConfig | None = None
 
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
@@ -55,6 +60,7 @@ class ModelWorker:
         self.weight_prefix = config.weight_prefix
         self.nccl_port = config.nccl_port
         self.total_gpu_memory_fraction = config.total_gpu_memory_fraction
+        self.weight_ipc = resolve_weight_ipc_config(config.weight_ipc)
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
@@ -208,6 +214,7 @@ class ModelWorker:
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
+            weight_ipc=self.weight_ipc,
         )
 
     def _init_dllm_algorithm(self):
@@ -252,13 +259,27 @@ class ModelWorker:
             "tp_rank": self.tp_rank,
             "tp_size": self.server_args.tp_size,
             "model_arch_override": self.model_arch_override,
-            "supports_weight_update": hasattr(
-                self.model_runner, "update_weights_from_disk"
-            ),
+            "supports_weight_update": self._weight_updates_allowed()
+            and hasattr(self.model_runner, "update_weights_from_disk"),
             "supports_weight_checker": True,
         }
 
+    def _weight_updates_allowed(self) -> bool:
+        return self.weight_ipc.role == "off"
+
+    def _reject_weight_update(self) -> tuple[bool, str] | None:
+        if self._weight_updates_allowed():
+            return None
+        return (
+            False,
+            "weight update is unsupported while weight IPC is enabled; "
+            "disable weight IPC before updating weights",
+        )
+
     def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        rejection = self._reject_weight_update()
+        if rejection is not None:
+            return rejection
         model_path = payload.get("model_path")
         if not model_path:
             return False, "model_path is required"
@@ -290,6 +311,9 @@ class ModelWorker:
         return bool(success), str(message)
 
     def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        rejection = self._reject_weight_update()
+        if rejection is not None:
+            return rejection
         if payload.get("serialized_named_tensors") is not None:
             return (
                 False,
@@ -299,6 +323,9 @@ class ModelWorker:
         return self._call_optional_weight_method("update_weights_from_tensor", payload)
 
     def init_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        rejection = self._reject_weight_update()
+        if rejection is not None:
+            return rejection
         init = getattr(self.model_runner, "init_weights_update_group", None)
         if init is None:
             return False, "model runner does not support init_weights_update_group"
@@ -324,6 +351,9 @@ class ModelWorker:
         return bool(success), str(message)
 
     def destroy_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        rejection = self._reject_weight_update()
+        if rejection is not None:
+            return rejection
         destroy = getattr(self.model_runner, "destroy_weights_update_group", None)
         if destroy is None:
             return False, "model runner does not support destroy_weights_update_group"
@@ -333,6 +363,9 @@ class ModelWorker:
     def update_weights_from_distributed(
         self, payload: dict[str, Any]
     ) -> tuple[bool, str]:
+        rejection = self._reject_weight_update()
+        if rejection is not None:
+            return rejection
         update = getattr(self.model_runner, "update_weights_from_distributed", None)
         if update is None:
             return (

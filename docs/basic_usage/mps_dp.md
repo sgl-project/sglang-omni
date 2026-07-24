@@ -165,6 +165,38 @@ nsys profile --gpu-metrics-devices $GPU_ID --gpu-metrics-set gh100 \
 
 Low SM activity at the tuned single replica's peak may indicate reclaimable headroom; confirm it with a controlled DP comparison before relying on it. If SM activity is already near the ceiling, stop here.
 
+## Optional: share AR weights across same-GPU replicas (CUDA IPC)
+
+By default each replica loads its own AR weights. On H100 Higgs that costs about 7.6 GB per replica and can prevent DP4 from keeping Equal KV at `MAX_TOTAL_TOKENS=100000`. Setting `WEIGHT_IPC=1` makes replica 0 export AR parameters over CUDA IPC and replicas 1…N-1 alias them. The minimal parity reproduction is available in [`examples/weight_ipc/validate_dp_parity.py`](../../examples/weight_ipc/validate_dp_parity.py).
+
+```bash
+# DP4 shared weights + Equal KV 100k
+WEIGHT_IPC=1 N=4 GPU_ID=0 MAX_TOTAL_TOKENS=100000 \
+  CORE_BLOCKS="0-7 8-15 16-23 24-31" \
+  bash examples/mps_dp/launch.sh up
+```
+
+For a minimal correctness check, start two replicas and compare deterministic
+leader/follower outputs:
+
+```bash
+WEIGHT_IPC=1 N=2 GPU_ID=0 MAX_TOTAL_TOKENS=100000 \
+  CORE_BLOCKS="0-15 16-31" \
+  bash examples/mps_dp/launch.sh up
+
+python examples/weight_ipc/validate_dp_parity.py \
+  --leader-url http://127.0.0.1:8801 \
+  --follower-url http://127.0.0.1:8802 \
+  --n 30
+
+bash examples/mps_dp/launch.sh down
+```
+
+The safe KV budget and throughput benefit depend on the GPU, model revision,
+request mix, and replica count. Validate those values on the target host instead
+of relying on repository-owned benchmark thresholds. Default remains
+`WEIGHT_IPC=0`.
+
 ## Limits and next steps
 
 1. **Generality is not fully validated.** Beyond the pinned H100 Higgs case study, we also ran related experiments on H200 and used SGLang to serve Qwen3-4B directly; both lines of work largely confirmed the same-GPU DP gains. Space and time limit how completely we can present those results here, and the measurements are not yet as polished as we would like. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.

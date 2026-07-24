@@ -8,6 +8,14 @@ from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
 
+from sglang_omni.distributed.weight_ipc import (
+    LeaderLivenessMonitor,
+    WeightIpcConfig,
+    WeightIpcRole,
+    export_leader_weights,
+    materialize_follower_weights,
+    validate_weight_ipc_compatibility,
+)
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -17,6 +25,17 @@ from sglang_omni.utils.gpu_memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_weight_ipc_kv_cap(
+    role: WeightIpcRole,
+    max_total_tokens: int | None,
+) -> None:
+    if role == "follower" and max_total_tokens is None:
+        raise ValueError(
+            "weight IPC follower requires an explicit --max-total-tokens value "
+            "because post-alias memory profiling cannot derive a stable KV budget"
+        )
 
 
 def filter_weights_by_prefix(
@@ -46,21 +65,50 @@ class SGLModelRunner(ModelRunner):
         pp_rank: int,
         pp_size: int,
         nccl_port: int,
+        weight_ipc: WeightIpcConfig,
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
         total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
+        self._weight_ipc_config = weight_ipc
+        self._weight_ipc_leader_monitor: LeaderLivenessMonitor | None = None
+        if weight_ipc.role != "off":
+            _validate_weight_ipc_kv_cap(
+                weight_ipc.role,
+                server_args.max_total_tokens,
+            )
+            architectures = (
+                [model_arch_override]
+                if model_arch_override is not None
+                else model_config.hf_config.architectures
+            )
+            configured_tp_size = server_args.tp_size
+            configured_pp_size = server_args.pp_size
+            validate_weight_ipc_compatibility(
+                role=weight_ipc.role,
+                architectures=architectures,
+                tp_size=configured_tp_size,
+                pp_size=configured_pp_size,
+            )
+            logger.info(
+                "weight_ipc: compatibility validated role=%s architectures=%s "
+                "tp_size=%s pp_size=%s",
+                weight_ipc.role,
+                list(architectures or ()),
+                configured_tp_size,
+                configured_pp_size,
+            )
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
-        tp_size = server_args.tp_size
         self.nccl_port = port_args.nccl_port
 
         # model_config is already fully configured by ModelWorker._init_model_config()
         # (architecture override, text_config swap, etc. are all done there)
 
+        tp_size = server_args.tp_size
         super().__init__(
             model_config=model_config,
             mem_fraction_static=server_args.mem_fraction_static,
@@ -74,6 +122,49 @@ class SGLModelRunner(ModelRunner):
             nccl_port=nccl_port,
             server_args=server_args,
         )
+
+    def load_model(self) -> None:
+        """Load weights, optionally sharing them across same-GPU DP replicas.
+
+        Weight IPC must complete **before** ``init_memory_pool`` / KV profiling
+        inside upstream ``ModelRunner.initialize``.
+        """
+        config = self._weight_ipc_config
+        if config.role == "off":
+            super().load_model()
+            return
+
+        model_path = str(self.server_args.model_path)
+        model_revision = self.server_args.revision
+
+        if config.role == "leader":
+            super().load_model()
+            export_leader_weights(
+                self.model,
+                config,
+                model_path=model_path,
+                model_revision=model_revision,
+            )
+            return
+
+        if config.role == "follower":
+            # Skip checkpoint I/O; construct parameter shells with dummy weights,
+            # then alias leader storages before KV profiling.
+            previous_load_format = self.server_args.load_format
+            self.server_args.load_format = "dummy"
+            try:
+                super().load_model()
+            finally:
+                self.server_args.load_format = previous_load_format
+            self._weight_ipc_leader_monitor = materialize_follower_weights(
+                self.model,
+                config,
+                model_path=model_path,
+                model_revision=model_revision,
+            )
+            return
+
+        raise ValueError(f"unknown weight IPC role: {config.role!r}")
 
     def _register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
