@@ -80,6 +80,8 @@ The current server exposes these main routes:
 | `GET` | `/v1/models` | Single-model listing for the active pipeline |
 | `POST` | `/v1/chat/completions` | Chat completions, including streaming and optional audio |
 | `POST` | `/v1/audio/speech` | Text-to-speech, raw audio response or raw PCM chunks when `stream=true` |
+| `POST` | `/v1/audio/transcriptions` | ASR transcription, including optional SSE streaming |
+| `POST` | `/v1/audio/translations` | Whisper speech-to-English translation |
 | `POST` | `/start_profile` | Torch trace + (optional) request-level events. Added by the built-in launcher |
 | `POST` | `/stop_profile` | Stops both torch trace and request-level events |
 | `POST` | `/start_request_profile` | Request-level event recorder only (no torch trace) |

@@ -46,9 +46,12 @@ Supported Models
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
      - Audio transcription through ``/v1/audio/transcriptions``
+   * - `FunAudioLLM/Fun-ASR-Nano-2512-hf <https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512-hf>`_
+     - ASR
+     - Multilingual transcription through ``/v1/audio/transcriptions``
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
-     - Experimental Whisper transcription route; response schema is served, correctness is not yet validated
+     - Transcription and English translation through ``/v1/audio/transcriptions`` and ``/v1/audio/translations``
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
      - Omni
      - Text, image, audio, video → text + audio
