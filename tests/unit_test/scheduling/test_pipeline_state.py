@@ -94,6 +94,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+    from sglang_omni.models.zonos2.payload_types import Zonos2State
 
     # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
@@ -105,6 +106,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         MossTTSLocalState,
         Qwen3TTSState,
         VoxtralTTSState,
+        Zonos2State,
     )
     base_fields = {
         "sample_rate",
