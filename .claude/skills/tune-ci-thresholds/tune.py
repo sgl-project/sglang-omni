@@ -107,10 +107,21 @@ METRIC_SPECS = {
     "output_tok_per_req_s": dict(
         worst="min", label="Output tok/req-s", digits=1, scale=1, group="speed"
     ),
+    "completion_tokens_min": dict(
+        worst="min", label="Completion tokens min", digits=0, scale=1, group="speed"
+    ),
+    "audio_duration_min_s": dict(
+        worst="min", label="Audio duration min (s)", digits=3, scale=1, group="speed"
+    ),
+    "prompt_tokens_min": dict(
+        worst="min", label="Prompt tokens min", digits=0, scale=1, group="speed"
+    ),
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
+    "latency_max_s":        dict(worst="max", label="Latency max (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
+    "ttfa_p95_s":           dict(worst="max", label="TTFA p95 (s)",          digits=4, scale=1,   group="speed"),
     "text_ttft_p95_s":      dict(worst="max", label="Text TTFT p95 (s)",     digits=4, scale=1,   group="speed"),
     "inter_chunk_p95_s":    dict(worst="max", label="Inter-chunk p95 (s)",   digits=4, scale=1,   group="speed"),
     "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
@@ -221,14 +232,26 @@ def match_metric(name, nested):
     if "SAMPLE_WER_MAX" in name: return "per_sample_wer_max"
     if "THROUGHPUT_QPS" in name or "THROUGHPUT_MIN" in name:
         return "throughput_qps"
+    if "OUTPUT_TOK_PER_REQ" in name:
+        return "output_tok_per_req_s"
+    if "PROMPT_TOKENS" in name and "MIN" in name:
+        return "prompt_tokens_min"
+    if "COMPLETION_TOKENS" in name and "MIN" in name:
+        return "completion_tokens_min"
+    if "AUDIO_DURATION" in name and "MIN" in name:
+        return "audio_duration_min_s"
     if "LATENCY_MEAN" in name:
         return "latency_mean_s"
     if "LATENCY_P95" in name:
         return "latency_p95_s"
+    if "LATENCY_MAX" in name:
+        return "latency_max_s"
     if "RTF_MEAN" in name:
         return "rtf_mean"
     if "RTF_P95" in name:
         return "rtf_p95"
+    if "TTFA" in name and "P95" in name:
+        return "ttfa_p95_s"
     if "TEXT_TTFT" in name and "P95" in name:
         return "text_ttft_p95_s"
     if "INTER_CHUNK" in name and "P95" in name:
@@ -581,6 +604,38 @@ def _required_model_ids_for_stages(cfg, all_stages, stage_keys):
     return _unique_ordered(model_ids)
 
 
+def _required_dataset_ids_for_stages(cfg, all_stages, stage_keys):
+    by_test = cfg.get("hf_datasets_by_test") or {}
+    dataset_map = _parse_datasets_dict()
+    dataset_ids = []
+    test_names = sorted({Path(all_stages[sk]["test"]).name for sk in stage_keys})
+    for test_name in test_names:
+        if test_name in by_test:
+            dataset_ids.extend(by_test[test_name] or [])
+            continue
+        test_path = next(
+            REPO_ROOT / all_stages[sk]["test"]
+            for sk in stage_keys
+            if Path(all_stages[sk]["test"]).name == test_name
+        )
+        try:
+            _, dataset_keys = _read_test_context(test_path)
+        except Exception:
+            dataset_ids.extend(cfg["hf_datasets"])
+            continue
+        dataset_ids.extend(
+            dataset_map[key] for key in dataset_keys if key in dataset_map
+        )
+    return _unique_ordered(dataset_ids)
+
+
+def _requires_speaker_sim_for_stages(cfg, all_stages, stage_keys):
+    by_test = cfg.get("requires_speaker_sim_by_test") or {}
+    default = bool(cfg.get("requires_speaker_sim", cfg["name"] in ("tts", "omni")))
+    test_names = {Path(all_stages[sk]["test"]).name for sk in stage_keys}
+    return any(bool(by_test.get(test_name, default)) for test_name in test_names)
+
+
 def nvidia_smi_L():
     return subprocess.run(["nvidia-smi", "-L"], capture_output=True,
                           text=True, check=False).stdout.strip()
@@ -789,14 +844,35 @@ def _stage_counts_complete(stage, sample_counts):
     return True
 
 
-def _observation_status(stage, metrics, pytest_status, pytest_reason):
+def _observation_status(
+    stage,
+    metrics,
+    observation_valid,
+    allowed_pytest_failure,
+    pytest_status,
+    pytest_reason,
+):
     """Calibration treats a run as complete once metrics are extracted."""
     if not stage.get("metrics"):
         return pytest_status, pytest_reason
     if not _stage_metrics_complete(stage, metrics):
         return "failed", "incomplete_metrics_extraction"
+    if stage.get("observation_validity"):
+        if observation_valid is None:
+            return "failed", "observation_validity_missing"
+        if observation_valid is not True:
+            return "failed", "observation_validity_failed"
     if pytest_status == "ok":
+        if stage.get("allowed_pytest_failure") and allowed_pytest_failure is True:
+            return "failed", "unexpected_recorded_pytest_failure"
         return "ok", ""
+    if stage.get("allowed_pytest_failure"):
+        if allowed_pytest_failure is None:
+            return "failed", "allowed_pytest_failure_missing"
+        if allowed_pytest_failure is not True:
+            return "failed", f"unexpected_pytest_failure ({pytest_reason})"
+        if pytest_reason != "exit 1":
+            return "failed", pytest_reason
     return "ok", f"threshold_assertion ({pytest_reason})"
 
 
@@ -829,10 +905,16 @@ def _run_json_ok(path: Path, stage=None) -> bool:
     except (json.JSONDecodeError, OSError):
         return False
     if stage is not None and stage.get("metrics"):
-        return (
+        if data.get("status") != "ok":
+            return False
+        if not (
             _stage_metrics_complete(stage, data.get("metrics") or {})
             and _stage_counts_complete(stage, data.get("sample_counts") or {})
-        )
+        ):
+            return False
+        if stage.get("observation_validity"):
+            return data.get("observation_valid") is True
+        return True
     return data.get("status") == "ok"
 
 
@@ -905,6 +987,8 @@ def strict_classify_cell(path: Path, stage: dict) -> str:
     ok = sample_counts.get("ok")
     metrics = data.get("metrics") or {}
     has_all = bool(metrics) and all(v is not None for v in metrics.values())
+    if data.get("status") != "ok":
+        return "✗"
     if not has_all:
         return "✗"
     if total is None or ok is None:
@@ -913,6 +997,8 @@ def strict_classify_cell(path: Path, stage: dict) -> str:
         return "△"
     expected = stage.get("expected_samples")
     if expected is not None and total != expected:
+        return "✗"
+    if stage.get("observation_validity") and data.get("observation_valid") is not True:
         return "✗"
     return "✓"
 
@@ -1103,8 +1189,18 @@ def pick_free_gpus(n, host: dict | None = None):
     )
 
 
-def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
-             model_ids_override=None, tried=None, gpu_required_override=None):
+def precheck(
+    py,
+    src,
+    out,
+    skip_ver,
+    cfg,
+    datasets_override=None,
+    model_ids_override=None,
+    tried=None,
+    gpu_required_override=None,
+    requires_speaker_sim_override=None,
+):
     errs, warns = [], []
     print(f"model: {cfg['name']}")
     print(f"venv_python: {py} ({src})")
@@ -1229,8 +1325,10 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             )
         errs.append("\n".join(lines))
     sim_dir = cfg["auto_env"].get("SEEDTTS_SIM_CACHE_DIR")
-    needs_speaker_sim = bool(
-        cfg.get("requires_speaker_sim", cfg["name"] in ("tts", "omni"))
+    needs_speaker_sim = (
+        bool(requires_speaker_sim_override)
+        if requires_speaker_sim_override is not None
+        else bool(cfg.get("requires_speaker_sim", cfg["name"] in ("tts", "omni")))
     )
     if sim_dir and needs_speaker_sim:
         sim_ok, sim_detail = _speaker_sim_assets_ok(Path(sim_dir))
@@ -1476,6 +1574,20 @@ def _build_sample_counts(sc_raw, default_file):
     return out
 
 
+def _build_observation_validity(raw, default_file):
+    jf, jp = _split_source(raw, default_file)
+    if not (jf and jp):
+        return None
+    return dict(json_file=jf, json_path=jp)
+
+
+def _build_allowed_pytest_failure(raw, default_file):
+    jf, jp = _split_source(raw, default_file)
+    if not (jf and jp):
+        return None
+    return dict(json_file=jf, json_path=jp)
+
+
 def _calibration_presets(ms, base_extra):
     """Return stage env/GPU overlays for non-random calibration presets.
 
@@ -1526,6 +1638,8 @@ def _stage_entry(
     test_file_sha256,
     metrics,
     sample_counts,
+    observation_validity=None,
+    allowed_pytest_failure=None,
     variant=None,
     calibration_preset=None,
     gpus=None,
@@ -1545,6 +1659,10 @@ def _stage_entry(
         metrics=metrics,
         sample_counts=sample_counts,
     )
+    if observation_validity:
+        entry["observation_validity"] = observation_validity
+    if allowed_pytest_failure:
+        entry["allowed_pytest_failure"] = allowed_pytest_failure
     if expected_samples is not None:
         entry["expected_samples"] = int(expected_samples)
     if variant:
@@ -1753,6 +1871,20 @@ def discover(out, only, cfg):
                 v_paths = vcfg.get("paths") or {}
                 v_sc_default = _build_sample_counts(
                     vcfg.get("sample_counts") or {}, v_default)
+                observation_validity = _build_observation_validity(
+                    vcfg.get(
+                        "observation_validity",
+                        ms.get("observation_validity"),
+                    ),
+                    v_default,
+                )
+                allowed_pytest_failure = _build_allowed_pytest_failure(
+                    vcfg.get(
+                        "allowed_pytest_failure",
+                        ms.get("allowed_pytest_failure"),
+                    ),
+                    v_default,
+                )
                 sc_by_group = vcfg.get("sample_counts_by_group") or {}
                 for (
                     preset_name,
@@ -1809,6 +1941,8 @@ def discover(out, only, cfg):
                             sha,
                             metrics,
                             group_sc,
+                            observation_validity=observation_validity,
+                            allowed_pytest_failure=allowed_pytest_failure,
                             variant=effective_variant,
                             calibration_preset=preset_name,
                             gpus=preset_gpus,
@@ -1828,6 +1962,14 @@ def discover(out, only, cfg):
             cfg_paths = ms.get("paths", {}) or {}
             default_sample_counts = _build_sample_counts(
                 ms.get("sample_counts") or {}, default_file)
+            observation_validity = _build_observation_validity(
+                ms.get("observation_validity"),
+                default_file,
+            )
+            allowed_pytest_failure = _build_allowed_pytest_failure(
+                ms.get("allowed_pytest_failure"),
+                default_file,
+            )
             sc_by_group = ms.get("sample_counts_by_group") or {}
             groups = _emit_groups(
                 all_constants, cfg_paths, default_file, counters,
@@ -1862,6 +2004,8 @@ def discover(out, only, cfg):
                         sha,
                         metrics,
                         sample_counts,
+                        observation_validity=observation_validity,
+                        allowed_pytest_failure=allowed_pytest_failure,
                         calibration_preset=preset_name,
                         gpus=preset_gpus,
                         hf_model_ids=preset_model_ids,
@@ -1914,6 +2058,20 @@ def _write_yaml(stages, path):
         if e.get("threshold_file"):
             L += [f"  threshold_file: {_yq(e['threshold_file'])}",
                   f"  threshold_file_sha256: {e['threshold_file_sha256']}"]
+        observation_validity = e.get("observation_validity") or {}
+        if observation_validity:
+            L += [
+                "  observation_validity:",
+                f"    json_file: {_yq(observation_validity['json_file'])}",
+                f"    json_path: {_yq(observation_validity['json_path'])}",
+            ]
+        allowed_pytest_failure = e.get("allowed_pytest_failure") or {}
+        if allowed_pytest_failure:
+            L += [
+                "  allowed_pytest_failure:",
+                f"    json_file: {_yq(allowed_pytest_failure['json_file'])}",
+                f"    json_path: {_yq(allowed_pytest_failure['json_path'])}",
+            ]
         sc = e.get("sample_counts") or {}
         if sc:
             L.append("  sample_counts:")
@@ -1949,6 +2107,8 @@ def _load_yaml(path, top_is_dict=False):
     def sc(v):
         v = v.strip()
         if v == "null": return None
+        if v == "true": return True
+        if v == "false": return False
         if v == "[]":   return []
         if v == "{}":   return {}
         if v.startswith('"') and v.endswith('"'):
@@ -2168,27 +2328,18 @@ def _run_cmd_inner(args, cfg, py, src, out):
                 print(f"error: {s} threshold sha mismatch — "
                       f"run `tune.py discover --model {cfg['name']}`")
                 return 2
-    # Which datasets do the selected tests actually reference?
-    # Each test uses DATASETS["key"]; resolve key → repo_id via the
-    # canonical benchmarks/dataset/prepare.py:DATASETS dict so we don't
-    # depend on naming coincidences between test keys and config repo ids.
-    ds_map = _parse_datasets_dict()
-    needed_repos = set()
-    for s in sel:
-        try:
-            _, ds_keys = _read_test_context(REPO_ROOT / all_stages[s]["test"])
-        except Exception:
-            continue
-        for k in ds_keys:
-            if k in ds_map:
-                needed_repos.add(ds_map[k])
-    required_ds = sorted(needed_repos) if needed_repos else list(cfg["hf_datasets"])
+    required_ds = _required_dataset_ids_for_stages(cfg, all_stages, sel)
     # Heads-up if AST-derived needs include a repo not in cfg
     extras = [d for d in required_ds if d not in cfg["hf_datasets"]]
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
     required_models = _required_model_ids_for_stages(cfg, all_stages, sel)
+    requires_speaker_sim = _requires_speaker_sim_for_stages(
+        cfg,
+        all_stages,
+        sel,
+    )
     gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     selected_gpu_requirement = max(
         (_stage_gpus(all_stages[s], gpus_per_test) for s in sel),
@@ -2198,7 +2349,8 @@ def _run_cmd_inner(args, cfg, py, src, out):
         rc = precheck(py, src, out, args.skip_version_check, cfg,
                       datasets_override=required_ds,
                       model_ids_override=required_models,
-                      gpu_required_override=selected_gpu_requirement)
+                      gpu_required_override=selected_gpu_requirement,
+                      requires_speaker_sim_override=requires_speaker_sim)
         if rc: return rc
     else:
         smi = nvidia_smi_L()
@@ -2631,8 +2783,26 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         metrics = _extract(stage, basetemp, stage_key=sk, warnings=extraction_warnings)
         metrics_by_stage[sk] = metrics
         sample_counts = _extract_counts(stage, basetemp)
+        observation_valid = _extract_observation_validity(
+            stage,
+            basetemp,
+            stage_key=sk,
+            warnings=extraction_warnings,
+        )
+        allowed_pytest_failure = _extract_allowed_pytest_failure(
+            stage,
+            basetemp,
+            stage_key=sk,
+            warnings=extraction_warnings,
+        )
         obs_status, obs_reason = _observation_status(
-            stage, metrics, status, reason)
+            stage,
+            metrics,
+            observation_valid,
+            allowed_pytest_failure,
+            status,
+            reason,
+        )
         rec_gi = git_info()
         run_payload = dict(
             status=obs_status, reason=obs_reason, metrics=metrics,
@@ -2651,6 +2821,10 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             basetemp=str(basetemp.resolve()))
         if stage.get("metrics"):
             run_payload["pytest_rc"] = pytest_rc
+        if stage.get("observation_validity"):
+            run_payload["observation_valid"] = observation_valid
+        if stage.get("allowed_pytest_failure"):
+            run_payload["allowed_pytest_failure"] = allowed_pytest_failure
         (sd / f"run{k}.json").write_text(json.dumps(run_payload, indent=2))
         (sd / f"run{k}.log").write_text(
             f"# Shared pytest log (one invocation covered all stages from "
@@ -2852,6 +3026,64 @@ def _extract_counts(stage, basetemp):
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             o[ck] = None
     return o
+
+
+def _extract_boolean_source(
+    stage,
+    source_key,
+    basetemp,
+    stage_key=None,
+    warnings=None,
+):
+    source = stage.get(source_key) or {}
+    if not source:
+        return None
+    jf, jp = source.get("json_file"), source.get("json_path")
+    sk = stage_key or stage.get("title", "?")
+    label = source_key.replace("_", " ")
+    if not (jf and jp):
+        if warnings is not None:
+            warnings.append(f"  {sk}: {label} has no json_file/json_path")
+        return None
+    path = Path(basetemp) / jf
+    if not path.exists():
+        if warnings is not None:
+            warnings.append(f"  {sk}: {label} file missing — {path}")
+        return None
+    try:
+        data = json.loads(path.read_text())
+        for key in jp.split("."):
+            data = data[key]
+        if not isinstance(data, bool):
+            raise TypeError(f"{label} must be boolean")
+        return data
+    except (KeyError, TypeError, json.JSONDecodeError, OSError) as exc:
+        if warnings is not None:
+            warnings.append(
+                f"  {sk}: {label} read failed at "
+                f"{jf}::{jp} — {type(exc).__name__}"
+            )
+        return None
+
+
+def _extract_observation_validity(stage, basetemp, stage_key=None, warnings=None):
+    return _extract_boolean_source(
+        stage,
+        "observation_validity",
+        basetemp,
+        stage_key=stage_key,
+        warnings=warnings,
+    )
+
+
+def _extract_allowed_pytest_failure(stage, basetemp, stage_key=None, warnings=None):
+    return _extract_boolean_source(
+        stage,
+        "allowed_pytest_failure",
+        basetemp,
+        stage_key=stage_key,
+        warnings=warnings,
+    )
 
 
 def _fmt(v, d): return "N/A" if v is None else f"{v * d['scale']:.{d['digits']}f}"

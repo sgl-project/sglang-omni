@@ -677,6 +677,183 @@ def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:
     assert data.audio_length == 2
 
 
+def test_moss_delay_runner_restricts_text_only_while_audio_is_active() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    cfg = SimpleNamespace(
+        pad_token_id=0,
+        audio_start_token_id=10,
+        audio_end_token_id=11,
+        audio_assistant_gen_slot_token_id=12,
+        audio_assistant_delay_slot_token_id=13,
+        audio_pad_code=4,
+        im_end_token_id=14,
+    )
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        config=cfg,
+        text_control_token_ids=torch.tensor([12, 13], dtype=torch.long),
+    )
+    data = SimpleNamespace(
+        delay_state=torch.tensor([1, torch.iinfo(torch.int64).max, 1]),
+        generation_steps=1,
+        sampling_seed=0,
+        text_temperature=0.0,
+        text_top_p=1.0,
+        text_top_k=-1,
+        audio_temperature=0.0,
+        audio_top_p=1.0,
+        audio_top_k=-1,
+        audio_repetition_penalty=1.0,
+        prompt_rows=None,
+        output_rows=[],
+    )
+    control_logits = torch.tensor([[5.0, -5.0]])
+    audio0_logits = torch.tensor([[-1.0, 0.0, 5.0, 1.0, -100.0]])
+    audio1_logits = torch.tensor([[-1.0, 6.0, 0.0, 1.0, -100.0]])
+
+    rows = runner._sample_rows(
+        [control_logits, audio0_logits, audio1_logits],
+        [data],
+        n_vq=2,
+        is_audio=True,
+    )
+    assert int(rows[0, 0]) == cfg.audio_assistant_gen_slot_token_id
+
+    # Once the Delay tail reaches n_vq, audio_end is forced. The next step must
+    # return to the original full-vocabulary text path; it is not forced to EOS
+    # inside the two-token sampler.
+    data.delay_state = torch.tensor([1, 2, 1])
+    data.generation_steps = 3
+    rows = runner._sample_rows(
+        [control_logits, audio0_logits, audio1_logits],
+        [data],
+        n_vq=2,
+        is_audio=True,
+    )
+    assert int(rows[0, 0]) == cfg.audio_end_token_id
+
+
+def test_moss_collect_step_uses_full_text_path_outside_audio() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        device=torch.device("cpu"),
+        _prepare_multi_modal_inputs=lambda rows: rows.to(torch.float32),
+    )
+    seen: dict[str, bool] = {}
+
+    def channel_logits(result, forward_batch, *, is_audio=False):
+        del result, forward_batch
+        seen["head"] = is_audio
+        return [torch.zeros(1, 20), torch.zeros(1, 5)]
+
+    def sample_rows(channel_logits, datas, *, n_vq, is_audio=False):
+        del channel_logits, datas, n_vq
+        seen["sampler"] = is_audio
+        return torch.tensor([[0, 4]], dtype=torch.long)
+
+    runner._channel_logits_from_result = channel_logits
+    runner._sample_rows = sample_rows
+    result = SimpleNamespace(next_token_ids=None)
+    schedule_batch = SimpleNamespace(output_ids=None)
+    request = SimpleNamespace(data=SimpleNamespace(is_audio=False))
+
+    runner._collect_moss_step(result, object(), schedule_batch, [request])
+
+    assert seen == {"head": False, "sampler": False}
+
+
+def test_moss_collect_step_mixed_batch_uses_full_text_path() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    cfg = SimpleNamespace(
+        pad_token_id=0,
+        audio_start_token_id=10,
+        audio_end_token_id=11,
+        audio_assistant_gen_slot_token_id=12,
+        audio_assistant_delay_slot_token_id=13,
+        audio_pad_code=4,
+        im_end_token_id=14,
+    )
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        config=cfg,
+        device=torch.device("cpu"),
+        _prepare_multi_modal_inputs=lambda rows: rows.to(torch.float32),
+    )
+    seen: dict[str, bool] = {}
+    text_logits = torch.full((2, 20), -100.0)
+    text_logits[0, 5] = 100.0
+    text_logits[0, cfg.audio_assistant_gen_slot_token_id] = 10.0
+    text_logits[0, cfg.audio_assistant_delay_slot_token_id] = 9.0
+    text_logits[1, 5] = 10.0
+    text_logits[1, cfg.audio_assistant_gen_slot_token_id] = 100.0
+    audio_logits = torch.tensor(
+        [
+            [-1.0, 0.0, 5.0, 1.0, -100.0],
+            [-1.0, 0.0, 1.0, 5.0, -100.0],
+        ]
+    )
+
+    def channel_logits(result, forward_batch, *, is_audio=False):
+        del result, forward_batch
+        seen["head"] = is_audio
+        return [text_logits, audio_logits]
+
+    sample_rows = runner._sample_rows
+
+    def sample_rows_spy(channel_logits, datas, *, n_vq, is_audio=False):
+        seen["sampler"] = is_audio
+        return sample_rows(channel_logits, datas, n_vq=n_vq, is_audio=is_audio)
+
+    runner._channel_logits_from_result = channel_logits
+    runner._sample_rows = sample_rows_spy
+
+    def data(*, is_audio: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            delay_state=torch.tensor(
+                [int(is_audio), torch.iinfo(torch.int64).max, int(is_audio)]
+            ),
+            generation_steps=1,
+            sampling_seed=0,
+            text_temperature=0.0,
+            text_top_p=1.0,
+            text_top_k=-1,
+            audio_temperature=0.0,
+            audio_top_p=1.0,
+            audio_top_k=-1,
+            audio_repetition_penalty=1.0,
+            is_audio=is_audio,
+        )
+
+    requests = [
+        SimpleNamespace(data=data(is_audio=True)),
+        SimpleNamespace(data=data(is_audio=False)),
+    ]
+    result = SimpleNamespace(next_token_ids=None)
+    schedule_batch = SimpleNamespace(output_ids=None)
+
+    runner._collect_moss_step(result, object(), schedule_batch, requests)
+
+    assert seen == {"head": False, "sampler": False}
+    assert runner._pending_rows[:, 0].tolist() == [
+        cfg.audio_assistant_gen_slot_token_id,
+        5,
+    ]
+
+
+def test_moss_collect_step_requires_is_audio_state() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    request = SimpleNamespace(data=SimpleNamespace())
+
+    with pytest.raises(AttributeError, match="is_audio"):
+        runner._collect_moss_step(object(), object(), object(), [request])
+
+
 def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
@@ -866,11 +1043,41 @@ def test_moss_channel_logits_use_decode_metadata(
     assert metadata.next_token_logits_buffer is None
 
 
+def test_moss_text_control_logits_select_from_full_processor_output() -> None:
+    from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+
+    full_text_logits = torch.arange(20, dtype=torch.float32).view(1, 20)
+    audio_logits = torch.tensor([[1.0, 2.0, 3.0]])
+    model = SimpleNamespace(
+        _text_control_token_ids=torch.tensor([12, 13], dtype=torch.long),
+        compute_channel_outputs=lambda hidden_states, forward_batch: [
+            SimpleNamespace(next_token_logits=full_text_logits),
+            SimpleNamespace(next_token_logits=audio_logits),
+        ],
+    )
+
+    logits = MossTTSDelaySGLangModel.compute_channel_logits(
+        model,
+        hidden_states=torch.ones(1, 4),
+        forward_batch=object(),
+        is_audio=True,
+    )
+
+    assert torch.equal(logits[0], full_text_logits[:, [12, 13]])
+    assert logits[1] is audio_logits
+
+
 def test_moss_post_process_outputs_skips_im_end() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
-    runner.model = SimpleNamespace(config=SimpleNamespace(im_end_token_id=14))
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(
+            im_end_token_id=14,
+            audio_start_token_id=10,
+            audio_end_token_id=11,
+        )
+    )
     runner._pending_rows = torch.tensor([[12, 2, 4], [14, 4, 4]], dtype=torch.long)
     runner._pending_embeds = torch.ones((2, 3))
     requests = [
@@ -897,6 +1104,109 @@ def test_moss_post_process_outputs_skips_im_end() -> None:
     assert len(requests[0].data.pending_feedback_queue) == 1
     assert requests[1].data.output_rows == []
     assert requests[1].data.pending_feedback_queue == []
+
+
+def test_moss_post_process_audio_end_restores_full_text_sampling() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(
+            im_end_token_id=14,
+            audio_start_token_id=10,
+            audio_end_token_id=11,
+        )
+    )
+    runner._pending_rows = torch.tensor([[11, 4, 4]], dtype=torch.long)
+    runner._pending_embeds = torch.ones((1, 3))
+    data = SimpleNamespace(
+        output_rows=[],
+        pending_feedback_queue=[],
+        is_audio=True,
+    )
+    request = SimpleNamespace(request_id="audio-end", data=data)
+
+    runner.post_process_outputs(
+        object(),
+        SimpleNamespace(requests=[request]),
+        {"audio-end": RequestOutput("audio-end", data=11)},
+    )
+
+    assert data.is_audio is False
+    assert [row.tolist() for row in data.output_rows] == [[11, 4, 4]]
+
+
+def test_moss_audio_end_in_batch_uses_full_text_path_on_next_step() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    cfg = SimpleNamespace(
+        im_end_token_id=14,
+        audio_start_token_id=10,
+        audio_end_token_id=11,
+    )
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = SimpleNamespace(
+        config=cfg,
+        device=torch.device("cpu"),
+        _prepare_multi_modal_inputs=lambda rows: rows.to(torch.float32),
+    )
+    requests = [
+        SimpleNamespace(
+            request_id="audio-end",
+            data=SimpleNamespace(
+                is_audio=True,
+                output_rows=[],
+                pending_feedback_queue=[],
+            ),
+        ),
+        SimpleNamespace(
+            request_id="audio-active",
+            data=SimpleNamespace(
+                is_audio=True,
+                output_rows=[],
+                pending_feedback_queue=[],
+            ),
+        ),
+    ]
+    runner._pending_rows = torch.tensor([[11, 4], [12, 2]], dtype=torch.long)
+    runner._pending_embeds = torch.ones((2, 2))
+
+    runner.post_process_outputs(
+        object(),
+        SimpleNamespace(requests=requests),
+        {
+            "audio-end": RequestOutput("audio-end", data=11),
+            "audio-active": RequestOutput("audio-active", data=12),
+        },
+    )
+
+    assert requests[0].data.is_audio is False
+    assert requests[1].data.is_audio is True
+
+    seen: dict[str, bool] = {}
+
+    def channel_logits(result, forward_batch, *, is_audio=False):
+        del result, forward_batch
+        seen["head"] = is_audio
+        return [torch.zeros(2, 20), torch.zeros(2, 5)]
+
+    def sample_rows(channel_logits, datas, *, n_vq, is_audio=False):
+        del channel_logits, datas, n_vq
+        seen["sampler"] = is_audio
+        return torch.tensor([[5, 4], [12, 2]], dtype=torch.long)
+
+    runner._channel_logits_from_result = channel_logits
+    runner._sample_rows = sample_rows
+    result = SimpleNamespace(next_token_ids=None)
+
+    runner._collect_moss_step(
+        result,
+        object(),
+        SimpleNamespace(output_ids=None),
+        requests,
+    )
+
+    assert seen == {"head": False, "sampler": False}
 
 
 def test_moss_delay_codec_splits_non_pad_segments() -> None:
@@ -948,6 +1258,66 @@ def test_moss_sample_tokens_uses_per_row_top_k() -> None:
     assert row0_vals == {0}  # top_k=1 -> always the argmax
     assert row1_vals - {0}  # top_k=4 -> reaches beyond the argmax
     assert row1_vals <= {0, 1, 2, 3}  # never the -inf-masked token
+
+
+def test_moss_compact_candidate_sampler_maps_greedy_indices() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    token_ids = torch.tensor([12, 13], dtype=torch.long)
+    sampled = MossTTSModelRunner._sample_tokens(
+        torch.tensor([[1.0, 3.0], [4.0, 2.0]]),
+        temperature=torch.zeros(2),
+        top_p=torch.ones(2),
+        top_k=torch.full((2,), 50, dtype=torch.long),
+        seeds=torch.tensor([100, 101]),
+        positions=torch.tensor([33, 66]),
+        candidate_token_ids=token_ids,
+    )
+
+    assert sampled.tolist() == [13, 12]
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="requires CUDA seeded sampler"
+)
+def test_moss_text_control_sampler_preserves_full_vocab_seed_columns() -> None:
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+
+    device = torch.device("cuda")
+    rows = 16
+    vocab = 32
+    token_ids = torch.tensor([12, 13], dtype=torch.long, device=device)
+    torch.manual_seed(0)
+    selected_logits = torch.randn(rows, 2, device=device)
+    full_logits = torch.full(
+        (rows, vocab), float("-inf"), dtype=torch.float32, device=device
+    )
+    full_logits[:, token_ids] = selected_logits
+    temperature = torch.full((rows,), 1.5, device=device)
+    top_p = torch.tensor([1.0, 0.8] * (rows // 2), device=device)
+    top_k = torch.tensor([50, 1] * (rows // 2), dtype=torch.long, device=device)
+    seeds = torch.arange(rows, dtype=torch.long, device=device) + 100
+    positions = torch.arange(rows, dtype=torch.long, device=device) * 33
+
+    full = MossTTSModelRunner._sample_tokens(
+        full_logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        positions=positions,
+    )
+    restricted = MossTTSModelRunner._sample_tokens(
+        selected_logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        positions=positions,
+        candidate_token_ids=token_ids,
+    )
+
+    assert torch.equal(restricted, full)
 
 
 def test_moss_tts_rejects_invalid_token_count() -> None:

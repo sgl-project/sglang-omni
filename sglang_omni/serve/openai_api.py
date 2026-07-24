@@ -127,6 +127,7 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",
     "max_new_tokens must be",
+    "multimodal_train_inputs",
 )
 
 
@@ -1089,6 +1090,11 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         max_tokens=sampling.max_new_tokens,
         output_modalities=(
             req.output_modalities if req.output_modalities is not None else ["text"]
+        ),
+        multimodal_train_inputs=(
+            req.multimodal_train_inputs.model_dump()
+            if req.multimodal_train_inputs is not None
+            else None
         ),
         metadata=metadata,
     )
