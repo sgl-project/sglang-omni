@@ -122,6 +122,7 @@ class OmniScheduler:
         prefill_coalesce_wait_ms: float = 60.0,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -135,6 +136,8 @@ class OmniScheduler:
         self._stream_chunk_handler = stream_chunk_handler
         self._stream_done_handler = stream_done_handler
         self._abort_callback = abort_callback
+        self._shutdown_callback = shutdown_callback
+        self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
@@ -1096,13 +1099,24 @@ class OmniScheduler:
                 self._event_loop_normal()
         finally:
             self._scheduler_thread_id = None
-            self._shutdown_request_build_executor()
+            try:
+                self._shutdown_request_build_executor()
+            finally:
+                self._shutdown_resources()
 
     def event_loop(self) -> None:
         self.start()
 
     def stop(self) -> None:
         self._running = False
+        self._shutdown_resources()
+
+    def _shutdown_resources(self) -> None:
+        with self._shutdown_lock:
+            callback = self._shutdown_callback
+            self._shutdown_callback = None
+        if callback is not None:
+            callback()
 
     def _shutdown_request_build_executor(self) -> None:
         executor = self._request_build_executor
@@ -1828,12 +1842,74 @@ class OmniScheduler:
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
         out_cache_loc = batch.out_cache_loc
-        self._free_overrun_step_slots(
-            out_cache_loc, [i for i, d in enumerate(drop) if d]
-        )
-        batch.filter_batch(keep_indices=keep)
-        if out_cache_loc is not None:
-            batch.out_cache_loc = out_cache_loc[keep]
+        forward_mode = getattr(batch, "forward_mode", None)
+        if forward_mode is not None and forward_mode.is_extend():
+            # Note:(Wenyao Gao) extend/mixed batches carry per-token fields
+            # (req i owns extend_lens[i] slots) that filter_batch leaves
+            # stale; reslice them here. The asserted fields are never
+            # populated on omni extend batches; trip instead of misslicing.
+            assert (
+                getattr(batch, "input_embeds", None) is None
+                and getattr(batch, "replace_embeds", None) is None
+                and getattr(batch, "token_type_ids", None) is None
+            ), "unhandled per-token field on drop-stale extend batch"
+            lens = batch.extend_lens
+            starts = [0] * len(lens)
+            for i in range(1, len(lens)):
+                starts[i] = starts[i - 1] + lens[i - 1]
+            drop_tokens = [
+                t
+                for i, d in enumerate(drop)
+                if d
+                for t in range(starts[i], starts[i] + lens[i])
+            ]
+            keep_tokens = [
+                t for i in keep for t in range(starts[i], starts[i] + lens[i])
+            ]
+            input_ids = batch.input_ids
+            prefix_lens = batch.prefix_lens
+            extend_logprob_start_lens = batch.extend_logprob_start_lens
+            lp_token_ids = getattr(batch, "extend_input_logprob_token_ids", None)
+            self._free_overrun_step_slots(out_cache_loc, drop_tokens)
+            batch.filter_batch(keep_indices=keep)
+            batch.input_ids = input_ids[keep_tokens]
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep_tokens]
+            batch.extend_lens = [lens[i] for i in keep]
+            batch.extend_num_tokens = sum(batch.extend_lens)
+            batch.prefix_lens = [prefix_lens[i] for i in keep]
+            batch.extend_logprob_start_lens = [
+                extend_logprob_start_lens[i] for i in keep
+            ]
+            if lp_token_ids is not None:
+                # Note:(Wenyao Gao) every req contributes a segment of
+                # lens[i] - start_lens[i] ids; not aligned with the token
+                # slices above.
+                if not batch.return_logprob:
+                    batch.extend_input_logprob_token_ids = None
+                else:
+                    lp_lens = [
+                        lens[i] - extend_logprob_start_lens[i] for i in range(len(lens))
+                    ]
+                    lp_starts = [0] * len(lp_lens)
+                    for i in range(1, len(lp_lens)):
+                        lp_starts[i] = lp_starts[i - 1] + lp_lens[i - 1]
+                    keep_lp_tokens = [
+                        t
+                        for i in keep
+                        for t in range(lp_starts[i], lp_starts[i] + lp_lens[i])
+                    ]
+                    batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
+        else:
+            self._free_overrun_step_slots(
+                out_cache_loc, [i for i, d in enumerate(drop) if d]
+            )
+            batch.filter_batch(keep_indices=keep)
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep]
+        if batch.decoding_reqs:
+            kept_ids = {id(r) for r in batch.reqs}
+            batch.decoding_reqs = [r for r in batch.decoding_reqs if id(r) in kept_ids]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:

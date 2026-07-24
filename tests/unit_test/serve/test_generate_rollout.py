@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -533,3 +534,58 @@ def test_converter_defaults_stream_false_and_logprob_true() -> None:
     assert req.stream is False
     assert req.return_logprob is True
     assert req.return_omni_rollout is False
+
+
+def _tensor_spec(**overrides: Any) -> dict[str, Any]:
+    spec = {
+        "dtype": "float32",
+        "shape": [1],
+        "data": base64.b64encode(b"\x00\x00\x00\x00").decode(),
+    }
+    spec.update(overrides)
+    return spec
+
+
+def test_generate_accepts_valid_multimodal_train_inputs() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "input_ids": [1, 2],
+            "multimodal_train_inputs": {
+                "version": 1,
+                "tensors": {"pixel_values": _tensor_spec()},
+            },
+        },
+    )
+
+    assert resp.status_code == 200
+    assert len(client.requests) == 1
+
+
+def test_generate_rejects_malformed_multimodal_tensor_specs() -> None:
+    client = _RolloutClient(_text_result())
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+    bad_specs = [
+        _tensor_spec(dtype="foobar"),
+        _tensor_spec(dtype="load"),
+        _tensor_spec(shape=[2, 2]),
+        _tensor_spec(data="!!!not-base64!!!"),
+    ]
+
+    for spec in bad_specs:
+        resp = tc.post(
+            "/generate",
+            json={
+                "input_ids": [1, 2],
+                "multimodal_train_inputs": {
+                    "version": 1,
+                    "tensors": {"pixel_values": spec},
+                },
+            },
+        )
+        assert resp.status_code == 422, spec
+
+    assert client.requests == []

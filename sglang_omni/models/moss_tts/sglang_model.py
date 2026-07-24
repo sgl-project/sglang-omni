@@ -120,6 +120,17 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             ]
         )
         self._pad_token_per_channel = self._compute_pad_token_per_channel()
+        self.register_buffer(
+            "_text_control_token_ids",
+            torch.tensor(
+                [
+                    int(self.config.audio_assistant_gen_slot_token_id),
+                    int(self.config.audio_assistant_delay_slot_token_id),
+                ],
+                dtype=torch.long,
+            ),
+            persistent=False,
+        )
 
         max_batch_size = getattr(getattr(self, "config", None), "max_batch_size", None)
         try:
@@ -320,25 +331,44 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         logits_metadata = LogitsMetadata.from_forward_batch(forward_batch)
         logits_metadata.next_token_logits_buffer = None
         logits_metadata.forward_mode = ForwardMode.DECODE
-        return [
+        outputs = [
+            self.logits_processors[0](
+                None,
+                hidden_states=hidden_states,
+                lm_head=self.lm_heads[0],
+                logits_metadata=logits_metadata,
+            )
+        ]
+        outputs.extend(
             processor(
                 None,
                 hidden_states=hidden_states,
                 lm_head=self.lm_heads[idx],
                 logits_metadata=logits_metadata,
             )
-            for idx, processor in enumerate(self.logits_processors)
-        ]
+            for idx, processor in enumerate(self.logits_processors[1:], start=1)
+        )
+        return outputs
 
     def compute_channel_logits(
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
+        *,
+        is_audio: bool = False,
     ) -> list[torch.Tensor]:
-        return [
+        logits = [
             output.next_token_logits
             for output in self.compute_channel_outputs(hidden_states, forward_batch)
         ]
+        if is_audio:
+            token_ids = self._text_control_token_ids.to(device=logits[0].device)
+            logits[0] = logits[0].index_select(-1, token_ids)
+        return logits
+
+    @property
+    def text_control_token_ids(self) -> torch.Tensor:
+        return self._text_control_token_ids
 
     @staticmethod
     def _select_sample_hidden_states(

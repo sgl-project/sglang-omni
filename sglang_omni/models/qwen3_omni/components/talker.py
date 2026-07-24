@@ -968,6 +968,29 @@ class Qwen3OmniTalker(nn.Module):
             dtype=torch.int64,
             device=device,
         )
+        # Note (akazaakane): int64-typed; rows 0-3 hold floats bit-cast via
+        # .view(torch.float64) so one copy covers both float and int params.
+        # Note (akazaakane): device="cpu" is required — model init runs under
+        # a cuda default-device context, and only CPU tensors can be pinned.
+        self._sampling_staging_cpu = torch.zeros(
+            6,
+            max_batch_size,
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=device.type == "cuda",
+        )
+        self._sampling_staging_gpu = torch.zeros(
+            6,
+            max_batch_size,
+            dtype=torch.int64,
+            device=device,
+        )
+        self._sampling_staging_event = (
+            torch.cuda.Event() if device.type == "cuda" else None
+        )
+        self._decode_prep_rids: list | None = None
+        self._decode_prep_out_lens: list[int] = []
+        self._decode_prep_rep_rows: torch.Tensor | None = None
         self._output_codes = torch.zeros(
             max_batch_size,
             config.num_code_groups,
@@ -1010,9 +1033,39 @@ class Qwen3OmniTalker(nn.Module):
             next_code = next_code.unsqueeze(-1)
         return next_code
 
+    def _reuse_decode_buffers(self, requests: list) -> bool:
+        # Note (akazaakane): sampling params/suppress mask are static per
+        # request, so only the repetition mask needs updating here.
+        prev_rids = self._decode_prep_rids
+        if prev_rids is None or len(prev_rids) != len(requests):
+            return False
+        prev_lens = self._decode_prep_out_lens
+        for row_idx, sched_req in enumerate(requests):
+            req = sched_req.data.req
+            if req.rid != prev_rids[row_idx]:
+                return False
+            out_len = len(req.output_ids) if req.output_ids else 0
+            if out_len != prev_lens[row_idx] + 1:
+                return False
+
+        rep_rows = self._decode_prep_rep_rows
+        if rep_rows is not None:
+            self._repetition_mask[rep_rows, self._sampled_token_ids[rep_rows]] = True
+        for row_idx in range(len(prev_lens)):
+            prev_lens[row_idx] += 1
+        return True
+
+    def invalidate_decode_buffers(self) -> None:
+        # Note (akazaakane): a prefill's sampled token bypasses
+        # _sampled_token_ids, so the fast path must not run right after one.
+        self._decode_prep_rids = None
+
     def prepare_decode_buffers(self, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
+            return
+
+        if self._reuse_decode_buffers(requests):
             return
 
         device = self._repetition_mask.device
@@ -1075,37 +1128,67 @@ class Qwen3OmniTalker(nn.Module):
                     sup_rows.extend([row_idx] * len(valid_sup))
                     sup_toks.extend(valid_sup)
 
-        rep_pen_dtype = self._repetition_penalties.dtype
-        self._repetition_penalties[:batch_size, 0] = torch.tensor(
-            rep_penalties, dtype=rep_pen_dtype, device=device
+        if self._sampling_staging_event is not None:
+            # Note (akazaakane): guards the prior async copy still reading
+            # this buffer before we overwrite it.
+            self._sampling_staging_event.synchronize()
+        staging_cpu = self._sampling_staging_cpu
+        staging_cpu_f64 = staging_cpu.view(torch.float64)
+        staging_cpu_f64[0, :batch_size] = torch.tensor(
+            rep_penalties, dtype=torch.float64
         )
-        self._sampling_temperatures[:batch_size, 0] = torch.tensor(
-            temperatures, dtype=self._sampling_temperatures.dtype, device=device
+        staging_cpu_f64[1, :batch_size] = torch.tensor(
+            temperatures, dtype=torch.float64
         )
-        self._sampling_top_ps[:batch_size] = torch.tensor(
-            top_ps, dtype=self._sampling_top_ps.dtype, device=device
+        staging_cpu_f64[2, :batch_size] = torch.tensor(top_ps, dtype=torch.float64)
+        staging_cpu_f64[3, :batch_size] = torch.tensor(min_ps, dtype=torch.float64)
+        staging_cpu[4, :batch_size] = torch.tensor(top_ks, dtype=torch.int64)
+        staging_cpu[5, :batch_size] = torch.tensor(sampling_seeds, dtype=torch.int64)
+        staging_gpu = self._sampling_staging_gpu
+        staging_gpu.copy_(staging_cpu, non_blocking=True)
+        if self._sampling_staging_event is not None:
+            self._sampling_staging_event.record()
+        staging_gpu_f64 = staging_gpu.view(torch.float64)
+        self._repetition_penalties[:batch_size, 0].copy_(
+            staging_gpu_f64[0, :batch_size]
         )
-        self._sampling_top_ks[:batch_size] = torch.tensor(
-            top_ks, dtype=self._sampling_top_ks.dtype, device=device
+        self._sampling_temperatures[:batch_size, 0].copy_(
+            staging_gpu_f64[1, :batch_size]
         )
-        self._sampling_min_ps[:batch_size] = torch.tensor(
-            min_ps, dtype=self._sampling_min_ps.dtype, device=device
-        )
-        self._sampling_seeds[:batch_size] = torch.tensor(
-            sampling_seeds, dtype=self._sampling_seeds.dtype, device=device
-        )
+        self._sampling_top_ps[:batch_size].copy_(staging_gpu_f64[2, :batch_size])
+        self._sampling_min_ps[:batch_size].copy_(staging_gpu_f64[3, :batch_size])
+        self._sampling_top_ks[:batch_size].copy_(staging_gpu[4, :batch_size])
+        self._sampling_seeds[:batch_size].copy_(staging_gpu[5, :batch_size])
 
         if rep_rows:
+            rep_pairs = torch.tensor(
+                rep_rows + rep_toks, dtype=torch.long, device=device
+            )
             self._repetition_mask[
-                torch.tensor(rep_rows, dtype=torch.long, device=device),
-                torch.tensor(rep_toks, dtype=torch.long, device=device),
+                rep_pairs[: len(rep_rows)], rep_pairs[len(rep_rows) :]
             ] = True
 
         if sup_rows:
+            sup_pairs = torch.tensor(
+                sup_rows + sup_toks, dtype=torch.long, device=device
+            )
             self._suppress_mask[
-                torch.tensor(sup_rows, dtype=torch.long, device=device),
-                torch.tensor(sup_toks, dtype=torch.long, device=device),
+                sup_pairs[: len(sup_rows)], sup_pairs[len(sup_rows) :]
             ] = True
+
+        self._decode_prep_rids = [sched_req.data.req.rid for sched_req in requests]
+        self._decode_prep_out_lens = [
+            len(sched_req.data.req.output_ids) if sched_req.data.req.output_ids else 0
+            for sched_req in requests
+        ]
+        rep_active_rows = [
+            row_idx for row_idx, penalty in enumerate(rep_penalties) if penalty != 1.0
+        ]
+        self._decode_prep_rep_rows = (
+            torch.tensor(rep_active_rows, dtype=torch.long, device=device)
+            if rep_active_rows
+            else None
+        )
 
     def prepare_input_embeds(
         self,
@@ -1169,6 +1252,9 @@ class Qwen3OmniTalker(nn.Module):
         Returns:
             LogitsProcessorOutput with codec logits
         """
+        if forward_batch.forward_mode.is_extend():
+            self.invalidate_decode_buffers()
+
         if input_embeds is not None and not input_embeds_are_projected:
             # Prefill: project thinker hidden states → talker dimension
             deepstack_hidden = input_deepstack_embeds

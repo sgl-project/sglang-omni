@@ -22,9 +22,18 @@ from benchmarks.tts_serving.scenarios import (
     Scenario,
     scenario_set_hash,
 )
-from benchmarks.tts_serving.spec import BenchmarkSpec, redact_sensitive_metadata
+from benchmarks.tts_serving.spec import (
+    BenchmarkSpec,
+    redact_sensitive_metadata,
+    workload_spec_hash,
+)
 
-SENSITIVE_AUDIO_REFERENCE_KEYS = {"audio", "audio_sample", "ref_audio"}
+SENSITIVE_AUDIO_REFERENCE_KEYS = {
+    "audio",
+    "audio_path",
+    "audio_sample",
+    "ref_audio",
+}
 
 
 class ArtifactError(RuntimeError):
@@ -62,6 +71,7 @@ def write_artifacts(
             "platform_metadata": redact_sensitive_metadata(spec.platform_metadata),
             "profile": spec.params.profile,
             "spec_hash": _spec_hash(spec),
+            "workload_spec_hash": workload_spec_hash(spec),
             "scenario_schema_version": SCENARIO_SCHEMA_VERSION,
             "scenario_set_hash": scenario_set_hash(scenarios),
             "load_stages": [stage.to_json() for stage in spec.params.load_stages],
