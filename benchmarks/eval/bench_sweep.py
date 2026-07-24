@@ -1,44 +1,27 @@
-"""bench_serving-style open-loop request-rate sweep for MPS-DP TTS replicas.
+"""Open-loop request-rate sweep for MPS-DP TTS replicas.
 
-Note (Yueying Li):
-Closed-loop benchmarking (fixed concurrency) conflates server capacity with
-client-side queueing: past the saturation point, TTFC absorbs the whole
-backlog. This driver instead sweeps *offered* rates: for each total rate it
-runs one open-loop Poisson client per replica (--concurrency 0 disables
-the closed-loop semaphore; --request-rate r gives exponential
-inter-arrivals) and harvests every per-request TTFC/RTF/latency for full
-CDFs, so TTFC can be read as a function of offered throughput and the
-capacity knee located.
+Note (Yueying Li): open-loop Poisson arrivals instead of fixed concurrency,
+because past saturation a closed-loop client absorbs the backlog into TTFC
+and hides the capacity knee.
 
 Usage:
     python -m benchmarks.eval.bench_sweep <N> <total_rates_csv> \
         <samples_per_client> <outdir>
 
-    # e.g. 4 replicas, offered 8/16/24/32 qps total, 200 samples per client:
-    python -m benchmarks.eval.bench_sweep 4 8,16,24,32 200 /tmp/sweep_dp4
-
-Assumes N replicas already healthy on 127.0.0.1:8801..880N (e.g. launched
-via examples/mps_dp/launch.sh or autodp.sh). Clients use disjoint
-seed-tts-eval EN shards within a stage so shared caches cannot inflate
-multi-client numbers.
+Assumes N replicas already healthy on 127.0.0.1:8801..880N. Clients use
+disjoint seed-tts-eval EN shards within a stage so shared caches cannot
+inflate multi-client numbers.
 
 Environment:
     BENCH_MODEL   model name passed to benchmark_tts_seedtts (default higgs)
-    BENCH_STREAM  1 (default) benchmarks streaming and records TTFC; 0 drops
-                  --stream for models that generate the final waveform only
-                  (e.g. Ming-Omni-TTS) — TTFC percentiles are then null and
-                  latency/RTF carry the comparison
-    BENCH_REF     1 (default) sends seed-tts-eval reference audio
-                  (--ref-format references); 0 benchmarks text-only synthesis
-                  (--no-ref-audio) for pipelines whose reference decode is
-                  unavailable in the serving environment
-    CLIENT_CORES  optional comma-separated CPU list to pin client processes
-                  to (keeps load generation off the server cores); unpinned
-                  when unset
+    BENCH_STREAM  1 (default) records TTFC; 0 drops --stream for models that
+                  generate the final waveform only (TTFC percentiles null)
+    BENCH_REF     1 (default) sends reference audio; 0 text-only synthesis
+    CLIENT_CORES  optional CPU list to pin client processes to
 
-Per-stage results (offered vs achieved qps, TTFC/RTF/latency percentiles,
-and full sorted arrays for CDF plots) are written to <outdir>/sweep.json.
+Per-stage results are written to <outdir>/sweep.json.
 """
+
 import json
 import os
 import shutil
