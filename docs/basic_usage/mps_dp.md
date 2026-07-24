@@ -113,17 +113,17 @@ For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocode
 
 The table above is a safety contract (what may alias, what must stay private, and how far each claim was validated); it deliberately carries no throughput column because performance depends on the deployment configuration (replica count, KV caps, CPU blocks, MPS), not on an architecture's share-safety. The per-model measurements, sharing off versus on at each model's highest validated DP on one 80 GB H100 (post-boot VRAM, one measurement pass per cell):
 
-| Model | Validated DP, IPC off | Validated DP, IPC on | VRAM, off | VRAM, on | Saved per follower | Throughput, off vs on |
+| Model | Validated DP, IPC off | Validated DP, IPC on | VRAM, off | VRAM, on | Saved per follower | Throughput (aggregate across replicas), off vs on |
 |---|---|---|---:|---:|---:|---|
 | Higgs TTS 3-4B | DP3 (100k cap; H200 DP8) | DP3, fit relaxed | 73.7 GB | 58.1 GB | 7.55 GiB | parity at every N (H200 series) |
-| MOSS TTS local | DP3 at the card edge, vocoder graphs partly eager | DP3 with 13.3 GB headroom, full graphs | 78.0 GB | 61.8 GB | 8.44 GiB | measured parity: DP2 17.9 vs 18.2, DP3 23.4 vs 23.4 agg qps |
-| MOSS TTS delay | **DP1** (DP2 fails the equal-KV gate: replica 1 profiles 185 of 30000 tokens) | **DP2** | n/a | 42.4 GB | 17.05 GiB | shared DP2 about 7.5 vs single-replica 5.7 agg qps (about +30 percent, preliminary single run); outputs byte-identical |
-| MOSS Transcribe-Diarize | DP3 (40k cap) | DP3 | 23.9 GB | 20.2 GB | 1.75 GiB | parity: 75.7 vs 70.9 cold agg qps (192 unique clips) |
-| Qwen3-ASR 1.7B | DP3 (40k cap) | DP3 | 28.2 GB | 20.2 GB | 3.83 GiB | parity: 67.5 vs 64.5 |
-| Whisper large-v3-turbo | DP3 (40k cap) | DP3 | 14.1 GB | 10.7 GB | 1.51 GiB | parity: 67.8 vs 68.0 |
+| MOSS TTS local | DP3 at the card edge, vocoder graphs partly eager | DP3 with 13.3 GB headroom, full graphs | 78.0 GB | 61.8 GB | 8.44 GiB | measured parity: DP2 agg 17.9 vs 18.2 (per replica 9.0 vs 9.1), DP3 agg 23.4 vs 23.4 (per replica 7.8) qps |
+| MOSS TTS delay | **DP1** (DP2 fails the equal-KV gate: replica 1 profiles 185 of 30000 tokens) | **DP2** | n/a | 42.4 GB | 17.05 GiB | shared DP2 agg about 7.5 qps (about 3.8 per replica) vs the single replica's 5.7: aggregate up about 30 percent while per-replica drops, the usual host-bound DP trade (preliminary single run); outputs byte-identical |
+| MOSS Transcribe-Diarize | DP3 (40k cap) | DP3 | 23.9 GB | 20.2 GB | 1.75 GiB | parity: agg 75.7 vs 70.9 cold qps (per replica 25.2 vs 23.6; 192 unique clips) |
+| Qwen3-ASR 1.7B | DP3 (40k cap) | DP3 | 28.2 GB | 20.2 GB | 3.83 GiB | parity: agg 67.5 vs 64.5 (per replica 22.5 vs 21.5) |
+| Whisper large-v3-turbo | DP3 (40k cap) | DP3 | 14.1 GB | 10.7 GB | 1.51 GiB | parity: agg 67.8 vs 68.0 (per replica 22.6 vs 22.7) |
 | Voxtral TTS 4B | DP2 (30k cap) | DP2 | 23.4 GB | 16.0 GB | 7.20 GiB | boot and memory validated; qps needs the model's own client |
 | Fish S2-Pro | DP2 (30k cap) | DP2 | 38.3 GB | 30.6 GB | 7.53 GiB | boot and memory validated; qps needs the model's own client |
-| FunASR Nano | DP2 (30k cap) | DP2 | 11.8 GB | 10.2 GB | 1.57 GiB | parity: 40.6 vs 42.5 cold agg qps |
+| FunASR Nano | DP2 (30k cap) | DP2 | 11.8 GB | 10.2 GB | 1.57 GiB | parity: agg 40.6 vs 42.5 cold qps (per replica 20.3 vs 21.3) |
 | Qwen3-TTS 0.6B (12Hz Base) | DP2 (30k cap) | DP2 | 13.4 GB | 11.7 GB | 1.75 GiB | boot and memory validated; qps needs its own client |
 | Ming TTS 16.8B | none (leader alone OOMs at practical fractions) | none (follower boot transient reaches the card edge) | n/a | n/a | n/a | H200 follow-up |
 | Qwen3-Omni 30B-A3B | none (about 60 GiB bf16 per weight copy) | none | n/a | n/a | n/a | H200 follow-up |
