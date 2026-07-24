@@ -117,7 +117,7 @@ mps_quit() {
 
 resolve_numa() {
   if [ -n "${NUMA_NODE:-}" ]; then echo "$NUMA_NODE"; return 0; fi
-  # Note (jiaxin): /sys/class/drm ordinals are not guaranteed to match nvidia-smi
+  # Note (Jiaxin Deng): /sys/class/drm ordinals are not guaranteed to match nvidia-smi
   # ordinals, so the NUMA node is derived from the GPU's PCI bus id instead.
   local bus node
   bus=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader -i "$1")
@@ -157,7 +157,7 @@ resolve_state() {
 }
 
 tracked_pids() {
-  # Note (jiaxin): zombies hold no resources and can never be reaped by this
+  # Note (Jiaxin Deng): zombies hold no resources and can never be reaped by this
   # script in init-less containers, so they do not count as live.
   local pgid out="" p
   while IFS=$'\t' read -r _ _ pgid _ _; do
@@ -239,7 +239,7 @@ verify_attach() {
 }
 
 teardown_state() {
-  # Note (jiaxin): these GPUs are shared; teardown only signals processes recorded
+  # Note (Jiaxin Deng): these GPUs are shared; teardown only signals processes recorded
   # in this run's state, never scans the whole GPU, and keeps the state directory
   # whenever cleanup cannot be confirmed, so nothing is hidden from inspection.
   local state=$1 keep=${2:-} leader_pid pgid leader_start t live raw control_pid=""
@@ -254,7 +254,7 @@ teardown_state() {
     [ -z "${live// /}" ] && break
     sleep "$DRAIN_INTERVAL"
   done
-  # Note (jiaxin): the pipe is private to this run, so ANY client the daemon still
+  # Note (Jiaxin Deng): the pipe is private to this run, so ANY client the daemon still
   # reports is outstanding even if its PID left the tracked groups; quitting around
   # live clients can wedge the MPS server with RPC failures that outlast this run.
   if raw=$(mps_clients "$state"); then
@@ -401,7 +401,7 @@ up() {
   local uuid node run state
   uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
   node=$(resolve_numa "$gpu")
-  # Note (jiaxin): a caller (autodp) may pin RUN_ID so it can tear down exactly
+  # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
   # the run it started, instead of rediscovering the newest dir.
   run="${RUN_ID:-run-$(date +%Y%m%d-%H%M%S)-$$}"
   state=$STATE_ROOT/gpu-$gpu/$run
@@ -452,7 +452,7 @@ up() {
   for ((i=0; i<n; i++)); do
     port=$((base_port+i))
     log=$state/logs/replica_$i.log
-    # Weight sharing: replica 0 leads (loads + exports IPC handles); later
+    # Note (Jiaxin Deng): replica 0 leads (loads + exports IPC handles); later
     # replicas attach. The sequential health gate below already guarantees the
     # leader has exported (export completes during model load, well before
     # /health turns 200) by the time any follower boots, so followers never
@@ -462,7 +462,7 @@ up() {
       if [ "$i" = 0 ]; then ws_env="leader:$state/ipc_weights"
       else ws_env="follower:$state/ipc_weights"; fi
     fi
-    # Note (jiaxin): concurrent colocated launches raced on CUDA-graph capture and
+    # Note (Jiaxin Deng): concurrent colocated launches raced on CUDA-graph capture and
     # memory profiling in testing, so replicas start sequentially behind a health
     # gate; setsid gives each replica its own process group so teardown can signal
     # exactly this run's process trees.

@@ -98,10 +98,10 @@ class SGLModelRunner(ModelRunner):
         if ws is None:
             return super().load_model()
 
-        # TP/PP ranks are separate processes inheriting the env var and their
-        # shards share names/shapes/dtypes across ranks, so the handle file
-        # would collide and followers would silently attach another rank's
-        # shard. Refuse until the handle path is rank-qualified.
+        # Note (Jiaxin Deng): TP/PP ranks are separate processes inheriting the
+        # env var, and their shards share names/shapes/dtypes across ranks, so
+        # the handle file would collide and followers would silently attach
+        # another rank's shard. Refuse until the handle path is rank-qualified.
         if self.server_args.tp_size != 1 or self.server_args.pp_size != 1:
             raise ipc_weights.WeightShareError(
                 "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1, got "
@@ -136,10 +136,10 @@ class SGLModelRunner(ModelRunner):
             )
             return
 
-        # Follower: wait for the leader BEFORE allocating dummy weights so we
-        # never hold a full transient dummy-weight copy while blocked. The
-        # exact handle file name needs the constructed model's class, so this
-        # pre-wait polls for any export in the directory; follower_attach
+        # Note (Jiaxin Deng): wait for the leader BEFORE allocating dummy
+        # weights so we never hold a full transient dummy copy while blocked.
+        # The exact handle file name needs the constructed model's class, so
+        # this pre-wait polls for any export in the directory; follower_attach
         # below still waits on (and validates) the engine's own file.
         import torch
 
@@ -161,8 +161,8 @@ class SGLModelRunner(ModelRunner):
                 private_names=policy.private_tensor_names,
             )
         )
-        # Return the dropped dummy-weight blocks to the driver so KV-pool
-        # profiling (and later replicas) see the freed memory.
+        # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
+        # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()
 
     def init_device_graphs(self):

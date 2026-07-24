@@ -300,11 +300,12 @@ _FS_TRUST_ENFORCED = os.name == "posix"
 
 def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
     """Fail fast unless the architecture is audited; return its share policy."""
-    archs = [a for a in (architectures or []) if isinstance(a, str) and a.strip()]
-    if len(archs) != 1:
+    # Note (Jiaxin Deng): no normalizing away malformed entries; a config that
+    # lists anything besides one nonblank architecture string must fail here.
+    archs = list(architectures or [])
+    if len(archs) != 1 or not isinstance(archs[0], str) or not archs[0].strip():
         raise WeightShareError(
-            "weight sharing requires exactly one model architecture, got "
-            f"{list(architectures or [])!r}"
+            f"weight sharing requires exactly one model architecture, got {archs!r}"
         )
     arch = archs[0].strip()
     policy = WEIGHT_SHARE_POLICIES.get(arch)
@@ -491,7 +492,8 @@ def _atomic_write(file_path: str, data: bytes) -> None:
         finally:
             os.close(dir_fd)
     except OSError:
-        pass  # best effort; rename atomicity already holds on the same fs
+        # Note (Jiaxin Deng): best effort; rename atomicity holds regardless.
+        pass
 
 
 def _resolve_private_names(
@@ -940,7 +942,9 @@ def _alias_from_payload(
             incoming = shared[name]
         elif name in values:
             incoming = values[name]
-        else:  # unreachable while the manifest hash matches; belt & braces
+        else:
+            # Note (Jiaxin Deng): unreachable while the manifest hash matches;
+            # kept so a hash bug cannot degrade into a silent skip.
             raise WeightShareError(f"leader export is missing tensor {name!r}")
         if not isinstance(incoming, torch.Tensor):
             raise WeightShareError(

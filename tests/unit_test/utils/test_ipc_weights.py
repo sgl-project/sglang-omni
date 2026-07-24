@@ -292,7 +292,17 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         assert policy.private_tensor_names == private
     # Note (Jiaxin Deng): the Ming-Omni thinker is gate-reachable but only
     # spot-checked, so it must stay rejected until fully audited.
-    for bad in ([], ["A", "B"], ["BailingMoeV2ForCausalLM"], [""], None):
+    higgs = "HiggsMultimodalQwen3ForConditionalGeneration"
+    for bad in (
+        [],
+        ["A", "B"],
+        ["BailingMoeV2ForCausalLM"],
+        [""],
+        None,
+        [higgs, None],
+        [higgs, "   "],
+        [None],
+    ):
         with pytest.raises(WeightShareError):
             ipc_weights.validate_weight_share_architecture(bad)
 
