@@ -125,6 +125,15 @@ The table above is a safety contract (what may alias, what must stay private, an
 
 Scaling ratios are internal to their own measurement series (different drivers and dates); do not compare absolute throughput across rows. The pattern: for the ASR models VRAM never binds the replica count, so sharing frees memory without changing the DP ceiling; for large-backbone TTS the share is what buys the operating margin (MOSS) or the fit itself.
 
+What sharing concretely unlocked on one 80 GB H100 (sharing leaves throughput at parity at a fixed N; the wins are fit and margin):
+
+| Unlock | Unshared | Shared |
+|---|---|---|
+| MOSS delay DP1 to DP2 | infeasible: the equal-KV gate fails, replica 1 profiles 185 of 30000 tokens | DP2 boots and serves: 17.05 GiB aliased, follower 17.5 GiB lighter, seeded outputs byte-identical |
+| MOSS local DP3 made operable | boots at the card edge (79.3 of 79.65 GB) with the third replica dropping vocoder graphs to eager | 66.3 GB under load, 13.3 GB headroom, full graph coverage, aggregate +29% over DP2 |
+| ASR trio | no replica-count unlock; VRAM never binds (3 to 9 GB per replica) | followers 1.75 / 3.83 / 1.51 GiB lighter at unchanged behavior |
+| Ming TTS 16.8B | DP2 out of reach | still out of reach: the follower boot transient alone reaches the card edge; needs an H200-class card |
+
 ```bash
 WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
   bash examples/mps_dp/launch.sh up
