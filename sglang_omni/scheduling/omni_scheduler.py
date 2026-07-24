@@ -54,6 +54,13 @@ _ABORTED_REQUEST_ID_LIMIT = 10000
 _ABORTED_REQUEST_ID_RETAINED = 5000
 
 
+def _break_request_data_cycle(req: Any) -> None:
+    """Detach completed Reqs while preserving data.req for async snapshots."""
+    data = getattr(req, "_omni_data", None)
+    if data is not None and getattr(data, "req", None) is req:
+        req._omni_data = None
+
+
 class _NoOpSender:
     """Stub for send_to_detokenizer — stream_output handles emission."""
 
@@ -714,7 +721,6 @@ class OmniScheduler:
             self._pending_stream_done.discard(req_id)
         self._deferred_request_payloads.pop(req_id, None)
         req = req_data.req
-        req._omni_data = req_data
         req_id = req.rid
         if bool(getattr(req_data, "enforce_request_limits", False)):
             error_msg = self._prepare_request_limits(req_data)
@@ -738,6 +744,7 @@ class OmniScheduler:
         def enqueue_if_live() -> None:
             if req_id in self._aborted_request_ids:
                 return
+            req._omni_data = req_data
             _emit_event(
                 request_id=req_id,
                 stage=None,
@@ -1026,6 +1033,7 @@ class OmniScheduler:
                         )
                 self._first_emit_done.discard(rid)
                 self._prefill_start_done.discard(rid)
+                _break_request_data_cycle(req)
                 continue
 
             # Build result payload from the Req
@@ -1051,6 +1059,7 @@ class OmniScheduler:
             finally:
                 data.prefill_input_embeds = None
                 data.decode_input_embeds = None
+                _break_request_data_cycle(req)
 
             self._first_emit_done.discard(rid)
             self._prefill_start_done.discard(rid)
@@ -1155,9 +1164,13 @@ class OmniScheduler:
                 ]
                 self._backlogged_request_build_payloads.clear()
                 self._backlogged_request_build_payloads.extend(retained)
-            self.waiting_queue = [
-                req for req in self.waiting_queue if req.rid != request_id
-            ]
+            waiting_queue = []
+            for req in self.waiting_queue:
+                if req.rid == request_id:
+                    _break_request_data_cycle(req)
+                else:
+                    waiting_queue.append(req)
+            self.waiting_queue = waiting_queue
         if self._abort_callback is not None and not running_abort:
             try:
                 self._abort_callback(request_id)
@@ -1987,6 +2000,9 @@ class OmniScheduler:
 def _remove_from_batch(batch: Any, request_id: str) -> None:
     if batch is None:
         return
+    for req in batch.reqs:
+        if req.rid == request_id:
+            _break_request_data_cycle(req)
     batch.reqs = [req for req in batch.reqs if req.rid != request_id]
     if not batch.reqs:
         batch.batch_is_full = False

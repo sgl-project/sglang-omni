@@ -229,6 +229,9 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         is_prefill_only=True,
         is_extend_in_batch=False,
     )
+    failed_reqs = list(batch.reqs)
+    for req in failed_reqs:
+        req._omni_data.req = req
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
     _init_sync_request_build_state(scheduler)
@@ -243,6 +246,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert all("cuda out of memory" in str(output.data) for output in outputs)
     assert scheduler._aborted_request_ids == {"req-1", "req-2"}
     assert batch.reqs == []
+    assert all(req._omni_data is None for req in failed_reqs)
     assert release_calls == [("req-1", tree_cache), ("req-2", tree_cache)]
     assert scheduler._pending_stream_chunks == {}
     assert scheduler._pending_stream_done == set()
@@ -506,6 +510,8 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately() -> None:
     scheduler.inbox = Queue()
 
     req = SimpleNamespace(rid="req-wait")
+    request_data = SimpleNamespace(req=req)
+    req._omni_data = request_data
     scheduler.waiting_queue = [req]
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
@@ -516,6 +522,8 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately() -> None:
 
     assert scheduler.waiting_queue == []
     assert cleaned == ["req-wait"]
+    assert req._omni_data is None
+    assert request_data.req is req
 
 
 def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
@@ -596,6 +604,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
         req_pool_idx=1,
         _omni_data=data,
     )
+    data.req = req
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
@@ -623,6 +632,8 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     assert adapted == []
     assert cleaned == ["req-fish"]
     assert scheduler.outbox.empty()
+    assert req._omni_data is None
+    assert data.req is req
 
 
 def test_omni_scheduler_abort_caps_aborted_id_set() -> None:
@@ -943,10 +954,11 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
         sampling_params=SimpleNamespace(max_new_tokens=10),
         output_ids=[],
     )
-    scheduler._request_builder = lambda payload: SimpleNamespace(
+    request_data = SimpleNamespace(
         req=req,
         enforce_request_limits=True,
     )
+    scheduler._request_builder = lambda payload: request_data
 
     scheduler.process_input_requests([SimpleNamespace(request_id="req-long")])
 
@@ -956,6 +968,8 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert isinstance(output.data, ValueError)
     assert "Input length (5 tokens) exceeds" in str(output.data)
     assert scheduler.waiting_queue == []
+    assert getattr(req, "_omni_data", None) is None
+    assert request_data.req is req
 
 
 def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
@@ -1078,6 +1092,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise() -> No
         finished=lambda: True,
         finished_reason=None,
     )
+    request_data.req = req
 
     scheduler.stream_output([req])
 
@@ -1089,3 +1104,5 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise() -> No
     assert scheduler._prefill_start_done == set()
     assert request_data.prefill_input_embeds is None
     assert request_data.decode_input_embeds is None
+    assert req._omni_data is None
+    assert request_data.req is req
