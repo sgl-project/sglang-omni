@@ -243,48 +243,47 @@ class WeightSharePolicy:
 # Note (Jiaxin Deng): one audited entry per architecture; the gate derives from
 # these keys. Adding a model requires a full post-load mutation audit: any
 # registered tensor written per request must be listed private, or co-located
-# replicas corrupt each other. Qwen3-TTS and Ming stay out until audited.
+# replicas corrupt each other. The Ming-Omni thinker stays out until audited.
 WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "HiggsMultimodalQwen3ForConditionalGeneration": WeightSharePolicy(),
-    # MOSS local stages per-request decode feedback into this registered
-    # embedding every step; everything else in the model is load-once.
+    # Note (Jiaxin Deng): MOSS local stages per-request decode feedback into
+    # this registered embedding every step; everything else is load-once.
     "MossTTSLocalSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
-    # MOSS delay and Ming stage decode feedback the same way MOSS local does;
-    # their other registered tensors are load or init once.
+    # Note (Jiaxin Deng): MOSS delay and Ming stage decode feedback the same
+    # way MOSS local does; their other registered tensors are load or init once.
     "MossTTSDelaySGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
     "MingTTSSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
-    # MTD carries no decode staging scratch: every registered tensor is
-    # checkpoint-loaded or an init-computed constant (rope cache).
+    # Note (Jiaxin Deng): the four ASR models carry no decode staging scratch;
+    # every registered tensor is checkpoint-loaded or an init-computed constant.
     "MossTranscribeDiarizeForConditionalGeneration": WeightSharePolicy(),
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
     "WhisperForConditionalGeneration": WeightSharePolicy(),
     "FunAsrNanoForConditionalGeneration": WeightSharePolicy(),
-    # Voxtral stages decode feedback into an UNregistered plain-tensor scratch
-    # (_decode_input_embed_buffer), so nothing registered is written post-load;
-    # that scratch must stay unregistered or this entry needs a private name.
+    # Note (Jiaxin Deng): Voxtral keeps its decode staging in an unregistered
+    # plain tensor; if that scratch is ever registered, this needs its name.
     "VoxtralSGLangTTSModel": WeightSharePolicy(),
-    # Fish's slow-AR staging is unregistered and its fast-AR decoder (with
-    # per-step KV buffers) joins the module tree only after export; this empty
-    # set holds only while leader export stays at the end of load_model.
+    # Note (Jiaxin Deng): Fish's staging is unregistered and its fast-AR
+    # decoder, with per-step KV buffers, joins the module tree only after
+    # export; the empty set holds only while export stays at load_model's end.
     "S2ProSGLangTextModel": WeightSharePolicy(),
-    # LLaDA2's denoise-loop state (mask filling, per-step KV rewrite) lives in
-    # per-replica scheduler and pool state, never in registered tensors.
+    # Note (Jiaxin Deng): LLaDA2's denoise-loop state lives in per-replica
+    # scheduler and pool state, never in registered tensors.
     "LLaDA2MoeModelLM": WeightSharePolicy(),
-    # Qwen3-TTS stages decode feedback into this dual-registered embedding
-    # (deduped canonical name); its other scratch tensors are unregistered and
-    # the external speech tokenizer never enters the module tree.
+    # Note (Jiaxin Deng): Qwen3-TTS stages decode feedback into this
+    # dual-registered embedding, listed under its deduped canonical name; the
+    # external speech tokenizer never enters the module tree.
     "Qwen3TTSTalker": WeightSharePolicy(
         private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
     ),
-    # Qwen3-Omni runs TWO engines per pipeline (thinker + talker), each hitting
-    # this gate, so both stay listed together. The talker keeps its decode
-    # staging in unregistered plain attributes, the Voxtral pattern.
+    # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline and each
+    # hits this gate, so both stay listed together; the talker keeps its
+    # decode staging in unregistered plain attributes.
     "Qwen3OmniThinkerForCausalLM": WeightSharePolicy(),
     "Qwen3OmniTalker": WeightSharePolicy(),
 }

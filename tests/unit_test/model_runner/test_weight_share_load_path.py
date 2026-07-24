@@ -49,7 +49,8 @@ def _bare_runner(load_format="auto"):
         model_path="m",
         revision="r",
     )
-    # role-plumbing tests use a stand-in model; the gate is covered in test_ipc_weights.py
+    # Note (Jiaxin Deng): role-plumbing tests use a stand-in model; the gate
+    # itself is covered in test_ipc_weights.py.
     runner._model_arch_override = "HiggsMultimodalQwen3ForConditionalGeneration"
     runner._weight_share_config = None
     runner._weight_share_record = None
