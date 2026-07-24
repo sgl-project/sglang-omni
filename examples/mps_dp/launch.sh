@@ -28,7 +28,8 @@
 #     value takes precedence when both are set.
 #   MF: optional explicit --mem-fraction-static override (unset = pipeline default).
 #   WEIGHT_SHARE (0): 1 = replicas share one copy of the AR backbone weights
-#     over CUDA IPC. Replica 0 is the weight LEADER (loads the checkpoint and
+#     over CUDA IPC. Requires CONFIG (the validated-config preflight runs
+#     before any resource is created). Replica 0 is the weight LEADER (loads the checkpoint and
 #     publishes IPC handles under $state/ipc_weights); replicas 1..N-1 attach
 #     zero-copy instead of loading their own copy. The leader owns the shared
 #     storage: if replica 0 dies, followers hold dangling mappings — always
@@ -353,10 +354,19 @@ up() {
     if [ "$n" -gt 1 ]; then
       config_resolver_args+=(--require-single-sglang-engine)
     fi
+    if [ "$weight_share" = 1 ]; then
+      config_resolver_args+=(--weight-share)
+    fi
     expected_max_total_tokens=$("$PYTHON_BIN" "$SCRIPT_DIR/config.py" \
       "${config_resolver_args[@]}") \
       || die "could not resolve max_total_tokens from $config"
   else
+    # Note (Jiaxin Deng): without a pipeline config the supported-model check
+    # cannot run until engine startup, which is after the MPS daemon and state
+    # dir exist; sharing therefore requires CONFIG so unsupported models are
+    # rejected before any resource is created.
+    [ "$weight_share" = 1 ] \
+      && die "WEIGHT_SHARE=1 requires CONFIG (support is checked per pipeline config before any resource is created)"
     source_args=(--model-path "$model")
     model_name=${MODEL_NAME:-higgs}
     model_name_args=(--model-name "$model_name")

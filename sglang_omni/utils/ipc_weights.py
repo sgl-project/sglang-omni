@@ -240,10 +240,12 @@ class WeightSharePolicy:
     private_tensor_names: frozenset[str] = frozenset()
 
 
-# Note (Jiaxin Deng): one audited entry per architecture; the gate derives from
-# these keys. Adding a model requires a full post-load mutation audit: any
-# registered tensor written per request must be listed private, or co-located
-# replicas corrupt each other. The Ming-Omni thinker stays out until audited.
+# Note (Jiaxin Deng): the gate derives from these keys. An entry here requires
+# a full post-load mutation audit (any registered tensor written per request
+# listed private) AND a passing end-to-end run on the mps_dp launcher at the
+# current revision: shared N=2 boot under MPS, attach verification, concurrent
+# request correctness, and clean teardown. Audit alone is not enough; those
+# entries live in AUDIT_ONLY_WEIGHT_SHARE_POLICIES below.
 WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "HiggsMultimodalQwen3ForConditionalGeneration": WeightSharePolicy(),
     # Note (Jiaxin Deng): MOSS local stages per-request decode feedback into
@@ -251,12 +253,9 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "MossTTSLocalSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
-    # Note (Jiaxin Deng): MOSS delay and Ming stage decode feedback the same
-    # way MOSS local does; their other registered tensors are load or init once.
+    # Note (Jiaxin Deng): MOSS delay stages decode feedback the same way MOSS
+    # local does; its other registered tensors are load or init once.
     "MossTTSDelaySGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
-    ),
-    "MingTTSSGLangModel": WeightSharePolicy(
         private_tensor_names=frozenset({"_decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): the four ASR models carry no decode staging scratch;
@@ -265,6 +264,19 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
     "WhisperForConditionalGeneration": WeightSharePolicy(),
     "FunAsrNanoForConditionalGeneration": WeightSharePolicy(),
+}
+
+# Note (Jiaxin Deng): completed mutation audits whose launcher end-to-end
+# validation has not passed yet; the gate rejects them so an audit cannot be
+# advertised as support. Promotion to WEIGHT_SHARE_POLICIES requires the same
+# e2e evidence as the entries above. The Ming-Omni thinker stays out entirely
+# until audited.
+AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
+    # Note (Jiaxin Deng): Ming stages decode feedback like MOSS local; blocked
+    # on VRAM (leader alone reaches the card edge on 80 GB).
+    "MingTTSSGLangModel": WeightSharePolicy(
+        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+    ),
     # Note (Jiaxin Deng): Voxtral keeps its decode staging in an unregistered
     # plain tensor; if that scratch is ever registered, this needs its name.
     "VoxtralSGLangTTSModel": WeightSharePolicy(),
@@ -273,7 +285,8 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # export; the empty set holds only while export stays at load_model's end.
     "S2ProSGLangTextModel": WeightSharePolicy(),
     # Note (Jiaxin Deng): LLaDA2's denoise-loop state lives in per-replica
-    # scheduler and pool state, never in registered tensors.
+    # scheduler and pool state, never in registered tensors; its pipeline also
+    # declares no generation SGLang stage, so the launcher cannot drive it.
     "LLaDA2MoeModelLM": WeightSharePolicy(),
     # Note (Jiaxin Deng): Qwen3-TTS stages decode feedback into this
     # dual-registered embedding, listed under its deduped canonical name; the
@@ -281,9 +294,10 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "Qwen3TTSTalker": WeightSharePolicy(
         private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
     ),
-    # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline and each
-    # hits this gate, so both stay listed together; the talker keeps its
-    # decode staging in unregistered plain attributes.
+    # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline; the
+    # launcher only drives single-SGLang-engine pipelines, so these cannot
+    # reach e2e validation on it. The talker keeps its decode staging in
+    # unregistered plain attributes.
     "Qwen3OmniThinkerForCausalLM": WeightSharePolicy(),
     "Qwen3OmniTalker": WeightSharePolicy(),
 }
@@ -311,10 +325,17 @@ def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
     policy = WEIGHT_SHARE_POLICIES.get(arch)
     if policy is None:
         supported = ", ".join(sorted(WEIGHT_SHARE_POLICIES))
+        if arch in AUDIT_ONLY_WEIGHT_SHARE_POLICIES:
+            raise WeightShareError(
+                f"weight sharing for architecture {arch!r} has a completed "
+                "mutation audit but no passing launcher end-to-end validation; "
+                f"support is in progress. Supported architectures: {supported}"
+            )
         raise WeightShareError(
-            f"weight sharing is unsupported for architecture {arch!r}; audited "
-            f"architectures: {supported}. A model that writes per-request state "
-            "in place into a shared parameter would corrupt co-located replicas"
+            f"weight sharing is unsupported for architecture {arch!r}; "
+            f"supported architectures: {supported}. A model that writes "
+            "per-request state in place into a shared parameter would corrupt "
+            "co-located replicas"
         )
     return policy
 

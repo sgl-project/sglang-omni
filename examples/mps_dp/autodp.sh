@@ -21,11 +21,13 @@
 #   [env] bash examples/mps_dp/autodp.sh up       # probe + size + launch
 #
 # Environment (defaults in parentheses):
-#   MODEL (bosonai/higgs-tts-3-4b), MODEL_NAME (higgs), GPU_ID (0),
-#   CONFIG ()                  config-file models (e.g. Qwen3-TTS): forwarded to
-#                              launch.sh, which serves via --config instead of
-#                              --model-path (MODEL/MODEL_NAME defaults are
-#                              suppressed; launch.sh forbids MODEL with CONFIG)
+#   MODEL (), MODEL_NAME (), GPU_ID (0),
+#   CONFIG (configs/higgs_h100_dp3.yaml when MODEL is unset)
+#                              pipeline config forwarded to launch.sh, which
+#                              serves via --config instead of --model-path
+#                              (launch.sh forbids MODEL with CONFIG and
+#                              requires CONFIG when WEIGHT_SHARE=1, so the
+#                              supported-model preflight can run)
 #   MAX_TOTAL_TOKENS (100000)  common per-replica KV cap, required
 #   WEIGHT_SHARE (1)           1 = share the AR backbone over CUDA IPC; use 0
 #                              for models without weight-share support
@@ -48,19 +50,24 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 CMD=${1:-plan}
 CONFIG=${CONFIG:-}
+if [ -z "$CONFIG" ] && [ -z "${MODEL:-}" ]; then
+  # Default flow: Higgs through its shipped config, so the weight-share
+  # supported-model preflight can run before any resource is created.
+  CONFIG=$HERE/configs/higgs_h100_dp3.yaml
+fi
 if [ -n "$CONFIG" ]; then
   # launch.sh forbids MODEL alongside CONFIG; empty values read as unset there.
   MODEL=
   MODEL_NAME=${MODEL_NAME:-}
 else
-  MODEL=${MODEL:-bosonai/higgs-tts-3-4b}
+  MODEL=${MODEL:-}
   MODEL_NAME=${MODEL_NAME:-higgs}
 fi
 GPU_ID=${GPU_ID:-0}
 CAP=${MAX_TOTAL_TOKENS:-100000}
-# Note (Jiaxin Deng): weight sharing supports only audited architectures (the
-# WEIGHT_SHARE_POLICIES allowlist); others fail the arch gate at startup. Size
-# those with WEIGHT_SHARE=0.
+# Note (Jiaxin Deng): weight sharing supports only validated configs (the
+# WEIGHT_SHARE_VALIDATED_CONFIGS registry in config.py); others are rejected in
+# preflight. Size those with WEIGHT_SHARE=0.
 WS=${WEIGHT_SHARE:-1}
 H_GIB=${HEADROOM_GIB:-1.5}
 

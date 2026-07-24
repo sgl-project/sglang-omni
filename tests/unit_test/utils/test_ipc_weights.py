@@ -268,17 +268,21 @@ def test_handle_file_for_model_uses_class_name(tmp_path):
 
 
 def test_validate_weight_share_architecture_allows_and_rejects():
-    # Note (Jiaxin Deng): exact-set lock so an arch cannot enter the registry
-    # without updating the audited expectations here.
-    expected_private = {
+    # Note (Jiaxin Deng): exact-set locks so an arch cannot enter or leave
+    # either registry without updating the expectations here. Supported means
+    # audited plus a passing launcher e2e run; audit-only means audited and
+    # still rejected by the gate.
+    expected_supported = {
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
         "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MossTTSDelaySGLangModel": frozenset({"_decode_input_embedding.weight"}),
-        "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
         "FunAsrNanoForConditionalGeneration": frozenset(),
+    }
+    expected_audit_only = {
+        "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
         "VoxtralSGLangTTSModel": frozenset(),
         "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
@@ -286,10 +290,19 @@ def test_validate_weight_share_architecture_allows_and_rejects():
         "Qwen3OmniThinkerForCausalLM": frozenset(),
         "Qwen3OmniTalker": frozenset(),
     }
-    assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_private)
-    for arch, private in expected_private.items():
+    assert set(ipc_weights.WEIGHT_SHARE_POLICIES) == set(expected_supported)
+    assert set(ipc_weights.AUDIT_ONLY_WEIGHT_SHARE_POLICIES) == set(expected_audit_only)
+    assert not set(expected_supported) & set(expected_audit_only)
+    for arch, private in expected_supported.items():
         policy = ipc_weights.validate_weight_share_architecture([arch])
         assert policy.private_tensor_names == private
+    for arch, private in expected_audit_only.items():
+        assert (
+            ipc_weights.AUDIT_ONLY_WEIGHT_SHARE_POLICIES[arch].private_tensor_names
+            == private
+        )
+        with pytest.raises(WeightShareError, match="support is in progress"):
+            ipc_weights.validate_weight_share_architecture([arch])
     # Note (Jiaxin Deng): the Ming-Omni thinker is gate-reachable but only
     # spot-checked, so it must stay rejected until fully audited.
     higgs = "HiggsMultimodalQwen3ForConditionalGeneration"
