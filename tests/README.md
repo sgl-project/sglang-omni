@@ -30,6 +30,7 @@ tests/
     │   └── test_audio.py
     ├── pipeline/
     │   ├── helpers.py
+    │   ├── test_async_decode.py
     │   ├── test_comm_engine_ack.py
     │   ├── test_comm_router.py
     │   ├── test_compile.py
@@ -321,6 +322,8 @@ that happened to contain an older version of the test.
   - scheduler batching
   - scheduler errors
   - scheduler concurrency
+  - async-decode drop-stale handling, including per-token field reslicing on
+    decode and extend/mixed batches
   - scheduler callable contracts, including sync wrappers and callable objects
     that return awaitables.
 - `unit_test/relay/`: Low-level data-plane relay tests:

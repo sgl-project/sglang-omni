@@ -363,6 +363,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
         def __init__(self, reqs):
             self.reqs = reqs
             self.out_cache_loc = torch.arange(100, 100 + len(reqs))
+            self.decoding_reqs = None
 
         def filter_batch(self, keep_indices=None):
             captured["keep_indices"] = keep_indices
