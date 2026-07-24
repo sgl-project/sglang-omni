@@ -1,0 +1,16 @@
+# Conservative single-GPU profile for one RTX 4090 (SM89, 24 GB).
+config_cls: WhisperASRPipelineConfig
+name: whisper-asr-rtx4090
+model_path: openai/whisper-large-v3
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 16
+    enable_torch_compile: false
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.65
