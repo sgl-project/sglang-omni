@@ -403,7 +403,13 @@ up() {
   node=$(resolve_numa "$gpu")
   # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
   # the run it started, instead of rediscovering the newest dir.
+  # Note (Yueying Li): RUN_ID becomes a single directory component under
+  # gpu-$gpu; a separator or traversal sequence would relocate run state into
+  # another GPU's namespace (or out of STATE_ROOT) and bypass the
+  # active/stale-run guards above, so restrict it to a run-* basename.
   run="${RUN_ID:-run-$(date +%Y%m%d-%H%M%S)-$$}"
+  [[ "$run" =~ ^run-[A-Za-z0-9_-]+$ ]] \
+    || die "RUN_ID must be a single 'run-<suffix>' path component ([A-Za-z0-9_-]), got '$run'"
   state=$STATE_ROOT/gpu-$gpu/$run
   mkdir -p "$state/logs" "$state/mps/pipe" "$state/mps/log"
   : > "$state/replicas.tsv"

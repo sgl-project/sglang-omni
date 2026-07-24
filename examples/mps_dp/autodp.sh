@@ -64,9 +64,31 @@ CAP=${MAX_TOTAL_TOKENS:-100000}
 WS=${WEIGHT_SHARE:-1}
 H_GIB=${HEADROOM_GIB:-1.5}
 
+MAX_DP=${MAX_DP:-16}
+MIN_CORES_PER_REPLICA=${MIN_CORES_PER_REPLICA:-2}
+
 die() { echo "error: $*" >&2; exit 1; }
 [[ "$CMD" =~ ^(plan|up)$ ]] || die "usage: autodp.sh plan|up"
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found (run on a GPU node)"
+
+# Note (Yueying Li): every public knob is validated before any resource is
+# created — a sizing tool that promises a safe plan must reject nonsensical
+# inputs (WEIGHT_SHARE=2, MIN_CORES_PER_REPLICA=0, nonnumeric MAX_DP, N=0)
+# instead of folding them into arithmetic.
+[[ "$GPU_ID" =~ ^[0-9]+$ ]] \
+  || die "GPU_ID must be a non-negative integer, got '$GPU_ID'"
+[[ "$CAP" =~ ^[1-9][0-9]*$ ]] \
+  || die "MAX_TOTAL_TOKENS must be a positive integer, got '$CAP'"
+[[ "$WS" =~ ^[01]$ ]] \
+  || die "WEIGHT_SHARE must be 0 or 1, got '$WS'"
+[[ "$H_GIB" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+  || die "HEADROOM_GIB must be a non-negative number, got '$H_GIB'"
+[[ "$MAX_DP" =~ ^[1-9][0-9]*$ ]] \
+  || die "MAX_DP must be a positive integer, got '$MAX_DP'"
+[[ "$MIN_CORES_PER_REPLICA" =~ ^[1-9][0-9]*$ ]] \
+  || die "MIN_CORES_PER_REPLICA must be a positive integer, got '$MIN_CORES_PER_REPLICA'"
+[ -z "${N:-}" ] || [[ "$N" =~ ^[1-9][0-9]*$ ]] \
+  || die "N must be a positive integer, got '$N'"
 
 M_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i "$GPU_ID")
 USED_MIB=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$GPU_ID")
@@ -128,27 +150,34 @@ fi
 SRV_CORE_COUNT=$(python3 -c "import os; c=len(os.sched_getaffinity(0)); print(max(1, c*3//4))")
 SIZED_RAW=$(python3 - <<EOF
 import sys
+
 m = $M_MIB / 1024
 s = float("$STATIC_GIB")
 w = float("$WEIGHTS_GIB")
 h = float("$H_GIB")
 ws = $WS
+
 if not (m > 0 and s > 0 and h >= 0 and w >= 0 and (w < s or not ws)):
     sys.exit("autodp: invalid sizing inputs m=%s s=%s w=%s h=%s" % (m, s, w, h))
+
 denom = (s - w + h) if ws else (s + h)
 if denom <= 0:
     sys.exit("autodp: non-positive per-replica cost %.3f GiB; cannot size" % denom)
+
 d = int((m - w) // denom) if ws else int(m // denom)
-d = min(d, ${MAX_DP:-16}, $SRV_CORE_COUNT // ${MIN_CORES_PER_REPLICA:-2})
+d = min(d, $MAX_DP, $SRV_CORE_COUNT // $MIN_CORES_PER_REPLICA)
+
 # Note (Jiaxin Deng): reject an unsizable card instead of forcing d=1, which
 # would report "safe" for a plan that cannot even boot one replica.
 if d < 1:
     need = (w + denom) if ws else denom
     sys.exit("autodp: no replica fits on %.1f GiB (needs >= %.1f GiB); lower the KV cap or free the GPU" % (m, need))
+
 prev = (d - 1) * ((s - w) if ws else s) + (w if ws else 0)
 free_last = m - prev
 mf = min(0.97, round(s / free_last + 0.02, 3)) if free_last > 0 else 0.97
 static_total = (w + d * (s - w)) if ws else (d * s)
+
 print(d)
 print(mf)
 print(round(static_total, 1))
