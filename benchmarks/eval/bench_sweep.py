@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
 """bench_serving-style open-loop request-rate sweep for MPS-DP TTS replicas.
 
+Note (Yueying Li):
 Closed-loop benchmarking (fixed concurrency) conflates server capacity with
 client-side queueing: past the saturation point, TTFC absorbs the whole
 backlog. This driver instead sweeps *offered* rates: for each total rate it
@@ -41,9 +41,13 @@ and full sorted arrays for CDF plots) are written to <outdir>/sweep.json.
 """
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
+
+import numpy as np
 
 N = int(sys.argv[1])
 RATES = [float(r) for r in sys.argv[2].split(",")]
@@ -67,6 +71,10 @@ def _spawn_client(stage_index, rate, per_client_rate, stage_dir, i):
     slot = (stage_index + i) % NUM_SLOTS
     offset = slot * SAMPLES
     cdir = os.path.join(stage_dir, f"client{i}")
+    # Note (Yueying Li): remove any previous run's output for this client so a
+    # client that fails before writing results cannot resurrect a stale
+    # speed_results.json into this stage's aggregation.
+    shutil.rmtree(cdir, ignore_errors=True)
     cmd = [
         sys.executable,
         "-m",
@@ -106,10 +114,28 @@ def _spawn_client(stage_index, rate, per_client_rate, stage_dir, i):
     if os.environ.get("CLIENT_CORES"):
         client_cores = {int(c) for c in os.environ["CLIENT_CORES"].split(",")}
         preexec = lambda: os.sched_setaffinity(0, client_cores)  # noqa: E731
-    proc = subprocess.Popen(
-        cmd, stdout=logf, stderr=subprocess.STDOUT, preexec_fn=preexec
-    )
+    # Note (Yueying Li): each client gets its own session so teardown can signal
+    # the whole process tree; close the log handle ourselves if Popen never
+    # returns a process to own it.
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            preexec_fn=preexec,
+            start_new_session=True,
+        )
+    except BaseException:
+        logf.close()
+        raise
     return proc, logf
+
+
+def _stop_client(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 sweep = []
@@ -120,6 +146,9 @@ for stage_index, rate in enumerate(RATES):
     # Note (Jiaxin Deng): terminate every started client and close its log even
     # if a later spawn fails, so a partial stage cannot leak traffic or handles
     # into the next stage.
+    # Note (Yueying Li): teardown signals each client's whole session (SIGTERM,
+    # bounded wait, SIGKILL escalation) and reaps it, so traffic is provably
+    # stopped before the stage exits and no zombie survives into the next one.
     try:
         for i in range(N):
             procs.append(
@@ -133,7 +162,12 @@ for stage_index, rate in enumerate(RATES):
     finally:
         for p, logf in procs:
             if p.poll() is None:
-                p.terminate()
+                _stop_client(p, signal.SIGTERM)
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    _stop_client(p, signal.SIGKILL)
+                    p.wait()
             logf.close()
 
     ttfcs, lats, rtfs, audio_secs = [], [], [], []
@@ -164,8 +198,11 @@ for stage_index, rate in enumerate(RATES):
     rtfs.sort()
     lats_sorted = sorted(lats)
 
+    # Note (Yueying Li): numpy linear-interpolated percentiles, matching
+    # benchmarks.metrics.performance, so every repository benchmark shares one
+    # percentile definition.
     def pct(arr, p):
-        return arr[min(int(p * len(arr)), len(arr) - 1)] if arr else None
+        return round(float(np.percentile(arr, 100 * p)), 4) if arr else None
 
     stage = {
         "offered_total_rate": rate,
