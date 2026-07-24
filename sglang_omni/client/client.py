@@ -268,6 +268,7 @@ class Client:
             format=actual_format,
             sample_rate=sample_rate,
             usage=last_chunk.usage if last_chunk else None,
+            finish_reason=last_chunk.finish_reason if last_chunk else None,
         )
 
     # ------------------------------------------------------------------
@@ -502,6 +503,9 @@ class Client:
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text
+            finish_reason = result.get("finish_reason")
+            if finish_reason is not None:
+                chunk.finish_reason = finish_reason
             token_ids = result.get("token_ids")
             if token_ids is not None:
                 if not isinstance(token_ids, (list, tuple)):

@@ -1040,6 +1040,31 @@ def build_sglang_qwen3_tts_request(
     return data
 
 
+def _qwen3_tts_finish_reason(data: Qwen3TTSSGLangRequestData) -> str | None:
+    """Normalize the scheduler's terminal state for the semantic decoder."""
+    raw = data.finish_reason
+    if raw is None and data.req is not None:
+        finished_reason = getattr(data.req, "finished_reason", None)
+        if finished_reason is not None and hasattr(finished_reason, "to_json"):
+            raw = finished_reason.to_json().get("type")
+        elif finished_reason is not None:
+            raw = str(finished_reason)
+
+    if raw is not None:
+        normalized = str(raw).lower()
+        for known in ("length", "abort", "error"):
+            if known in normalized:
+                return known
+        return str(raw)
+
+    # note (Junnan Li): the scheduler reason is absent when a stage owns the
+    # terminal step, and reaching the budget there is still a length stop.
+    max_new_tokens = data.max_new_tokens
+    if max_new_tokens is not None and len(data.output_codes) >= int(max_new_tokens):
+        return "length"
+    return "stop"
+
+
 def apply_sglang_qwen3_tts_result(
     payload: StagePayload,
     data: Qwen3TTSSGLangRequestData,
@@ -1069,6 +1094,7 @@ def apply_sglang_qwen3_tts_result(
             "completion_tokens": len(data.output_codes),
             "engine_time_s": time.perf_counter() - data.engine_start_s,
             "sample_rate": 24000,
+            "finish_reason": _qwen3_tts_finish_reason(data),
         },
     )
 
