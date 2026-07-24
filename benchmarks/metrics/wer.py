@@ -14,6 +14,9 @@ from benchmarks.metrics._format import (
     print_speed_metric_line,
 )
 
+# Mirrors ``_CER_ABOVE_50_FRACTION``; drives the ``*_50_*`` metric keys.
+_WER_ABOVE_50_FRACTION = 0.5
+
 
 @dataclass
 class SampleOutput:
@@ -73,8 +76,8 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
         if o.audio_duration_s > 0 and o.latency_s > 0
     ]
 
-    n_above_50 = int(np.sum(wer_arr > 0.5))
-    ok_samples = [o for o in successes if o.wer <= 0.5]
+    n_above_50 = int(np.sum(wer_arr > _WER_ABOVE_50_FRACTION))
+    ok_samples = [o for o in successes if o.wer <= _WER_ABOVE_50_FRACTION]
     if ok_samples:
         ok_errors = sum(
             o.substitutions + o.deletions + o.insertions for o in ok_samples
