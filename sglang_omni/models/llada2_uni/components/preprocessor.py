@@ -32,6 +32,8 @@ ROLE_HUMAN = "<role>HUMAN</role>"
 ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
 DEFAULT_SYSTEM_PROMPT = "detailed thinking off"
+T2I_SYSTEM_PROMPT = "You are a text-to-image generation assistant."
+T2I_UNCONDITION_PROMPT = "<uncondition>"
 
 # Image special token strings
 SOI_TOKEN = "<|image|>"  # id=156901
@@ -41,6 +43,18 @@ BOI_TOKEN = "<boi>"  # id=156904
 IMAGE_TOKEN_OFFSET = 157184  # VQ codebook indices are offset by this value
 DUMMY_IMAGE_TOKEN_ID = IMAGE_TOKEN_OFFSET  # <IMAGE0>, used as placeholder
 
+DEFAULT_IMAGE_OUTPUT_WIDTH = 1024
+DEFAULT_IMAGE_OUTPUT_HEIGHT = 1024
+DEFAULT_IMAGE_GENERATION_STEPS = 16
+DEFAULT_IMAGE_BLOCK_LENGTH = 32
+DEFAULT_IMAGE_CFG_SCALE = 4.0
+DEFAULT_IMAGE_GEN_LENGTH = 1088
+DEFAULT_IMAGE_DECODER_STEPS = 8
+DEFAULT_IMAGE_RESOLUTION_MULTIPLIER = 2
+DEFAULT_IMAGE_DECODE_MODE = "decoder-turbo"
+DEFAULT_IMAGE_FORMAT = "png"
+NORMAL_IMAGE_DECODER_STEPS = 50
+
 # Pixel budgets for image resize (single-image / multi-image)
 SINGLE_IMAGE_MIN_PIXELS = 128 * 128
 SINGLE_IMAGE_MAX_PIXELS = 800 * 800
@@ -48,6 +62,245 @@ MULTI_IMAGE_MIN_PIXELS = 128 * 128
 MULTI_IMAGE_MAX_PIXELS = 448 * 448
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_modalities(value: Any) -> set[str]:
+    if value is None:
+        return {"text"}
+    if isinstance(value, str):
+        return {value.lower()}
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).lower() for item in value}
+    return {"text"}
+
+
+def _is_image_output_request(request: Any) -> bool:
+    metadata = getattr(request, "metadata", {}) or {}
+    return "image" in _normalize_modalities(metadata.get("output_modalities"))
+
+
+def _get_config_int(
+    config: dict[str, Any],
+    *names: str,
+    default: int,
+    minimum: int = 1,
+) -> int:
+    value = default
+    for name in names:
+        if config.get(name) is not None:
+            value = config[name]
+            break
+    value = int(value)
+    if value < minimum:
+        raise ValueError(
+            f"Image generation parameter {names[0]!r} must be >= {minimum}"
+        )
+    return value
+
+
+def _get_config_float(
+    config: dict[str, Any],
+    name: str,
+    *,
+    default: float,
+) -> float:
+    value = config.get(name, default)
+    return float(value)
+
+
+def _get_image_format(config: dict[str, Any]) -> str:
+    image_format = str(
+        config.get("format", config.get("response_format", DEFAULT_IMAGE_FORMAT))
+    ).lower()
+    if image_format == "jpg":
+        image_format = "jpeg"
+    if image_format not in {"png", "jpeg"}:
+        raise ValueError("LLaDA2-Uni image output format must be 'png' or 'jpeg'.")
+    return image_format
+
+
+def _get_decode_mode(config: dict[str, Any]) -> str:
+    decode_mode = str(config.get("decode_mode", DEFAULT_IMAGE_DECODE_MODE)).lower()
+    if decode_mode == "turbo":
+        decode_mode = "decoder-turbo"
+    if decode_mode == "decoder":
+        decode_mode = "normal"
+    if decode_mode not in {"normal", "decoder-turbo"}:
+        raise ValueError(
+            "LLaDA2-Uni image decode_mode must be 'normal' or 'decoder-turbo'."
+        )
+    return decode_mode
+
+
+def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
+    text = ""
+    for msg in messages:
+        if msg.get("role", "user") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type", "text") == "text":
+                        parts.append(str(item.get("text", "")))
+                elif isinstance(item, str):
+                    parts.append(item)
+            text = "".join(parts)
+        else:
+            text = str(content)
+    return text
+
+
+def build_image_generation_config(request: Any) -> dict[str, Any]:
+    """Build LLaDA2 text-to-image request metadata from API image config."""
+    metadata = getattr(request, "metadata", {}) or {}
+    params = getattr(request, "params", {}) or {}
+    raw_config = metadata.get("image_config") or {}
+    if not isinstance(raw_config, dict):
+        raise ValueError("image output configuration must be a JSON object")
+
+    resolution_multiplier = _get_config_int(
+        raw_config,
+        "resolution_multiplier",
+        default=DEFAULT_IMAGE_RESOLUTION_MULTIPLIER,
+    )
+    width = _get_config_int(
+        raw_config,
+        "width",
+        "image_w",
+        "w",
+        default=DEFAULT_IMAGE_OUTPUT_WIDTH,
+    )
+    height = _get_config_int(
+        raw_config,
+        "height",
+        "image_h",
+        "h",
+        default=DEFAULT_IMAGE_OUTPUT_HEIGHT,
+    )
+
+    token_factor = 16 * resolution_multiplier
+    if height % token_factor != 0 or width % token_factor != 0:
+        raise ValueError(
+            "LLaDA2-Uni image output width and height must be divisible by "
+            f"{token_factor} for resolution_multiplier={resolution_multiplier}."
+        )
+
+    token_grid_h = height // token_factor
+    token_grid_w = width // token_factor
+    num_image_tokens = token_grid_h * token_grid_w
+
+    requested_gen_length = raw_config.get("gen_length")
+    if requested_gen_length is None:
+        requested_gen_length = params.get("max_new_tokens")
+    gen_length = (
+        max(num_image_tokens, DEFAULT_IMAGE_GEN_LENGTH)
+        if requested_gen_length is None
+        else int(requested_gen_length)
+    )
+    if gen_length < num_image_tokens:
+        raise ValueError(
+            "LLaDA2-Uni image output gen_length must be at least "
+            f"{num_image_tokens} for {width}x{height} output."
+        )
+
+    decode_mode = _get_decode_mode(raw_config)
+    default_decoder_steps = (
+        DEFAULT_IMAGE_DECODER_STEPS
+        if decode_mode == "decoder-turbo"
+        else NORMAL_IMAGE_DECODER_STEPS
+    )
+
+    image_generation: dict[str, Any] = {
+        "type": "image",
+        "width": width,
+        "height": height,
+        "token_grid_h": token_grid_h,
+        "token_grid_w": token_grid_w,
+        "num_image_tokens": num_image_tokens,
+        "gen_length": gen_length,
+        "steps": _get_config_int(
+            raw_config,
+            "steps",
+            default=DEFAULT_IMAGE_GENERATION_STEPS,
+        ),
+        "block_length": _get_config_int(
+            raw_config,
+            "block_length",
+            default=DEFAULT_IMAGE_BLOCK_LENGTH,
+        ),
+        "cfg_scale": _get_config_float(
+            raw_config,
+            "cfg_scale",
+            default=DEFAULT_IMAGE_CFG_SCALE,
+        ),
+        "decoder_steps": _get_config_int(
+            raw_config,
+            "decoder_steps",
+            default=default_decoder_steps,
+        ),
+        "resolution_multiplier": resolution_multiplier,
+        "decode_mode": decode_mode,
+        "format": _get_image_format(raw_config),
+        "image_token_offset": IMAGE_TOKEN_OFFSET,
+    }
+    if raw_config.get("seed") is not None:
+        image_generation["seed"] = int(raw_config["seed"])
+    elif params.get("seed") is not None:
+        image_generation["seed"] = int(params["seed"])
+    return image_generation
+
+
+def _encode_text(tokenizer: Any, text: str) -> list[int]:
+    if hasattr(tokenizer, "encode"):
+        return list(tokenizer.encode(text, add_special_tokens=False))
+    return list(tokenizer(text).input_ids)
+
+
+def build_image_generation_prompt(
+    *,
+    tokenizer: Any,
+    messages: list[dict[str, Any]],
+    image_generation: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the LLaDA2 text-to-image prompt and unconditional CFG prompt."""
+    prompt = _extract_last_user_text(messages)
+    token_grid_h = int(image_generation["token_grid_h"])
+    token_grid_w = int(image_generation["token_grid_w"])
+    image_header = (
+        f"{SOI_TOKEN}<|reserved_token_{token_grid_h}|>"
+        f"<|reserved_token_{token_grid_w}|>{BOI_TOKEN}"
+    )
+
+    prefix = f"{ROLE_SYSTEM} {T2I_SYSTEM_PROMPT} {ROLE_HUMAN}"
+    image_header_ids = (
+        _encode_text(tokenizer, SOI_TOKEN)
+        + _encode_text(tokenizer, f"<|reserved_token_{token_grid_h}|>")
+        + _encode_text(tokenizer, f"<|reserved_token_{token_grid_w}|>")
+        + _encode_text(tokenizer, BOI_TOKEN)
+    )
+    conditional_ids = (
+        _encode_text(tokenizer, prefix)
+        + _encode_text(tokenizer, prompt)
+        + _encode_text(tokenizer, ROLE_ASSISTANT)
+        + image_header_ids
+    )
+    unconditional_ids = (
+        _encode_text(tokenizer, prefix)
+        + _encode_text(tokenizer, T2I_UNCONDITION_PROMPT)
+        + _encode_text(tokenizer, ROLE_ASSISTANT)
+        + image_header_ids
+    )
+
+    return {
+        "input_ids": conditional_ids,
+        "uncond_ids": unconditional_ids,
+        "prompt": prompt,
+        "image_header": image_header,
+    }
 
 
 def validate_prompt_seq_len(
@@ -209,6 +462,47 @@ class LLaDA2Preprocessor:
                 image_counts_per_msg = None
 
         self._validate_messages(messages)
+
+        if _is_image_output_request(request):
+            if raw_images:
+                raise ValueError(
+                    "LLaDA2-Uni image output request path currently supports "
+                    "text-to-image requests only; image editing is not wired yet."
+                )
+            image_generation = build_image_generation_config(request)
+            image_prompt = build_image_generation_prompt(
+                tokenizer=self._tokenizer,
+                messages=messages,
+                image_generation=image_generation,
+            )
+            image_generation.update(
+                {
+                    "uncond_ids": image_prompt["uncond_ids"],
+                    "text_prompt": image_prompt["prompt"],
+                    "image_header": image_prompt["image_header"],
+                }
+            )
+            input_ids_tensor = torch.tensor(
+                [image_prompt["input_ids"]],
+                dtype=torch.long,
+            )
+            validate_prompt_seq_len(
+                input_ids_tensor,
+                max_seq_len=self._max_seq_len,
+                max_new_tokens=int(image_generation["gen_length"]),
+                request_id=payload.request_id,
+            )
+            state = LLaDA2UniPipelineState(
+                prompt={"input_ids": input_ids_tensor},
+                encoder_inputs={IMAGE_STAGE: {"_skip": True, "_result": {}}},
+                image_generation=image_generation,
+            )
+            return StagePayload(
+                request_id=payload.request_id,
+                request=payload.request,
+                data=state.to_dict(),
+            )
+
         image_cache_key = compute_image_cache_key(raw_images)
 
         images = await ensure_image_list_async(raw_images) if raw_images else []

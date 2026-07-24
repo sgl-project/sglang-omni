@@ -358,15 +358,18 @@ The default worker capability set represents a complete Omni V1 replica:
 - `audio_input`
 - `video_input`
 - `audio_output`
+- `image_output`
 
 The router infers required capabilities from each request:
 
 - `/v1/chat/completions` requires `chat`
 - `stream: true` requires `streaming`
-- `images`, `image`, or image message parts require `image_input`
+- `image`, `images`, or image message parts require `image_input`
 - `audios`, `audio_inputs`, or audio message parts require `audio_input`
 - `videos`, `video`, or video message parts require `video_input`
 - `modalities: ["audio"]` or `audio` output fields require `audio_output`
+- `modalities: ["image"]`, `output_modalities: ["image"]`, or `image_config`
+  output config fields require `image_output`
 - `/v1/audio/speech` requires `speech`, plus `streaming` for streamed speech
 
 Register narrower worker capabilities only when a worker cannot serve one of
@@ -379,7 +382,8 @@ when the router cannot infer a single safe worker set:
 
 - `X-SGLang-Omni-Route-Model`: requested model for mixed-model pools
 - `X-SGLang-Omni-Route-Capabilities`: comma-separated capabilities such as
-  `image_input`, `audio_input`, `video_input`, `audio_output`, or `streaming`
+  `image_input`, `audio_input`, `video_input`, `audio_output`, `image_output`,
+  or `streaming`
 - `X-SGLang-Omni-Route-Stream`: `true` or `false` for large streaming requests
 
 These headers are router-only hints and are not forwarded to workers.

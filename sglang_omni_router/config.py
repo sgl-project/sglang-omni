@@ -27,6 +27,7 @@ Capability = Literal[
     "audio_input",
     "video_input",
     "audio_output",
+    "image_output",
 ]
 RoutingPolicy = Literal["round_robin", "least_request", "random"]
 
@@ -38,6 +39,7 @@ DEFAULT_CAPABILITIES: set[Capability] = {
     "audio_input",
     "video_input",
     "audio_output",
+    "image_output",
 }
 CLOUD_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 

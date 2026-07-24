@@ -24,6 +24,8 @@ class LLaDA2UniPipelineState:
     encoder_outs: dict[str, Any] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, Any] = field(default_factory=dict)
+    image_generation: dict[str, Any] = field(default_factory=dict)
+    image_decode_out: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> "LLaDA2UniPipelineState":
@@ -32,6 +34,8 @@ class LLaDA2UniPipelineState:
         encoder_inputs = data.get("encoder_inputs")
         encoder_outs = data.get("encoder_outs")
         engine_outputs = data.get("engine_outputs")
+        image_generation = data.get("image_generation")
+        image_decode_out = data.get("image_decode_out")
         thinker_out = data.get("thinker_out")
         return cls(
             prompt=data.get("prompt"),
@@ -39,6 +43,12 @@ class LLaDA2UniPipelineState:
             encoder_outs=encoder_outs if isinstance(encoder_outs, dict) else {},
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=engine_outputs if isinstance(engine_outputs, dict) else {},
+            image_generation=(
+                image_generation if isinstance(image_generation, dict) else {}
+            ),
+            image_decode_out=(
+                image_decode_out if isinstance(image_decode_out, dict) else {}
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +63,10 @@ class LLaDA2UniPipelineState:
             data["thinker_out"] = self.thinker_out
         if self.engine_outputs:
             data["engine_outputs"] = self.engine_outputs
+        if self.image_generation:
+            data["image_generation"] = self.image_generation
+        if self.image_decode_out:
+            data["image_decode_out"] = self.image_decode_out
         return data
 
 

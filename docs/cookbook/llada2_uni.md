@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input, and can return text or non-streaming image output.
 
 ## Highlights
 
@@ -20,9 +20,11 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+LLaDA2.0-Uni runs a 5-stage pipeline
+(`preprocessing → image_encoder → thinker → image_decode → decode`) on a single
+GPU. Text requests use the SGLang dLLM thinker path. Image-output requests use
+the model checkpoint's upstream image-token generator in the thinker stage, then
+decode the generated VQ tokens to PNG/JPEG bytes in `image_decode`.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
@@ -127,6 +129,34 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
+Text-to-image requests return base64-encoded PNG/JPEG image payloads:
+
+```python
+import base64
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/LLaDA2.0-Uni",
+        "messages": [{"role": "user", "content": "Draw a lighthouse at dusk."}],
+        "modalities": ["image"],
+        "image_config": {
+            "width": 512,
+            "height": 512,
+            "steps": 8,
+            "cfg_scale": 2.0,
+            "decode_mode": "decoder-turbo",
+            "format": "png",
+        },
+    },
+)
+resp.raise_for_status()
+image = resp.json()["choices"][0]["message"]["images"][0]
+with open("llada2_output.png", "wb") as f:
+    f.write(base64.b64decode(image["data"]))
+```
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for LLaDA2.0-Uni.
@@ -135,18 +165,25 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Output modalities; use `["image"]` for text-to-image responses |
+| `image_config` | object | `null` | Image-output generation settings such as `width`, `height`, `steps`, `cfg_scale`, `decoder_steps`, `decode_mode`, and `format` |
+| `image` | string/object | `null` | Single image input path, URL, or inline image payload |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
 ### Incoming Features
 
-- Text-to-image generation
-- Text-to-Image Generation with Thinking
+- Image editing
 - Interleaved Generation
+- Text-to-image generation with thinking
 
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- Text output is supported for text and image input. Image output currently
+  supports text-to-image generation and returns non-streaming base64 PNG/JPEG
+  payloads. Image editing, image-output streaming, and interleaved generation
+  are not wired yet.
+- The image-token generator and image decoder are loaded lazily, but image
+  output can require substantially more GPU memory than text-only serving. For
+  mixed text and image workloads, budget for both thinker paths or run separate
+  workers behind the router.

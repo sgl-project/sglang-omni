@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import CompletionImage, CompletionResult, GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -267,6 +267,37 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+
+class SuccessfulImageChatClient:
+    def __init__(self) -> None:
+        self.requests: list[GenerateRequest] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> CompletionResult:
+        del request_id, audio_format
+        self.requests.append(request)
+        return CompletionResult(
+            request_id="chat-image-1",
+            text="",
+            images=[
+                CompletionImage(
+                    data="iVBORw0KGgo=",
+                    format="png",
+                    width=4,
+                    height=2,
+                    mime_type="image/png",
+                )
+            ],
+        )
 
 
 class AdminClient:
@@ -910,6 +941,76 @@ def test_speech_request_records_explicit_generation_params() -> None:
         "temperature",
         "top_k",
     ]
+
+
+def test_chat_image_output_config_is_forwarded_to_generate_request() -> None:
+    req = ChatCompletionRequest(
+        model="inclusionAI/LLaDA2.0-Uni",
+        messages=[{"role": "user", "content": "Draw a lighthouse at dusk."}],
+        modalities=["image"],
+        image_config={
+            "width": 512,
+            "height": 768,
+            "steps": 8,
+            "cfg_scale": 2.0,
+            "decode_mode": "decoder-turbo",
+        },
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.output_modalities == ["image"]
+    assert gen_req.metadata["image_config"] == {
+        "width": 512,
+        "height": 768,
+        "steps": 8,
+        "cfg_scale": 2.0,
+        "decode_mode": "decoder-turbo",
+    }
+
+
+def test_chat_image_output_returns_images_array() -> None:
+    client = SuccessfulImageChatClient()
+    tc = TestClient(create_app(client, model_name="llada2-uni"))
+
+    response = tc.post(
+        "/v1/chat/completions",
+        json={
+            "model": "llada2-uni",
+            "messages": [{"role": "user", "content": "Draw a green square."}],
+            "modalities": ["image"],
+            "image_config": {"width": 512, "height": 512, "format": "png"},
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["choices"][0]["message"]
+    assert message["role"] == "assistant"
+    assert "content" not in message
+    assert message["images"] == [
+        {
+            "data": "iVBORw0KGgo=",
+            "format": "png",
+            "width": 4,
+            "height": 2,
+            "mime_type": "image/png",
+        }
+    ]
+    assert client.requests[0].output_modalities == ["image"]
+
+
+def test_chat_single_image_input_is_forwarded_as_images_metadata() -> None:
+    req = ChatCompletionRequest(
+        model="inclusionAI/LLaDA2.0-Uni",
+        messages=[{"role": "user", "content": "Describe this image."}],
+        modalities=["text"],
+        image="tests/data/cars.jpg",
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.output_modalities == ["text"]
+    assert gen_req.metadata["images"] == ["tests/data/cars.jpg"]
 
 
 def test_speech_request_passes_streaming_control_fields() -> None:

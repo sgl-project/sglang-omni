@@ -443,8 +443,12 @@ def _infer_payload_capabilities(
     capabilities.update(_infer_input_field_capabilities(payload))
     if path == "/v1/audio/speech" and _speech_uses_reference_audio(payload):
         capabilities.add("audio_input")
-    if _modalities_include_audio(payload) or _has_non_empty(payload.get("audio")):
+    if _modalities_include(payload, "audio") or _has_non_empty(payload.get("audio")):
         capabilities.add("audio_output")
+    if _modalities_include(payload, "image") or _has_non_empty(
+        payload.get("image_config")
+    ):
+        capabilities.add("image_output")
     capabilities.update(_infer_message_part_capabilities(payload.get("messages")))
     return capabilities
 
@@ -469,10 +473,12 @@ def _has_non_empty(value: Any) -> bool:
     return True
 
 
-def _modalities_include_audio(payload: dict[str, Any]) -> bool:
+def _modalities_include(payload: dict[str, Any], modality: str) -> bool:
     for field in OUTPUT_MODALITY_FIELDS:
         modalities = payload.get(field)
-        if isinstance(modalities, list) and any(item == "audio" for item in modalities):
+        if isinstance(modalities, list) and any(
+            item == modality for item in modalities
+        ):
             return True
     return False
 

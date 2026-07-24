@@ -121,9 +121,15 @@ def build_dllm_thinker_request(
         raise TypeError("prompt.input_ids must be a torch.Tensor")
 
     input_ids_list = input_ids.to(dtype=torch.long).flatten().tolist()
+    image_generation = (
+        state.image_generation if isinstance(state.image_generation, dict) else {}
+    )
+    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    if image_generation.get("type") == "image":
+        max_new_tokens = image_generation.get("gen_length", max_new_tokens)
 
     sampling_params = SamplingParams(
-        max_new_tokens=params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS),
+        max_new_tokens=max_new_tokens,
         temperature=params.get("temperature", 0.0),
         top_p=params.get("top_p", 1.0),
         top_k=params.get("top_k", -1),
