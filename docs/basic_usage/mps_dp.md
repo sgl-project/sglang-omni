@@ -115,12 +115,12 @@ The table above is a safety contract (what may alias, what must stay private, an
 
 | Model | Validated DP, IPC off | Validated DP, IPC on | VRAM, off | VRAM, on | Saved per follower | Throughput (aggregate across replicas), off vs on |
 |---|---|---|---:|---:|---:|---|
-| Higgs TTS 3-4B | DP3 (100k cap; H200 DP8) | DP3, fit relaxed | 73.7 GB | 58.1 GB | 7.55 GiB | parity at every N (H200 series) |
+| Higgs TTS 3-4B | DP3 (100k cap; unshared DP4 needs 98 GB) | **DP4** (74.9 GB idle, 78.4 under load) | 73.7 GB at DP3 | 58.1 GB at DP3 | 7.55 GiB | parity at every N (H200 series); shared DP4 beats shared DP3 by +10% to +40% round-matched (2 rounds, this driver) |
 | MOSS TTS local | DP3 at the card edge, vocoder graphs partly eager | DP3 with 13.3 GB headroom, full graphs | 78.0 GB | 61.8 GB | 8.44 GiB | measured parity: DP2 agg 17.9 vs 18.2 (per replica 9.0 vs 9.1), DP3 agg 23.4 vs 23.4 (per replica 7.8) qps |
 | MOSS TTS delay | **DP1** (DP2 fails the equal-KV gate: replica 1 profiles 185 of 30000 tokens) | **DP2** | n/a | 42.4 GB | 17.05 GiB | single 5.7 to shared DP2 agg 7.5 qps (+32%, per replica 3.8, preliminary); outputs byte-identical |
 | MOSS Transcribe-Diarize | DP3 (40k cap) | DP3 | 23.9 GB | 20.2 GB | 1.75 GiB | parity: agg 75.7 vs 70.9 cold qps (per replica 25.2 vs 23.6; 192 unique clips) |
 | Qwen3-ASR 1.7B | DP3 (40k cap) | DP3 | 28.2 GB | 20.2 GB | 3.83 GiB | parity: agg 67.5 vs 64.5 (per replica 22.5 vs 21.5) |
-| Whisper large-v3-turbo | DP3 (40k cap) | DP3 | 14.1 GB | 10.7 GB | 1.51 GiB | parity: agg 67.8 vs 68.0 (per replica 22.6 vs 22.7) |
+| Whisper large-v3-turbo | DP3 (40k cap) | **DP6** (19.7 GB) | 14.1 GB at DP3 | 10.7 GB at DP3 | 1.51 GiB | parity at DP3 (agg 67.8 vs 68.0); shared DP6 reaches agg 95.3 cold qps, +40% over DP3 |
 | Voxtral TTS 4B | DP2 (30k cap) | DP2 | 23.4 GB | 16.0 GB | 7.20 GiB | boot and memory validated; qps needs the model's own client |
 | Fish S2-Pro | DP2 (30k cap) | DP2 | 38.3 GB | 30.6 GB | 7.53 GiB | boot and memory validated; qps needs the model's own client |
 | FunASR Nano | DP2 (30k cap) | DP2 | 11.8 GB | 10.2 GB | 1.57 GiB | parity: agg 40.6 vs 42.5 cold qps (per replica 20.3 vs 21.3) |
@@ -128,7 +128,7 @@ The table above is a safety contract (what may alias, what must stay private, an
 | Ming TTS 16.8B | none (leader alone OOMs at practical fractions) | none (follower boot transient reaches the card edge) | n/a | n/a | n/a | H200 follow-up |
 | Qwen3-Omni 30B-A3B | none (about 60 GiB bf16 per weight copy) | none | n/a | n/a | n/a | H200 follow-up |
 
-The validated-DP columns show the highest configuration each mode booted and served in these runs. For the ASR models and the small TTS models the ceiling is host-bound, not VRAM-bound, so sharing does not move it; sharing moves the ceiling exactly where weights bind: MOSS delay (DP1 to DP2) and MOSS local (edge DP3 to operable DP3). Throughput parity at a fixed N is the expected and desired result: replicas execute the same kernels over the same weight values either way, so sharing is free; the throughput gains come from the extra replicas or KV the freed memory funds (delay DP2 +32% over its single replica, local DP3 +29% over DP2).
+The validated-DP columns show the highest configuration each mode booted and served in these runs, not proven ceilings: Whisper kept scaling to DP6 and its knee is still unfound, so treat the small models' DP as CPU-core-limited, not VRAM-limited. For the ASR models and the small TTS models the ceiling is host-bound, not VRAM-bound, so sharing does not move it; sharing moves the ceiling exactly where weights bind: MOSS delay (DP1 to DP2) and MOSS local (edge DP3 to operable DP3). Throughput parity at a fixed N is the expected and desired result: replicas execute the same kernels over the same weight values either way, so sharing is free; the throughput gains come from the extra replicas or KV the freed memory funds (delay DP2 +32% over its single replica, local DP3 +29% over DP2).
 
 VRAM saved per follower is the byte count the leader exports and each follower aliases instead of allocating; the off and on columns differ by roughly (N-1) times this value. ASR throughput used 64 unique synthesized clips per replica with the cold round reported (a warm rerun is cache-inflated). LLaDA2 is allowlisted (audited clean, including the installed dllm loop) but its checkpoint was not cached on the measurement box, so it has no measured row. Sharing leaves throughput at parity at a fixed N everywhere it was paired; the wins are fit (MOSS delay DP2, previously impossible), margin (MOSS local DP3: 13.3 GB headroom and full graphs versus 0.33 GB and graph fallback), and follower memory.
 
