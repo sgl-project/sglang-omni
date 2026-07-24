@@ -104,9 +104,7 @@ class ResourceMonitor:
                     process_memory_bytes += used
 
             utilization = _best_effort(
-                lambda: float(
-                    pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu
-                )
+                lambda: float(pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu)
             )
             power_w = _best_effort(
                 lambda: float(pynvml.nvmlDeviceGetPowerUsage(self._handle)) / 1000.0
@@ -204,11 +202,7 @@ def summarize_resource_samples(
             [sample.gpu_process_cpu_percent for sample in samples]
         ),
         "gpu_process_pids": sorted(
-            {
-                pid
-                for sample in samples
-                for pid in sample.gpu_process_pids
-            }
+            {pid for sample in samples for pid in sample.gpu_process_pids}
         ),
         "error": error,
     }

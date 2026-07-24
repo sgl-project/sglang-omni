@@ -6,25 +6,25 @@
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, throughput, latency, RTF, and worker routing balance.
-It supports both Qwen3-ASR and Fun-ASR-Nano through ``--model-path``.
+It supports Qwen3-ASR, Fun-ASR-Nano, and Whisper through ``--model-path``.
 
 Usage:
 
     # Download the test set once:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Launch the validated single-RTX-4090 profile
+    # Launch a conservative single-RTX-4090 profile
     sgl-omni serve \
-        --config examples/configs/qwen3_asr_rtx4090.yaml \
+        --config examples/configs/fun_asr_rtx4090.yaml \
         --port 8000
 
-    # Sweep the issue's matrix (3 repeats each) over the full SeedTTS EN set:
+    # Sweep the full SeedTTS EN set (3 measured repeats after a warmup):
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 \
-        --concurrencies 1,2,4,8,16,32,64 \
+        --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+        --concurrencies 1,2,4,8,16,32 \
         --repeats 3 --warmup \
         --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
-        --model-revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
         --dtype bfloat16 \
         --attention-backend flashinfer \
         --mm-attention-backend triton_attn \
@@ -36,24 +36,12 @@ Usage:
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 3
 
-    # Run the same sweep against Fun-ASR-Nano:
-    python -m sglang_omni.cli serve \
-        --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+    # Run the same sweep against Whisper Large v3:
+    sgl-omni serve \
+        --config examples/configs/whisper_asr_rtx4090.yaml --port 8000
     python -m benchmarks.eval.benchmark_asr_seedtts \
-        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
-        --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
-
-Validated RTX 4090 24 GB results (bf16, DP=1, max-running-requests=16,
-CUDA Graph through 16, three repeats plus one warmup per level):
-
-* SeedTTS EN corpus WER was 0.0120-0.0123. Throughput was 10.53 samples/s at
-  concurrency 1, 45.10 at concurrency 8, and 65.43 at concurrency 16.
-* SeedTTS ZH corpus CER was 0.0062. Throughput was 11.67 samples/s at
-  concurrency 1, 55.21 at concurrency 8, and 79.53 at concurrency 16.
-* Concurrency 32 completed without skips but queued above the 16-request
-  admission limit, so it did not improve EN throughput.
-* The 30-minute mixed soak completed 78,418 requests without unexpected errors;
-  peak sampled GPU memory was 17,990 MiB.
+        --port 8000 --model-path openai/whisper-large-v3 \
+        --concurrencies 1,2,4,8,16,32 --repeats 3 --warmup
 
 Earlier reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
 4080 SUPER 32 GB, DP=1, three repeats plus one discarded warmup per level):
@@ -100,24 +88,24 @@ import statistics
 
 import requests
 
-from benchmarks.dataset.prepare import (
-    DATASETS,
-    SEEDTTS_DATASET_REVISION,
-)
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.runtime_metrics import (
-    ResourceMonitor,
-    collect_benchmark_provenance,
-)
+from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
-DEFAULT_MODEL_REVISION = "7278e1e70fe206f11671096ffdd38061171dd6e5"
+MODEL_REVISIONS = {
+    QWEN3_ASR_MODEL_PATH: "7278e1e70fe206f11671096ffdd38061171dd6e5",
+    FUN_ASR_MODEL_PATH: "854d88f94205cd17d2afdb24332130d86fbe654a",
+    OMNI_WHISPER_MODEL_PATH: "06f233fe06e710322aca913c1bc4249a0d71fce1",
+}
+EXPECTED_SAMPLES = {"en": 1088, "zh": 2020}
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
@@ -225,6 +213,8 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         )
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
+    wall_clock_s = benchmark_result["wall_clock_s"]
+    audio_processed_s = float(speed.get("asr_audio_processed_s") or 0.0)
     return {
         "concurrency": concurrency,
         "repeat": repeat,
@@ -234,8 +224,11 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "errors": summary["skipped"],
         "corpus_wer": summary["corpus_wer"],
         "per_sample_wer_max": summary["wer_per_sample_max"],
-        "wall_clock_s": benchmark_result["wall_clock_s"],
+        "wall_clock_s": wall_clock_s,
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
+        "audio_seconds_per_s": (
+            audio_processed_s / wall_clock_s if wall_clock_s > 0 else 0.0
+        ),
         "latency_mean_s": speed["latency_mean_s"],
         "latency_p95_s": speed["latency_p95_s"],
         "latency_p99_s": speed["latency_p99_s"],
@@ -243,6 +236,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
         "resources": resources,
+        "per_sample": benchmark_result["per_sample"],
     }
 
 
@@ -288,15 +282,14 @@ def _aggregate(repeats: list[dict]) -> dict:
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),
         "throughput_samples_per_s": _stat("throughput_samples_per_s"),
+        "audio_seconds_per_s": _stat("audio_seconds_per_s"),
         "latency_mean_s": _stat("latency_mean_s"),
         "latency_p95_s": _stat("latency_p95_s"),
         "latency_p99_s": _stat("latency_p99_s"),
         "rtf_mean": _stat("rtf_mean"),
         "rtf_p95": _stat("rtf_p95"),
         "resources": {
-            "gpu_memory_used_peak_mib": _resource_metric(
-                "gpu_memory_used_mib", "max"
-            ),
+            "gpu_memory_used_peak_mib": _resource_metric("gpu_memory_used_mib", "max"),
             "gpu_memory_used_steady_mib": _resource_metric(
                 "gpu_memory_used_mib", "steady_mean"
             ),
@@ -304,9 +297,7 @@ def _aggregate(repeats: list[dict]) -> dict:
                 "gpu_process_memory_mib", "max"
             ),
             "power_peak_w": _resource_metric("power_w", "max"),
-            "system_cpu_peak_percent": _resource_metric(
-                "system_cpu_percent", "max"
-            ),
+            "system_cpu_peak_percent": _resource_metric("system_cpu_percent", "max"),
             "gpu_process_cpu_peak_percent": _resource_metric(
                 "gpu_process_cpu_percent", "max"
             ),
@@ -323,9 +314,10 @@ def _aggregate(repeats: list[dict]) -> dict:
 def _print_table(aggregates: list[dict]) -> None:
     header = (
         "| conc | reps | wall(s) mean | thrpt mean | thrpt best | "
-        "lat mean(s) | lat p95(s) | rtf mean | rtf p95 | corpus WER | max WER |"
+        "audio s/s | lat mean(s) | lat p95(s) | rtf mean | rtf p95 | "
+        "corpus WER | max WER |"
     )
-    sep = "|---:" * 11 + "|"
+    sep = "|---:" * 12 + "|"
     print("\n" + header)
     print(sep)
     for agg in aggregates:
@@ -334,6 +326,7 @@ def _print_table(aggregates: list[dict]) -> None:
             f"| {agg['wall_clock_s']['mean']:.3f} "
             f"| {agg['throughput_samples_per_s']['mean']:.3f} "
             f"| {agg['throughput_samples_per_s']['max']:.3f} "
+            f"| {agg['audio_seconds_per_s']['mean']:.3f} "
             f"| {agg['latency_mean_s']['mean']:.3f} "
             f"| {agg['latency_p95_s']['mean']:.3f} "
             f"| {agg['rtf_mean']['mean']:.4f} "
@@ -376,15 +369,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "ASR model id served by the router. Defaults to "
             f"{QWEN3_ASR_MODEL_PATH}; use "
-            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
+            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano or "
+            f"{OMNI_WHISPER_MODEL_PATH} for Whisper."
         ),
     )
     parser.add_argument(
         "--model-revision",
         default=None,
         help=(
-            "Resolved model revision used by the running server. The pinned "
-            "Qwen3-ASR revision is used when its default model path is selected."
+            "Resolved model revision used by the running server. Known ASR "
+            "model paths use pinned defaults."
         ),
     )
     parser.add_argument(
@@ -470,7 +464,7 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
     aggregates: list[dict] = []
     for concurrency in concurrencies:
         if args.warmup:
-            print(f"[conc={concurrency}] warmup pass ...")
+            print(f"[conc={concurrency}] warmup pass ...", flush=True)
             await run_asr_transcription(
                 samples,
                 host=args.host,
@@ -491,10 +485,14 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 f"lat_p95={result['latency_p95_s']:.3f}s "
                 f"rtf_mean={result['rtf_mean']:.4f} "
                 f"corpus_wer={result['corpus_wer']:.4f} "
-                f"skipped={result['skipped']}"
+                f"skipped={result['skipped']}",
+                flush=True,
             )
             if result["worker"].get("per_worker_routed"):
-                print(f"    routed per worker: {result['worker']['per_worker_routed']}")
+                print(
+                    f"    routed per worker: {result['worker']['per_worker_routed']}",
+                    flush=True,
+                )
         aggregates.append(_aggregate(repeats))
     return aggregates
 
@@ -502,10 +500,12 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 def main() -> None:
     args = parse_args()
     concurrencies = [int(c) for c in args.concurrencies.split(",") if c.strip()]
+    if not concurrencies or any(concurrency < 1 for concurrency in concurrencies):
+        raise ValueError("--concurrencies must contain positive integers")
+    if args.repeats < 1:
+        raise ValueError("--repeats must be at least 1")
     max_samples = args.max_samples if args.max_samples > 0 else None
-    model_revision = args.model_revision
-    if model_revision is None and args.model_path == QWEN3_ASR_MODEL_PATH:
-        model_revision = DEFAULT_MODEL_REVISION
+    model_revision = args.model_revision or MODEL_REVISIONS.get(args.model_path)
 
     samples = load_seedtts_samples(
         args.meta,
@@ -513,6 +513,11 @@ def main() -> None:
         split=args.lang,
         revision=args.dataset_revision,
     )
+    if max_samples is None and len(samples) != EXPECTED_SAMPLES[args.lang]:
+        raise RuntimeError(
+            f"Expected full SeedTTS {args.lang} scope of "
+            f"{EXPECTED_SAMPLES[args.lang]} samples, got {len(samples)}"
+        )
     print(
         f"Loaded {len(samples)} SeedTTS {args.lang} samples; "
         f"sweeping concurrency={concurrencies} x {args.repeats} repeats "
