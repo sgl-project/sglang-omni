@@ -214,7 +214,7 @@ class ModelRunner:
         )
 
     def execute_resolve(
-        self, pending: "_PendingStep | None"
+        self, pending: "_PendingStep | None", skip_rids: set[str] | None = None
     ) -> ModelRunnerOutput | None:
         """Consume a launched decode step: wait on its event (non-blocking
         ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
@@ -222,6 +222,9 @@ class ModelRunner:
         (``post_decode_resolve``), then
         finalize sampling/output. Returns that step's ``ModelRunnerOutput``,
         or None if ``pending`` is None (first iteration / after a drain).
+
+        ``skip_rids``: caller-precomputed prior-step finished/retracted set
+        (same predicate as below); ``None`` computes it here.
         """
         if pending is None:
             return None
@@ -230,13 +233,15 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
-        # Skip reqs finished or retracted in a prior (lagged) step so _finalize
-        # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
-        skip_rids = {
-            req.request_id
-            for req in pending.scheduler_output.requests
-            if req.data.req.finished() or self._req_is_retracted(req.data.req)
-        }
+        if skip_rids is None:
+            # Skip reqs finished or retracted in a prior (lagged) step so
+            # _finalize neither re-emits nor re-frees their KV (mirrors
+            # _resolve_and_process).
+            skip_rids = {
+                req.request_id
+                for req in pending.scheduler_output.requests
+                if req.data.req.finished() or self._req_is_retracted(req.data.req)
+            }
         self.post_decode_resolve(
             pending.launch_buf,
             pending.batch_result,

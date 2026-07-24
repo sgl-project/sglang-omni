@@ -17,7 +17,6 @@ import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
 from sglang_omni.models.higgs_tts.sampler import K_MAX, selected_token_logprobs
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
@@ -33,8 +32,24 @@ from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_
 logger = logging.getLogger(__name__)
 
 
+def _flat_nonempty(vals) -> torch.Tensor | None:
+    """Flatten a sampling attr to 1-D; empty behaves like absent (defaults)."""
+    if vals is None:
+        return None
+    t = torch.as_tensor(vals).reshape(-1)
+    return t if t.numel() else None
+
+
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
+
+    # Decode row-indices cache, valid while (request-id list, padded bs, row
+    # epoch) is unchanged; the epoch guards the release + request-id-reuse
+    # case. Class-level defaults so fixtures built via object.__new__ inherit.
+    _rows_cache: torch.Tensor | None = None
+    _rows_cache_ids: list[str] | None = None
+    _rows_cache_bs: int = 0
+    _rows_cache_epoch: int = -1
 
     def __init__(self, tp_worker: Any, output_processor: Any) -> None:
         super().__init__(tp_worker, output_processor)
@@ -169,11 +184,26 @@ class HiggsTTSModelRunner(ModelRunner):
 
         model._sampler_pool.reset_row(model._padding_row)
 
-        rows_py: list[int] = [model.acquire_row(req.request_id) for req in requests]
-        rows_py.extend([model._padding_row] * (bs - n_real))
-        model._cg_row_indices[:bs] = torch.tensor(
-            rows_py, dtype=torch.long, device=model._cg_row_indices.device
-        )
+        req_ids = [req.request_id for req in requests]
+        epoch = model._row_epoch
+        if (
+            req_ids == self._rows_cache_ids
+            and bs == self._rows_cache_bs
+            and epoch == self._rows_cache_epoch
+        ):
+            # note (Jiaxin Deng): restore from the cached copy, not skip; the
+            # lookahead overrun guard below mutates _cg_row_indices in place.
+            model._cg_row_indices[:bs].copy_(self._rows_cache)
+        else:
+            rows_py: list[int] = [model.acquire_row(rid) for rid in req_ids]
+            rows_py.extend([model._padding_row] * (bs - n_real))
+            model._cg_row_indices[:bs] = torch.tensor(
+                rows_py, dtype=torch.long, device=model._cg_row_indices.device
+            )
+            self._rows_cache = model._cg_row_indices[:bs].clone()
+            self._rows_cache_ids = req_ids
+            self._rows_cache_bs = bs
+            self._rows_cache_epoch = epoch
 
         if self._async_enabled and is_lookahead and n_real > 0:
             # Async-lookahead overrun guard (GPU-side, no host sync): a request
@@ -194,23 +224,36 @@ class HiggsTTSModelRunner(ModelRunner):
                 done, torch.full_like(rows_t_real, model._padding_row), rows_t_real
             )
 
-        temps, top_ps, top_ks = self._extract_decode_sampling_params(
-            forward_batch, n_real
-        )
-        temps.extend([1.0] * (bs - n_real))
-        top_ps.extend([1.0] * (bs - n_real))
-        model._cg_temperature[:bs] = torch.tensor(
-            temps, dtype=torch.float32, device=model._cg_temperature.device
-        )
-        model._cg_top_p[:bs] = torch.tensor(
-            top_ps, dtype=torch.float32, device=model._cg_top_p.device
-        )
-
-        top_k_vals = [(tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks]
-        top_k_vals.extend([K_MAX] * (bs - n_real))
-        model._cg_top_k_buf[:bs] = torch.tensor(
-            top_k_vals, dtype=torch.long, device=model._cg_top_k_buf.device
-        )
+        # note (Jiaxin Deng): device-side copies only; a .cpu()/.tolist() here
+        # is a stream-syncing D2H on the per-step launch path.
+        sampling_info = forward_batch.sampling_info
+        if sampling_info is None:
+            temps = top_ps = top_ks = None
+        else:
+            temps = _flat_nonempty(sampling_info.temperatures)
+            top_ps = _flat_nonempty(sampling_info.top_ps)
+            top_ks = _flat_nonempty(sampling_info.top_ks)
+        if temps is not None:
+            model._cg_temperature[:n_real].copy_(temps[:n_real])
+        else:
+            model._cg_temperature[:n_real].fill_(1.0)
+        if top_ps is not None:
+            model._cg_top_p[:n_real].copy_(top_ps[:n_real])
+        else:
+            model._cg_top_p[:n_real].fill_(1.0)
+        if top_ks is not None:
+            tks = top_ks[:n_real].to(torch.long)
+            # top_k outside (0, K_MAX) (incl. sglang's TOP_K_ALL sentinel for
+            # unspecified top_k) normalizes to K_MAX = no-op filter.
+            model._cg_top_k_buf[:n_real].copy_(
+                torch.where((tks > 0) & (tks < K_MAX), tks, torch.full_like(tks, K_MAX))
+            )
+        else:
+            model._cg_top_k_buf[:n_real].fill_(K_MAX)
+        if bs > n_real:
+            model._cg_temperature[n_real:bs].fill_(1.0)
+            model._cg_top_p[n_real:bs].fill_(1.0)
+            model._cg_top_k_buf[n_real:bs].fill_(K_MAX)
 
         rows_t = model._cg_row_indices[:bs]
         pool = model._sampler_pool
@@ -220,33 +263,6 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_active_last_codes[:bs] = pool.last_codes[rows_t]
         model._cg_active_seeds[:bs] = pool.seeds[rows_t]
         model._cg_active_step_count[:bs] = pool.step_count[rows_t]
-
-    @staticmethod
-    def _extract_decode_sampling_params(forward_batch, n_real: int):
-        """Pull per-row temperature / top_p / top_k off sglang's
-        ``sampling_info`` with safe defaults. ``top_k`` values outside
-        ``(0, K_MAX)`` (including sglang's ``TOP_K_ALL`` sentinel for
-        unspecified top_k) are normalized to ``None`` — the downstream
-        buffer maps that to ``K_MAX`` = no-op filter.
-        """
-        sampling_info = getattr(forward_batch, "sampling_info", None)
-        if sampling_info is None or n_real == 0:
-            return ([1.0] * n_real, [1.0] * n_real, [None] * n_real)
-
-        temps_raw = _flat_sampling_attr(sampling_info, "temperatures") or [1.0] * n_real
-        top_ps_raw = _flat_sampling_attr(sampling_info, "top_ps") or [1.0] * n_real
-        top_ks_raw = _flat_sampling_attr(sampling_info, "top_ks")
-
-        temps = [float(t) for t in temps_raw[:n_real]]
-        top_ps = [float(t) for t in top_ps_raw[:n_real]]
-        if top_ks_raw is None:
-            top_ks: list[int | None] = [None] * n_real
-        else:
-            top_ks = [
-                int(t) if (t is not None and 0 < int(t) < K_MAX) else None
-                for t in top_ks_raw[:n_real]
-            ]
-        return temps, top_ps, top_ks
 
     def _collect_step_outputs_cg(
         self, result: Any, forward_batch: Any, requests: list

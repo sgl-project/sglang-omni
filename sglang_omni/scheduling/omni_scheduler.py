@@ -951,7 +951,9 @@ class OmniScheduler:
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
 
-    def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
+    def _run_batch_resolve(
+        self, batch, sched_output, pending_step, skip_rids: set | None = None
+    ):
         """Async: resolve the given launched step (wait event, host collect),
         emit its stream chunks (except overrun reqs in ``skip_rids``), and
         return its GenerationBatchResult.
@@ -962,10 +964,12 @@ class OmniScheduler:
         """
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
-        mr_output = self._model_runner.execute_resolve(pending_step)
+        mr_output = self._model_runner.execute_resolve(
+            pending_step, skip_rids=skip_rids
+        )
         if mr_output is None:
             return _FAILED_BATCH_RESULT
-        self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
+        self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids or ())
         return GenerationBatchResult(
             logits_output=None,
             next_token_ids=pending_step.batch_result.next_token_ids,

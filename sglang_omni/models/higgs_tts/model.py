@@ -168,6 +168,9 @@ class HiggsTTSModel(nn.Module):
         self._free_rows: list[int] = list(
             range(self._sampler_pool_max_running_requests)
         )
+        # Bumped on release: invalidates the runner's row-indices cache even
+        # if a released request id is later reused with a different row.
+        self._row_epoch = 0
         self._output_codes: dict[str, list[torch.Tensor]] = {}
         cg_device = self.backbone.model.embed_tokens.weight.device
         self._cg_row_indices = torch.zeros(
@@ -262,6 +265,7 @@ class HiggsTTSModel(nn.Module):
         row = self._rid_to_row.pop(req_id, None)
         if row is not None:
             self._free_rows.append(row)
+            self._row_epoch += 1
         self._output_codes.pop(req_id, None)
 
     def reset_request(self, req_id: str) -> None:
