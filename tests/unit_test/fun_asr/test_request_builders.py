@@ -307,6 +307,27 @@ def test_fun_asr_request_builder_rejects_audio_over_vad_limit(monkeypatch) -> No
         request_builder(payload)
 
 
+def test_fun_asr_request_builder_reports_audio_decode_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_audio",
+        lambda source: (_ for _ in ()).throw(RuntimeError("decode failed")),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=200,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-invalid-audio",
+        request=OmniRequest(inputs={"audio_bytes": b"invalid"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        request_builder(payload)
+
+
 def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
     monkeypatch,
 ) -> None:

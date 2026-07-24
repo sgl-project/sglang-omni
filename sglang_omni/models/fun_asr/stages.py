@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -34,6 +35,18 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
+
+logger = logging.getLogger(__name__)
+
+
+def _log_memory_checkpoint(checkpoint: str, gpu_id: int) -> None:
+    logger.info(
+        "Fun-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+        checkpoint,
+        gpu_id,
+        format_bytes_gib(get_process_gpu_memory_bytes(gpu_id)),
+    )
 
 
 def create_sglang_fun_asr_executor(
@@ -72,7 +85,15 @@ def create_sglang_fun_asr_executor(
     # (system/user/assistant wrappers + base prompt_text, no hotwords) instead
     # of a fixed guess, so context_length is accurate. Per-request hotword
     # overflow is guarded in the request builder against this context_length.
-    prompt_overhead_tokens = fun_asr_prompt_overhead_tokens(tokenizer)
+    prompt_overhead_tokens = max(
+        fun_asr_prompt_overhead_tokens(
+            tokenizer,
+            language=language,
+            itn=itn,
+        )
+        for language in (None, "英文")
+        for itn in (True, False)
+    )
     context_length = encoder_token_count + int(max_new_tokens) + prompt_overhead_tokens
 
     defaults: dict[str, Any] = {
@@ -85,12 +106,15 @@ def create_sglang_fun_asr_executor(
         "sampling_backend": "pytorch",
         "dtype": dtype,
     }
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    mm_backend_reason = "explicit override"
     if mm_attention_backend is not None:
         defaults["mm_attention_backend"] = mm_attention_backend
     else:
-        sm_version = get_visible_gpu_sm_version(gpu_id)
-        if sm_version is not None and sm_version >= 100:
+        mm_backend_reason = "SGLang automatic selection"
+        if sm_version == 89 or (sm_version is not None and sm_version >= 100):
             defaults["mm_attention_backend"] = "triton_attn"
+            mm_backend_reason = f"capability policy for SM{sm_version}"
     overrides = build_generation_batch_overrides(
         max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
@@ -106,6 +130,23 @@ def create_sglang_fun_asr_executor(
         model_name="Fun-ASR",
         server_args=server_args,
     )
+    logger.info(
+        "Fun-ASR runtime profile: sm=%s dtype=%s attention_backend=%s "
+        "mm_attention_backend=%s mm_backend_reason=%s cuda_graph=%s "
+        "cuda_graph_bs=%s torch_compile=%s max_running_requests=%s "
+        "mem_fraction_static=%s",
+        sm_version,
+        getattr(server_args, "dtype", None),
+        getattr(server_args, "attention_backend", None),
+        getattr(server_args, "mm_attention_backend", None),
+        mm_backend_reason,
+        not getattr(server_args, "disable_cuda_graph", False),
+        getattr(server_args, "cuda_graph_bs", None),
+        getattr(server_args, "enable_torch_compile", None),
+        getattr(server_args, "max_running_requests", None),
+        getattr(server_args, "mem_fraction_static", None),
+    )
+    _log_memory_checkpoint("pre_model_load", gpu_id)
 
     want_cuda_graph, (
         model_worker,
@@ -120,9 +161,11 @@ def create_sglang_fun_asr_executor(
         gpu_id,
         model_arch_override="FunAsrNanoForConditionalGeneration",
     )
+    _log_memory_checkpoint("post_static_allocation", gpu_id)
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
+    _log_memory_checkpoint("post_cuda_graph_capture", gpu_id)
 
     init_mm_embedding_cache(mm_embedding_cache_size_bytes)
 

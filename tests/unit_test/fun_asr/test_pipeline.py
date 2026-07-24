@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
@@ -28,6 +31,10 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
+    assert FunASRPipelineConfig.mem_fraction_role_to_stage() == {"asr": "asr"}
+    assert FunASRPipelineConfig.generation_sglang_role_to_stage() == {
+        "generation": "asr"
+    }
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunAsrNanoForConditionalGeneration")
         is FunASRPipelineConfig
@@ -71,17 +78,34 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
+def test_fun_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = ConfigManager.from_file(
+        str(repo_root / "examples/configs/fun_asr_rtx4090.yaml")
+    ).config
+    stage = config.stages[0]
+
+    factory_args = resolve_stage_static_factory_args(stage, config)
+
+    assert factory_args["dtype"] == "bfloat16"
+    assert factory_args["max_running_requests"] == 16
+    assert factory_args["enable_torch_compile"] is False
+    assert factory_args["mm_attention_backend"] == "triton_attn"
+    assert factory_args["server_args_overrides"]["mem_fraction_static"] == 0.65
+
+
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
     validations: list[dict[str, object]] = []
     adapter_kwargs: dict[str, object] = {}
+    fake_tokenizer = lambda text, add_special_tokens=False: SimpleNamespace(
+        input_ids=[0] * len(text)
+    )
 
     monkeypatch.setattr(
         fun_asr_stages.AutoTokenizer,
         "from_pretrained",
-        lambda *args, **kwargs: lambda text, add_special_tokens=False: SimpleNamespace(
-            input_ids=[0] * len(text)
-        ),
+        lambda *args, **kwargs: fake_tokenizer,
     )
     monkeypatch.setattr(
         fun_asr_stages.AutoFeatureExtractor,
@@ -91,7 +115,12 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     monkeypatch.setattr(
         fun_asr_stages,
         "get_visible_gpu_sm_version",
-        lambda gpu_id: None,
+        lambda gpu_id: 89,
+    )
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 0,
     )
     monkeypatch.setattr(fun_asr_stages, "init_mm_embedding_cache", lambda size: None)
     monkeypatch.setattr(
@@ -138,6 +167,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
+        build_kwargs["context_length"] = context_length
         return SimpleNamespace(**overrides)
 
     model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
@@ -181,6 +211,19 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert build_kwargs["mm_attention_backend"] == "triton_attn"
+    max_prompt_overhead = max(
+        fun_asr_stages.fun_asr_prompt_overhead_tokens(
+            fake_tokenizer,
+            language=language,
+            itn=itn,
+        )
+        for language in (None, "英文")
+        for itn in (True, False)
+    )
+    assert build_kwargs["context_length"] == (
+        fun_asr_stages.fun_asr_low_frame_rate_length(500) + 200 + max_prompt_overhead
+    )
     assert validations == [
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
