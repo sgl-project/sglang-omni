@@ -102,9 +102,10 @@ def test_load_seedtts_samples_stages_only_selected_rows(
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
 
-    def fake_load_dataset(repo_id: str, split: str):
+    def fake_load_dataset(repo_id: str, split: str, revision: str | None = None):
         assert repo_id == "zhaochenyang20/seed-tts-eval-arrow"
         assert split == "en"
+        assert revision == prepare.SEEDTTS_DATASET_REVISION
         return dataset
 
     monkeypatch.setitem(
@@ -122,6 +123,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         "zhaochenyang20/seed-tts-eval-arrow",
         max_samples=2,
         split="en",
+        revision=prepare.SEEDTTS_DATASET_REVISION,
     )
 
     assert dataset.selected_indices == [0, 1]
