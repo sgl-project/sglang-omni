@@ -186,8 +186,9 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
-| `eval/benchmark_asr_stability.py` | ASR functional paths and sustained mixed-load soak | Qwen3-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR, Whisper | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_stability.py` | ASR functional paths and sustained mixed-load soak | Qwen3-ASR, Fun-ASR, Whisper | `/v1/audio/transcriptions`, `/v1/audio/translations` |
+| `eval/benchmark_whisper_translation.py` | Pinned CoVoST2 zh-to-English quality and speed | Whisper | `/v1/audio/translations` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -209,14 +210,20 @@ docstring (sequential phases on CI to reduce OOM risk).
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
-or Fun-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. Use it to measure how ASR concurrency affects throughput,
-latency, and WER for a given workload.
+Fun-ASR, or Whisper router and reports WER + speed + per-worker routing balance
+per concurrency level. Use it to measure how ASR concurrency affects
+throughput, latency, and WER for a given workload.
 
 `benchmark_asr_stability.py` validates basic EN/ZH requests, SSE consistency,
 stream cancellation/reconnect, empty/corrupt/over-limit inputs, near-30-second
 audio, memory retention, and a configurable mixed-concurrency soak. Its default
-duration is 30 minutes.
+duration is 30 minutes. Whisper runs also exercise translation by default.
+
+`benchmark_whisper_translation.py` uses the pinned `lmms-lab/covost2` `zh_en`
+test split. It records complete sample scope, corpus WER, optional BLEU/chrF,
+latency, throughput, audio seconds/s, resource use, and full provenance.
+Install FFmpeg for the dataset's MP3 audio and pass `--source-language zh`
+until automatic Whisper source-language detection is available.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

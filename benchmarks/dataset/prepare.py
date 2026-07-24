@@ -3,6 +3,7 @@
 
 Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
+    python -m benchmarks.dataset.prepare --dataset covost2-zh-en
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
     python -m benchmarks.dataset.prepare --dataset seedtts-50
     python -m benchmarks.dataset.prepare --dataset mmmu
@@ -25,9 +26,13 @@ logger = logging.getLogger(__name__)
 
 SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
 SEEDTTS_DATASET_REVISION = "27f4c1adee83b5b29b7c4b375f6b976324bda308"
+COVOST2_DATASET_ID = "lmms-lab/covost2"
+COVOST2_DATASET_CONFIG = "zh_en"
+COVOST2_DATASET_REVISION = "e38a7a7fba8adcd1563b2169afc3bc7eed202a25"
 
 DATASETS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_ID,
+    "covost2-zh-en": f"{COVOST2_DATASET_ID}:{COVOST2_DATASET_CONFIG}",
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
     "seedtts-50": "zhaochenyang20/seed-tts-eval-50-arrow",
     "mmmu": "MMMU/MMMU",
@@ -45,6 +50,7 @@ DATASETS: dict[str, str] = {
 
 DATASET_REVISIONS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_REVISION,
+    "covost2-zh-en": COVOST2_DATASET_REVISION,
 }
 
 
@@ -90,6 +96,12 @@ def download_dataset(
             split=split,
             data_files={split: f"data/{split}-*.parquet"},
             verification_mode="no_checks",
+            **revision_kwargs,
+        )
+    elif repo_id == f"{COVOST2_DATASET_ID}:{COVOST2_DATASET_CONFIG}":
+        load_dataset(
+            COVOST2_DATASET_ID,
+            COVOST2_DATASET_CONFIG,
             **revision_kwargs,
         )
     else:
