@@ -111,44 +111,24 @@ By default every replica loads its own full copy of the AR backbone (7.60 GiB fo
 
 For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.
 
-The table above is a safety contract (what may alias, what must stay private, and how far each claim was validated); it deliberately carries no throughput column because performance depends on the deployment configuration (replica count, KV caps, CPU blocks, MPS), not on an architecture's share-safety. The per-model DP measurements live here:
+The table above is a safety contract (what may alias, what must stay private, and how far each claim was validated); it deliberately carries no throughput column because performance depends on the deployment configuration (replica count, KV caps, CPU blocks, MPS), not on an architecture's share-safety. The per-model measurements, sharing off versus on at each model's highest validated DP on one 80 GB H100 (post-boot VRAM, one measurement pass per cell):
 
-| Model | Same-GPU DP scaling (unshared) | Shared weights per follower | Measured shared-DP posture (80 GB H100) |
-|---|---|---|---|
-| Higgs TTS 3-4B | DP2 1.4 to 1.7x, DP3 1.8 to 2.1x (case study below); H200 DP8 validated | 7.55 GiB | throughput parity at every N in the H200 series |
-| MOSS TTS local | DP2 1.64x, DP3 2.15x (one series, 24 server cores total) | 8.44 GiB | shared DP3 at a 30000 cap runs at 66 GB with 13 GB headroom and full graphs, where unshared DP3 sits at 79.3 of 79.65 GB with partial vocoder-graph fallback; DP3 at a 60000 cap fails both ways (boot transient / arithmetic); DP4 does not fit either way |
-| MOSS Transcribe-Diarize | DP3 about 1.7x (prior series) | 1.75 GiB | shared DP2: leader 7.9, follower 6.1 GB; transcripts identical under cross-replica load |
-| Qwen3-ASR | DP3 about 2.7x (prior series) | 3.83 GiB | shared DP2: leader 9.4, follower 5.4 GB; transcripts identical |
-| Whisper large-v3-turbo | DP3 about 2.1x (prior series) | 1.51 GiB | shared DP2: leader 4.7, follower 3.0 GB; transcripts identical |
-| MOSS TTS delay | DP2 unshared: fails the equal-KV gate at these settings | 17.05 GiB | shared DP2: leader 29.9, follower 12.4 GB, both at the 30000 cap; seeded outputs byte-identical |
-| Ming TTS | not measured | n/a | n/a |
+| Model | Max DP (cap) | VRAM, IPC off | VRAM, IPC on | VRAM saved per follower (aliased weights) | Throughput, off vs on |
+|---|---|---:|---:|---:|---|
+| Higgs TTS 3-4B | DP3 (100k) | 73.7 GB | 58.1 GB | 7.55 GiB | parity at every N (H200 series) |
+| MOSS TTS local | DP3 (30k) | 78.0 GB, vocoder graphs partly eager | 61.8 GB, full graphs | 8.44 GiB | measured parity: DP2 17.9 vs 18.2, DP3 23.4 vs 23.4 agg qps |
+| MOSS TTS delay | DP2 shared; DP1 only unshared | DP2 fails the equal-KV gate (replica 1 profiles 185 of 30000 tokens) | 42.4 GB | 17.05 GiB | shared DP2 about 7.5 vs single-replica 5.7 agg qps (about +30 percent, preliminary single run); outputs byte-identical |
+| MOSS Transcribe-Diarize | DP3 (40k) | 23.9 GB | 20.2 GB | 1.75 GiB | parity: 75.7 vs 70.9 cold agg qps (192 unique clips) |
+| Qwen3-ASR 1.7B | DP3 (40k) | 28.2 GB | 20.2 GB | 3.83 GiB | parity: 67.5 vs 64.5 |
+| Whisper large-v3-turbo | DP3 (40k) | 14.1 GB | 10.7 GB | 1.51 GiB | parity: 67.8 vs 68.0 |
+| Voxtral TTS 4B | DP2 (30k) | 23.4 GB | 16.0 GB | 7.20 GiB | boot and memory validated; qps needs the model's own client |
+| Fish S2-Pro | DP2 (30k) | 38.3 GB | 30.6 GB | 7.53 GiB | boot and memory validated; qps needs the model's own client |
+| FunASR Nano | DP2 (30k) | 11.8 GB | 10.2 GB | 1.57 GiB | parity: 40.6 vs 42.5 cold agg qps |
+| Qwen3-TTS 0.6B (12Hz Base) | DP2 (30k) | 13.4 GB | 11.7 GB | 1.75 GiB | boot and memory validated; qps needs the model's own client |
+| Ming TTS 16.8B | DP of 2 or more infeasible on 80 GB | leader alone OOMs at practical fractions | follower boot transient reaches the card edge | n/a (33.6 GiB weights) | H200 follow-up |
+| Qwen3-Omni 30B-A3B | DP of 2 or more infeasible on 80 GB | about 60 GiB bf16 per weight copy | same | n/a | H200 follow-up |
 
-Scaling ratios are internal to their own measurement series (different drivers and dates); do not compare absolute throughput across rows. The pattern: for the ASR models VRAM never binds the replica count, so sharing frees memory without changing the DP ceiling; for large-backbone TTS the share is what buys the operating margin (MOSS) or the fit itself.
-
-What sharing concretely unlocked on one 80 GB H100 (sharing leaves throughput at parity at a fixed N; the wins are fit and margin):
-
-| Unlock | Unshared | Shared |
-|---|---|---|
-| MOSS delay DP1 to DP2 | infeasible: the equal-KV gate fails, replica 1 profiles 185 of 30000 tokens | DP2 boots and serves: 17.05 GiB aliased, follower 17.5 GiB lighter, seeded outputs byte-identical |
-| MOSS local DP3 made operable | boots at the card edge (79.3 of 79.65 GB) with the third replica dropping vocoder graphs to eager | 66.3 GB under load, 13.3 GB headroom, full graph coverage, aggregate +29% over DP2 |
-| ASR trio | no replica-count unlock; VRAM never binds (3 to 9 GB per replica) | followers 1.75 / 3.83 / 1.51 GiB lighter at unchanged behavior |
-| Ming TTS 16.8B | DP2 out of reach | still out of reach: the follower boot transient alone reaches the card edge; needs an H200-class card |
-
-```bash
-WEIGHT_SHARE=1 CORE_BLOCKS="0-9 10-19 20-29" MAX_TOTAL_TOKENS=100000 \
-  bash examples/mps_dp/launch.sh up
-```
-
-Replica 0 is the weight **leader**: it loads the checkpoint normally and publishes CUDA-IPC handles for every backbone parameter and buffer to `$state/ipc_weights/` (atomic write; the machinery is sglang's `MultiprocessingSerializer` / `monkey_patch_torch_reductions`, the same lineage as `update_weights_from_tensor`). Replicas 1..N-1 are **followers**: they build the module tree with `load_format=dummy` (no checkpoint I/O), then alias every parameter/buffer onto the leader's storage before KV profiling, warmup, and CUDA-graph capture — except policy-private tensors, which keep the follower's own storage and only receive the leader's bytes. KV cache, CUDA graphs, and sampler state remain private per replica. The plumbing is the `SGLANG_OMNI_WEIGHT_SHARE=leader:<dir> | follower:<dir>` environment variable; unset means today's independent-copy behavior.
-
-What this buys: N-1 fewer weight copies (15.2 GiB at DP3), which can fund a fourth replica at the same KV cap or a larger per-replica KV budget; followers also skip checkpoint I/O at startup. Two operational rules:
-
-- **Restart together.** The leader owns the shared allocations; CUDA IPC mappings die with the exporting process. If replica 0 exits, bring the whole run down (`down`) and start a new run. Never restart replicas individually.
-- **No weight updates.** In-place weight updates (`update_weights_from_disk/tensor/distributed`) are rejected while sharing is active — an update through one replica would corrupt all of them. Redeploy the run to change weights.
-
-A follower transiently holds its dummy weight copy before the alias step frees it, so the booting follower's peak briefly includes one extra weight copy on top of the already-running replicas' steady state. At tight caps this transient, not the steady state, is the binding constraint: measured with MOSS local on one 80 GB H100, shared DP3 boots at a 30000-token cap, while at a 60000 cap the third replica's boot transient overflows the card.
-
-Measured MOSS local DP3 on that H100 (24 server cores total, 30000-token cap): shared runs at 66 GB under load with 13 GB headroom and full CUDA-graph coverage, while unshared DP3 fits only at the edge, 79.3 of 79.65 GB with the third replica dropping part of its vocoder graph set to eager. Aggregate throughput was at parity between the two and about 29% above DP2; the sharing win at DP3 is the operating margin, not qps.
+VRAM saved per follower is the byte count the leader exports and each follower aliases instead of allocating; the off and on columns differ by roughly (N-1) times this value. ASR throughput used 64 unique synthesized clips per replica with the cold round reported (a warm rerun is cache-inflated). LLaDA2 is allowlisted (audited clean, including the installed dllm loop) but its checkpoint was not cached on the measurement box, so it has no measured row. Sharing leaves throughput at parity at a fixed N everywhere it was paired; the wins are fit (MOSS delay DP2, previously impossible), margin (MOSS local DP3: 13.3 GB headroom and full graphs versus 0.33 GB and graph fallback), and follower memory.
 
 ## How We Found This
 
