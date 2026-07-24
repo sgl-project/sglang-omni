@@ -113,20 +113,22 @@ For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocode
 
 The table above is a safety contract (what may alias, what must stay private, and how far each claim was validated); it deliberately carries no throughput column because performance depends on the deployment configuration (replica count, KV caps, CPU blocks, MPS), not on an architecture's share-safety. The per-model measurements, sharing off versus on at each model's highest validated DP on one 80 GB H100 (post-boot VRAM, one measurement pass per cell):
 
-| Model | Max DP (cap) | VRAM, IPC off | VRAM, IPC on | VRAM saved per follower (aliased weights) | Throughput, off vs on |
-|---|---|---:|---:|---:|---|
-| Higgs TTS 3-4B | DP3 (100k) | 73.7 GB | 58.1 GB | 7.55 GiB | parity at every N (H200 series) |
-| MOSS TTS local | DP3 (30k) | 78.0 GB, vocoder graphs partly eager | 61.8 GB, full graphs | 8.44 GiB | measured parity: DP2 17.9 vs 18.2, DP3 23.4 vs 23.4 agg qps |
-| MOSS TTS delay | DP2 shared; DP1 only unshared | DP2 fails the equal-KV gate (replica 1 profiles 185 of 30000 tokens) | 42.4 GB | 17.05 GiB | shared DP2 about 7.5 vs single-replica 5.7 agg qps (about +30 percent, preliminary single run); outputs byte-identical |
-| MOSS Transcribe-Diarize | DP3 (40k) | 23.9 GB | 20.2 GB | 1.75 GiB | parity: 75.7 vs 70.9 cold agg qps (192 unique clips) |
-| Qwen3-ASR 1.7B | DP3 (40k) | 28.2 GB | 20.2 GB | 3.83 GiB | parity: 67.5 vs 64.5 |
-| Whisper large-v3-turbo | DP3 (40k) | 14.1 GB | 10.7 GB | 1.51 GiB | parity: 67.8 vs 68.0 |
-| Voxtral TTS 4B | DP2 (30k) | 23.4 GB | 16.0 GB | 7.20 GiB | boot and memory validated; qps needs the model's own client |
-| Fish S2-Pro | DP2 (30k) | 38.3 GB | 30.6 GB | 7.53 GiB | boot and memory validated; qps needs the model's own client |
-| FunASR Nano | DP2 (30k) | 11.8 GB | 10.2 GB | 1.57 GiB | parity: 40.6 vs 42.5 cold agg qps |
-| Qwen3-TTS 0.6B (12Hz Base) | DP2 (30k) | 13.4 GB | 11.7 GB | 1.75 GiB | boot and memory validated; qps needs the model's own client |
-| Ming TTS 16.8B | DP of 2 or more infeasible on 80 GB | leader alone OOMs at practical fractions | follower boot transient reaches the card edge | n/a (33.6 GiB weights) | H200 follow-up |
-| Qwen3-Omni 30B-A3B | DP of 2 or more infeasible on 80 GB | about 60 GiB bf16 per weight copy | same | n/a | H200 follow-up |
+| Model | Validated DP, IPC off | Validated DP, IPC on | VRAM, off | VRAM, on | Saved per follower | Throughput, off vs on |
+|---|---|---|---:|---:|---:|---|
+| Higgs TTS 3-4B | DP3 (100k cap; H200 DP8) | DP3, fit relaxed | 73.7 GB | 58.1 GB | 7.55 GiB | parity at every N (H200 series) |
+| MOSS TTS local | DP3 at the card edge, vocoder graphs partly eager | DP3 with 13.3 GB headroom, full graphs | 78.0 GB | 61.8 GB | 8.44 GiB | measured parity: DP2 17.9 vs 18.2, DP3 23.4 vs 23.4 agg qps |
+| MOSS TTS delay | **DP1** (DP2 fails the equal-KV gate: replica 1 profiles 185 of 30000 tokens) | **DP2** | n/a | 42.4 GB | 17.05 GiB | shared DP2 about 7.5 vs single-replica 5.7 agg qps (about +30 percent, preliminary single run); outputs byte-identical |
+| MOSS Transcribe-Diarize | DP3 (40k cap) | DP3 | 23.9 GB | 20.2 GB | 1.75 GiB | parity: 75.7 vs 70.9 cold agg qps (192 unique clips) |
+| Qwen3-ASR 1.7B | DP3 (40k cap) | DP3 | 28.2 GB | 20.2 GB | 3.83 GiB | parity: 67.5 vs 64.5 |
+| Whisper large-v3-turbo | DP3 (40k cap) | DP3 | 14.1 GB | 10.7 GB | 1.51 GiB | parity: 67.8 vs 68.0 |
+| Voxtral TTS 4B | DP2 (30k cap) | DP2 | 23.4 GB | 16.0 GB | 7.20 GiB | boot and memory validated; qps needs the model's own client |
+| Fish S2-Pro | DP2 (30k cap) | DP2 | 38.3 GB | 30.6 GB | 7.53 GiB | boot and memory validated; qps needs the model's own client |
+| FunASR Nano | DP2 (30k cap) | DP2 | 11.8 GB | 10.2 GB | 1.57 GiB | parity: 40.6 vs 42.5 cold agg qps |
+| Qwen3-TTS 0.6B (12Hz Base) | DP2 (30k cap) | DP2 | 13.4 GB | 11.7 GB | 1.75 GiB | boot and memory validated; qps needs its own client |
+| Ming TTS 16.8B | none (leader alone OOMs at practical fractions) | none (follower boot transient reaches the card edge) | n/a | n/a | n/a | H200 follow-up |
+| Qwen3-Omni 30B-A3B | none (about 60 GiB bf16 per weight copy) | none | n/a | n/a | n/a | H200 follow-up |
+
+The validated-DP columns show the highest configuration each mode booted and served in these runs. For the ASR models and the small TTS models the ceiling is host-bound, not VRAM-bound, so sharing does not move it; sharing moves the ceiling exactly where weights bind: MOSS delay (DP1 to DP2) and MOSS local (edge DP3 to operable DP3). Throughput parity at a fixed N is the expected and desired result: replicas execute the same kernels over the same weight values either way, so sharing is free; the throughput gains come from the extra replicas or KV the freed memory funds (delay DP2 about +30 percent over its single replica, local DP3 +29 percent over DP2).
 
 VRAM saved per follower is the byte count the leader exports and each follower aliases instead of allocating; the off and on columns differ by roughly (N-1) times this value. ASR throughput used 64 unique synthesized clips per replica with the cold round reported (a warm rerun is cache-inflated). LLaDA2 is allowlisted (audited clean, including the installed dllm loop) but its checkpoint was not cached on the measurement box, so it has no measured row. Sharing leaves throughput at parity at a fixed N everywhere it was paired; the wins are fit (MOSS delay DP2, previously impossible), margin (MOSS local DP3: 13.3 GB headroom and full graphs versus 0.33 GB and graph fallback), and follower memory.
 
