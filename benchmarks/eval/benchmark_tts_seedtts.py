@@ -234,7 +234,7 @@ class TtsSeedttsBenchmarkConfig:
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
-    # Skip this many samples before taking max_samples — lets N concurrent
+    # Note (Yueying Li): skip this many samples before taking max_samples — lets N concurrent
     # clients replay DISJOINT dataset shards (offset i*max_samples) so shared
     # radix/fingerprint caches don't inflate multi-client throughput.
     sample_offset: int = 0

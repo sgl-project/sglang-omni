@@ -165,7 +165,7 @@ class StageConfig(BaseModel):
     # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
     runtime_arg_map: dict[str, str] = Field(default_factory=dict)
-    # Per-stage env defaults applied in this stage's worker process at spawn
+    # Note (Yueying Li): per-stage env defaults applied in this stage's worker process at spawn
     # (merged over the pipeline-level env_defaults; never overrides os.environ).
     env: dict[str, str] = Field(default_factory=dict)
 

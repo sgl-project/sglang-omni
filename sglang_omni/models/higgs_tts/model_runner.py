@@ -56,7 +56,7 @@ class HiggsTTSModelRunner(ModelRunner):
         # Ping-pong pinned host buffers for the async-decode rollout-logprob D2H.
         self._logprob_host_buffers: list[torch.Tensor] | None = None
         self._logprob_slot = 0
-        # Sync-free decode launch (see _populate_cg_buffers): skip the
+        # Note (Yueying Li): sync-free decode launch (see _populate_cg_buffers): skip the
         # composition-invariant sampling-param extraction/upload when the batch
         # composition is unchanged since the previous decode step.
         self._syncfree_launch: bool = _syncfree_launch_enabled()
@@ -187,7 +187,7 @@ class HiggsTTSModelRunner(ModelRunner):
 
         model._sampler_pool.reset_row(model._padding_row)
 
-        # A rid absent from the pool map is a fresh acquisition: the rid may be
+        # Note (Yueying Li): a rid absent from the pool map is a fresh acquisition: the rid may be
         # a client-supplied reuse of a finished request's id, and LIFO row
         # recycling makes (rid, row, bs) collide with the stale key — force a
         # rebuild so the new request cannot inherit cached params/redirects.
@@ -195,20 +195,20 @@ class HiggsTTSModelRunner(ModelRunner):
             self._cg_launch_key = None
 
         rows_py: list[int] = [model.acquire_row(req.request_id) for req in requests]
-        # Sync-free launch cache: temperature/top_p/top_k/row-index are
+        # Note (Yueying Li): sync-free launch cache: temperature/top_p/top_k/row-index are
         # per-request constants, so the four H2D uploads below (and the
         # blocking D2H reads inside _extract_decode_sampling_params) need to
         # rerun only when the batch composition changes. The key is
         # order-sensitive and includes the pool rows (recomputed from
         # acquire_row every step), so admission / finish / retract / abort /
-        # reorder / row re-allocation all miss; ``bs`` covers the padding-row
+        # reorder / row re-allocation all miss; bs covers the padding-row
         # count. On a hit the buffers still hold last step's values: the only
         # other in-place writer is the lookahead done-row guard below, whose
         # padding redirect must persist exactly as long as the finished
         # request stays in the batch — i.e. until the key changes.
         launch_key = (tuple(req.request_id for req in requests), tuple(rows_py), bs)
         if not (self._syncfree_launch and launch_key == self._cg_launch_key):
-            self._cg_launch_key = None  # a failed rebuild must not leave a valid key
+            self._cg_launch_key = None  # Note (Yueying Li): a failed rebuild must not leave a valid key
             rows_full = rows_py + [model._padding_row] * (bs - n_real)
             model._cg_row_indices[:bs] = torch.tensor(
                 rows_full, dtype=torch.long, device=model._cg_row_indices.device

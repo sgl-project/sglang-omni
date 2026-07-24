@@ -154,7 +154,7 @@ def test_pool_gathers_still_run_on_hit():
     reqs = _reqs("a", "b")
     runner._populate_cg_buffers(fb, reqs)
     row_a = model._rid_to_row["a"]
-    # Simulate the previous step's scatter mutating pool state.
+    # Note (Yueying Li): simulate the previous step's scatter mutating pool state.
     model._sampler_pool.delay_count[row_a] = 5
     model._sampler_pool.step_count[row_a] = 7
     runner._populate_cg_buffers(fb, reqs)  # hit
@@ -197,7 +197,7 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     assert model._cg_temperature[1:3].tolist() == [1.0, 1.0]
     assert model._cg_top_k_buf[1:3].tolist() == [K_MAX, K_MAX]
 
-    # Row re-allocation under an identical rid tuple: retract-like release,
+    # Note (Yueying Li): row re-allocation under an identical rid tuple: retract-like release,
     # another request steals the row, then "b" is re-admitted.
     old_row = model._rid_to_row["b"]
     model.release_row("b")
@@ -227,7 +227,7 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
         rows_per_step = []
         runner._populate_cg_buffers(fb, reqs, is_lookahead=True)
         rows_per_step.append(model._cg_row_indices[:2].tolist())
-        # Request "b" finishes via EOC on-GPU: the step's scatter marks its
+        # Note (Yueying Li): request "b" finishes via EOC on-GPU: the step's scatter marks its
         # pool row done while the host has not yet filtered it out.
         model._sampler_pool.generation_done[model._rid_to_row["b"]] = True
         for _ in range(2):  # overrun steps, composition unchanged
@@ -252,7 +252,7 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
 
 
 def test_rid_reuse_on_same_row_misses():
-    # Client-supplied rids may be reused after a request finishes; LIFO row
+    # Note (Yueying Li): client-supplied rids may be reused after a request finishes; LIFO row
     # recycling then reproduces the exact (rid, row, bs) key of the finished
     # request. A fresh acquisition must force a rebuild or the new request
     # inherits the old params and a stale padding-row redirect.

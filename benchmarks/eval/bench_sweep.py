@@ -148,7 +148,7 @@ for stage_index, rate in enumerate(RATES):
         for r in d["per_request"]:
             if r.get("is_success"):
                 lats.append(r["latency_s"])
-                # TTFC only exists for streaming runs; latency/RTF always do.
+                # Note (Yueying Li): TTFC only exists for streaming runs; latency/RTF always do.
                 if r.get("audio_ttfp_s") is not None:
                     ttfcs.append(r["audio_ttfp_s"])
                 if r.get("rtf") is not None:
@@ -169,8 +169,8 @@ for stage_index, rate in enumerate(RATES):
 
     stage = {
         "offered_total_rate": rate,
-        # completed / (spawn-to-exit wall): includes client startup + drain —
-        # use achieved_qps_runner for capacity claims.
+        # Note (Yueying Li): completed / (spawn-to-exit wall) includes client
+        # startup + drain; use achieved_qps_runner for capacity claims.
         "achieved_qps": round(completed / wall, 2),
         "achieved_qps_runner": round(achieved_runner, 2),
         "audio_s_per_s": round(audio_sps, 1),
