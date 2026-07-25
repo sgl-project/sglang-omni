@@ -202,7 +202,12 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
-        factory_args={"device": "cuda"},
+        factory_args={
+            "device": "cuda",
+            "stream_chunk_size": 25,
+            "left_context_size": 25,
+            "initial_codec_chunk_frames": 0,
+        },
         gpu=gpu,
         terminal=True,
         can_accept_stream_before_payload=True,
