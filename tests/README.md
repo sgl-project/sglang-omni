@@ -89,6 +89,8 @@ tests/
     │   ├── test_model.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
+    ├── arkasr/
+    │   └── test_pipeline.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
     │   ├── test_pipeline.py

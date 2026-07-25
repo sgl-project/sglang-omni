@@ -139,6 +139,15 @@ class WhisperSpecialEncoderLayer(WhisperEncoderLayer):
         hidden_states = self.activation_fn(self.fc1(hidden_states))
         hidden_states = self.fc2(hidden_states)
         hidden_states = residual + hidden_states
+        # Match the reference (modeling_audio.py): clamp after the final residual
+        # so the fp16 path stays finite. fp16 max is ~65504 and deep-layer
+        # activations can overflow to inf/NaN; bf16 has fp32-range exponents so
+        # this is a no-op there and the bf16 path is unchanged.
+        if hidden_states.dtype == torch.float16:
+            clamp_value = torch.finfo(hidden_states.dtype).max - 1000
+            hidden_states = torch.clamp(
+                hidden_states, min=-clamp_value, max=clamp_value
+            )
         return (hidden_states, None, None)
 
 

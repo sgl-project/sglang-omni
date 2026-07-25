@@ -123,3 +123,45 @@ def test_ark_suppressed_token_ids():
     assert 103 in ids and 104 in ids and 106 in ids  # <...> added tokens
     assert 105 not in ids  # normal token untouched
     assert ids == sorted(ids)  # deterministic order
+
+
+def test_ark_encoder_layer_fp16_clamp():
+    """The encoder layer must clamp the final residual under fp16 so large
+    activations stay finite (mirrors the checkpoint's modeling_audio.py). This
+    guards the exposed dtype="float16" path; the bf16 path must be a no-op.
+    """
+    from sglang_omni.models.arkasr.audio_tower import WhisperSpecialEncoderLayer
+
+    cfg = _tiny_config().whisper_config
+    cfg._attn_implementation = "sdpa"
+
+    # fp16: drive fc2 output large enough to exceed fp16 max (~65504) so an
+    # unclamped residual would overflow to +/-inf. Clamp must keep it finite.
+    torch.manual_seed(0)
+    layer = WhisperSpecialEncoderLayer(cfg).eval().half()
+    with torch.no_grad():
+        layer.fc2.weight.fill_(50.0)
+        layer.fc2.bias.fill_(65000.0)
+        x = torch.full((1, 6, cfg.d_model), 300.0, dtype=torch.float16)
+        out_fp16 = layer(x)[0]
+    assert out_fp16.dtype == torch.float16
+    assert torch.isfinite(out_fp16).all()  # clamp prevented inf/NaN
+    # clamp keeps values strictly under the fp16 ceiling (target is max-1000;
+    # fp16 rounding lands a few ulps above the exact target, still < max).
+    fp16_max = torch.finfo(torch.float16).max
+    assert out_fp16.abs().max().item() < fp16_max
+    clamp_value = fp16_max - 1000
+
+    # bf16: same weights do not overflow (fp32-range exponent) and the clamp
+    # branch never fires, so the bf16 path is unchanged.
+    torch.manual_seed(0)
+    layer_bf16 = WhisperSpecialEncoderLayer(cfg).eval().to(torch.bfloat16)
+    with torch.no_grad():
+        layer_bf16.fc2.weight.fill_(50.0)
+        layer_bf16.fc2.bias.fill_(65000.0)
+        xb = torch.full((1, 6, cfg.d_model), 300.0, dtype=torch.bfloat16)
+        out_bf16 = layer_bf16(xb)[0]
+    assert out_bf16.dtype == torch.bfloat16
+    assert torch.isfinite(out_bf16).all()
+    # bf16 values exceed the fp16 clamp ceiling -> proves no clamp was applied.
+    assert out_bf16.abs().max().item() > clamp_value
