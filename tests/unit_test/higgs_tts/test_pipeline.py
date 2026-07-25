@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import pickle
 import queue
 from types import SimpleNamespace
 from typing import Any
@@ -650,6 +651,93 @@ def test_higgs_preprocessing_url_refs_use_decoded_content_key(monkeypatch) -> No
     assert first_state.reference_code_cache_key is not None
     assert first_state.reference_code_cache_key.startswith("waveform:")
     assert first_state.reference_code_cache_key == second_state.reference_code_cache_key
+
+
+def _stub_preprocessing_tokenizer(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+    monkeypatch.setattr(
+        stages,
+        "HiggsTokenizerAdapter",
+        lambda _tokenizer: SimpleNamespace(
+            build_prompt=lambda text, num_ref_tokens, reference_text: [1, 2, 3]
+        ),
+    )
+
+
+def test_higgs_preprocessing_drops_consumed_reference_audio(monkeypatch) -> None:
+    _stub_preprocessing_tokenizer(monkeypatch)
+    monkeypatch.setattr(
+        stages,
+        "load_audio_to_24k",
+        lambda reference_audio: (np.zeros(16, dtype=np.float32), 24000),
+    )
+
+    encoded = base64.b64encode(b"\x00\x11" * 4096).decode("ascii")
+    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    payload = scheduler._fn(
+        StagePayload(
+            request_id="raw-audio",
+            request=OmniRequest(
+                inputs={
+                    "text": "hello",
+                    "references": [{"media_type": "audio/wav", "data": encoded}],
+                },
+                params={"stream": True},
+            ),
+            data={},
+        )
+    )
+
+    assert payload.request.inputs == {"text": "hello"}
+    assert payload.request.params == {"stream": True}
+    assert HiggsTtsState.from_dict(payload.data).reference_waveform is not None
+    # write_payload pickles request into the data_ref header on every
+    # cross-process hop, so the reference audio must not survive preprocessing.
+    assert encoded.encode() not in pickle.dumps(payload.request)
+
+
+def test_higgs_preprocessing_drops_consumed_reference_codes(monkeypatch) -> None:
+    _stub_preprocessing_tokenizer(monkeypatch)
+
+    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    payload = scheduler._fn(
+        StagePayload(
+            request_id="ref-codes",
+            request=OmniRequest(
+                inputs={
+                    "text": "hello",
+                    "reference_text": "speaker",
+                    "reference_codes": [[1, 2], [3, 4]],
+                },
+                params={},
+            ),
+            data={},
+        )
+    )
+
+    assert payload.request.inputs == {"text": "hello", "reference_text": "speaker"}
+    assert HiggsTtsState.from_dict(payload.data).reference_codes_delayed is not None
+
+
+def test_higgs_preprocessing_keeps_plain_text_inputs(monkeypatch) -> None:
+    _stub_preprocessing_tokenizer(monkeypatch)
+
+    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    payload = scheduler._fn(
+        StagePayload(
+            request_id="text-only",
+            request=OmniRequest(inputs="hello", params={}),
+            data={},
+        )
+    )
+
+    assert payload.request.inputs == "hello"
 
 
 def test_higgs_model_runner_marks_sampler_finish() -> None:
