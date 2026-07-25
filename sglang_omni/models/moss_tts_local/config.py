@@ -16,9 +16,9 @@ from sglang_omni.config import (
 )
 
 _PKG = "sglang_omni.models.moss_tts_local"
-# Note (Akazaakane): Preprocessing shares the AR process, so its codec memory is
-# included by process-scoped SGLang accounting. The reserve is for the isolated
-# vocoder codec instance and runtime headroom.
+# Note (Ratish): in the default single-process topology preprocessing loads before AR, so its
+# codec memory is included by process-scoped SGLang accounting
+# the reserve is for the later vocoder codec instance and runtime headroom
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
 _COLOCATED_CODEC_GPU_MEMORY_FRACTION = 0.05
 _COLOCATED_CODEC_MEM_RESERVE = 0.15

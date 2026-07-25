@@ -29,7 +29,6 @@ from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_
 from sglang_omni.scheduling.types import ARRequestData
 
 _MOSS_TTS_LOCAL_PREPARED_MARKER = "_moss_tts_local_prepared_request"
-_MOSS_TTS_LOCAL_PREPARED_PROMPT_ROWS = "_moss_tts_local_prepared_prompt_rows"
 
 
 @dataclass
@@ -112,25 +111,12 @@ def pop_prepared_moss_tts_local_request(
     if marker is None:
         return None
     prepared = _QUEUE.pop(str(marker))
-    if prepared is not None:
-        return prepared
-
-    prompt_rows = data.get(_MOSS_TTS_LOCAL_PREPARED_PROMPT_ROWS)
-    if not isinstance(prompt_rows, torch.Tensor):
+    if prepared is None:
         raise RuntimeError(
             "MOSS-TTS Local preprocessing state is missing for prepared payload "
             f"{marker!r}; the AR scheduler must not rebuild it"
         )
-    prompt_rows = prompt_rows.detach().to(dtype=torch.long, device="cpu")
-    input_ids_list = build_row_cache_key_ids(prompt_rows)
-    state = MossTTSLocalState.from_dict(data)
-    return MossTTSLocalPreparedRequest(
-        state=state,
-        input_ids_list=input_ids_list,
-        input_ids=torch.tensor(input_ids_list, dtype=torch.long),
-        prompt_rows=prompt_rows,
-        gen_kwargs=state.generation_kwargs,
-    )
+    return prepared
 
 
 def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
@@ -317,9 +303,6 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     data = prepared.state.to_dict()
     if published:
         data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
-        # Note (Akazaakane): Isolated preprocessing cannot share the process-local
-        # queue with AR, so carry the minimal prepared tensor through the relay.
-        data[_MOSS_TTS_LOCAL_PREPARED_PROMPT_ROWS] = prepared.prompt_rows
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )

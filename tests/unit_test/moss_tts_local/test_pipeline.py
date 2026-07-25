@@ -11,7 +11,6 @@ import pytest
 import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
-from sglang_omni.config import apply_stage_process_overrides
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.config.topology import build_process_topology_plan
 from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
@@ -454,15 +453,6 @@ def test_pipeline_stage_wiring():
     assert [(group.name, group.stage_names) for group in split_topology.groups] == [
         ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
     ]
-
-
-@pytest.mark.parametrize("stage_name", ["preprocessing", "vocoder"])
-def test_pipeline_stage_isolation_has_complete_memory_budget(stage_name):
-    config = MossTTSLocalPipelineConfig(model_path="dummy")
-    config = apply_stage_process_overrides(config, isolate_stages=[stage_name])
-    placement = build_stage_placement_plan(config)
-
-    build_process_topology_plan(config, placement)
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():
@@ -909,25 +899,6 @@ def test_preprocess_and_result_adapter():
         assert codes.shape == (3, N_VQ)
         assert result.data["completion_tokens"] == 3
         assert result.data["prompt_tokens"] == prepared.prompt_rows.shape[0]
-    finally:
-        clear_moss_tts_local_preprocessing_context()
-
-
-def test_prepared_request_falls_back_to_serialized_prompt_rows():
-    from sglang_omni.models.moss_tts_local.request_builders import (
-        pop_prepared_moss_tts_local_request,
-    )
-
-    set_moss_tts_local_preprocessing_context(processor=_FakeProcessor())
-    try:
-        payload = preprocess_moss_tts_local_payload(_payload())
-        clear_moss_tts_local_preprocessing_context()
-
-        prepared = pop_prepared_moss_tts_local_request(payload)
-
-        assert prepared.prompt_rows.ndim == 2
-        assert prepared.prompt_rows.shape[1] == N_VQ + 1
-        assert len(prepared.input_ids_list) == prepared.prompt_rows.shape[0]
     finally:
         clear_moss_tts_local_preprocessing_context()
 
