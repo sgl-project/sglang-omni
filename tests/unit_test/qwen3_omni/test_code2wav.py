@@ -72,7 +72,8 @@ def test_code2wav_config_stage_passes_chunk_size_args() -> None:
     stage = _code2wav_stage(gpu=0, process="code2wav")
     assert stage.factory_args["stream_chunk_size"] == 25
     assert stage.factory_args["left_context_size"] == 25
-    assert stage.factory_args["initial_codec_chunk_frames"] == 4
+    # 0 = off by default (backwards compatible); per-request opt-in still works.
+    assert stage.factory_args["initial_codec_chunk_frames"] == 0
 
 
 def _code_chunk(idx: int, *, stream: bool = True) -> StreamItem:

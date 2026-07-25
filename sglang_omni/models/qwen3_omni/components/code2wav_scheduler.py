@@ -120,16 +120,6 @@ class Code2WavScheduler(StreamingSimpleScheduler):
     def _latch_initial_chunk_frames(
         self, request_id: str, payload: StagePayload | None
     ) -> None:
-        """Resolve and cache the per-request first-chunk size.
-
-        A request may override the scheduler default via
-        ``params['initial_codec_chunk_frames']`` (0 opts out of a smaller
-        first chunk; values are clamped to ``stream_chunk_size``). Absent the
-        param, the scheduler-level ``initial_codec_chunk_frames`` default
-        applies. Called from ``on_streaming_new_request``; safe before or
-        after chunks arrive because the gate only consumes the value while
-        nothing has been emitted yet.
-        """
         if request_id in self._req_initial_chunk_frames:
             return
         params = None
@@ -148,10 +138,6 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._req_initial_chunk_frames[request_id] = resolved
 
     def _initial_chunk_frames_for(self, request_id: str) -> int:
-        """Per-request first-chunk size, falling back to the scheduler default
-        when the payload has not arrived yet (chunks may precede the payload
-        because ``can_accept_stream_before_payload`` is set). 0 means 'use the
-        steady chunk size for every chunk'."""
         resolved = self._req_initial_chunk_frames.get(request_id)
         if resolved is not None:
             return resolved
