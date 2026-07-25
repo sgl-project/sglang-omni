@@ -109,7 +109,7 @@ def _build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults=dict(config.env_defaults),
+            env_defaults={**dict(config.env_defaults), **stage_cfg.env},
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,

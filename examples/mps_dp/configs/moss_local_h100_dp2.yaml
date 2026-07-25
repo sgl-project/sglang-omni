@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 80 GB H100: two same-GPU MOSS TTS local replicas with
+# shared weights. Per-replica budget: AR 0.30 plus 0.15 codec reserve.
+
+config_cls: MossTTSLocalPipelineConfig
+name: mossl
+model_path: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+
+stage_overrides:
+  tts_engine:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.45
+      sglang_server_args:
+        mem_fraction_static: 0.30
+
+runtime_overrides:
+  tts_engine:
+    server_args_overrides:
+      max_total_tokens: 30000

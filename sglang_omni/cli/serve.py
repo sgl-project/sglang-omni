@@ -1160,8 +1160,8 @@ def serve(
             "--decode_mode",
             help=(
                 "Decode execution mode for the supported generation stage: "
-                "async|sync. Omit this flag to use the pipeline config default "
-                "(async for Higgs TTS). Async mode enables one-step lookahead, "
+                "async|sync. Omit this flag to use the model-specific pipeline "
+                "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
                 "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
                 "MOSS-Transcribe-Diarize, and Fun-ASR."

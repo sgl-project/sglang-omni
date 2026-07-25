@@ -30,6 +30,8 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "moss_tts_local": "MossTTSLocalModel",
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
+    # ZONOS2 ships params.json (model_type "zonos2") with no config.json.
+    "zonos2": "Zonos2ForCausalLM",
 }
 
 
