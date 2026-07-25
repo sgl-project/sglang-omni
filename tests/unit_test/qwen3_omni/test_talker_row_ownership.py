@@ -5,10 +5,12 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.types import ModelRunnerOutput
 
 
 def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
@@ -130,6 +132,133 @@ def test_stale_mask_cannot_leak_into_reused_slot() -> None:
     assert model._feedback_mask.tolist() == [False, True]
     assert torch.equal(model._feedback_buffer[0], torch.zeros(hidden))
     assert torch.equal(model._feedback_buffer[1], feedback1 + text1)
+
+
+def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
+    n, hidden, code_groups = 2, 3, 2
+    model = _fake_model(n, hidden, code_groups)
+    runner = _runner(model)
+
+    request_data = {
+        "r0": _data(
+            torch.full((hidden,), 1.0),
+            torch.full((hidden,), 10.0),
+        ),
+        "r1": _data(
+            torch.full((hidden,), 2.0),
+            torch.full((hidden,), 20.0),
+        ),
+    }
+    request_data["r0"].pending_text_queue.extend(
+        [torch.full((hidden,), 11.0), torch.full((hidden,), 12.0)]
+    )
+    request_data["r1"].pending_text_queue.append(torch.full((hidden,), 21.0))
+
+    previous_feedback = {
+        "r0": torch.full((hidden,), 1.0),
+        "r1": torch.full((hidden,), 2.0),
+    }
+    text_by_request = {
+        "r0": [10.0, 11.0, 12.0],
+        "r1": [20.0, 21.0],
+    }
+    step_orders = [("r0", "r1"), ("r1", "r0"), ("r0",)]
+    expected_messages: list[tuple[str, torch.Tensor]] = []
+    expected_pending_feedback: dict[str, torch.Tensor] = {}
+
+    for step, order in enumerate(step_orders):
+        requests = [_req_wrap(request_data[rid]) for rid in order]
+        schedule_batch = SimpleNamespace(
+            reqs=[SimpleNamespace(rid=rid) for rid in order],
+            output_ids=None,
+        )
+        expected_inputs = [
+            previous_feedback[rid] + torch.full((hidden,), text_by_request[rid].pop(0))
+            for rid in order
+        ]
+
+        runner._write_feedback_buffers(requests)
+
+        assert model._feedback_mask.tolist() == [True] * len(order) + [False] * (
+            n - len(order)
+        )
+        for row, expected in enumerate(expected_inputs):
+            assert torch.equal(model._feedback_buffer[row], expected)
+
+        # Match the real forward, which consumes and clears the active mask.
+        model._feedback_mask[: len(order)] = False
+        tokens = torch.tensor(
+            [step * 10 + int(rid[-1]) for rid in order], dtype=torch.long
+        )
+        codes = torch.stack(
+            [
+                torch.tensor(
+                    [step * 100 + int(rid[-1]), step * 100 + int(rid[-1]) + 1000],
+                    dtype=torch.long,
+                )
+                for rid in order
+            ]
+        )
+        embeds = torch.stack(
+            [
+                torch.full((hidden,), float(step * 100 + int(rid[-1]) + 1))
+                for rid in order
+            ]
+        )
+        model._output_codes[: len(order)] = codes
+        model._output_embeds[: len(order)] = embeds
+
+        result = SimpleNamespace()
+        runner._stage_token_ids(result, tokens)
+        runner._emit_code_chunks_and_feedback(
+            schedule_batch=schedule_batch,
+            requests=requests,
+        )
+
+        emitted = runner._outbox.sent[-len(order) :]
+        assert [message.request_id for message in emitted] == list(order)
+        for row, rid in enumerate(order):
+            assert torch.equal(emitted[row].data, codes[row])
+            assert torch.equal(request_data[rid].pending_feedback_queue[0], embeds[row])
+            previous_feedback[rid] = embeds[row].clone()
+            expected_messages.append((rid, codes[row].clone()))
+            expected_pending_feedback[rid] = embeds[row].clone()
+
+        assert len(runner._outbox.sent) == len(expected_messages)
+        for message, (expected_rid, expected_code) in zip(
+            runner._outbox.sent, expected_messages
+        ):
+            assert message.request_id == expected_rid
+            assert torch.equal(message.data, expected_code)
+        for rid, expected_feedback in expected_pending_feedback.items():
+            pending_feedback = request_data[rid].pending_feedback_queue
+            assert len(pending_feedback) == 1
+            assert torch.equal(pending_feedback[0], expected_feedback)
+
+        device_chain_tokens = tokens + 1000
+        schedule_batch.output_ids = device_chain_tokens
+        model_runner_output = ModelRunnerOutput(
+            outputs={},
+            can_run_cuda_graph=False,
+            host_token_ids=runner._resolve_host_token_ids(result),
+        )
+        batch_result = OmniScheduler._make_batch_result(
+            schedule_batch, model_runner_output
+        )
+        assert schedule_batch.input_ids.tolist() == device_chain_tokens.tolist()
+        assert batch_result.next_token_ids is model_runner_output.host_token_ids
+        assert batch_result.next_token_ids.tolist() == tokens.tolist()
+
+
+def test_make_batch_result_requires_declared_host_token_ids() -> None:
+    batch = SimpleNamespace(
+        output_ids=torch.tensor([7], dtype=torch.long),
+        input_ids=None,
+    )
+    malformed_output = SimpleNamespace(can_run_cuda_graph=False)
+
+    with pytest.raises(AttributeError, match="host_token_ids"):
+        OmniScheduler._make_batch_result(batch, malformed_output)
 
 
 class _FakeReq:

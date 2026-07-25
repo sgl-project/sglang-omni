@@ -934,7 +934,7 @@ class OmniScheduler:
             batch.input_ids = next_token_ids.to(torch.int64)
         # Note (wenyao): reuse the runner-staged pinned host copy so the mixin's
         # .tolist() is host-only; the device tensor still drives the input chain above
-        host_token_ids = getattr(mr_output, "host_token_ids", None)
+        host_token_ids = mr_output.host_token_ids
         if host_token_ids is not None:
             next_token_ids = host_token_ids
         return GenerationBatchResult(
