@@ -320,16 +320,17 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     assert "throughput_qps" in stages["fun_asr_en_speed"]["metrics"]
 
 
-def test_tune_ci_threshold_tts_config_no_longer_owns_asr_ci_stages() -> None:
+def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:
     config = yaml.safe_load((_MODELS_DIR / "tts/config.yaml").read_text())
     stages = yaml.safe_load((_MODELS_DIR / "tts/stages.yaml").read_text())
 
-    assert config["test_globs"] == ["tests/test_model/test_tts_ci.py"]
+    expected_tests = [
+        "tests/test_model/test_tts_ci.py",
+        "tests/test_model/test_tts_serving_ci.py",
+    ]
+    assert config["test_globs"] == expected_tests
     assert "test_asr_ci.py" not in config.get("gpus_per_test", {})
     assert "test_asr_ci.py" not in config.get("hf_model_ids_by_test", {})
     assert "test_asr_ci.py" not in config.get("metric_sources", {})
-    assert len(stages) == 12
-    assert all(
-        stage["test"] == "tests/test_model/test_tts_ci.py" for stage in stages.values()
-    )
+    assert {stage["test"] for stage in stages.values()} == set(expected_tests)
     assert not any(stage_key.startswith("qwen3_asr") for stage_key in stages)

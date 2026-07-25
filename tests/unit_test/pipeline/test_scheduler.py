@@ -363,6 +363,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
         def __init__(self, reqs):
             self.reqs = reqs
             self.out_cache_loc = torch.arange(100, 100 + len(reqs))
+            self.decoding_reqs = None
 
         def filter_batch(self, keep_indices=None):
             captured["keep_indices"] = keep_indices
@@ -791,6 +792,20 @@ def test_stage_output_cache_tracks_bytes_and_detaches() -> None:
 
     assert cache.get("too-large") is None
     assert cache.current_bytes == 8
+
+
+def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    shutdowns: list[None] = []
+    scheduler._running = True
+    scheduler._shutdown_lock = threading.Lock()
+    scheduler._shutdown_callback = lambda: shutdowns.append(None)
+
+    scheduler.stop()
+    scheduler.stop()
+
+    assert scheduler._running is False
+    assert shutdowns == [None]
 
 
 def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:

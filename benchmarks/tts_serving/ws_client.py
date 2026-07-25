@@ -38,6 +38,8 @@ SUPPORTED_WS_SPLIT_GRANULARITIES = {"sentence", "clause"}
 
 @dataclass
 class WebSocketAudioState:
+    request_start_s: float = 0.0
+    previous_audio_frame_s: float | None = None
     active_sentence_duration_s: float = 0.0
     active_sentence_has_signal: bool = False
     active_sentence_binary_frames: int = 0
@@ -53,6 +55,7 @@ async def run_ws_scenario(
         endpoint=scenario.endpoint,
         category=scenario.category,
         capability_key=scenario.capability_key,
+        workload=scenario.workload,
         expected_success=scenario.expect_success,
         response_format="pcm",
     )
@@ -66,6 +69,7 @@ async def run_ws_scenario(
                 scenario.script or _default_script(spec),
                 timeout_s=spec.params.timeout_s,
                 expect_success=scenario.expect_success,
+                request_start_s=start,
             )
         if scenario.capability_key == "ws.disconnect" and result.status == "ok":
             await _probe_websocket_after_disconnect(session, spec, scenario, result)
@@ -113,8 +117,11 @@ async def _run_ws_script(
     *,
     timeout_s: int,
     expect_success: bool,
+    request_start_s: float | None = None,
 ) -> None:
-    audio_state = WebSocketAudioState()
+    audio_state = WebSocketAudioState(
+        request_start_s=request_start_s or time.perf_counter()
+    )
     async with asyncio.timeout(timeout_s):
         for action in script:
             action_type = str(action.get("action"))
@@ -580,6 +587,14 @@ def _record_binary_audio(
             f"WebSocket binary audio frame is not valid PCM: {validation.error}",
         )
         return False
+    now = time.perf_counter()
+    if result.ttfa_s is None:
+        result.ttfa_s = now - audio_state.request_start_s
+        result.first_audio_payload_bytes = len(data)
+    elif audio_state.previous_audio_frame_s is not None:
+        result.inter_chunk_s.append(now - audio_state.previous_audio_frame_s)
+    audio_state.previous_audio_frame_s = now
+    result.audio_chunk_count += 1
     result.audio_bytes += len(data)
     result.ws_active_sentence_bytes += len(data)
     result.response_bytes += len(data)
@@ -632,16 +647,34 @@ async def _probe_websocket_after_disconnect(
     result: ScenarioResult,
 ) -> None:
     url = websocket_url(spec.base_url, scenario.path)
+    probe_result = ScenarioResult(
+        scenario_id=f"{scenario.id}:liveness",
+        endpoint=scenario.endpoint,
+        category="capability_probe",
+        capability_key=scenario.capability_key,
+        expected_success=True,
+        response_format="pcm",
+    )
     try:
         async with session.ws_connect(url, max_msg_size=MAX_HTTP_RESPONSE_BYTES) as ws:
             await _run_ws_script(
                 ws,
-                result,
+                probe_result,
                 _default_script(spec),
                 timeout_s=spec.params.timeout_s,
                 expect_success=True,
+                request_start_s=time.perf_counter(),
             )
-        result.ws_close_reason = "client_closed"
+        if not probe_result.success:
+            result.status = "failed"
+            result.success = False
+            result.capability = "fail"
+            result.error_type = probe_result.error_type
+            result.error_class = probe_result.error_class or "protocol_error"
+            result.error = (
+                "post-disconnect WebSocket liveness probe failed: "
+                f"{probe_result.error or probe_result.status}"
+            )
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         result.status = "transport_error"
         result.success = False

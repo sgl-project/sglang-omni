@@ -56,10 +56,12 @@ def disable_proxy() -> Generator[None, None, None]:
         os.environ.update(saved_env)
 
 
+PROXY_ENV_KEYS = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+
+
 def no_proxy_env() -> dict[str, str]:
     """Return a copy of os.environ with proxy variables removed, for subprocess use."""
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+    return {k: v for k, v in os.environ.items() if k.lower() not in PROXY_ENV_KEYS}
 
 
 def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
@@ -176,9 +178,14 @@ def start_server_from_cmd(
     timeout: int = STARTUP_TIMEOUT,
     env: dict[str, str] | None = None,
     tee: bool = False,
+    strip_proxy: bool = False,
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
     process_env = os.environ.copy()
+    if strip_proxy:
+        for key in list(process_env):
+            if key.lower() in PROXY_ENV_KEYS:
+                del process_env[key]
     if env is not None:
         process_env.update(env)
     if log_file is None:

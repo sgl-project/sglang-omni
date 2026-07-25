@@ -21,6 +21,7 @@ env:
 # Invoked by omni-ci.yaml after ASR CI. Restores omni only.
 # DAG:
 #   stage-1-non-streaming -> stage-2-streaming -> stage-3-consistency
+#     -> stage-4-serving
 
 jobs:
   stage-1-non-streaming:
@@ -197,3 +198,54 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 3 (consistency)
+
+  stage-4-serving:
+    name: stage 4 - serving stress
+    needs: stage-3-consistency
+    if: always() && !cancelled()
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 75
+    container:
+      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run TTS serving stress stage
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_serving_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TTS_SERVING_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage 4 (serving stress)
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-path-globs: |
+            */benchmark/results.json
+            */benchmark/manifest.json
+            */benchmark.wall_time.json
+          artifact-upload-name: tts-stage-serving-results
+          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-if-no-files-found: error
+          summary-only: "true"

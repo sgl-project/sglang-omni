@@ -185,12 +185,16 @@ def handle_rerun_failed_ci(
         latest_runs.append(run)
 
     rerun_count = 0
+    force_rerun_target_found = False
+    force_rerun_succeeded = False
     for run in latest_runs:
         force_full_rerun = (
             run.event == "pull_request"
             and run.name == "Omni CI"
             and force_full_omni_ci_rerun
         )
+        if force_full_rerun:
+            force_rerun_target_found = True
         if run.status in {"queued", "in_progress", "waiting", "pending", "requested"}:
             if not force_full_rerun:
                 print(
@@ -200,6 +204,7 @@ def handle_rerun_failed_ci(
                 continue
             if cancel_and_rerun_workflow(gh_repo, run):
                 rerun_count += 1
+                force_rerun_succeeded = True
             continue
 
         if run.status != "completed":
@@ -209,12 +214,20 @@ def handle_rerun_failed_ci(
             )
             continue
         if force_full_rerun:
+            if run.conclusion == "action_required":
+                print(f"Cannot rerun workflow {run.id}: GitHub approval is required.")
+                continue
             print(f"Processing full workflow rerun: {run.name} (ID: {run.id})")
             try:
-                run.rerun()
-                rerun_count += 1
+                rerun_started = run.rerun()
             except GithubException as e:
                 print(f"Failed to rerun workflow {run.id}: {e}")
+                continue
+            if not rerun_started:
+                print(f"Failed to rerun workflow {run.id}.")
+                continue
+            rerun_count += 1
+            force_rerun_succeeded = True
             continue
         if run.conclusion not in ("failure", "skipped"):
             print(
@@ -235,14 +248,24 @@ def handle_rerun_failed_ci(
         except Exception as e:
             print(f"Failed to rerun workflow {run.id}: {e}")
 
+    if force_full_omni_ci_rerun and not force_rerun_target_found:
+        print(
+            "No Omni CI pull_request workflow run exists for the current PR head "
+            f"{head_sha}."
+        )
+
+    action_succeeded = (
+        force_rerun_succeeded if force_full_omni_ci_rerun else rerun_count > 0
+    )
     if rerun_count > 0:
         print(f"Triggered rerun for {rerun_count} workflows.")
-        if react_on_success:
-            comment.create_reaction("+1")
-        return True
+    elif force_full_omni_ci_rerun:
+        print("No eligible workflows were rerun.")
     else:
         print("No failed or skipped workflows found to rerun.")
-        return False
+    if action_succeeded and react_on_success:
+        comment.create_reaction("+1")
+    return action_succeeded
 
 
 def main():
@@ -325,12 +348,15 @@ def main():
             comment,
             user_perms,
             react_on_success=False,
-            force_full_omni_ci_rerun=tagged and tts_model_target is not None,
+            force_full_omni_ci_rerun=tagged,
         )
 
-        if tagged or rerun:
+        if rerun:
             comment.create_reaction("+1")
             print("Combined command processed successfully; reaction added.")
+        elif tagged:
+            comment.create_reaction("confused")
+            print("Labels were updated, but Omni CI was not restarted.")
         else:
             print("Combined command finished, but no actions were taken.")
 
