@@ -17,6 +17,7 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.scheduling.streaming_vocoder import resolve_initial_codec_chunk_frames
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         device: str,
         stream_chunk_size: int = 10,
         left_context_size: int = 25,
+        initial_codec_chunk_frames: int = 0,
         sample_rate: int = 24000,
         codec_eos_token_id: int = 2150,
     ):
@@ -66,6 +68,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
+        self._initial_codec_chunk_frames = max(int(initial_codec_chunk_frames), 0)
         self._sample_rate = sample_rate
         self._codec_eos_token_id = codec_eos_token_id
         self._total_upsample = int(model.total_upsample)
@@ -75,6 +78,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._emitted: dict[str, int] = {}
         self._audio_chunks: dict[str, list[np.ndarray]] = {}
         self._stream_enabled: dict[str, bool] = {}
+        self._initial_chunk_frames: dict[str, int] = {}
         super().__init__(compute_fn=None)
         self._payloads = self._stream_payloads
 
@@ -83,14 +87,20 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         return True
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        del payload
         self._ensure_request_state(request_id)
+        override = resolve_initial_codec_chunk_frames(
+            payload.request.params, steady_chunk_frames=self._stream_chunk_size
+        )
+        self._initial_chunk_frames[request_id] = (
+            override or self._initial_codec_chunk_frames
+        )
 
     def clear_stream_state(self, request_id: str) -> None:
         self._code_chunks.pop(request_id, None)
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
         self._stream_enabled.pop(request_id, None)
+        self._initial_chunk_frames.pop(request_id, None)
 
     def _fail_request(self, request_id: str, error: Exception) -> None:
         self.outbox.put(
@@ -148,8 +158,14 @@ class Code2WavScheduler(StreamingSimpleScheduler):
                 )
             return []
         self._code_chunks[request_id].append(codes)
-        ready = len(self._code_chunks[request_id]) - self._emitted[request_id]
-        if ready >= self._stream_chunk_size:
+        emitted = self._emitted[request_id]
+        # Before payload arrives, fall back to stage default (not 0).
+        initial = self._initial_chunk_frames.get(
+            request_id, self._initial_codec_chunk_frames
+        )
+        threshold = initial if emitted == 0 and initial > 0 else self._stream_chunk_size
+        ready = len(self._code_chunks[request_id]) - emitted
+        if ready >= threshold:
             return self._decode_and_emit(request_id)
         return []
 
@@ -276,6 +292,7 @@ def create_code2wav_scheduler(
     gpu_id: int | None = None,
     stream_chunk_size: int = 10,
     left_context_size: int = 25,
+    initial_codec_chunk_frames: int = 0,
 ):
     """Factory: returns Code2WavScheduler."""
     if gpu_id is not None:
@@ -286,4 +303,5 @@ def create_code2wav_scheduler(
         device=device,
         stream_chunk_size=stream_chunk_size,
         left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_codec_chunk_frames,
     )
