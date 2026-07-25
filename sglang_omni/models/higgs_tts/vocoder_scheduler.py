@@ -27,6 +27,15 @@ DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE = 75
 DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES = 20
 
 
+def _delayed_rows_tensor(rows: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:
+    """``[L, N]`` int64 view of delayed rows."""
+    if isinstance(rows, torch.Tensor):
+        return rows.to(dtype=torch.long)
+    if len(rows) == 0:
+        return torch.empty((0, 0), dtype=torch.long)
+    return torch.stack(rows, dim=0).to(torch.long)
+
+
 @dataclass
 class _HiggsStreamState:
     delayed_rows: list[torch.Tensor] = field(default_factory=list)
@@ -383,9 +392,11 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
     ) -> tuple[HiggsTtsState, torch.Tensor | None]:
         state = HiggsTtsState.from_dict(payload.data)
         delayed_rows = state.output_codes_delayed
-        if not delayed_rows:
+        if delayed_rows is None:
             return state, None
-        delayed_LN = torch.tensor(delayed_rows, dtype=torch.long)
+        delayed_LN = _delayed_rows_tensor(delayed_rows)
+        if delayed_LN.numel() == 0:
+            return state, None
         if delayed_LN.shape[0] < state.num_codebooks:
             return state, None
         codes_TN = reverse_delay_pattern(delayed_LN)
@@ -416,30 +427,30 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
 
     def _decode_state_to_audio(self, state: HiggsTtsState) -> torch.Tensor | None:
         delayed_rows = state.output_codes_delayed
-        if not delayed_rows:
+        if delayed_rows is None:
             return None
-        rows = [torch.tensor(row, dtype=torch.long) for row in delayed_rows]
-        if len(rows) < int(state.num_codebooks):
+        delayed_LN = _delayed_rows_tensor(delayed_rows)
+        if delayed_LN.numel() == 0 or delayed_LN.shape[0] < int(state.num_codebooks):
             return None
         return self._decode_delayed_rows(
-            rows,
+            delayed_LN,
             num_codebooks=int(state.num_codebooks),
             codebook_size=int(state.codebook_size),
         )
 
     def _decode_delayed_rows(
         self,
-        rows: list[torch.Tensor],
+        rows: torch.Tensor | list[torch.Tensor],
         *,
         num_codebooks: int,
         codebook_size: int,
     ) -> torch.Tensor:
-        if len(rows) < int(num_codebooks):
+        delayed_LN = _delayed_rows_tensor(rows)
+        if delayed_LN.shape[0] < int(num_codebooks):
             raise ValueError(
                 f"Higgs delayed rows must include at least {num_codebooks} rows, "
-                f"got {len(rows)}"
+                f"got {delayed_LN.shape[0]}"
             )
-        delayed_LN = torch.stack(rows, dim=0).to(torch.long)
         codes_TN = reverse_delay_pattern(delayed_LN)
         codec_vocab = int(codebook_size) - 2
         codes_TN = torch.where(

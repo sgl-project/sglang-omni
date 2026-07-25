@@ -428,7 +428,7 @@ class HiggsTTSModelRunner(ModelRunner):
             data = sched_req.data
             end = offset + int(data.req.extend_range.length)
             codes_rows = data.reference_codes_delayed
-            if not codes_rows:
+            if codes_rows is None:
                 offset = end
                 continue
 
@@ -438,7 +438,6 @@ class HiggsTTSModelRunner(ModelRunner):
                 offset = end
                 continue
 
-            codes = torch.tensor(codes_rows, dtype=torch.long, device=device)
             # Radix reuse can begin this request's live extension after a
             # cached reference-audio prefix. Derive the code row from the
             # absolute prompt position instead of request-local progress.
@@ -446,14 +445,19 @@ class HiggsTTSModelRunner(ModelRunner):
                 token == AUDIO_PLACEHOLDER_ID
                 for token in data.req.origin_input_ids[: data.req.extend_range.start]
             )
-            if consumed + n_placeholders > len(codes_rows):
+            if consumed + n_placeholders > int(codes_rows.shape[0]):
                 raise RuntimeError(
                     "Higgs reference-code rows do not cover the live audio "
                     f"placeholders: consumed={consumed}, "
-                    f"live={n_placeholders}, available={len(codes_rows)}"
+                    f"live={n_placeholders}, available={codes_rows.shape[0]}"
                 )
+            # Slice on the host so only the rows this extend needs cross to device.
+            codes = codes_rows[consumed : consumed + n_placeholders].to(
+                device=device,
+                dtype=torch.long,
+            )
             with torch.no_grad():
-                embed = fused_embed(codes[consumed : consumed + n_placeholders])
+                embed = fused_embed(codes)
             mask_idx = full_mask.nonzero(as_tuple=True)[0] + offset
             text_embeds[mask_idx] = embed.to(text_embeds.dtype)
             offset = end

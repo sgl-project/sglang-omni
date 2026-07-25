@@ -41,6 +41,7 @@ from sglang_omni.models.higgs_tts.utils import (
     load_audio_to_24k,
     resolve_checkpoint,
     to_codes_TN,
+    to_cpu_code_rows,
 )
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
@@ -331,7 +332,7 @@ def create_preprocessing_executor(
                 num_ref_tokens=delayed.shape[0],
                 reference_text=reference_text,
             )
-            ref_codes_delayed: list[list[int]] | None = delayed.tolist()
+            ref_codes_delayed: torch.Tensor | None = to_cpu_code_rows(delayed)
             target_text_for_encoder = None
             reference_text_for_encoder = None
         elif waveform_tensor is None:
@@ -430,21 +431,22 @@ def create_audio_encoder_executor(
             else None
         )
         if cached_delayed is not None:
-            delayed_rows = cached_delayed.tolist()
+            delayed_rows = to_cpu_code_rows(cached_delayed)
         else:
             delayed = reference_service.get_or_encode(
                 _HiggsReferenceInput(waveform, state.reference_code_cache_key),
                 desc=state.uploaded_voice_name or "ad-hoc reference",
             )
-            delayed_rows = delayed.tolist()
+            delayed_rows = to_cpu_code_rows(delayed)
             if speaker_code_cache_key is not None:
                 speaker_cache.put(
-                    speaker_code_cache_key, delayed.detach().to("cpu", torch.int32)
+                    speaker_code_cache_key,
+                    to_cpu_code_rows(delayed_rows, dtype=torch.int32),
                 )
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",
-            num_ref_tokens=len(delayed_rows),
+            num_ref_tokens=int(delayed_rows.shape[0]),
             reference_text=state.reference_text,
         )
         state.reference_waveform = None

@@ -157,7 +157,9 @@ def test_higgs_prefill_embeddings_follow_radix_prefix_position() -> None:
                 origin_input_ids=origin_input_ids,
                 extend_range=SimpleNamespace(start=2, length=2),
             ),
-            reference_codes_delayed=[[10, 11], [20, 21], [30, 31]],
+            reference_codes_delayed=torch.tensor(
+                [[10, 11], [20, 21], [30, 31]], dtype=torch.int32
+            ),
         )
     )
     forward_batch = SimpleNamespace(
@@ -793,9 +795,13 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     second = encode(make_payload("second"))
 
     assert fake_codec.calls == 1
-    assert (
-        first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
-    )
+    first_codes = first.data["reference_codes_delayed"]
+    second_codes = second.data["reference_codes_delayed"]
+    assert torch.equal(first_codes, second_codes)
+    assert first_codes.device.type == "cpu"
+    assert first_codes.dtype == torch.long
+    assert first_codes.is_contiguous()
+    assert first_codes.data_ptr() != second_codes.data_ptr()
     assert first.data["prompt_token_ids"] == [5, 3, 7]
     assert second.data["prompt_token_ids"] == [5, 3, 7]
     assert "reference_waveform" not in second.data
@@ -890,16 +896,62 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
     )
 
     assert fake_codec.calls == 2
-    assert (
-        first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
+    first_codes = first.data["reference_codes_delayed"]
+    assert torch.equal(first_codes, second.data["reference_codes_delayed"])
+    assert torch.equal(third.data["reference_codes_delayed"], first_codes)
+    assert not torch.equal(
+        reuploaded.data["reference_codes_delayed"],
+        first_codes,
     )
-    assert (
-        third.data["reference_codes_delayed"] == first.data["reference_codes_delayed"]
+
+
+def test_higgs_preprocessing_keeps_preencoded_codes_as_cpu_tensor(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
     )
-    assert (
-        reuploaded.data["reference_codes_delayed"]
-        != first.data["reference_codes_delayed"]
+
+    class FakeAdapter:
+        def __init__(self, _tokenizer) -> None:
+            pass
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [len(text), num_ref_tokens, len(reference_text or "")]
+
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    source_codes = torch.tensor([[1, 2], [3, 4]], dtype=torch.int32)
+    payload = StagePayload(
+        request_id="preencoded",
+        request=OmniRequest(
+            inputs={
+                "text": "hello",
+                "reference_text": "speaker",
+                "reference_codes": source_codes,
+            },
+            params={},
+        ),
+        data={},
     )
+
+    result = scheduler._fn(payload)
+    delayed_codes = result.data["reference_codes_delayed"]
+
+    assert torch.equal(
+        delayed_codes,
+        apply_delay_pattern(source_codes.to(torch.long)),
+    )
+    assert delayed_codes.device.type == "cpu"
+    assert delayed_codes.dtype == torch.long
+    assert delayed_codes.is_contiguous()
+    assert result.data["prompt_token_ids"] == [5, 3, 7]
 
 
 def test_higgs_preprocessing_uses_waveform_cache(monkeypatch, tmp_path) -> None:
@@ -1554,6 +1606,70 @@ def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
     assert result.next_token_ids.tolist() == [0]
 
 
+class _CaptureEmbedding(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dtypes: list[torch.dtype] = []
+
+    def forward(self, codes: torch.Tensor) -> torch.Tensor:
+        self.dtypes.append(codes.dtype)
+        return codes.to(torch.float32)
+
+
+def _make_prefill_runner(capture: _CaptureEmbedding) -> HiggsTTSModelRunner:
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        backbone=SimpleNamespace(
+            model=SimpleNamespace(embed_tokens=torch.nn.Embedding(16, 3))
+        ),
+        multimodal_embedding=SimpleNamespace(modality_embedding_0=capture),
+    )
+    return runner
+
+
+# Prompt with a leading text token so placeholder rows are not simply position:
+# row k belongs to the k-th -100, not to token index k.
+_PREFILL_PROMPT_IDS = torch.tensor([2, -100, -100, -100, -100], dtype=torch.long)
+_PREFILL_REF_CODES = torch.tensor(
+    [
+        [0, 1024, 1025],
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+    ],
+    dtype=torch.int32,
+)
+
+
+def test_higgs_model_runner_prefill_slices_tensor_reference_codes() -> None:
+    """Reference rows arrive as a CPU tensor. Only the slice this extend needs
+    crosses to the device, and the fused embedding always sees int64 rows
+    whatever dtype the frontend stored them in."""
+    capture = _CaptureEmbedding()
+    runner = _make_prefill_runner(capture)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            origin_input_ids=_PREFILL_PROMPT_IDS.tolist(),
+            extend_range=SimpleNamespace(start=0, length=3),
+        ),
+        reference_codes_delayed=_PREFILL_REF_CODES,
+    )
+
+    first_embeds = runner._build_prefill_input_embeds(
+        SimpleNamespace(input_ids=_PREFILL_PROMPT_IDS[:3]),
+        [SimpleNamespace(data=data)],
+    )
+    data.req.extend_range = SimpleNamespace(start=3, length=2)
+    second_embeds = runner._build_prefill_input_embeds(
+        SimpleNamespace(input_ids=_PREFILL_PROMPT_IDS[3:]),
+        [SimpleNamespace(data=data)],
+    )
+
+    assert torch.equal(first_embeds[1:], _PREFILL_REF_CODES[:2].to(torch.float32))
+    assert torch.equal(second_embeds, _PREFILL_REF_CODES[2:].to(torch.float32))
+    assert capture.dtypes == [torch.long, torch.long]
+
+
 def _make_payload(request_id: str, state: HiggsTtsState) -> StagePayload:
     return StagePayload(
         request_id=request_id,
@@ -1616,7 +1732,9 @@ def test_higgs_tts_vocoder_batches_decode_requests(
     p1 = _make_payload(
         "r1",
         HiggsTtsState(
-            output_codes_delayed=[[i % 100] * 8 for i in range(10)],
+            output_codes_delayed=torch.tensor(
+                [[i % 100] * 8 for i in range(10)], dtype=torch.int32
+            ),
             prompt_tokens=5,
             completion_tokens=10,
             engine_time_s=0.5,
@@ -1625,7 +1743,9 @@ def test_higgs_tts_vocoder_batches_decode_requests(
     p2 = _make_payload(
         "r2",
         HiggsTtsState(
-            output_codes_delayed=[[i % 100] * 8 for i in range(12)],
+            output_codes_delayed=torch.tensor(
+                [[i % 100] * 8 for i in range(12)], dtype=torch.long
+            ),
         ),
     )
 
@@ -1650,14 +1770,23 @@ def test_higgs_tts_vocoder_batch_handles_empty_items(
     )
 
     payloads = [
-        _make_payload("r-empty", HiggsTtsState(output_codes_delayed=None)),
+        _make_payload(
+            "r-empty",
+            HiggsTtsState(output_codes_delayed=torch.empty((0, 8), dtype=torch.long)),
+        ),
         _make_payload(
             "r-short",
-            HiggsTtsState(output_codes_delayed=[[0] * 8 for _ in range(3)]),
+            HiggsTtsState(
+                output_codes_delayed=torch.zeros((3, 8), dtype=torch.long),
+            ),
         ),
         _make_payload(
             "r-valid",
-            HiggsTtsState(output_codes_delayed=[[i % 100] * 8 for i in range(10)]),
+            HiggsTtsState(
+                output_codes_delayed=torch.tensor(
+                    [[i % 100] * 8 for i in range(10)], dtype=torch.long
+                ),
+            ),
         ),
     ]
 
@@ -1723,7 +1852,7 @@ def _higgs_stream_payload(
     initial_codec_chunk_frames: int | None = None,
 ) -> StagePayload:
     state = HiggsTtsState(
-        output_codes_delayed=delayed_rows,
+        output_codes_delayed=torch.tensor(delayed_rows, dtype=torch.long),
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         prompt_tokens=2,
