@@ -186,7 +186,22 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
-        factory_args={"device": "cuda"},
+        factory_args={
+            "device": "cuda",
+            # Steady streaming chunk (frames per decode window after the first).
+            # Larger than the legacy default of 10 to amortize vocoder calls
+            # during steady-state; paired with a small first chunk below.
+            "stream_chunk_size": 25,
+            # Left context (overlap frames) reused across adjacent windows.
+            # The trim in _decode_incremental removes the overlap so the seam
+            # is sample-accurate; chunk 1 naturally gets min(left, start)=0.
+            "left_context_size": 25,
+            # First-chunk size: a small initial decode window lowers first-audio
+            # latency. Per-request override via
+            # params['initial_codec_chunk_frames'] (0 opts out; clamped to
+            # stream_chunk_size). 0 here = 'use steady size for every chunk'.
+            "initial_codec_chunk_frames": 4,
+        },
         gpu=gpu,
         terminal=True,
         can_accept_stream_before_payload=True,
