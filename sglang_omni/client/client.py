@@ -503,9 +503,6 @@ class Client:
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text
-            finish_reason = result.get("finish_reason")
-            if finish_reason is not None:
-                chunk.finish_reason = finish_reason
             token_ids = result.get("token_ids")
             if token_ids is not None:
                 if not isinstance(token_ids, (list, tuple)):
