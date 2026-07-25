@@ -1248,6 +1248,8 @@ def _register_speech(app: FastAPI) -> None:
         headers = {
             "Content-Disposition": f'attachment; filename="speech.{result.format}"',
         }
+        if result.finish_reason is not None:
+            headers["X-Finish-Reason"] = str(result.finish_reason)
         if result.usage is not None:
             if result.usage.prompt_tokens is not None:
                 headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)

@@ -1059,18 +1059,54 @@ def apply_sglang_qwen3_tts_result(
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
 
+    finish_reason = _resolve_qwen3_tts_finish_reason(data)
+
+    result_data: dict[str, Any] = {
+        "audio_codes": codes,
+        "ref_code_len": data.ref_code_len,
+        "prompt_tokens": data.ref_code_len,
+        "completion_tokens": len(data.output_codes),
+        "engine_time_s": time.perf_counter() - data.engine_start_s,
+        "sample_rate": 24000,
+    }
+    if finish_reason is not None:
+        result_data["finish_reason"] = finish_reason
+
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={
-            "audio_codes": codes,
-            "ref_code_len": data.ref_code_len,
-            "prompt_tokens": data.ref_code_len,
-            "completion_tokens": len(data.output_codes),
-            "engine_time_s": time.perf_counter() - data.engine_start_s,
-            "sample_rate": 24000,
-        },
+        data=result_data,
     )
+
+
+def _resolve_qwen3_tts_finish_reason(
+    data: Qwen3TTSSGLangRequestData,
+) -> str | None:
+    """Normalize the generation termination reason ("stop"/"length"/"abort")."""
+    raw = getattr(data, "finish_reason", None)
+    if raw is None and getattr(data, "req", None) is not None:
+        req_reason = getattr(data.req, "finished_reason", None)
+        if req_reason is not None and hasattr(req_reason, "to_json"):
+            raw = req_reason.to_json().get("type")
+        elif req_reason is not None:
+            raw = str(req_reason)
+
+    normalized = str(raw).lower() if raw is not None else None
+    if normalized is not None:
+        if "length" in normalized:
+            return "length"
+        if "abort" in normalized:
+            return "abort"
+        if "error" in normalized:
+            return "error"
+        if "stop" in normalized:
+            return "stop"
+        return str(raw)
+
+    max_new_tokens = getattr(data, "max_new_tokens", None)
+    if max_new_tokens is not None and len(data.output_codes) >= int(max_new_tokens):
+        return "length"
+    return "stop"
 
 
 def make_qwen3_tts_scheduler_adapters(*, model: Any, wrapper: Any):

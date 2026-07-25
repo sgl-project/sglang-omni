@@ -32,3 +32,4 @@ class Qwen3TTSState(DeclarativeStateBase):
     audio_codes: Any | None = wire(None, codec="tensor_list")
     ref_code_len: int = wire(0, emit="truthy", codec="int")
     audio_samples: Any | None = wire(None, codec="tensor_list")
+    finish_reason: str | None = None

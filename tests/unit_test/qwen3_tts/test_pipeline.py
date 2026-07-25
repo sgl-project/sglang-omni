@@ -1020,6 +1020,90 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
     assert result.data["completion_tokens"] == 2
 
 
+def test_qwen3_tts_result_adapter_propagates_scheduler_finish_reason() -> None:
+    """The scheduler stores a normalized reason on data.finish_reason before the
+    result adapter runs; it must reach the result so /v1/audio/speech can tell a
+    budget-truncated response from one that ended on codec EOS."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+        finish_reason="length",
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_result_adapter_reports_stop_reason() -> None:
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+        finish_reason="stop",
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "stop"
+
+
+def test_qwen3_tts_result_adapter_reads_finish_reason_from_req() -> None:
+    """Falls back to the SGLang Req's finished_reason.to_json()['type'] when the
+    scheduler-normalized field is absent (mirrors Ming-TTS)."""
+
+    class _FinishLength:
+        def to_json(self):
+            return {"type": "length", "length": 2048}
+
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[], finished_reason=_FinishLength()),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+        finish_reason=None,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_result_adapter_infers_length_at_budget() -> None:
+    """When no reason is available at all but generation hit the token budget,
+    infer 'length' so a truncated response is never reported as a clean stop."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1]), torch.tensor([2]), torch.tensor([3])],
+        stage_payload=payload,
+        finish_reason=None,
+        max_new_tokens=3,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_result_adapter_defaults_to_stop_below_budget() -> None:
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1])],
+        stage_payload=payload,
+        finish_reason=None,
+        max_new_tokens=2048,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "stop"
+
+
 def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

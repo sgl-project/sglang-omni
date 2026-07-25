@@ -229,6 +229,7 @@ class SpeechResult:
     format: str
     sample_rate: int | None = None
     usage: UsageInfo | None = None
+    finish_reason: str | None = None
 
 
 class ClientError(Exception):

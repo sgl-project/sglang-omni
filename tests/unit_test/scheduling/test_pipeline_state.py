@@ -344,6 +344,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 audio_codes=torch.tensor([[1, 2], [3, 4]]),
                 ref_code_len=1,
                 audio_samples=torch.tensor([0.5, 0.6]),
+                finish_reason="length",
                 prompt_tokens=9,
                 completion_tokens=11,
                 engine_time_s=0.625,
