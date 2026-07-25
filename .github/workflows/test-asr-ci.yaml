@@ -20,7 +20,6 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
-  QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # DAG:
@@ -30,7 +29,8 @@ jobs:
   stage-1-multi-speaker:
     name: stage 1 - MOSS-TD multi-speaker
     runs-on: [self-hosted, h100]
-    timeout-minutes: 30
+    # movies800 + stream + aishell4_long + googletime on DP=2.
+    timeout-minutes: 90
     container:
       image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
       options: >-
@@ -57,8 +57,6 @@ jobs:
             pytest tests/test_model/test_asr_ci_multi_speaker.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_HUB_DISABLE_XET: "1"
-          HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: ${{ env.MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -71,14 +69,18 @@ jobs:
           artifact-path-globs: |
             */moss_transcribe_diarize_results.json
             */moss_transcribe_diarize_stream_results.json
+            */moss_transcribe_diarize_aishell4_long_results.json
+            */moss_transcribe_diarize_googletime_results.json
           artifact-upload-name: asr-stage-multi-speaker-results
           artifact-upload-path: |
             /tmp/**/moss_transcribe_diarize_results.json
             /tmp/**/moss_transcribe_diarize_stream_results.json
+            /tmp/**/moss_transcribe_diarize_aishell4_long_results.json
+            /tmp/**/moss_transcribe_diarize_googletime_results.json
           summary-only: "true"
 
   stage-2-seedtts:
-    name: stage 2 - Qwen3-ASR SeedTTS
+    name: stage 2 - Fun-ASR SeedTTS
     needs: stage-1-multi-speaker
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
@@ -100,28 +102,28 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run Qwen3-ASR SeedTTS CI
+      - name: Run Fun-ASR SeedTTS CI
         shell: bash
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_asr_ci_seedtts.py -v -s -x
+            pytest tests/test_model/test_asr_ci_fun_asr.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
-          HF_HUB_DISABLE_XET: "1"
-          HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          QWEN3_ASR_MODEL_PATH: ${{ env.QWEN3_ASR_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: ASR stage 2 (Qwen3-ASR SeedTTS)
+          stage-label: ASR stage 2 (Fun-ASR SeedTTS)
           artifact-path-globs: |
-            */qwen3_asr_results.json
+            */fun_asr_results.json
+            */fun_asr_zh_results.json
           artifact-upload-name: asr-stage-seedtts-results
-          artifact-upload-path: /tmp/**/qwen3_asr_results.json
+          artifact-upload-path: |
+            /tmp/**/fun_asr_results.json
+            /tmp/**/fun_asr_zh_results.json
           summary-only: "true"

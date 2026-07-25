@@ -13,7 +13,6 @@ from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import Aud
 from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
 from sglang_omni.models.ming_tts.payload_types import (
     MingTTSState,
-    decode_generated_latents,
     load_ming_tts_state,
     store_ming_tts_state,
 )
@@ -39,7 +38,7 @@ class MingAudioDecoder(torch.nn.Module):
         device: str | torch.device = "cuda:0",
         dtype: str | torch.dtype = "bfloat16",
     ) -> "MingAudioDecoder":
-        if audio_config.semantic_module_kwargs is not None:
+        if getattr(audio_config, "semantic_module_kwargs", None) is not None:
             raise ValueError(
                 "Ming-Omni-TTS serving currently uses the talker AudioVAE "
                 "encode/decode path and does not support semantic_module_kwargs"
@@ -152,11 +151,12 @@ class MingTTSBatchVocoder(BatchVocoderBase):
 
     def prepare_item(self, payload: StagePayload) -> tuple[MingTTSState, torch.Tensor]:
         state = load_ming_tts_state(payload)
-        latents = decode_generated_latents(
-            state,
-            device=self._decoder.device,
-            dtype=self._decoder.dtype,
-        )
+        latents = state.generated_latents
+        if latents is not None:
+            latents = latents.to(
+                device=self._decoder.device,
+                dtype=self._decoder.dtype,
+            )
         return state, latents
 
     def _decode_item(
@@ -187,9 +187,7 @@ class MingTTSBatchVocoder(BatchVocoderBase):
         state.sample_rate = int(sample_rate)
         state.duration_s = float(wav.numel() / int(sample_rate))
         if not self._keep_latents:
-            state.generated_latents_bytes = None
-            state.generated_latents_shape = None
-            state.generated_latents_dtype = None
+            state.generated_latents = None
 
         payload = store_ming_tts_state(payload, state)
         payload.data.update(

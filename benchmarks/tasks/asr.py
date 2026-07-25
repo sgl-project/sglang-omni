@@ -3,7 +3,7 @@
 
 Owns the ASR/WER primitives shared by the standalone ASR benchmark
 (benchmarks/eval/benchmark_asr_seedtts.py), the ASR CI gate
-(tests/test_model/test_asr_ci_seedtts.py), the TTS WER stage
+(tests/test_model/test_asr_ci_fun_asr.py), the TTS WER stage
 (benchmarks.tasks.tts.run_seedtts_transcribe), and the talker WER paths.
 """
 
@@ -48,6 +48,7 @@ OMNI_WHISPER_SAMPLE_RATE = 16000
 
 QWEN3_ASR_MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 QWEN3_ASR_REQUEST_TIMEOUT_S = 300
+FUN_ASR_MODEL_PATH = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 # note (aaron): ASR transcription fan-out for WER, not TTS generation concurrency.
 DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.
@@ -71,7 +72,13 @@ def _get_en_normalizer():
 
 def normalize_text(text: str, lang: str) -> str:
     if lang == "zh":
-        from zhon.hanzi import punctuation as zh_punct
+        try:
+            from zhon.hanzi import punctuation as zh_punct
+        except ImportError as exc:
+            raise RuntimeError(
+                "Chinese WER requires zhon (zhon.hanzi.punctuation). "
+                "Install pinned deps with uv pip install -e ."
+            ) from exc
 
         all_punct = zh_punct + string.punctuation
         for ch in all_punct:

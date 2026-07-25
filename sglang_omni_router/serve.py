@@ -32,6 +32,54 @@ from sglang_omni_router.launcher import (
 
 logger = logging.getLogger("sglang_omni_router.serve")
 
+# Note (Jiaxin Deng): each in-flight request holds a client and an upstream
+# socket; the headroom covers listeners, health checks, and log files.
+_NOFILE_HEADROOM = 64
+
+
+def _read_nofile_soft_limit() -> int | None:
+    try:
+        import resource
+    except ImportError:  # non-POSIX platform, nothing to check
+        return None
+    soft_limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    if soft_limit == resource.RLIM_INFINITY:
+        return None
+    return soft_limit
+
+
+def check_file_descriptor_limit(config: RouterConfig, *, strict: bool = False) -> None:
+    soft_limit = _read_nofile_soft_limit()
+    if soft_limit is None:
+        return
+    pool_size = config.upstream_pool_size
+    required = 2 * pool_size + _NOFILE_HEADROOM
+    if soft_limit >= required:
+        return
+    # Note (Jiaxin Deng): name the flag that binds the pool max(); an explicit
+    # --max-connections == --max-inflight tie binds both (lowering either alone
+    # leaves the other holding the pool), while a derived max_inflight (unset)
+    # follows --max-connections.
+    max_connections = config.max_connections
+    max_inflight = config.effective_max_inflight
+    if config.max_inflight is not None and max_inflight == max_connections:
+        remediation = "lower both --max-connections and --max-inflight"
+    elif max_inflight > max_connections:
+        remediation = "lower --max-inflight"
+    else:
+        remediation = "lower --max-connections"
+    message = (
+        f"nofile soft limit {soft_limit} is below {required} "
+        f"(2 x upstream_pool_size={pool_size} + {_NOFILE_HEADROOM} headroom, where "
+        f"upstream_pool_size = max(--max-connections={max_connections}, "
+        f"--max-inflight={max_inflight})); under load the relay exhausts file "
+        f"descriptors and clients see raw connection errors. Raise the limit "
+        f"(ulimit -n {required}) or {remediation}."
+    )
+    if strict:
+        raise ValueError(message)
+    logger.warning(message)
+
 
 def normalize_log_level(log_level: str) -> str:
     normalized_level = log_level.upper()
@@ -84,9 +132,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Pool-wide cap on concurrent upstream connections across all workers "
-            "(one shared client). Default: auto, 128 x workers, capped at 4096. "
-            "Explicit values below 64 x workers can under-feed the pool."
+            "Admission bound: maximum concurrent in-flight model requests "
+            "before the router fast-rejects with 503. Default: auto, "
+            "128 x workers, capped at 4096. The upstream connection pool is "
+            "sized to at least this value, so admitted requests never queue "
+            "inside the pool. Explicit values below 64 x workers can "
+            "under-feed the pool."
+        ),
+    )
+    parser.add_argument(
+        "--max-inflight",
+        type=int,
+        default=None,
+        help=(
+            "Advanced override: decouple the admission bound from "
+            "--max-connections (default: equal to it). The upstream pool is "
+            "sized to the larger of the two."
         ),
     )
     parser.add_argument("--health-failure-threshold", type=int, default=3)
@@ -95,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-check-interval-secs", type=int, default=10)
     parser.add_argument("--health-check-endpoint", default="/health")
     parser.add_argument("--log-level", default="info")
+    parser.add_argument(
+        "--strict-limits",
+        action="store_true",
+        help=(
+            "Fail startup instead of warning when the nofile soft limit is too "
+            "low for the resolved upstream pool size "
+            "(max of --max-connections and --max-inflight)."
+        ),
+    )
     parser.add_argument(
         "--admin-api-key",
         default=None,
@@ -156,6 +226,7 @@ def build_config_from_args(
         request_timeout_secs=args.request_timeout_secs,
         max_payload_size=args.max_payload_size,
         max_connections=args.max_connections,
+        max_inflight=args.max_inflight,
         health_failure_threshold=args.health_failure_threshold,
         health_success_threshold=args.health_success_threshold,
         health_check_timeout_secs=args.health_check_timeout_secs,
@@ -202,12 +273,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         else:
             config = build_config_from_args(args)
 
+        check_file_descriptor_limit(config, strict=args.strict_limits)
         logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
         logger.info(
             f"Router configuration: workers={len(config.workers)} | "
             f"policy={config.policy} | "
             f"max_payload_size={config.max_payload_size} | "
             f"max_connections={config.max_connections} | "
+            f"max_inflight={config.effective_max_inflight} | "
+            f"upstream_pool={config.upstream_pool_size} | "
             f"health_failure_threshold={config.health_failure_threshold} | "
             f"health_success_threshold={config.health_success_threshold} | "
             f"health_check_endpoint={config.health_check_endpoint} | "

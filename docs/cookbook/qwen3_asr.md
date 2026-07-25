@@ -79,12 +79,9 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
 ```
 
-ASR CI reuses the same single-pass benchmark entry point and applies WER,
-throughput, latency, and RTF thresholds.
-
-```bash
-QWEN3_ASR_CI_CONCURRENCY=32 pytest tests/test_model/test_asr_ci_seedtts.py -s
-```
+The ASR CI gate runs Fun-ASR-Nano on this same benchmark entry point
+(`tests/test_model/test_asr_ci_fun_asr.py`). Qwen3-ASR remains the
+transcriber for the TTS and talker WER stages.
 
 ## Known Limitations
 

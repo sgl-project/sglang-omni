@@ -178,6 +178,27 @@ def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
     assert client_impl.requests == []
 
 
+def test_batch_speech_applies_pipeline_reference_requirements() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="audar-tts",
+            required_speech_reference_count=1,
+            speech_reference_text_required=True,
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"items": [{"input": "missing reference"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["error"]["param"] == "items.0.ref_audio"
+    assert client_impl.requests == []
+
+
 def test_batch_speech_uses_served_model_and_default_voice() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))

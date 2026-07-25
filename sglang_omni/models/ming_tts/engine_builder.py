@@ -64,11 +64,6 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         self.tokenizer: Any = None
         self._model_runner: Any = None
 
-    def resolve_checkpoint(self, model_path: str) -> str:
-        from sglang_omni.models.ming_tts import stages as ming_stages
-
-        return ming_stages._resolve_checkpoint(model_path)
-
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
 

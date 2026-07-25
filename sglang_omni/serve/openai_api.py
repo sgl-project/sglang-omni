@@ -127,6 +127,7 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",
     "max_new_tokens must be",
+    "multimodal_train_inputs",
 )
 
 
@@ -184,6 +185,9 @@ def create_app(
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
+    required_speech_reference_count: int | None = None,
+    speech_reference_text_required: bool = False,
+    additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -200,6 +204,11 @@ def create_app(
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
             lowered into backend reference-audio requests.
+        required_speech_reference_count: Exact reference count required before
+            dispatching a speech request to the backend.
+        speech_reference_text_required: Whether each speech reference requires
+            a transcript.
+        additional_speech_languages: Pipeline-specific accepted languages.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` TTS
@@ -238,6 +247,9 @@ def create_app(
             requires_uploaded_voice_for_named_voice
         ),
         supports_uploaded_voice_references=supports_uploaded_voice_references,
+        required_speech_reference_count=required_speech_reference_count,
+        speech_reference_text_required=speech_reference_text_required,
+        additional_speech_languages=additional_speech_languages,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -1078,6 +1090,11 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         max_tokens=sampling.max_new_tokens,
         output_modalities=(
             req.output_modalities if req.output_modalities is not None else ["text"]
+        ),
+        multimodal_train_inputs=(
+            req.multimodal_train_inputs.model_dump()
+            if req.multimodal_train_inputs is not None
+            else None
         ),
         metadata=metadata,
     )

@@ -50,9 +50,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TTS_LANGUAGE_ALIASES = {
-    language.lower(): language for language in SUPPORTED_TTS_LANGUAGES
-}
 _TTS_TASK_TYPE_ALIASES = {
     task_type.replace("_", "").replace("-", "").lower(): task_type
     for task_type in SUPPORTED_TTS_TASK_TYPES
@@ -87,6 +84,9 @@ class SpeechRequestValidator:
         default_model: str,
         requires_uploaded_voice_for_named_voice: bool = False,
         supports_uploaded_voice_references: bool = True,
+        required_speech_reference_count: int | None = None,
+        speech_reference_text_required: bool = False,
+        additional_speech_languages: frozenset[str] = frozenset(),
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
@@ -94,6 +94,11 @@ class SpeechRequestValidator:
     ) -> None:
         if tts_batch_max_items < 1:
             raise ValueError("tts_batch_max_items must be greater than 0")
+        if (
+            required_speech_reference_count is not None
+            and required_speech_reference_count < 1
+        ):
+            raise ValueError("required_speech_reference_count must be greater than 0")
         self.default_model = default_model
         self.requires_uploaded_voice_for_named_voice = (
             requires_uploaded_voice_for_named_voice
@@ -102,6 +107,14 @@ class SpeechRequestValidator:
             supports_uploaded_voice_references
             or requires_uploaded_voice_for_named_voice
         )
+        self.required_speech_reference_count = required_speech_reference_count
+        self.speech_reference_text_required = speech_reference_text_required
+        supported_languages = SUPPORTED_TTS_LANGUAGES | frozenset(
+            additional_speech_languages
+        )
+        self._tts_language_aliases = {
+            language.lower(): language for language in supported_languages
+        }
         self.voice_store = voice_store
         self.reference_connector = MultiModalResourceConnector(
             allowed_local_media_path=allowed_local_media_path,
@@ -182,6 +195,7 @@ class SpeechRequestValidator:
 
         updates = self._prepare_generation_updates(request)
         prepared_references = self._prepare_reference_fields(request)
+        self._validate_speech_references(prepared_references)
         updates.update(prepared_references.request_updates)
         prepared_request = request.model_copy(update=updates)
         return PreparedSpeechRequest(
@@ -223,7 +237,7 @@ class SpeechRequestValidator:
         if request.task_type is not None:
             updates["task_type"] = _normalize_task_type(request.task_type)
         if request.language is not None:
-            updates["language"] = _normalize_language(request.language)
+            updates["language"] = self._normalize_language(request.language)
 
         _validate_positive_int(request.max_new_tokens, param="max_new_tokens")
         _validate_positive_int(request.token_count, param="token_count")
@@ -234,6 +248,31 @@ class SpeechRequestValidator:
         )
         _validate_non_negative_int(request.seed, param="seed")
         return updates
+
+    def _normalize_language(self, value: str) -> str:
+        normalized = self._tts_language_aliases.get(value.strip().lower())
+        if normalized is None:
+            supported = ", ".join(sorted(self._tts_language_aliases.values()))
+            raise bad_request(f"language must be one of: {supported}", param="language")
+        return normalized
+
+    def _validate_speech_references(
+        self, prepared_references: PreparedSpeechReferences
+    ) -> None:
+        references = prepared_references.reference_descriptors
+        required_count = self.required_speech_reference_count
+        if required_count is not None and len(references) != required_count:
+            count = "one" if required_count == 1 else str(required_count)
+            param = "ref_audio" if not references else "references"
+            raise bad_request(
+                f"exactly {count} speech reference is required",
+                param=param,
+            )
+        if self.speech_reference_text_required and any(
+            not isinstance(reference.get("text"), str) or not reference["text"].strip()
+            for reference in references
+        ):
+            raise bad_request("reference transcript is required", param="ref_text")
 
     def _prepare_reference_fields(
         self, request: CreateSpeechRequest
@@ -443,6 +482,7 @@ class SpeechRequestValidator:
                 reference_tasks[cache_key] = task
 
         prepared_references = await task
+        self._validate_speech_references(prepared_references)
         updates.update(prepared_references.request_updates)
         return PreparedSpeechRequest(
             request=request.model_copy(update=updates),
@@ -508,7 +548,7 @@ class SpeechRequestValidator:
             else None
         )
         if batch.language is not None:
-            _normalize_language(batch.language)
+            self._normalize_language(batch.language)
         _validate_positive_int(batch.max_new_tokens, param="max_new_tokens")
         _validate_positive_int(batch.token_count, param="token_count")
         _validate_positive_int(batch.duration_tokens, param="duration_tokens")
@@ -964,14 +1004,6 @@ def _validate_reference_size(size_bytes: int, *, param: str) -> None:
             f"{param} must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
             param=param,
         )
-
-
-def _normalize_language(value: str) -> str:
-    normalized = _TTS_LANGUAGE_ALIASES.get(value.strip().lower())
-    if normalized is None:
-        supported = ", ".join(sorted(SUPPORTED_TTS_LANGUAGES))
-        raise bad_request(f"language must be one of: {supported}", param="language")
-    return normalized
 
 
 def _normalize_task_type(value: str) -> str:

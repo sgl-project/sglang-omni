@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import logging
 import queue
 from types import SimpleNamespace
 from typing import Any
@@ -245,6 +246,44 @@ def test_higgs_tts_engine_abort_callback_requires_model() -> None:
     abort_callback("req-1")
 
     assert reset_calls == ["req-1"]
+
+
+def _make_higgs_builder(**kwargs):
+    from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
+
+    return HiggsTtsEngineBuilder(
+        max_new_tokens=2048,
+        max_running_requests=64,
+        cuda_graph_max_bs=64,
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2, -0.1])
+def test_higgs_tts_engine_rejects_out_of_range_memory_fraction(fraction) -> None:
+    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+        _make_higgs_builder(total_gpu_memory_fraction=fraction)
+
+
+def test_higgs_tts_engine_memory_budget_override_is_loud(caplog) -> None:
+    builder = _make_higgs_builder(total_gpu_memory_fraction=0.8)
+    assert builder.generation_defaults(dtype="bfloat16")["mem_fraction_static"] == 0.8
+
+    # Note: (Jiaxin Deng) the matching no-CLI-flag path stays silent.
+    with caplog.at_level(logging.WARNING):
+        builder.adjust_overrides({"mem_fraction_static": 0.8})
+        _make_higgs_builder().adjust_overrides({"mem_fraction_static": 0.9})
+    assert not caplog.records
+
+    # Note: (Jiaxin Deng) a diverging override (e.g. --talker-mem-fraction-static)
+    # wins but warns instead of silently shadowing the placement budget.
+    with caplog.at_level(logging.WARNING):
+        builder.adjust_overrides({"mem_fraction_static": 0.3})
+    assert any(
+        "total_gpu_memory_fraction" in record.message for record in caplog.records
+    )
 
 
 def test_higgs_reference_code_cache_key_round_trip() -> None:

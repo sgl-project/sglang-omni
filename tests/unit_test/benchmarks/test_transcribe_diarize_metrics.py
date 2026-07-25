@@ -61,11 +61,24 @@ def test_parse_args_uses_aishell4_long_preset() -> None:
     assert args.output_dir == module.AISHELL4_LONG_OUTPUT_DIR
 
 
+def test_parse_args_uses_googletime_preset() -> None:
+    module = _load_benchmark_module()
+
+    args = module.parse_args(["--dataset", "googletime"])
+
+    assert args.dataset == "googletime"
+    assert args.repo_id == module.GOOGLETIME_REPO_ID
+    assert args.max_samples is None
+    assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
+    assert args.output_dir == module.GOOGLETIME_OUTPUT_DIR
+
+
 @pytest.mark.parametrize(
     ("dataset", "expected_sample_count"),
     [
         ("movies800times", 800),
         ("aishell4_long", 20),
+        ("googletime", 25),
     ],
 )
 def test_load_samples_uses_dataset_expected_sample_count(

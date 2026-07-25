@@ -234,6 +234,10 @@ class TtsSeedttsBenchmarkConfig:
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
+    # Note (Yueying Li): skip this many samples before taking max_samples — lets N concurrent
+    # clients replay DISJOINT dataset shards (offset i*max_samples) so shared
+    # radix/fingerprint caches don't inflate multi-client throughput.
+    sample_offset: int = 0
     max_new_tokens: int | None = 2048
     token_count: int | str | None = None
     temperature: float | None = None
@@ -293,6 +297,7 @@ def _build_results_config(
         "instructions": config.instructions,
         "stream": config.stream,
         "max_samples": config.max_samples,
+        "sample_offset": config.sample_offset,
         "max_new_tokens": config.max_new_tokens,
         "seed": config.seed,
         "token_count": config.token_count,
@@ -315,8 +320,22 @@ async def run_tts_seedtts_benchmark(
     base_url = build_base_url(config)
     api_url = f"{base_url}/v1/audio/speech"
 
-    samples = load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
-    logger.info(f"Prepared {len(samples)} requests")
+    # Note (Jiaxin Deng): a negative offset would silently slice from the end
+    # instead of skipping the first N, contaminating the shard it claims to take.
+    if config.sample_offset < 0:
+        raise ValueError(
+            f"--sample-offset must be non-negative, got {config.sample_offset}"
+        )
+    if config.sample_offset:
+        head = config.sample_offset + (config.max_samples or 0)
+        samples = load_seedtts_samples(
+            config.meta, head if config.max_samples else None, split=config.lang
+        )[config.sample_offset :]
+    else:
+        samples = load_seedtts_samples(
+            config.meta, config.max_samples, split=config.lang
+        )
+    logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
     os.makedirs(save_audio_dir, exist_ok=True)
@@ -414,6 +433,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
+        sample_offset=args.sample_offset,
         max_new_tokens=args.max_new_tokens,
         token_count=args.token_count,
         temperature=args.temperature,
@@ -535,6 +555,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--sample-offset", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument(
         "--token-count",

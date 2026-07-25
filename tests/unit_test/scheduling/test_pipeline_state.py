@@ -86,6 +86,7 @@ def test_serialize_value_detaches_tensor_to_cpu() -> None:
 def test_tts_pipeline_states_share_base_usage_contract() -> None:
     import dataclasses
 
+    from sglang_omni.models.audar_tts.payload_types import AudarTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -93,9 +94,11 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+    from sglang_omni.models.zonos2.payload_types import Zonos2State
 
     # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
+        AudarTTSState,
         S2ProState,
         HiggsTtsState,
         MingTTSState,
@@ -103,6 +106,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         MossTTSLocalState,
         Qwen3TTSState,
         VoxtralTTSState,
+        Zonos2State,
     )
     base_fields = {
         "sample_rate",
@@ -177,6 +181,7 @@ def _assert_restored_fields(
 
 
 def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
+    from sglang_omni.models.audar_tts.payload_types import AudarTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -184,6 +189,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+    from sglang_omni.models.zonos2.payload_types import Zonos2State
 
     # Each (state, overrides) pair is checked two ways: the
     # to_dict()-vs-to_dict() comparison (wire-format stability across a
@@ -196,6 +202,20 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     # their tensor fields natively. Note the float32 tensor -> Python list
     # conversions derive expected values through the same precision path.
     cases: list[tuple[PipelineStateBase, dict[str, Any]]] = [
+        (
+            AudarTTSState(
+                target_text="target",
+                reference_text="reference",
+                reference_audio={"bytes": b"wav"},
+                prompt="prompt",
+                audio_codes=[1, 2, 3],
+                generation_kwargs={"temperature": 0.7},
+                prompt_tokens=4,
+                completion_tokens=6,
+                engine_time_s=0.125,
+            ),
+            {},
+        ),
         (
             S2ProState(
                 input_ids=[1, 2, 3],
@@ -250,19 +270,16 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 audio_token_position=3,
                 prompt_latent_start_position=4,
                 prompt_latent_token_count=2,
-                spk_emb_bytes=b"\x00" * 8,
-                spk_emb_shape=[1, 2],
-                spk_emb_dtype="float32",
-                prompt_latent_bytes=b"\x00" * 8,
-                prompt_latent_shape=[1, 1, 2],
-                prompt_latent_dtype="float32",
+                spk_emb=torch.zeros(1, 2),
+                prompt_latent=torch.zeros(1, 1, 2),
                 max_decode_steps=16,
                 cfg=1.5,
                 sigma=0.2,
                 temperature=0.7,
-                generated_latents_bytes=b"\x00" * 16,
-                generated_latents_shape=[2, 1, 2],
-                generated_latents_dtype="float32",
+                generated_latents=torch.tensor(
+                    [[[0.5, -1.25]], [[2.0, 0.0]]],
+                    dtype=torch.float32,
+                ),
                 generated_last_chunk=[False, True],
                 stop_step=1,
                 finish_reason="stop",
@@ -351,6 +368,27 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 "audio_samples": torch.tensor([0.7, 0.8]).tolist(),
             },
         ),
+        (
+            Zonos2State(
+                text="hello",
+                ref_audio={"path": "ref.wav"},
+                ref_text="reference",
+                language="en",
+                speaking_rate=1.2,
+                conditioning={"emotion": "calm"},
+                input_ids=torch.zeros((3, 10), dtype=torch.long),
+                speaker_token_positions=[0],
+                speaker_emb=torch.tensor([0.1, 0.2, 0.3]),
+                speaker_fingerprint="wav:abc",
+                audio_codes=torch.tensor([[1, 2], [3, 4]]),
+                eos_frame=2,
+                generation_kwargs={"cfg_scale": 2.0},
+                prompt_tokens=3,
+                completion_tokens=2,
+                engine_time_s=0.125,
+            ),
+            {},
+        ),
     ]
 
     for state, overrides in cases:
@@ -388,6 +426,26 @@ def test_typed_tensor_picks_int32_for_large_values() -> None:
 
     assert data["audio_codes_dtype"] == "int32"
     assert decode_typed_tensor(data, key="audio_codes").tolist() == [[70000, 1]]
+
+
+def test_typed_tensor_float_round_trip_transports_as_float32() -> None:
+    latents = torch.tensor([[0.5, -1.25], [2.0, 0.0]], dtype=torch.bfloat16)
+
+    data = encode_typed_tensor(latents, key="latents")
+
+    assert data["latents_dtype"] == "float32"
+    restored = decode_typed_tensor(data, key="latents")
+    assert restored.dtype == torch.float32
+    assert restored.tolist() == [[0.5, -1.25], [2.0, 0.0]]
+
+
+def test_typed_tensor_empty_float_round_trip_keeps_shape() -> None:
+    data = encode_typed_tensor(torch.empty((0, 2, 3)), key="latents")
+
+    assert data["latents_dtype"] == "float32"
+    restored = decode_typed_tensor(data, key="latents")
+    assert restored.shape == (0, 2, 3)
+    assert restored.dtype == torch.float32
 
 
 def test_typed_tensor_legacy_list_fallback_and_missing() -> None:

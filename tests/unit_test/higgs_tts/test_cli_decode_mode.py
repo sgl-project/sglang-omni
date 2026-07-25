@@ -13,6 +13,7 @@ import typer
 
 from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
@@ -90,7 +91,7 @@ def test_decode_mode_cli_rejects_unsupported_config():
     config = Qwen3TTSPipelineConfig(model_path="dummy")
     with pytest.raises(
         typer.BadParameter,
-        match="Higgs TTS, MOSS-TTS-Local, and MOSS-Transcribe-Diarize",
+        match="Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, and Fun-ASR",
     ):
         apply_decode_mode_cli_overrides(
             config, decode_mode="sync", async_lookahead_min_batch_size=None
@@ -108,6 +109,23 @@ def test_decode_mode_cli_applies_to_moss_transcribe_diarize_asr_stage():
     args = resolve_stage_factory_args(stage, config)
     assert args["enable_async_decode"] is True
     assert args["async_decode_min_batch_size"] == 4
+
+
+def test_decode_mode_cli_applies_to_fun_asr_stage():
+    config = FunASRPipelineConfig(model_path="dummy")
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="async", async_lookahead_min_batch_size=4
+    )
+    stage = next(s for s in config.stages if s.name == "asr")
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is True
+    assert args["async_decode_min_batch_size"] == 4
+
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="sync", async_lookahead_min_batch_size=None
+    )
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is False
 
 
 def test_decode_mode_cli_absent_is_noop_without_tts_engine_stage():

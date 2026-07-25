@@ -54,6 +54,26 @@ Reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
 Both models saturated near concurrency 32. Fun-ASR completed every request at
 all measured levels; Qwen3-ASR skipped 72 requests at concurrency 64 on the
 single GPU. Audio duration was 4.69 s mean, 4.53 s median, and 8.81 s maximum.
+
+Reference results on a single H100 80 GB (bf16, DP=1, three repeats plus one
+discarded warmup per level):
+
+* Fun-ASR-Nano on the full SeedTTS EN set (1088 clips): 26.44 samples/s with
+  0.038 s mean latency at concurrency 1, saturating near 127.5 samples/s at
+  concurrency 16 through 32, with 0.0171 corpus WER at every level through 32.
+  The higher concurrency 64 figure counts completed samples only, after
+  request shedding.
+* Fun-ASR-Nano on the full SeedTTS ZH set (2020 clips): 167.4 samples/s at
+  concurrency 32 with 0.190 s mean latency and 0.0135 corpus WER at every
+  level through 32.
+* Qwen3-ASR-1.7B on the same GPU and EN set: 97.9 samples/s at concurrency 32
+  with 0.324 s mean latency and 0.0122 corpus WER. Fun-ASR-Nano was about 30
+  percent faster at saturation, and at concurrency 1 kept 0.038 s mean latency
+  versus 0.099 s for Qwen3-ASR, consistent with the 4080S comparison above.
+
+On the H100 both languages shed roughly 2 to 5 percent of requests at
+concurrency 64 with HTTP 500, because a single worker admits at most 16
+pending request builds. The full tables live in docs/cookbook/fun_asr.md.
 """
 
 from __future__ import annotations
@@ -69,6 +89,7 @@ import requests
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.asr import (
+    FUN_ASR_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
@@ -269,7 +290,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "ASR model id served by the router. Defaults to "
             f"{QWEN3_ASR_MODEL_PATH}; use "
-            "FunAudioLLM/Fun-ASR-Nano-2512-hf for Fun-ASR-Nano."
+            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
         ),
     )
     parser.add_argument(

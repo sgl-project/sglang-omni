@@ -41,9 +41,9 @@ from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.scheduling.reference_encoder import (
-    ReferenceEncodeHook,
     ReferenceEncodeKey,
     ReferenceEncodeService,
+    TensorReferenceEncodeHook,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -392,8 +392,15 @@ class _MossLocalReferenceInput:
 
 
 class _MossLocalReferenceEncodeHook(
-    ReferenceEncodeHook[_MossLocalReferenceInput, torch.Tensor, torch.Tensor]
+    TensorReferenceEncodeHook[_MossLocalReferenceInput]
 ):
+    model_id = "moss_tts_local"
+    model_revision = "local_audio_tokenizer"
+    encoder_id = "moss_tts_local_audio_tokenizer"
+    artifact_kind = "moss_tts_local_reference_codes"
+    storage_dtype = torch.int32
+    output_dtype = torch.long
+
     def __init__(
         self,
         encoder: _BatchedReferenceEncoder,
@@ -402,25 +409,12 @@ class _MossLocalReferenceEncodeHook(
     ) -> None:
         self._encoder = encoder
         self._n_vq = int(n_vq)
-        self._encoder_config_hash = _hash_bytes(f"n_vq:{self._n_vq}".encode("utf-8"))
+        self.encoder_config_hash = _hash_bytes(f"n_vq:{self._n_vq}".encode("utf-8"))
 
     def normalize_input(self, raw_input: Any) -> _MossLocalReferenceInput:
         if isinstance(raw_input, _MossLocalReferenceInput):
             return raw_input
         return _MossLocalReferenceInput("path", str(raw_input))
-
-    def cache_key(self, item: _MossLocalReferenceInput) -> ReferenceEncodeKey | None:
-        input_key = self._input_key(item)
-        if input_key is None:
-            return None
-        return ReferenceEncodeKey(
-            model_id="moss_tts_local",
-            model_revision="local_audio_tokenizer",
-            encoder_id="moss_tts_local_audio_tokenizer",
-            encoder_config_hash=self._encoder_config_hash,
-            artifact_kind="moss_tts_local_reference_codes",
-            input_key=input_key,
-        )
 
     def encode_one(self, item: _MossLocalReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
@@ -433,22 +427,15 @@ class _MossLocalReferenceEncodeHook(
             return self._encoder.encode_wav(wav, sample_rate)
         raise TypeError(f"unknown MOSS-local reference source: {item.source_kind}")
 
-    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
-        return artifact.detach().to("cpu", dtype=torch.int32).clone()
-
-    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
-        return stored.detach().clone().to(torch.long)
-
     def revalidate(
-        self,
-        item: _MossLocalReferenceInput,
-        key: ReferenceEncodeKey,
+        self, item: _MossLocalReferenceInput, key: ReferenceEncodeKey
     ) -> bool:
-        if item.source_kind != "path":
-            return True
-        return _reference_path_cache_key(item.source) == key.input_key
+        return (
+            item.source_kind != "path"
+            or _reference_path_cache_key(item.source) == key.input_key
+        )
 
-    def _input_key(self, item: _MossLocalReferenceInput) -> str | None:
+    def input_key(self, item: _MossLocalReferenceInput) -> str | None:
         if item.source_kind == "path":
             _BatchedReferenceEncoder._check_reference_duration(item.source)
             return _reference_path_cache_key(item.source)

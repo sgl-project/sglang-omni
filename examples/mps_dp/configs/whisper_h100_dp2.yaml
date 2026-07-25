@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 80 GB H100: two same-GPU Whisper large-v3-turbo replicas
+# with shared weights.
+
+config_cls: WhisperASRPipelineConfig
+name: whisper
+model_path: openai/whisper-large-v3-turbo
+
+runtime_overrides:
+  asr:
+    mem_fraction_static: 0.20
+    server_args_overrides:
+      max_total_tokens: 40000

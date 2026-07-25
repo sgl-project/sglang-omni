@@ -19,6 +19,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +39,6 @@ def _import_mistral_common_for_voxtral():
     except ImportError as exc:
         raise RuntimeError(_VOXTRAL_MISTRAL_COMMON_HINT) from exc
     return SpeechRequest, MistralTokenizer
-
-
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
 
 
 def _validate_voxtral_speech_params(

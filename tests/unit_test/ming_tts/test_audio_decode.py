@@ -9,10 +9,7 @@ from sglang_omni.models.ming_tts.audio_decode import (
     MingAudioDecoder,
     decode_ming_tts_audio_payload,
 )
-from sglang_omni.models.ming_tts.payload_types import (
-    MingTTSState,
-    encode_generated_latents,
-)
+from sglang_omni.models.ming_tts.payload_types import MingTTSState
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -59,11 +56,8 @@ def test_ming_tts_audio_decode_accepts_empty_generated_latents() -> None:
         prompt_tokens=3,
         completion_tokens=0,
         generated_last_chunk=[],
+        generated_latents=torch.empty((0, 2, 3), dtype=torch.float32),
     )
-    for field_name, value in encode_generated_latents(
-        torch.empty((0, 2, 3), dtype=torch.float32)
-    ).items():
-        setattr(state, field_name, value)
     payload = StagePayload(
         request_id="req-ming-tts",
         request=OmniRequest(inputs="hello"),

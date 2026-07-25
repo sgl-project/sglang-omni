@@ -22,10 +22,8 @@ runs:
       run: |
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
-        echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
-        echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
-        echo "HF_HUB_ENABLE_HF_TRANSFER=0" >> "${GITHUB_ENV}"
+        echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"

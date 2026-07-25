@@ -8,43 +8,10 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
+from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae import (
+    AudioVAEconfig,
+)
 from sglang_omni.models.ming_tts.payload_types import MING_TTS_SAMPLE_RATE
-
-
-class AudioVAEconfig(PretrainedConfig):
-    """Config class matching the official AudioVAE checkpoint metadata."""
-
-    def __init__(
-        self,
-        sample_rate: int = 16000,
-        enc_kwargs: dict[str, Any] | None = None,
-        dec_kwargs: dict[str, Any] | None = None,
-        hifi_gan_disc_kwargs: dict[str, Any] | None = None,
-        spec_disc_kwargs: dict[str, Any] | None = None,
-        lambda_disc: float = 1.0,
-        lambda_mel_loss: float = 15.0,
-        lambda_adv: float = 1.0,
-        lambda_feat_match_loss: float = 1.0,
-        semantic_module_kwargs: dict[str, Any] | None = None,
-        lambda_semantic: float | None = 5.0,
-        init_method: str = "normal",
-        patch_size: int = -1,
-        **kwargs: Any,
-    ) -> None:
-        self.sample_rate = sample_rate
-        self.enc_kwargs = enc_kwargs
-        self.dec_kwargs = dec_kwargs
-        self.hifi_gan_disc_kwargs = hifi_gan_disc_kwargs
-        self.spec_disc_kwargs = spec_disc_kwargs
-        self.lambda_disc = lambda_disc
-        self.lambda_mel_loss = lambda_mel_loss
-        self.lambda_adv = lambda_adv
-        self.lambda_feat_match_loss = lambda_feat_match_loss
-        self.semantic_module_kwargs = semantic_module_kwargs
-        self.lambda_semantic = lambda_semantic
-        self.init_method = init_method
-        self.patch_size = patch_size
-        super().__init__(**kwargs)
 
 
 def resolve_ming_tts_audio_vae_config(

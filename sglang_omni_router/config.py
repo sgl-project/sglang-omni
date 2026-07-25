@@ -136,6 +136,7 @@ class RouterConfig(BaseModel):
     request_timeout_secs: int = 1800
     max_payload_size: int = 512 * 1024 * 1024
     max_connections: int | None = None
+    max_inflight: int | None = None
     health_failure_threshold: int = 3
     health_success_threshold: int = 2
     health_check_timeout_secs: int = 5
@@ -169,6 +170,27 @@ class RouterConfig(BaseModel):
         if value is not None and value <= 0:
             raise ValueError("value must be > 0")
         return value
+
+    @field_validator("max_inflight")
+    @classmethod
+    def _validate_max_inflight(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("max_inflight must be > 0")
+        return value
+
+    @property
+    def effective_max_inflight(self) -> int:
+        # Note (Jiaxin Deng): the default derives from max_connections so
+        # admission binds where the upstream pool would otherwise queue.
+        if self.max_inflight is not None:
+            return self.max_inflight
+        return self.max_connections
+
+    @property
+    def upstream_pool_size(self) -> int:
+        # Note (Jiaxin Deng): pool >= admission bound, so an admitted request
+        # can never queue inside the httpx pool (the late PoolTimeout 502 mode).
+        return max(self.max_connections, self.effective_max_inflight)
 
     @field_validator("health_check_endpoint")
     @classmethod
@@ -216,6 +238,7 @@ def build_router_config(
     request_timeout_secs: int = 1800,
     max_payload_size: int = 512 * 1024 * 1024,
     max_connections: int | None = None,
+    max_inflight: int | None = None,
     health_failure_threshold: int = 3,
     health_success_threshold: int = 2,
     health_check_timeout_secs: int = 5,
@@ -238,6 +261,7 @@ def build_router_config(
         request_timeout_secs=request_timeout_secs,
         max_payload_size=max_payload_size,
         max_connections=max_connections,
+        max_inflight=max_inflight,
         health_failure_threshold=health_failure_threshold,
         health_success_threshold=health_success_threshold,
         health_check_timeout_secs=health_check_timeout_secs,

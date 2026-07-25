@@ -261,13 +261,12 @@ def scan_ming_tts_weights(
 ) -> MingTTSWeightManifest:
     """Scan checkpoint metadata without materializing checkpoint tensors."""
 
-    resolved_path = Path(model_path).expanduser()
-    if not resolved_path.exists():
-        from huggingface_hub import snapshot_download
+    from sglang_omni.models.weight_loader import resolve_model_path
 
-        resolved_path = Path(
-            snapshot_download(str(model_path), local_files_only=local_files_only)
-        )
+    resolved_path = resolve_model_path(
+        str(model_path),
+        local_files_only=local_files_only,
+    )
 
     index_path = resolved_path / _INDEX_FILENAME
     if index_path.exists():

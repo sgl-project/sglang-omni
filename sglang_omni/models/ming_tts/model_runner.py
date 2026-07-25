@@ -11,10 +11,6 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.ming_tts.payload_types import (
-    decode_prompt_latent,
-    decode_speaker_embedding,
-)
 from sglang_omni.models.ming_tts.sglang_model import MingTTSTailInputs
 
 
@@ -110,16 +106,12 @@ class MingTTSModelRunner(ModelRunner):
         weight = self.model._decode_input_embedding.weight
         device = weight.device
         dtype = weight.dtype
-        speaker_embedding = decode_speaker_embedding(
-            state,
-            device=device,
-            dtype=dtype,
-        )
-        prompt_latent = decode_prompt_latent(
-            state,
-            device=device,
-            dtype=torch.float32,
-        )
+        speaker_embedding = state.spk_emb
+        if speaker_embedding is not None:
+            speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
+        prompt_latent = state.prompt_latent
+        if prompt_latent is not None:
+            prompt_latent = prompt_latent.to(device=device, dtype=torch.float32)
         if prompt_latent is not None and prompt_latent.ndim == 2:
             prompt_latent = prompt_latent.unsqueeze(0)
 

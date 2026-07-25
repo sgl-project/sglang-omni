@@ -12,10 +12,7 @@ from sglang_omni.models.ming_tts.engine_io import (
     MingTTSSGLangRequestData,
     make_ming_tts_scheduler_adapters,
 )
-from sglang_omni.models.ming_tts.payload_types import (
-    MingTTSState,
-    decode_generated_latents,
-)
+from sglang_omni.models.ming_tts.payload_types import MingTTSState
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -67,7 +64,7 @@ def test_ming_tts_result_adapter_serializes_empty_latent_output() -> None:
 
     payload = _result_adapter(reset_requests.append)(_request_data())
     restored = MingTTSState.from_dict(payload.data)
-    latents = decode_generated_latents(restored)
+    latents = restored.generated_latents
 
     assert latents is not None
     assert latents.shape == (0, 2, 3)
@@ -132,10 +129,10 @@ def test_ming_tts_result_adapter_resets_state_after_serialization_error(
 ) -> None:
     reset_requests = []
 
-    def fail_serialization(_):
+    def fail_serialization(*_args):
         raise RuntimeError("serialization failed")
 
-    monkeypatch.setattr(engine_io, "encode_generated_latents", fail_serialization)
+    monkeypatch.setattr(engine_io, "store_ming_tts_state", fail_serialization)
     data = _request_data(generated_latents=torch.ones(1, 2, 3))
 
     with pytest.raises(RuntimeError, match="serialization failed"):

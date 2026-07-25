@@ -172,7 +172,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ## Benchmarking
 
-Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times and aishell4_long as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, and aishell4_long is a long-sequence dataset with 20 long-form meeting audio. These two datasets are right now under private license, and you can contact the Moss team for access.
+Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.
 
 
 ```bash
@@ -195,6 +195,17 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --max-new-tokens 65536 \
   --request-timeout-s 1800 \
   --output-dir results/moss_transcribe_diarize_aishell4_long
+
+# Long-sequence English podcast ASR / diarization
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
+  --dataset googletime \
+  --concurrency 16 \
+  --max-running-requests 16 \
+  --cuda-graph-max-bs 16 \
+  --mem-fraction-static 0.80 \
+  --max-new-tokens 65536 \
+  --request-timeout-s 1800 \
+  --output-dir results/moss_transcribe_diarize_googletime
 ```
 
 ## Benchmark Results

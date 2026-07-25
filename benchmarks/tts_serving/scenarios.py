@@ -17,7 +17,7 @@ from benchmarks.tts_serving.voice_upload_fixtures import (
     get_wav_upload_fixture,
 )
 
-SCENARIO_SCHEMA_VERSION = 2
+SCENARIO_SCHEMA_VERSION = 3
 
 MULTILINGUAL_TEXTS = (
     ("Auto", "This sentence lets the model auto-detect the target language."),
@@ -220,6 +220,7 @@ class Scenario:
     category: str
     stage_id: str
     capability_key: str
+    workload: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     method: str = "POST"
     path: str = "/v1/audio/speech"
@@ -414,6 +415,10 @@ def _required_stage_scenarios(
         next_index += 1
         speech_edges.append(_speech_reference_base64_success(next_index, spec, stage))
         next_index += 1
+        speech_edges.append(
+            _speech_reference_structured_success(next_index, spec, stage)
+        )
+        next_index += 1
         if spec.params.file_ref_audio:
             speech_edges.append(_speech_reference_file_success(next_index, spec, stage))
             next_index += 1
@@ -433,15 +438,18 @@ def _required_stage_scenarios(
         for _ in range(_malformed_case_count()):
             speech_edges.append(_speech_malformed(next_index, spec, stage))
             next_index += 1
+        speech_edges.append(_speech_disconnect(next_index, spec, stage))
+        next_index += 1
         groups.append(speech_edges)
     if "speech_stream" in endpoint_set:
         groups.append(
             [
                 _speech_raw_pcm_stream(next_index, spec, stage),
                 _speech_stream_non_pcm_error(next_index + 1, spec, stage),
+                _speech_stream_disconnect(next_index + 2, spec, stage),
             ]
         )
-        next_index += 2
+        next_index += 3
     if "batch" in endpoint_set:
         batch_scenarios = [
             _batch_request(
@@ -479,6 +487,8 @@ def _required_stage_scenarios(
                 expected_error_type="BadRequestError",
             )
         )
+        next_index += 1
+        batch_scenarios.append(_batch_disconnect(next_index, spec, stage))
         next_index += 1
         groups.append(batch_scenarios)
     if "voices" in endpoint_set:
@@ -620,24 +630,18 @@ def _scenario_id(stage: LoadStage, category: str, index: int) -> str:
 def _speech_baseline(
     index: int, spec: BenchmarkSpec, stage: LoadStage, rng: random.Random
 ) -> Scenario:
-    response_format = rng.choice(RESPONSE_FORMATS)
     payload = _base_payload(spec, rng.choice(BASE_TEXTS))
-    payload.update(
-        {
-            "response_format": response_format,
-            "speed": rng.choice(SPEED_BOUNDARY_VALUES),
-            "seed": spec.seed + index,
-        }
-    )
+    payload["seed"] = spec.seed + index
     return Scenario(
         id=_scenario_id(stage, "speech_baseline", index),
         endpoint="speech",
         category="speech_baseline",
         stage_id=stage.id,
         capability_key="speech.create",
+        workload="speech_normal",
         payload=payload,
         description="well-formed single-shot speech",
-        planned_metadata={"response_format": response_format},
+        planned_metadata={"response_format": "wav"},
     )
 
 
@@ -903,6 +907,7 @@ def _speech_long_prefill_decode(
         category="speech_long_prefill_decode",
         stage_id=stage.id,
         capability_key="speech.create",
+        workload="long_prefill_decode",
         payload=payload,
         description="max-valid input with high decode budget",
         planned_metadata={
@@ -967,6 +972,29 @@ def _speech_reference_base64_success(
         expected_status_class="success",
         description="valid base64 ref_audio voice cloning request",
         planned_metadata={"reference_case": "valid_base64_ref_audio"},
+    )
+
+
+def _speech_reference_structured_success(
+    index: int, spec: BenchmarkSpec, stage: LoadStage
+) -> Scenario:
+    payload = _base_payload(spec, BASE_TEXTS[index % len(BASE_TEXTS)])
+    payload["task_type"] = "Base"
+    payload["references"] = [
+        {
+            "audio_path": _valid_reference_wav_data_uri(),
+            "text": "A valid structured reference audio sample for voice cloning.",
+        }
+    ]
+    return Scenario(
+        id=_scenario_id(stage, "speech_reference_structured", index),
+        endpoint="speech",
+        category="speech_reference",
+        stage_id=stage.id,
+        capability_key="speech.reference",
+        payload=payload,
+        description="valid structured references voice cloning request",
+        planned_metadata={"reference_case": "valid_structured_references"},
     )
 
 
@@ -1044,6 +1072,36 @@ def _speech_reference_failure(
     )
 
 
+def _speech_disconnect(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scenario:
+    payload = _base_payload(
+        spec,
+        _long_stress_text(
+            spec,
+            stage,
+            index,
+            target_chars=MAX_SPEECH_INPUT_CHARS,
+            label="speech disconnect",
+        ),
+    )
+    payload.update(
+        {
+            "response_format": "pcm",
+            "max_new_tokens": LONG_PREFILL_DECODE_MAX_NEW_TOKENS,
+            "seed": spec.seed + index,
+        }
+    )
+    return Scenario(
+        id=_scenario_id(stage, "speech_disconnect", index),
+        endpoint="speech",
+        category="speech_disconnect",
+        stage_id=stage.id,
+        capability_key="speech.disconnect",
+        method="HTTP_DISCONNECT",
+        payload=payload,
+        description="disconnect a non-streaming speech request before completion",
+    )
+
+
 def _speech_raw_pcm_stream(
     index: int, spec: BenchmarkSpec, stage: LoadStage
 ) -> Scenario:
@@ -1061,6 +1119,7 @@ def _speech_raw_pcm_stream(
         category="speech_stream",
         stage_id=stage.id,
         capability_key="speech.stream",
+        workload="rest_stream",
         payload=payload,
         description="REST raw PCM streaming speech",
     )
@@ -1090,6 +1149,38 @@ def _speech_stream_non_pcm_error(
         expected_error_type="BadRequestError",
         description="raw PCM streaming request with invalid non-PCM response format",
         planned_metadata={"stream_error_case": "stream_non_pcm"},
+    )
+
+
+def _speech_stream_disconnect(
+    index: int, spec: BenchmarkSpec, stage: LoadStage
+) -> Scenario:
+    payload = _base_payload(
+        spec,
+        _long_stress_text(
+            spec,
+            stage,
+            index,
+            target_chars=WEBSOCKET_STREAM_AUDIO_CHARS,
+            label="speech stream disconnect",
+        ),
+    )
+    payload.update(
+        {
+            "stream": True,
+            "response_format": "pcm",
+            "seed": spec.seed + index,
+        }
+    )
+    return Scenario(
+        id=_scenario_id(stage, "speech_stream_disconnect", index),
+        endpoint="speech_stream",
+        category="speech_stream_disconnect",
+        stage_id=stage.id,
+        capability_key="speech.stream_disconnect",
+        method="HTTP_DISCONNECT",
+        payload=payload,
+        description="disconnect a REST streaming request after the first audio chunk",
     )
 
 
@@ -1250,6 +1341,9 @@ def _batch_request(
         category="batch",
         stage_id=stage.id,
         capability_key="batch.create",
+        workload=(
+            "batch_32_all_valid" if batch_size == 32 and not inject_item_error else None
+        ),
         path="/v1/audio/speech/batch",
         payload=payload,
         expect_success=expect_success,
@@ -1334,6 +1428,31 @@ def _batch_item_overrides(
             "batch_size": len(items),
             "batch_case": "item_overrides",
             "expected_item_failures": [len(items) - 2, len(items) - 1],
+        },
+    )
+
+
+def _batch_disconnect(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scenario:
+    batch = _batch_request(
+        index,
+        spec,
+        stage,
+        batch_size=32,
+        inject_item_error=False,
+    )
+    return Scenario(
+        id=_scenario_id(stage, "batch_disconnect", index),
+        endpoint="batch",
+        category="batch_disconnect",
+        stage_id=stage.id,
+        capability_key="batch.disconnect",
+        method="HTTP_DISCONNECT",
+        path=batch.path,
+        payload=batch.payload,
+        description="disconnect a 32-item batch request before completion",
+        planned_metadata={
+            "batch_size": 32,
+            "batch_case": "disconnect",
         },
     )
 
@@ -1877,6 +1996,7 @@ def _websocket_normal(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scen
         category="websocket",
         stage_id=stage.id,
         capability_key="ws.normal",
+        workload="ws_normal",
         method="WS",
         path="/v1/audio/speech/stream",
         script=[
@@ -1954,6 +2074,7 @@ def _websocket_stream_audio(
         category="websocket",
         stage_id=stage.id,
         capability_key="ws.stream_audio",
+        workload="ws_stream_audio",
         method="WS",
         path="/v1/audio/speech/stream",
         script=[

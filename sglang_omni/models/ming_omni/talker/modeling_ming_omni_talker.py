@@ -1272,7 +1272,7 @@ class MingOmniTalker(nn.Module):
                 text = text[1:]
 
             use_stream = stream
-            all_wavs: list = []
+            total_samples = 0
             next_start_idx = segment_start_idx
 
             segment_max_decode_steps = self.duration_capped_steps(
@@ -1298,14 +1298,12 @@ class MingOmniTalker(nn.Module):
             ):
                 tts_speech = this_tts_speech_dict["tts_speech"]
                 if (
-                    all_wavs
-                    and torch.cat(all_wavs, dim=-1).shape[1]
+                    total_samples
+                    and total_samples
                     / audio_detokenizer.config.sample_rate
                     * (16000 / 5818)
                     >= len(text)
-                    and torch.cat(all_wavs, dim=-1).shape[1]
-                    / audio_detokenizer.config.sample_rate
-                    > 2
+                    and total_samples / audio_detokenizer.config.sample_rate > 2
                 ):
                     break
 
@@ -1332,7 +1330,7 @@ class MingOmniTalker(nn.Module):
                         if this_start_idx == this_end_idx
                         else text_ori[rel_start_idx : rel_end_idx + 1]
                     )
-                    all_wavs.append(tts_speech)
+                    total_samples += tts_speech.shape[-1]
                     yield (
                         tts_speech,
                         this_text_ori,
@@ -1340,7 +1338,7 @@ class MingOmniTalker(nn.Module):
                         this_dura * 1000,
                     )
                 else:
-                    all_wavs.append(tts_speech)
+                    total_samples += tts_speech.shape[-1]
                     yield (
                         tts_speech,
                         text_ori,

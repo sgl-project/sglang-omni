@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -371,6 +373,30 @@ def load_spec(path: str | Path) -> BenchmarkSpec:
     except json.JSONDecodeError as exc:
         raise SpecError(f"invalid JSON in spec file: {exc}") from exc
     return BenchmarkSpec.from_obj(raw)
+
+
+def workload_spec_hash(spec: BenchmarkSpec) -> str:
+    payload = _canonical_json_value(asdict(spec))
+    payload.pop("base_url", None)
+    payload.pop("run_id", None)
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _canonical_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return "inf" if value > 0 else "-inf"
+    return value
 
 
 def redact_sensitive_metadata(value: Any) -> Any:

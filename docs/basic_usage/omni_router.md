@@ -188,13 +188,15 @@ The table below lists the router command-line arguments.
 | `--model` | not set | Model name assigned to every worker when using `--worker-urls`. Do not use with `--worker-config`. |
 | `--request-timeout-secs` | `1800` | Timeout for proxied worker requests. |
 | `--max-payload-size` | `536870912` | Maximum request body size accepted by the router, in bytes. |
-| `--max-connections` | auto: `128 x workers`, capped at `4096` | Pool-wide cap on concurrent upstream connections across all workers (one shared client). Explicit values below `64 x workers` log an under-feed warning. |
+| `--max-connections` | auto: `128 x workers`, capped at `4096` | Admission bound: maximum concurrent in-flight model requests before the router fast-rejects with `503`. The upstream connection pool is sized to at least this value. Explicit values below `64 x workers` log an under-feed warning. |
+| `--max-inflight` | equal to `--max-connections` | Advanced override that decouples the admission bound from `--max-connections`. The upstream pool is sized to the larger of the two. |
 | `--health-failure-threshold` | `3` | Consecutive failed health checks or routed request failures before a worker becomes unhealthy. |
 | `--health-success-threshold` | `2` | Consecutive successful health checks before an unhealthy or unknown worker becomes healthy. |
 | `--health-check-timeout-secs` | `5` | Timeout for one worker health-check request. |
 | `--health-check-interval-secs` | `10` | Interval between background worker health checks. |
 | `--health-check-endpoint` | `/health` | Worker endpoint used by background health checks. |
 | `--log-level` | `info` | Router and Uvicorn log level. |
+| `--strict-limits` | off | Fail startup instead of warning when the `nofile` soft limit is too low for the resolved upstream pool size (`max(--max-connections, --max-inflight)`). |
 
 Routing policies:
 
@@ -252,8 +254,9 @@ The endpoints have different meanings:
   become healthy.
 - `GET /ready`: at least one worker is routable. This returns `503` when all
   workers are unhealthy, dead, disabled, or still unknown.
-- `GET /health`: worker-pool health summary. This returns `503` when no worker
-  is routable.
+- `GET /health`: worker-pool health summary plus admission stats (`inflight`,
+  `max_inflight`, `peak_inflight`, `rejected_total`). This returns `503` when no
+  worker is routable.
 - `GET /workers`: detailed worker state, including `health_state`, `disabled`,
   `routable`, `active_requests`, failure counters, and last error.
 - `GET /v1/models`: merged model list from routable workers.
@@ -394,10 +397,48 @@ Router logs include a route-completion record for buffered and streaming
 requests. Each record contains the request ID, selected worker, path, stream
 flag, inferred capabilities, status code, duration, and terminal outcome.
 
+## Overload Behavior
+
+The router bounds its concurrent work. Once `--max-connections` in-flight model
+requests are being relayed, additional model requests are rejected immediately,
+before the request body is read:
+
+- status `503` with an OpenAI-style error envelope (`"type": "overloaded_error"`)
+- a `Retry-After: 1` header
+- a `route_rejected` log record with `reason=router_overloaded`
+
+Health and management endpoints (`/live`, `/ready`, `/health`, `/workers`, admin
+routes) are never gated. `GET /health` reports the current in-flight level, the
+peak since startup, and the total rejected count.
+
+Sizing guidance:
+
+- The auto default (`128 x workers`) is a divergence backstop, not a latency
+  target. For large responses on a single-core router, an oversized bound
+  degrades service itself; size `--max-connections` toward
+  `capacity x acceptable latency` for your payload shape.
+- Each in-flight request holds two file descriptors (client plus upstream). The
+  router warns at startup when the `nofile` soft limit is below
+  `2 x upstream pool size + headroom`, where the pool size is
+  `max(--max-connections, --max-inflight)`. Raise the limit, or lower whichever
+  of the two flags binds the pool (the warning names it); `--strict-limits`
+  turns the warning into a startup error.
+- A rejected request costs the client its keep-alive connection (the router
+  responds before reading the body), so clients should back off on `503` rather
+  than immediately retrying on a fresh connection.
+
 ## Failure Handling
 
-If a worker health check or routed request fails repeatedly, the worker becomes
-unhealthy and leaves the routable pool. It can return to healthy after the
+Worker liveness is owned by the background `/health` probes. A relayed request
+only marks a worker unhealthy when the router cannot get a usable response from
+it: a transport-level failure (connection error or read timeout, with no HTTP
+response) or a gateway status the worker returns, `502 Bad Gateway` or `504
+Gateway Timeout`. Capacity backpressure and application statuses the worker
+answers with itself, `429 Too Many Requests`, `503 Service Unavailable`, `408
+Request Timeout`, and `500 Internal Server Error`, are counted as per-request
+failures in the worker statistics but never evict a reachable worker, so one
+overloaded worker or a stream of bad-input requests cannot cascade the pool into
+unavailability. A worker that leaves the pool can return to healthy after the
 configured number of successful health checks.
 
 To inspect failover behavior:

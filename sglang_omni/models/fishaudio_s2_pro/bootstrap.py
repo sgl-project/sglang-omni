@@ -74,12 +74,17 @@ def patch_fish_config_for_sglang() -> None:
 
 
 def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
-    """Match the old Fish runtime's rope-cache precision behavior."""
-    for module in model.modules():
-        if hasattr(module, "cos_sin_cache"):
-            module.cos_sin_cache.data = module.cos_sin_cache.data.to(torch.bfloat16).to(
-                torch.float32
-            )
+    """Match the old Fish runtime's rope-cache precision behavior.
+
+    In-place, idempotent, and deterministic on purpose: this runs after the
+    weight-share export, so rebinding the buffer would orphan attached
+    followers, while an in-place write lands identically for every replica.
+    """
+    with torch.no_grad():
+        for module in model.modules():
+            if hasattr(module, "cos_sin_cache"):
+                cache = module.cos_sin_cache
+                cache.copy_(cache.to(torch.bfloat16).to(cache.dtype))
 
 
 def load_audio_decoder(

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from sglang_omni.models.ming_tts.audio_config import resolve_ming_tts_audio_vae_config
@@ -16,6 +15,7 @@ from sglang_omni.models.ming_tts.request_builders import preprocess_ming_tts_pay
 from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 from sglang_omni.models.ming_tts.weight_loading import load_ming_tts_audio_vae_weights
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -238,14 +238,6 @@ def create_audio_decode_executor(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )
-
-
-def _resolve_checkpoint(checkpoint: str) -> str:
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
 
 
 def _load_ming_tts_config(model_path: str) -> Any:

@@ -11,21 +11,10 @@ import pytest
 import torch
 
 from sglang_omni.scheduling.reference_encoder import (
-    ReferenceEncodeHook,
     ReferenceEncodeKey,
     ReferenceEncodeService,
+    TensorReferenceEncodeHook,
 )
-
-
-def _key(name: str) -> ReferenceEncodeKey:
-    return ReferenceEncodeKey(
-        model_id="test",
-        model_revision="rev",
-        encoder_id="encoder",
-        encoder_config_hash="cfg",
-        artifact_kind="codes",
-        input_key=name,
-    )
 
 
 class _FirstWaveGate:
@@ -53,18 +42,23 @@ def _wait_for_merged(
     assert service.stats()["merged"] >= expected
 
 
-class _TensorHook(ReferenceEncodeHook[str, torch.Tensor, torch.Tensor]):
+class _TensorHook(TensorReferenceEncodeHook[str]):
+    model_id = "test"
+    model_revision = "rev"
+    encoder_id = "encoder"
+    encoder_config_hash = "cfg"
+    artifact_kind = "codes"
+    storage_dtype = torch.long
+    output_dtype = torch.long
+
     def __init__(self) -> None:
         self.calls: Counter[str] = Counter()
         self.lock = threading.Lock()
 
-    def normalize_input(self, raw_input: Any) -> str:
-        return str(raw_input)
-
-    def cache_key(self, item: str) -> ReferenceEncodeKey | None:
+    def input_key(self, item: str) -> str | None:
         if item.startswith("uncacheable"):
             return None
-        return _key(item)
+        return item
 
     def encode_one(self, item: str) -> torch.Tensor:
         with self.lock:
@@ -72,11 +66,51 @@ class _TensorHook(ReferenceEncodeHook[str, torch.Tensor, torch.Tensor]):
         value = sum(ord(ch) for ch in item) % 127
         return torch.full((2,), value, dtype=torch.long)
 
-    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
-        return artifact.detach().to("cpu").clone()
 
-    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
-        return stored.detach().clone().to(dtype=torch.long)
+def test_tensor_hook_builds_key_and_owns_stored_and_loaded_tensors() -> None:
+    class _CompressedHook(_TensorHook):
+        storage_dtype = torch.int32
+        option = "v1"
+
+        def options_key(self, item: str) -> str:
+            return self.option
+
+    hook = _CompressedHook()
+    key = hook.cache_key("stable")
+    assert key is not None
+    assert key == ReferenceEncodeKey(
+        model_id="test",
+        model_revision="rev",
+        encoder_id="encoder",
+        encoder_config_hash="cfg",
+        artifact_kind="codes",
+        input_key="stable",
+        options_key="v1",
+    )
+    assert hook.revalidate("stable", key)
+    assert not hook.revalidate("changed", key)
+    hook.option = "v2"
+    assert not hook.revalidate("stable", key)
+
+    artifact = torch.tensor([1, 2], dtype=torch.long)
+    stored = hook.store_artifact(artifact)
+    loaded = hook.load_artifact(stored)
+    artifact.fill_(9)
+    stored.fill_(8)
+
+    assert stored.dtype == torch.int32
+    assert loaded.dtype == torch.long
+    assert torch.equal(loaded, torch.tensor([1, 2], dtype=torch.long))
+
+    class _PreservingHook(_TensorHook):
+        storage_dtype = None
+        output_dtype = None
+
+    preserving_hook = _PreservingHook()
+    source = torch.tensor([1.5], dtype=torch.float32)
+    preserved = preserving_hook.load_artifact(preserving_hook.store_artifact(source))
+    assert preserved.dtype == torch.float32
+    assert preserved.data_ptr() != source.data_ptr()
 
 
 def test_same_key_concurrent_single_flight() -> None:

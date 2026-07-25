@@ -24,7 +24,7 @@ dependencies = [
     "transformers==5.6.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
-    "huggingface-hub>=0.36.0",# HF model downloads
+    "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
@@ -67,7 +67,7 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "descript-audiotools",
-    "descript-audio-codec",
+    "descript-audio-codec==1.0.0",
     "torchaudio==2.11.0",
     "torchcodec==0.11.1",     # Matches sglang==0.5.12.post1 dependency
     # Gradio playground
@@ -75,6 +75,14 @@ dependencies = [
     # Ming-Omni
     "diffusers==0.37.0",      # Align with sglang 0.5.12.post1 hard pin (diffusers==0.37.0)
     "x-transformers",          # Ming talker rotary embeddings
+    # ZONOS2 written->spoken text normalization; pulls pynini + sacremoses.
+    "nemo_text_processing==1.2.0",
+]
+
+[project.optional-dependencies]
+audar-tts = [
+    "llama-cpp-python==0.3.34",
+    "neucodec==0.0.6",
 ]
 
 [project.scripts]

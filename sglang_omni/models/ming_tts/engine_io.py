@@ -11,7 +11,6 @@ import torch
 
 from sglang_omni.models.ming_tts.payload_types import (
     MingTTSState,
-    encode_generated_latents,
     load_ming_tts_state,
     store_ming_tts_state,
 )
@@ -85,7 +84,7 @@ def make_ming_tts_scheduler_adapters(
         sampling_params.verify(vocab_size)
 
         requires_projected_prefill = (
-            state.spk_emb_bytes is not None or state.prompt_latent_bytes is not None
+            state.spk_emb is not None or state.prompt_latent is not None
         )
 
         req_input_ids_list = input_ids_list
@@ -165,9 +164,7 @@ def make_ming_tts_scheduler_adapters(
             state.prompt_tokens = len(data.input_ids)
             state.completion_tokens = int(generated.shape[0])
             state.engine_time_s = time.perf_counter() - data.engine_start_s
-
-            for field_name, value in encode_generated_latents(generated).items():
-                setattr(state, field_name, value)
+            state.generated_latents = generated
 
             return store_ming_tts_state(payload, state)
         finally:

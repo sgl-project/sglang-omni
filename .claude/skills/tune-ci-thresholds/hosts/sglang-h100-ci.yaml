@@ -42,8 +42,7 @@ speaker_similarity_bootstrap:
   warm_cache:
     env:
       HF_ENDPOINT: https://huggingface.co
-      HF_HUB_DISABLE_XET: "1"
-      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HF_HUB_DISABLE_XET: "0"
       SEEDTTS_SIM_CACHE_DIR: /root/.cache/huggingface/speaker_sim
     hf_token: "source ~/.zshrc"
     command: |
