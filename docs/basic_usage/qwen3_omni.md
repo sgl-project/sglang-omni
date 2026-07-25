@@ -173,6 +173,39 @@ sgl-omni serve \
 
 Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
 
+Exact-shape CUDA Graph replay is enabled by default for Qwen3-Omni Code2Wav.
+The default stage config supplies a 2% typed GPU memory budget; colocated
+example configs override it with their hardware-specific budget.
+
+To disable replay, add this runtime override to the YAML config:
+
+```yaml
+runtime_overrides:
+  code2wav:
+    enable_cuda_graph: false
+```
+
+When replay is enabled, a custom Code2Wav stage must define
+`runtime.resources.total_gpu_memory_fraction`; startup rejects a missing typed
+budget before loading the model.
+
+The feature captures only the current serial serving windows
+`B1/T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
+Capture-time incompatibilities also fall back to eager execution.
+
+To observe the graph hit rate under serving traffic, enable per-shape telemetry:
+
+```bash
+SGLANG_OMNI_TRACE_CODE2WAV_GRAPH=1 sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate
+```
+
+The Code2Wav stage logs cumulative graph replays and eager fallbacks, grouped
+by batch size, frame count, and fallback reason. It reports every 2,000
+executions and once when the scheduler exits. Telemetry is disabled by default.
+
 For manual multi-GPU placement, use the example script:
 
 ```bash

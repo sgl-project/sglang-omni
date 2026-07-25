@@ -4,16 +4,23 @@
 Receives codec code chunks via inbox (stream_chunk), accumulates them,
 runs vocoder incrementally, outputs final audio via outbox.
 """
+
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+    Code2WavCudaGraphRunner,
+    Code2WavRunResult,
+)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
@@ -47,7 +54,7 @@ def load_code2wav_model(
         device=device,
         strict=False,
     )
-    return model
+    return model.eval()
 
 
 class Code2WavScheduler(StreamingSimpleScheduler):
@@ -61,6 +68,8 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         left_context_size: int = 25,
         sample_rate: int = 24000,
         codec_eos_token_id: int = 2150,
+        enable_cuda_graph: bool = False,
+        _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
     ):
         self._model = model
         self._device = torch.device(device)
@@ -69,6 +78,9 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._sample_rate = sample_rate
         self._codec_eos_token_id = codec_eos_token_id
         self._total_upsample = int(model.total_upsample)
+        self._cuda_graph_runner = (
+            _cuda_graph_runner if bool(enable_cuda_graph) else None
+        )
 
         # Per-request state
         self._code_chunks: dict[str, list[torch.Tensor]] = {}
@@ -77,6 +89,13 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._stream_enabled: dict[str, bool] = {}
         super().__init__(compute_fn=None)
         self._payloads = self._stream_payloads
+
+    def start(self) -> None:
+        try:
+            super().start()
+        finally:
+            if self._cuda_graph_runner is not None:
+                self._cuda_graph_runner.log_shape_telemetry(trigger="shutdown")
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         del payload
@@ -150,7 +169,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         self._code_chunks[request_id].append(codes)
         ready = len(self._code_chunks[request_id]) - self._emitted[request_id]
         if ready >= self._stream_chunk_size:
-            return self._decode_and_emit(request_id)
+            return self._decode_and_emit(request_id, trigger="threshold")
         return []
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
@@ -159,7 +178,7 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         emitted = self._emitted[request_id]
         messages: list[OutgoingMessage] = []
         if chunks and emitted < len(chunks):
-            messages.extend(self._decode_and_emit(request_id))
+            messages.extend(self._decode_and_emit(request_id, trigger="stream_done"))
 
         # Build final output
         audio_parts = self._audio_chunks.get(request_id, [])
@@ -203,11 +222,19 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         )
         return messages
 
-    def _decode_and_emit(self, request_id: str) -> list[OutgoingMessage]:
+    def _decode_and_emit(
+        self, request_id: str, *, trigger: str
+    ) -> list[OutgoingMessage]:
         chunks = self._code_chunks[request_id]
         start = self._emitted[request_id]
         end = len(chunks)
-        audio = self._decode_incremental(request_id, chunks, start, end)
+        audio = self._decode_incremental(
+            request_id,
+            chunks,
+            start,
+            end,
+            trigger=trigger,
+        )
         self._emitted[request_id] = end
         messages: list[OutgoingMessage] = []
         if audio.size > 0:
@@ -233,21 +260,66 @@ class Code2WavScheduler(StreamingSimpleScheduler):
         return messages
 
     def _decode_incremental(
-        self, request_id: str, code_chunks, start, end
+        self,
+        request_id: str,
+        code_chunks,
+        start,
+        end,
+        *,
+        trigger: str,
     ) -> np.ndarray:
         if start >= end:
             return np.zeros((0,), dtype=np.float32)
         context = min(self._left_context_size, start)
+        profile_metadata: dict[str, Any] | None = None
+        if _get_event_recorder().is_active():
+            threshold_ready_request_count = sum(
+                len(chunks) - self._emitted.get(ready_request_id, 0)
+                >= self._stream_chunk_size
+                for ready_request_id, chunks in self._code_chunks.items()
+            )
+            profile_metadata = {
+                "trigger": trigger,
+                "start_frame": start,
+                "end_frame": end,
+                "new_frames": end - start,
+                "context_frames": context,
+                "window_frames": end - start + context,
+                "active_request_count": len(self._code_chunks),
+                "threshold_ready_request_count": threshold_ready_request_count,
+                "inbox_depth": self.inbox.qsize(),
+                "pending_message_depth": len(self._pending_messages),
+            }
+            _emit_event(
+                request_id=request_id,
+                stage=None,
+                event_name="code2wav_decode_start",
+                metadata=profile_metadata,
+            )
         window = torch.stack(code_chunks[start - context : end], dim=0)
         codes = window.transpose(0, 1).unsqueeze(0)
-        with torch.no_grad():
-            if self._device.type == "cuda":
-                torch.cuda.set_device(self._device)
-            wav = self._model(codes)
+        wav, execution_metadata = self._forward_codes(
+            codes,
+            graph_eligible=trigger == "threshold",
+        )
+        # Base scheduler chunk/done wrappers hold ``_state_lock`` across this
+        # complete path. A borrowed graph output is therefore trimmed and
+        # copied to host-owned NumPy storage before another replay can start.
         trim = context * self._total_upsample
         if trim:
             wav = wav[..., trim:]
         audio = wav.reshape(-1).detach().cpu().float().numpy().copy()
+        if profile_metadata is not None:
+            _emit_event(
+                request_id=request_id,
+                stage=None,
+                event_name="code2wav_decode_end",
+                metadata={
+                    **profile_metadata,
+                    "audio_samples": int(audio.shape[0]),
+                    **execution_metadata,
+                },
+            )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Code2Wav decode window=%s start=%s end=%s trim=%s samples=%s",
@@ -258,6 +330,44 @@ class Code2WavScheduler(StreamingSimpleScheduler):
                 int(audio.shape[0]),
             )
         return audio
+
+    def _forward_codes(
+        self,
+        codes: torch.Tensor,
+        *,
+        graph_eligible: bool,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Run one serial model call and return strict JSON-safe metadata."""
+
+        with torch.no_grad():
+            if self._device.type == "cuda":
+                torch.cuda.set_device(self._device)
+            if self._cuda_graph_runner is None:
+                result = Code2WavRunResult(
+                    output=self._model(codes),
+                    execution_mode="eager",
+                    key=None,
+                    fallback_reason=None,
+                )
+            else:
+                result = self._cuda_graph_runner.run(
+                    codes,
+                    eligible=graph_eligible,
+                )
+
+        graph_key = None
+        if result.key is not None:
+            graph_key = {
+                "batch_size": int(result.key.batch_size),
+                "frames": int(result.key.frames),
+            }
+        return result.output, {
+            "execution_mode": str(result.execution_mode),
+            "graph_key": graph_key,
+            "fallback_reason": (
+                None if result.fallback_reason is None else str(result.fallback_reason)
+            ),
+        }
 
     def _build_audio_payload(self, audio: np.ndarray) -> dict[str, Any]:
         return audio_waveform_payload(
@@ -276,14 +386,43 @@ def create_code2wav_scheduler(
     gpu_id: int | None = None,
     stream_chunk_size: int = 10,
     left_context_size: int = 25,
+    enable_cuda_graph: bool = False,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Factory: returns Code2WavScheduler."""
+    if enable_cuda_graph and total_gpu_memory_fraction is None:
+        raise ValueError(
+            "Code2Wav CUDA graph requires "
+            "runtime.resources.total_gpu_memory_fraction"
+        )
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
+    concrete_device = torch.device(device)
+    if concrete_device.type == "cuda" and concrete_device.index is None:
+        concrete_device = torch.device("cuda", torch.cuda.current_device())
+    device = str(concrete_device)
     model = load_code2wav_model(model_path, device=device, dtype=dtype)
+    cuda_graph_runner = None
+    if enable_cuda_graph:
+        cuda_graph_runner = Code2WavCudaGraphRunner.build(
+            model,
+            device=concrete_device,
+            num_quantizers=int(model.config.num_quantizers),
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+        )
+        logger.info(
+            "Code2Wav CUDA graph startup stats=%s",
+            json.dumps(
+                cuda_graph_runner.stats(),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
     return Code2WavScheduler(
         model,
         device=device,
         stream_chunk_size=stream_chunk_size,
         left_context_size=left_context_size,
+        enable_cuda_graph=enable_cuda_graph,
+        _cuda_graph_runner=cuda_graph_runner,
     )
