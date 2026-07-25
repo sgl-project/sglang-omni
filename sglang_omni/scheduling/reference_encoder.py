@@ -7,7 +7,9 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
+
+import torch
 
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -54,6 +56,60 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
     def encode_batch(self, items: list[InputT]) -> list[ArtifactT]:
         """Reserved; ReferenceEncodeService does not call this until batching."""
         return [self.encode_one(item) for item in items]
+
+
+class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
+    """Defaults for hooks with structured identity and option keys."""
+
+    model_id: str
+    model_revision: str
+    encoder_id: str
+    encoder_config_hash: str
+    artifact_kind: str
+
+    def normalize_input(self, raw_input: Any) -> InputT:
+        return cast(InputT, raw_input)
+
+    def input_key(self, item: InputT) -> str | None:
+        raise NotImplementedError
+
+    def options_key(self, item: InputT) -> str:
+        return ""
+
+    def cache_key(self, item: InputT) -> ReferenceEncodeKey | None:
+        input_key = self.input_key(item)
+        if input_key is None:
+            return None
+        return ReferenceEncodeKey(
+            model_id=self.model_id,
+            model_revision=self.model_revision,
+            encoder_id=self.encoder_id,
+            encoder_config_hash=self.encoder_config_hash,
+            artifact_kind=self.artifact_kind,
+            input_key=input_key,
+            options_key=self.options_key(item),
+        )
+
+    def revalidate(self, item: InputT, key: ReferenceEncodeKey) -> bool:
+        return (
+            self.input_key(item) == key.input_key
+            and self.options_key(item) == key.options_key
+        )
+
+
+class TensorReferenceEncodeHook(
+    KeyedReferenceEncodeHook[InputT, torch.Tensor, torch.Tensor]
+):
+    """Defaults for reference encoders that cache CPU tensor artifacts."""
+
+    storage_dtype: torch.dtype | None = None
+    output_dtype: torch.dtype | None = None
+
+    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
+        return artifact.detach().to(device="cpu", dtype=self.storage_dtype, copy=True)
+
+    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
+        return stored.detach().to(dtype=self.output_dtype, copy=True)
 
 
 def _fresh_exception(exc: BaseException) -> BaseException:

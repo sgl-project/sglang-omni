@@ -85,6 +85,58 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
 
+## Shared weights across replicas (opt-in, default off)
+
+By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
+
+**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and gated to **validated architectures with tp=pp=1**; anything else is rejected before any resource is created, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. An architecture audit alone does not enable sharing: a model is supported only after the documented launcher command passed end-to-end validation (shared N=2 boot under MPS, health, attach verification, concurrent-request correctness, clean teardown) at the current revision. `WEIGHT_SHARE=1` requires `CONFIG`, so the supported-config check runs in preflight, before the MPS daemon, state directory, or any replica exists. Each supported architecture carries a share policy: registered tensors the model writes at serving time (per-step decode staging scratch) are classified **replica-private** — every replica keeps its own storage for them and only the immutable weights alias one storage. Leader and follower derive the classification from the same policy and fail closed on any disagreement (it is part of the manifest). Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `--max-total-tokens` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum; because its sizing assumes sharing, it defaults `WEIGHT_SHARE=1`, while `launch.sh` itself defaults off.
+
+A model is either **supported** or **not supported**; there is no intermediate tier. Supported means all of the following passed at the current revision, with commands and logs recorded in the PR: the documented `launch.sh` command boots `N=2` with `WEIGHT_SHARE=1` under a private MPS daemon, every replica passes its health check and MPS attach verification, the follower attaches the leader's weights over CUDA IPC and holds no second resident copy of the shared weights after boot, concurrent requests across replicas return correct outputs (byte-identical audio to the single-replica baseline for TTS; word-identical transcripts for ASR, where timestamp fields may jitter under batching), and teardown leaves no replica process or MPS client behind. This is one-H100 end-to-end smoke validation — executable support evidence at the current revision, not a long-term stability or CI claim.
+
+| Architecture | Status | Config | Replica-private | Shared weight mass |
+|---|---|---|---|---|
+| MOSS TTS delay (`MossTTSDelaySGLangModel`) | Supported | `moss_delay_h100_dp2.yaml` | `_decode_input_embedding.weight` (per-step decode staging) | Qwen3-8B backbone, embeddings, heads (17.05 GiB) |
+| Higgs TTS (`HiggsMultimodalQwen3ForConditionalGeneration`) | Supported | `higgs_h100_dp3.yaml` | none identified | all registered parameters/buffers (7.55 GiB) |
+| MOSS TTS local (`MossTTSLocalSGLangModel`) | Supported | `moss_local_h100_dp2.yaml` | `_decode_input_embedding.weight` (per-step decode staging) | AR backbone, embeddings, local transformer, rope buffers (8.44 GiB) |
+| Whisper (`WhisperForConditionalGeneration`) | Supported | `whisper_h100_dp2.yaml` | none identified | all registered tensors (1.51 GiB) |
+| MOSS Transcribe-Diarize (`MossTranscribeDiarizeForConditionalGeneration`) | Supported | `moss_td_h100_dp2.yaml` | none identified | all registered tensors (1.75 GiB) |
+| Qwen3-ASR (`Qwen3ASRForConditionalGeneration`) | Supported | `qwen3_asr_h100_dp2.yaml` | none identified | all registered tensors (3.83 GiB) |
+| FunASR Nano (`FunAsrNanoForConditionalGeneration`) | Supported | `fun_asr_h100_dp2.yaml` | none identified | all registered tensors (1.57 GiB) |
+
+Each supported model launches with its config from `examples/mps_dp/configs/` and the same command shape, for example:
+
+```bash
+CONFIG=examples/mps_dp/configs/moss_delay_h100_dp2.yaml N=2 WEIGHT_SHARE=1 CORE_BLOCKS="0-7 8-15" bash examples/mps_dp/launch.sh up
+```
+
+Everything else is **not supported** and is rejected in preflight, before the MPS daemon, state directory, handle file, or any replica process exists. For these, a completed architecture audit is recorded where one exists, but support is still in progress:
+
+* Ming TTS (`MingTTSSGLangModel`): audit complete; blocked on VRAM (the 16.8B leader alone reaches the 80 GB card edge), pending an H200 pass.
+* Voxtral TTS (`VoxtralSGLangTTSModel`), Fish S2-Pro (`S2ProSGLangTextModel`), Qwen3-TTS (`Qwen3TTSTalker`): audit complete; shared boots were observed in exploratory runs, but concurrent-request correctness needs each model's own client, which this validation does not have yet.
+* LLaDA2 (`LLaDA2MoeModelLM`): audit complete; its pipeline declares no generation SGLang stage, so the launcher cannot drive it at any `N`.
+* Qwen3-Omni (`Qwen3OmniThinkerForCausalLM`, `Qwen3OmniTalker`): audit of both engines complete; the speech pipeline runs two SGLang engines and the text pipeline declares no generation stage, so the launcher cannot drive either.
+* Ming-Omni thinker (`BailingMoeV2ForCausalLM`) and every other architecture: no completed audit; adding one requires a post-load mutation audit, a policy entry, and the full launcher validation above.
+
+For MOSS, sharing covers the SGLang AR engine only: the preprocessing and vocoder codec instances keep loading per replica by design (they hold streaming state), so they are outside both the share and its memory savings.
+
+The measurements below are performance context from this PR's validation campaign (one 80 GB H100, post-boot VRAM, one measurement pass per cell unless noted); the support decision above rests on the current-revision end-to-end runs, not on these cells. Only supported models are shown.
+
+| Model | Validated DP, IPC off | Validated DP, IPC on | VRAM, off | VRAM, on | Saved per follower | Throughput (aggregate across replicas), off vs on |
+|---|---|---|---:|---:|---:|---|
+| MOSS TTS delay | **DP1** (unshared DP2: replica 1 cannot fit its own weight copy in the remaining budget) | **DP2** | n/a | 42.4 GB | 17.05 GiB | single 5.7 to shared DP2 agg 7.5 qps (+32%, per replica 3.8, single run); aligned-history outputs byte-identical; leader and follower processes 29.9 and 12.4 GB |
+| Higgs TTS 3-4B | DP3 (100k cap; unshared DP4 needs 98 GB) | **DP4** (74.9 GB idle, 78.4 under load) | 73.7 GB at DP3 | 58.1 GB at DP3 | 7.55 GiB | shared DP4 beats shared DP3 by +10% to +40% round-matched on this H100 driver; separately, the author's H200 series showed parity at every N |
+| MOSS TTS local | DP3 at the card edge, vocoder graphs partly eager | DP3 with 13.3 GB headroom, full graphs | 78.0 GB | 61.8 GB | 8.44 GiB | measured parity: DP2 agg 17.9 vs 18.2 (per replica 9.0 vs 9.1), DP3 agg 23.4 vs 23.4 (per replica 7.8) qps |
+| Whisper large-v3-turbo | DP3 (40k cap) | **DP6** (19.7 GB) | 14.1 GB at DP3 | 10.7 GB at DP3 | 1.51 GiB | parity at DP3 (agg 67.8 vs 68.0); shared DP6 reaches agg 95.3 cold qps, +40% over DP3 |
+| MOSS Transcribe-Diarize | DP3 (40k cap) | DP3 | 23.9 GB | 20.2 GB | 1.75 GiB | parity: agg 75.7 vs 70.9 cold qps (per replica 25.2 vs 23.6; 192 unique clips) |
+| Qwen3-ASR 1.7B | DP3 (40k cap) | DP3 | 28.2 GB | 20.2 GB | 3.83 GiB | parity: agg 67.5 vs 64.5 (per replica 22.5 vs 21.5) |
+| FunASR Nano | DP2 (30k cap) | DP2 | 11.8 GB | 10.2 GB | 1.57 GiB | parity: agg 40.6 vs 42.5 cold qps (per replica 20.3 vs 21.3) |
+
+The validated-DP columns show the highest configuration each mode booted and served in these runs, not proven ceilings: Whisper kept scaling to DP6 and its knee is still unfound, so treat the small models' DP as CPU-core-limited, not VRAM-limited. For the ASR models the ceiling is host-bound, not VRAM-bound, so sharing does not move it; sharing moves the ceiling exactly where weights bind: MOSS delay (DP1 to DP2) and MOSS local (edge DP3 to operable DP3). Fixed-N parity is the mechanism-level expectation (same kernels over the same weight values either way); the single-run ASR pairs differ by under 7% with no consistent direction and MOSS local's repeated rounds match, but treat single-pass cells as observations pending repetition. The throughput gains come from the extra replicas or KV the freed memory funds (delay DP2 +32% over its single replica, local DP3 +29% over DP2, Higgs DP4 +10% to +40% over DP3).
+
+Correctness scope for the smoke validation: TTS byte-identity holds for a replica serving the seeded sequence as its first traffic, for both leader and follower and with the peer under concurrent load; the MOSS samplers are additionally sensitive to their own serving history, at identical rates with sharing off and on (measured controls), so byte comparisons require aligned histories, and no evidence points at cross-replica sharing pollution. FunASR: 63/63 admissible clips exact; the 64th corpus clip exceeds the model's own 30-second VAD limit and is rejected identically by the baseline and both shared replicas.
+
+VRAM saved per follower is the byte count the leader exports and each follower aliases instead of allocating; the off and on columns differ by roughly (N-1) times this value. ASR throughput used 64 unique synthesized clips per replica with the cold round reported (a warm rerun is cache-inflated). Sharing leaves throughput at parity at a fixed N everywhere it was paired; the wins are fit (MOSS delay DP2, previously impossible), margin (MOSS local DP3: 13.3 GB headroom and full graphs versus 0.33 GB and graph fallback), and follower memory.
+
 ## How We Found This
 
 This recipe grew out of the serving profiling in [#907](https://github.com/sgl-project/sglang-omni/issues/907). Our profiling found substantial unused GPU capacity across several omni serving workloads, with strong host-dispatch-bound evidence in the tested ASR setup. From there we ran same-GPU DP experiments on [Higgs](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html) and [Moss](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html) TTS models.
@@ -108,7 +160,16 @@ Serving throughput depends on more than the GPU's peak compute. It also depends 
 
 **Replicating the weights costs VRAM. What does that buy?**
 
-Same-GPU DP does not save VRAM; it spends more of it. It copies the weights per replica and gives each replica its own, smaller KV pool. What it buys is the otherwise idle compute, reclaimed. That trade pays off only when a tuned single replica leaves the GPU idle (so there are idle SMs to fill) and the model is small enough that its weights are a modest slice of the card, so two or three full replicas still fit. On a compute-bound model, or one too large to hold several weight copies, extra replicas buy little.
+Same-GPU DP does not save VRAM; it spends more of it. It copies the weights per replica and gives each replica its own, smaller KV pool. What it buys is the otherwise idle compute, reclaimed. That trade pays off only when a tuned single replica leaves the GPU idle (so there are idle SMs to fill) and the model is small enough that its weights are a modest slice of the card, so two or three full replicas still fit. On a compute-bound model, or one too large to hold several weight copies, extra replicas buy little. (Weight sharing over CUDA IPC relaxes the fit constraint — followers attach the leader's copy instead of loading their own — but not the idle-compute precondition.)
+
+**Why does this pay for TTS models and not for general LLM serving?**
+
+Memory fit is the enabling condition, not the cause. The cause is idle that a single engine cannot reclaim, and TTS-style AR audio models produce it on two axes at once:
+
+- *Latency-capped batch shapes.* Streaming first-chunk latency pins the per-replica batch small, and a 0.6–4B talker at that batch runs low-occupancy kernels. The usual LLM remedy — batch deeper in one engine — spends the latency budget the product is built around.
+- *Host-heavy serving path.* Sampler pools, vocoder scheduling, chunk assembly, and HTTP streaming do per-step host work that rivals the GPU step time, so a single process idles the card temporally between launches. N processes overlap one replica's dispatch bubble with another's kernels; this is also why same-GPU DP scaling is sensitive to the CPU cores allotted per replica.
+
+A large dense transformer inverts every part of this: its decode batch can grow until the GEMMs saturate the SM array (continuous batching in one engine already multiplexes requests over one weight copy), SM utilization is high at serving batch sizes so MPS has no idle to harvest — only contention to add — and at tens of GiB per weight copy, same-card replicas stop fitting at all. The scaling tools there are TP/PP/EP within one engine, not DP behind MPS. Rule of thumb: colocate replicas when a tuned single replica holds roughly ≤60% SM-active under its latency SLO and N× the footprint fits (weight sharing extends the fit); otherwise scale the batch, not the process count.
 
 ## Reproduce the results
 

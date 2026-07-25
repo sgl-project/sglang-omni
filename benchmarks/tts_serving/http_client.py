@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import AsyncIterator
 
 import aiohttp
 
-from benchmarks.tts_serving.audio_validation import validate_audio_response
+from benchmarks.tts_serving.audio_validation import (
+    validate_audio_response,
+    validate_pcm_chunk,
+)
 from benchmarks.tts_serving.batch_client import handle_batch_success
 from benchmarks.tts_serving.http_contracts import (
     MAX_HTTP_RESPONSE_BYTES,
@@ -57,6 +61,7 @@ async def run_http_scenario(
         endpoint=scenario.endpoint,
         category=scenario.category,
         capability_key=scenario.capability_key,
+        workload=scenario.workload,
         expected_success=scenario.expect_success,
         response_format=_scenario_response_format(scenario),
         batch_size=scenario.planned_metadata.get("batch_size"),
@@ -93,6 +98,8 @@ async def run_http_scenario(
         elif scenario.method == "DELETE":
             async with session.delete(url) as response:
                 await _handle_binary_response(response, result, start, scenario)
+        elif scenario.method == "HTTP_DISCONNECT":
+            await _run_disconnect_scenario(session, spec, scenario, result)
         else:
             body = request_body(scenario)
             kwargs = (
@@ -126,6 +133,212 @@ async def run_http_scenario(
     finally:
         finish_timing(result, start)
     return result
+
+
+async def _run_disconnect_scenario(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+) -> None:
+    result.request_bytes = request_size(scenario)
+    if scenario.endpoint == "speech_stream":
+        disconnected = await _disconnect_streaming_response(
+            session,
+            spec,
+            scenario,
+            result,
+        )
+    else:
+        disconnected = await _disconnect_before_response(
+            session,
+            spec,
+            scenario,
+            result,
+        )
+    if not disconnected:
+        return
+
+    result.was_cancelled = True
+    await _run_speech_liveness_probe(session, spec, result)
+
+
+async def _disconnect_before_response(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+) -> bool:
+    request_body_sent = asyncio.Event()
+
+    async def mark_request_body_sent(
+        _session: aiohttp.ClientSession,
+        _trace_config_ctx: object,
+        _params: aiohttp.TraceRequestChunkSentParams,
+    ) -> None:
+        request_body_sent.set()
+
+    trace_config = aiohttp.TraceConfig()
+    trace_config.on_request_chunk_sent.append(mark_request_body_sent)
+    connector = aiohttp.TCPConnector(limit=1, force_close=True)
+    async with aiohttp.ClientSession(
+        timeout=session.timeout,
+        headers=session.headers,
+        connector=connector,
+        trace_configs=[trace_config],
+    ) as disconnect_session:
+        request_task = asyncio.create_task(
+            disconnect_session.post(
+                api_url(spec.base_url, scenario.path),
+                json=scenario.payload,
+            )
+        )
+        body_sent_task = asyncio.create_task(request_body_sent.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {request_task, body_sent_task},
+                timeout=spec.params.timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                _mark_protocol_error(
+                    result,
+                    status="disconnect_not_reached",
+                    error="request body was not sent before the configured request timeout",
+                )
+                return False
+            if request_task in done:
+                response = request_task.result()
+                result.http_status = response.status
+                result.http_status_class = classify_http_status(response.status)
+                response.close()
+                _mark_protocol_error(
+                    result,
+                    status="disconnect_completed_too_early",
+                    error="request completed before the benchmark client disconnected",
+                )
+                return False
+
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
+            return True
+        finally:
+            body_sent_task.cancel()
+            await asyncio.gather(body_sent_task, return_exceptions=True)
+            if not request_task.done():
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+
+
+async def _disconnect_streaming_response(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    scenario: Scenario,
+    result: ScenarioResult,
+) -> bool:
+    response = await session.post(
+        api_url(spec.base_url, scenario.path),
+        json=scenario.payload,
+    )
+    result.http_status = response.status
+    result.http_status_class = classify_http_status(response.status)
+    result.response_headers = dict(response.headers)
+    try:
+        if response.status != 200:
+            body, body_text = await _response_body_and_text(response)
+            result.response_bytes = len(body)
+            _classify_http_failure(response.status, body_text, result, scenario)
+            return False
+
+        chunk_iterator = _iter_response_http_chunks(response)
+        try:
+            chunk, _ = await anext(chunk_iterator)
+        except StopAsyncIteration:
+            _mark_protocol_error(
+                result,
+                status="disconnect_missing_audio",
+                error="streaming response ended before producing an audio chunk",
+            )
+            return False
+
+        validation = validate_pcm_chunk(
+            chunk,
+            sample_rate=_response_sample_rate(response),
+        )
+        if not validation.ok:
+            _mark_protocol_error(
+                result,
+                status="disconnect_invalid_audio",
+                error=f"first streaming audio chunk is invalid: {validation.error}",
+            )
+            return False
+        if response.content.at_eof():
+            _mark_protocol_error(
+                result,
+                status="disconnect_completed_too_early",
+                error="streaming response completed before the client disconnected",
+            )
+            return False
+
+        result.first_audio_payload_bytes = len(chunk)
+        result.audio_chunk_count = 1
+        return True
+    finally:
+        response.close()
+
+
+async def _run_speech_liveness_probe(
+    session: aiohttp.ClientSession,
+    spec: BenchmarkSpec,
+    result: ScenarioResult,
+) -> None:
+    payload = {
+        "model": spec.model_name,
+        "input": "Post-disconnect liveness probe.",
+        "voice": "default",
+        "response_format": "wav",
+        "speed": 1.0,
+    }
+    async with session.post(
+        api_url(spec.base_url, "/v1/audio/speech"),
+        json=payload,
+    ) as response:
+        try:
+            body = await read_response_body(response)
+        except ResponseBodyTooLarge as exc:
+            _mark_protocol_error(
+                result,
+                status="disconnect_liveness_response_too_large",
+                error=str(exc),
+            )
+            return
+        if response.status < 200 or response.status >= 300:
+            _mark_protocol_error(
+                result,
+                status="disconnect_liveness_failed",
+                error=(
+                    "post-disconnect speech probe failed "
+                    f"(status={response.status}, "
+                    f"body={body.decode('utf-8', errors='replace')})"
+                ),
+            )
+            return
+
+        validation = await asyncio.to_thread(
+            validate_audio_response,
+            body,
+            response_format="wav",
+            content_type=response.headers.get("Content-Type"),
+            sample_rate=_response_sample_rate(response),
+        )
+        if not validation.ok:
+            _mark_protocol_error(
+                result,
+                status="disconnect_liveness_invalid_audio",
+                error=f"post-disconnect speech probe returned invalid audio: {validation.error}",
+            )
+            return
+        _mark_success(result)
 
 
 async def _handle_probe_response(
@@ -214,6 +427,8 @@ async def _handle_binary_response(
             return
         result.audio_bytes = len(body)
         result.audio_duration_s = validation.duration_s
+        if not _parse_sglang_usage_headers(response, result):
+            return
         _mark_success(result)
         return
     _classify_http_failure(
@@ -334,6 +549,48 @@ def _response_sample_rate(response: aiohttp.ClientResponse) -> int:
     except ValueError:
         return PCM_SAMPLE_RATE
     return sample_rate if sample_rate > 0 else PCM_SAMPLE_RATE
+
+
+def _parse_sglang_usage_headers(
+    response: aiohttp.ClientResponse,
+    result: ScenarioResult,
+) -> bool:
+    """Capture optional SGLang usage headers without requiring provider extensions."""
+    header_specs = (
+        ("X-Prompt-Tokens", "prompt_tokens", int),
+        ("X-Completion-Tokens", "completion_tokens", int),
+        ("X-Engine-Time", "engine_time_s", float),
+    )
+    for header_name, attribute, parser in header_specs:
+        raw_value = response.headers.get(header_name)
+        if raw_value is None:
+            continue
+        try:
+            value = parser(raw_value)
+        except (TypeError, ValueError):
+            _mark_protocol_error(
+                result,
+                status="invalid_usage_headers",
+                error=f"{header_name} must be numeric, observed={raw_value!r}",
+            )
+            return False
+        if isinstance(value, float) and not math.isfinite(value):
+            _mark_protocol_error(
+                result,
+                status="invalid_usage_headers",
+                error=f"{header_name} must be finite, observed={raw_value!r}",
+            )
+            return False
+        if value < 0:
+            _mark_protocol_error(
+                result,
+                status="invalid_usage_headers",
+                error=f"{header_name} must be non-negative, observed={raw_value!r}",
+            )
+            return False
+        setattr(result, attribute, value)
+
+    return True
 
 
 async def _iter_response_http_chunks(

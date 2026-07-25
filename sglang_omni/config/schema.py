@@ -165,6 +165,9 @@ class StageConfig(BaseModel):
     # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
     runtime_arg_map: dict[str, str] = Field(default_factory=dict)
+    # Note (Yueying Li): per-stage env defaults applied in this stage's worker process at spawn
+    # (merged over the pipeline-level env_defaults; never overrides os.environ).
+    env: dict[str, str] = Field(default_factory=dict)
 
     # --- Fan-in ---
     wait_for: list[str] | None = None
@@ -221,6 +224,9 @@ class PipelineConfig(BaseModel):
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
+    required_speech_reference_count: ClassVar[int | None] = None
+    speech_reference_text_required: ClassVar[bool] = False
+    additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
 
     model_path: str
     stages: list[StageConfig]

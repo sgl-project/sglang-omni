@@ -26,7 +26,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         if not hasattr(qwen_tts, "Qwen3TTSModel"):
             raise ImportError("qwen_tts does not expose Qwen3TTSModel")
 
-        return qwen3_stages._resolve_checkpoint(model_path)
+        return super().resolve_checkpoint(model_path)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir

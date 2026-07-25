@@ -218,6 +218,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     processor: Any,
     tokenizer: Any,
     max_new_tokens: int,
+    audio_encoder_service: Any | None = None,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
     Callable[[Any], StagePayload],
@@ -267,6 +268,9 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         audio_item.set_pad_value()
         audio_item.offsets = offsets
 
+        if audio_encoder_service is not None:
+            audio_encoder_service.encode_item(audio_item)
+
         padded_input_ids = [
             audio_item.pad_value if token_id == audio_token_id else token_id
             for token_id in input_ids
@@ -307,11 +311,10 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         req._codec_suppress_tokens = None
 
         logger.debug(
-            "[moss-td] prompt_tokens=%d audio_tokens=%d chunks=%d duration=%.3fs",
-            len(padded_input_ids),
-            sum(end - start + 1 for start, end in offsets),
-            int(audio_feature_lengths.numel()),
-            audio_duration_s,
+            f"[moss-td] prompt_tokens={len(padded_input_ids)} "
+            f"audio_tokens={sum(end - start + 1 for start, end in offsets)} "
+            f"chunks={int(audio_feature_lengths.numel())} "
+            f"duration={audio_duration_s:.3f}s"
         )
 
         return MossTranscribeDiarizeRequestData(

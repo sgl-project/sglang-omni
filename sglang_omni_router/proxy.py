@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
+from collections.abc import Callable
 from http import HTTPStatus
 
 import httpx
@@ -52,12 +54,13 @@ RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
 BUFFERED_RESPONSE_HEADERS_TO_STRIP = RESPONSE_HEADERS_TO_STRIP | {
     "content-encoding",
 }
-WORKER_REQUEST_FAILURE_STATUS_CODES = {
-    HTTPStatus.REQUEST_TIMEOUT.value,
-    HTTPStatus.TOO_MANY_REQUESTS.value,
-    HTTPStatus.INTERNAL_SERVER_ERROR.value,
+# Note (Jiaxin Deng): liveness is owned by /health probes; a relayed status
+# evicts only on gateway failure (502/504). Capacity backpressure (429/503),
+# request timeouts (408), and bad-input 500s are per-request failures counted in
+# worker stats, so one overloaded or bad-input client cannot cascade the pool
+# unhealthy.
+WORKER_EVICTION_STATUS_CODES = {
     HTTPStatus.BAD_GATEWAY.value,
-    HTTPStatus.SERVICE_UNAVAILABLE.value,
     HTTPStatus.GATEWAY_TIMEOUT.value,
 }
 
@@ -69,9 +72,121 @@ _SSE_UPSTREAM_ERROR_EVENT = (
     b'"type": "upstream_error", "param": null, "code": 502}}\n\n'
 )
 
+_OVERLOAD_RETRY_AFTER_SECS = "1"
+
 
 class PayloadTooLargeError(ValueError):
     pass
+
+
+class AdmissionController:
+    """Bounded global in-flight count for the model data plane.
+
+    Runs on uvicorn's single event loop: check-and-increment happens
+    synchronously between awaits, so no locking is needed.
+    """
+
+    def __init__(self, max_inflight: int) -> None:
+        self._max_inflight = max_inflight
+        self._inflight = 0
+        self._peak_inflight = 0
+        self._rejected_total = 0
+
+    @property
+    def inflight(self) -> int:
+        return self._inflight
+
+    def try_acquire(self) -> bool:
+        if self._inflight >= self._max_inflight:
+            self._rejected_total += 1
+            return False
+        self._inflight += 1
+        if self._inflight > self._peak_inflight:
+            self._peak_inflight = self._inflight
+        return True
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "inflight": self._inflight,
+            "max_inflight": self._max_inflight,
+            "peak_inflight": self._peak_inflight,
+            "rejected_total": self._rejected_total,
+        }
+
+    def release(self) -> None:
+        assert self._inflight > 0, "in-flight count cannot be negative"
+        self._inflight -= 1
+
+
+class _ReleaseOnce:
+    """Idempotent release so every response path can call it safely."""
+
+    def __init__(self, admission: AdmissionController) -> None:
+        self._admission = admission
+        self._released = False
+
+    def __call__(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._admission.release()
+
+
+class _RelayCleanup:
+    """Idempotent teardown for one streamed relay.
+
+    Closes the upstream stream, decrements the worker in-flight count, releases
+    the admission slot, and records completion exactly once, whichever path
+    finishes the response: the body iterator (normal completion, mid-stream
+    error, or cancellation) or the response ``__call__`` when ``send`` fails on
+    ``http.response.start`` before the iterator ever runs.
+    """
+
+    def __init__(
+        self,
+        *,
+        upstream: httpx.Response,
+        worker: Worker,
+        release: _ReleaseOnce,
+        record_completion: Callable[[str], None],
+    ) -> None:
+        self._upstream = upstream
+        self._worker = worker
+        self._release = release
+        self._record_completion = record_completion
+        self._done = False
+
+    async def __call__(self, outcome: str) -> None:
+        if self._done:
+            return
+        self._done = True
+        # aclose() raising on a broken mid-stream connection must not skip the
+        # decrement, otherwise least_request drifts permanently.
+        try:
+            await self._upstream.aclose()
+        finally:
+            self._worker.decrement_active()
+            self._release()
+            self._record_completion(outcome)
+
+
+class _RelayResponse(StreamingResponse):
+    """Streaming relay response that cleans up even if the body never streams.
+
+    Starlette sends ``http.response.start`` before it iterates the body, so a
+    client disconnect (or any ``send`` failure) during that first send skips the
+    iterator's ``finally``. This ``__call__`` is the cleanup owner for that path.
+    """
+
+    def __init__(self, *args, cleanup: _RelayCleanup, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._cleanup = cleanup
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._cleanup("client_disconnected")
 
 
 def filter_request_headers(request: Request) -> dict[str, str]:
@@ -115,8 +230,56 @@ class ProxyHandler:
         self._workers = workers
         self._selector = selector
         self._client = client
+        self._admission = AdmissionController(config.effective_max_inflight)
+
+    @property
+    def admission(self) -> AdmissionController:
+        return self._admission
 
     async def forward_model_request(self, request: Request, path: str) -> Response:
+        # Note (Jiaxin Deng): reject before reading the body; past the bound
+        # the relay must shed load, not queue it.
+        if not self._admission.try_acquire():
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=503,
+                reason="router_overloaded",
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": (
+                            "router overloaded: max in-flight requests reached"
+                        ),
+                        "type": "overloaded_error",
+                        "code": 503,
+                    }
+                },
+                headers={"Retry-After": _OVERLOAD_RETRY_AFTER_SECS},
+            )
+        release = _ReleaseOnce(self._admission)
+        try:
+            response = await self._forward_admitted(request, path, release)
+        except BaseException:
+            release()
+            raise
+        # Note (Jiaxin Deng): a streamed relay releases its slot from the cleanup
+        # owner (iterator or __call__ finally); other responses release once built.
+        # The finalizer is only a GC backstop if the ASGI stack never calls it.
+        if not isinstance(response, StreamingResponse):
+            release()
+        else:
+            weakref.finalize(response, release)
+        return response
+
+    async def _forward_admitted(
+        self,
+        request: Request,
+        path: str,
+        release: _ReleaseOnce,
+    ) -> Response:
         content_length = request.headers.get("content-length")
         if content_length is not None and _exceeds_max_size(
             content_length, self._config.max_payload_size
@@ -196,7 +359,7 @@ class ProxyHandler:
                 content={"error": {"message": "no eligible upstream"}},
             )
 
-        return await self._forward_relay(request, path, body, metadata, worker)
+        return await self._forward_relay(request, path, body, metadata, worker, release)
 
     async def _forward_relay(
         self,
@@ -205,6 +368,7 @@ class ProxyHandler:
         body: bytes,
         metadata: RouteMetadata,
         worker: Worker,
+        release: _ReleaseOnce,
     ) -> Response:
         # Note (Jiaxin Deng): stream through instead of buffering. A mid-stream
         # failure after a 2xx cannot become a 502; SSE (text/event-stream) bodies
@@ -258,7 +422,7 @@ class ProxyHandler:
                 error=error,
             )
 
-        if upstream.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+        if upstream.status_code in WORKER_EVICTION_STATUS_CODES:
             record_worker_failure_once(
                 status_code=upstream.status_code,
                 error=f"status={upstream.status_code}",
@@ -266,6 +430,25 @@ class ProxyHandler:
 
         is_event_stream = (upstream.headers.get("content-type") or "").startswith(
             "text/event-stream"
+        )
+
+        def record_completion(outcome: str) -> None:
+            status_code = upstream.status_code if outcome == "completed" else None
+            worker.record_routed_request(status_code=status_code)
+            self._log_route_completion(
+                worker=worker,
+                path=path,
+                metadata=metadata,
+                status_code=upstream.status_code,
+                outcome=outcome,
+                start_time=start_time,
+            )
+
+        cleanup = _RelayCleanup(
+            upstream=upstream,
+            worker=worker,
+            release=release,
+            record_completion=record_completion,
         )
 
         async def iter_bytes():
@@ -284,25 +467,7 @@ class ProxyHandler:
                     return
                 raise
             finally:
-                # Note (Jiaxin Deng): decrement the in-flight count (and record
-                # completion) even if aclose() raises on a broken mid-stream
-                # connection, otherwise least_request drifts permanently.
-                try:
-                    await upstream.aclose()
-                finally:
-                    worker.decrement_active()
-                    status_code = (
-                        upstream.status_code if outcome == "completed" else None
-                    )
-                    worker.record_routed_request(status_code=status_code)
-                    self._log_route_completion(
-                        worker=worker,
-                        path=path,
-                        metadata=metadata,
-                        status_code=upstream.status_code,
-                        outcome=outcome,
-                        start_time=start_time,
-                    )
+                await cleanup(outcome)
 
         try:
             headers = filter_response_headers(upstream.headers, buffered=not stream)
@@ -316,11 +481,12 @@ class ProxyHandler:
             if stream
             else upstream.headers.get("content-type")
         )
-        return StreamingResponse(
+        return _RelayResponse(
             iter_bytes(),
             status_code=upstream.status_code,
             headers=headers,
             media_type=media_type,
+            cleanup=cleanup,
         )
 
     def _diagnostic_headers(
@@ -413,8 +579,10 @@ async def _read_body_with_limit(request: Request, max_size: int) -> bytes:
 
 
 def _response_outcome(status_code: int) -> str:
-    if status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+    if status_code in WORKER_EVICTION_STATUS_CODES:
         return "worker_failure_status"
+    if status_code == HTTPStatus.INTERNAL_SERVER_ERROR.value:
+        return "upstream_5xx"
     return "completed"
 
 

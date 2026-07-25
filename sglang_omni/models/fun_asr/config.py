@@ -17,6 +17,14 @@ class FunASRPipelineConfig(PipelineConfig):
         "FunASRForConditionalGeneration",
     )
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"asr": "asr"}
+
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "asr"}
+
     model_path: str
     entry_stage: str = "asr"
     stages: list[StageConfig] = [
@@ -28,7 +36,11 @@ class FunASRPipelineConfig(PipelineConfig):
                 "device": "cuda:0",
                 "max_running_requests": 32,
                 "max_new_tokens": 200,
-                "request_build_max_workers": 2,
+                "enable_encoder_torch_compile": False,
+                "enable_pre_lm_encoder": True,
+                "pre_lm_cache_max_entries": 4096,
+                "pre_lm_cache_size_bytes": 2 * 1024**3,
+                "request_build_max_workers": 8,
                 "request_build_max_pending": 16,
             },
             gpu=0,

@@ -59,7 +59,7 @@ def create_app(
     timeout = httpx.Timeout(config.request_timeout_secs)
     owns_client = client is None
     if client is None:
-        limits = httpx.Limits(max_connections=config.max_connections)
+        limits = httpx.Limits(max_connections=config.upstream_pool_size)
         client = httpx.AsyncClient(timeout=timeout, limits=limits)
     owns_health_client = health_client is None and owns_client
     if health_client is None:
@@ -95,6 +95,7 @@ def create_app(
         app.state.health_http_client = health_client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
+        app.state.admission_controller = proxy.admission
         app.state.admin_update_lock = asyncio.Lock()
         await health_checker.start()
         try:
@@ -164,6 +165,7 @@ def register_routes(
             workers,
             available_status="healthy",
             unavailable_status="unhealthy",
+            extra={"admission": proxy.admission.to_dict()},
         )
 
     @app.post("/workers")
@@ -429,14 +431,15 @@ def _worker_pool_status_response(
     *,
     available_status: str,
     unavailable_status: str,
+    extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     routable = sum(1 for worker in workers if worker.is_routable)
     status_code = 200 if routable > 0 else 503
     status = available_status if routable > 0 else unavailable_status
-    return JSONResponse(
-        _pool_summary(workers, status=status),
-        status_code=status_code,
-    )
+    payload = _pool_summary(workers, status=status)
+    if extra:
+        payload.update(extra)
+    return JSONResponse(payload, status_code=status_code)
 
 
 async def _broadcast_admin_request(

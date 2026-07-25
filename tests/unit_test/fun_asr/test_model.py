@@ -85,3 +85,28 @@ def test_fun_asr_weight_loader_rejects_unknown_audio_weights() -> None:
 
     with pytest.raises(ValueError, match=r"model\.audio_tower\.missing\.weight"):
         model.load_weights([("model.audio_tower.missing.weight", torch.ones(2))])
+
+
+def test_fun_asr_audio_feature_shape() -> None:
+    class _IdentityTower(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(1))
+
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return value
+
+    model = FunAsrNanoForConditionalGeneration.__new__(
+        FunAsrNanoForConditionalGeneration
+    )
+    nn.Module.__init__(model)
+    model.audio_tower = _IdentityTower()
+    model.multi_modal_projector = nn.Identity()
+    item = SimpleNamespace(
+        feature=torch.arange(68, dtype=torch.float32).reshape(1, 4, 17),
+        feature_attention_mask=torch.ones(1, 17, dtype=torch.long),
+    )
+
+    embedding = model.get_audio_feature([item])
+
+    assert embedding.shape == (3, 4)

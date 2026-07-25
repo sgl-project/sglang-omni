@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 80 GB H100: two same-GPU Qwen3-ASR replicas with shared
+# weights.
+
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3asr
+model_path: Qwen/Qwen3-ASR-1.7B
+
+runtime_overrides:
+  asr:
+    mem_fraction_static: 0.20
+    server_args_overrides:
+      max_total_tokens: 40000

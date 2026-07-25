@@ -22,9 +22,9 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.reference_encoder import (
-    ReferenceEncodeHook,
     ReferenceEncodeKey,
     ReferenceEncodeService,
+    TensorReferenceEncodeHook,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
@@ -137,14 +137,18 @@ def _fish_reference_payload_is_supported(ref_data: dict[str, Any]) -> bool:
     )
 
 
-class _FishReferenceEncodeHook(
-    ReferenceEncodeHook[_FishReferenceInput, torch.Tensor, torch.Tensor]
-):
+class _FishReferenceEncodeHook(TensorReferenceEncodeHook[_FishReferenceInput]):
+    model_id = "fishaudio_s2_pro"
+    encoder_id = "fishaudio_s2_pro_codec"
+    artifact_kind = "fishaudio_s2_pro_vq_codes"
+    storage_dtype = torch.long
+    output_dtype = torch.long
+
     def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
         self._codec = codec
-        self._checkpoint_id = str(checkpoint_id)
+        self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
-        self._encoder_config_hash = _hash_bytes(config.encode("utf-8"))
+        self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
 
     def normalize_input(self, raw_input: Any) -> _FishReferenceInput:
         if not isinstance(raw_input, dict):
@@ -161,19 +165,6 @@ class _FishReferenceEncodeHook(
                 str(raw_input.get("media_type") or "audio/wav"),
             )
         raise ValueError("FishAudio reference input has no audio payload")
-
-    def cache_key(self, item: _FishReferenceInput) -> ReferenceEncodeKey | None:
-        input_key = self._input_key(item)
-        if input_key is None:
-            return None
-        return ReferenceEncodeKey(
-            model_id="fishaudio_s2_pro",
-            model_revision=self._checkpoint_id,
-            encoder_id="fishaudio_s2_pro_codec",
-            encoder_config_hash=self._encoder_config_hash,
-            artifact_kind="fishaudio_s2_pro_vq_codes",
-            input_key=input_key,
-        )
 
     def encode_one(self, item: _FishReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
@@ -195,18 +186,10 @@ class _FishReferenceEncodeHook(
             return self._encode_reference_waveform(audio_tensor, int(sr))
         raise TypeError(f"unknown FishAudio reference source: {item.source_kind}")
 
-    def store_artifact(self, artifact: torch.Tensor) -> torch.Tensor:
-        return artifact.detach().to(device="cpu", dtype=torch.long).clone()
-
-    def load_artifact(self, stored: torch.Tensor) -> torch.Tensor:
-        return stored.detach().clone().to(dtype=torch.long)
-
     def revalidate(self, item: _FishReferenceInput, key: ReferenceEncodeKey) -> bool:
-        if item.source_kind != "path":
-            return True
-        return self._input_key(item) == key.input_key
+        return item.source_kind != "path" or self.input_key(item) == key.input_key
 
-    def _input_key(self, item: _FishReferenceInput) -> str | None:
+    def input_key(self, item: _FishReferenceInput) -> str | None:
         if item.source_kind == "path":
             return _reference_path_cache_key(str(item.source), trust_stat=False)
         if item.source_kind == "bytes":

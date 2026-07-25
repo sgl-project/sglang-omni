@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from sglang_omni_router import proxy as proxy_module
@@ -25,6 +27,7 @@ def _router_config(
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
     max_connections: int | None = None,
+    max_inflight: int | None = None,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
@@ -38,6 +41,7 @@ def _router_config(
         policy=policy,
         max_payload_size=max_payload_size,
         max_connections=max_connections,
+        max_inflight=max_inflight,
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
@@ -1167,6 +1171,352 @@ def test_streaming_inflight_count_decrements_even_if_aclose_raises() -> None:
     assert sum(worker.failed_requests for worker in app.state.workers) == 1
 
 
+def _admission_proxy(
+    handler,
+    *,
+    max_inflight: int,
+    max_payload_size: int = 512 * 1024 * 1024,
+    routable: bool = True,
+) -> proxy_module.ProxyHandler:
+    config = RouterConfig(
+        workers=[WorkerConfig(url="http://worker-a:8101")],
+        max_inflight=max_inflight,
+        max_payload_size=max_payload_size,
+    )
+    workers = build_workers(config.workers)
+    if routable:
+        workers[0].state = "healthy"
+    return proxy_module.ProxyHandler(
+        config=config,
+        workers=workers,
+        selector=WorkerSelector("round_robin"),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+
+def _chat_request(body: bytes = b'{"model": "qwen3-omni"}') -> Request:
+    return _request_without_content_length([body])
+
+
+@pytest.mark.asyncio
+async def test_admission_bounds_inflight_and_fast_rejects_the_rest() -> None:
+    gate = asyncio.Event()
+    upstream_started = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal upstream_started
+        if request.url.path == "/v1/chat/completions":
+            upstream_started += 1
+            await gate.wait()
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = _admission_proxy(handler, max_inflight=4)
+
+    tasks = [
+        asyncio.create_task(
+            proxy.forward_model_request(_chat_request(), "/v1/chat/completions")
+        )
+        for _ in range(20)
+    ]
+    for _ in range(100):
+        if sum(task.done() for task in tasks) == 16 and upstream_started == 4:
+            break
+        await asyncio.sleep(0.01)
+    gate.set()
+    responses = await asyncio.gather(*tasks)
+
+    admitted = [r for r in responses if isinstance(r, StreamingResponse)]
+    rejected = [r for r in responses if not isinstance(r, StreamingResponse)]
+    assert len(admitted) == 4
+    assert len(rejected) == 16
+    # The upstream never saw more than the bound.
+    assert upstream_started == 4
+    for response in rejected:
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "1"
+        payload = json.loads(response.body)
+        assert payload["error"]["type"] == "overloaded_error"
+    for response in admitted:
+        assert response.status_code == 200
+        async for _ in response.body_iterator:
+            pass
+    assert proxy.admission.inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_slot_released_on_early_and_error_paths() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            raise httpx.ConnectError("worker down", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = _admission_proxy(handler, max_inflight=2, max_payload_size=64)
+
+    upstream_error = await proxy.forward_model_request(
+        _chat_request(), "/v1/chat/completions"
+    )
+    assert upstream_error.status_code == 502
+    assert proxy.admission.inflight == 0
+
+    too_large = await proxy.forward_model_request(
+        _chat_request(b"x" * 128), "/v1/chat/completions"
+    )
+    assert too_large.status_code == 413
+    assert proxy.admission.inflight == 0
+
+    no_worker_proxy = _admission_proxy(handler, max_inflight=2, routable=False)
+    no_eligible = await no_worker_proxy.forward_model_request(
+        _chat_request(), "/v1/chat/completions"
+    )
+    assert no_eligible.status_code == 503
+    assert json.loads(no_eligible.body) == {
+        "error": {"message": "no eligible upstream"}
+    }
+    assert "retry-after" not in no_eligible.headers
+    assert no_worker_proxy.admission.inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_slot_released_when_stream_never_starts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = _admission_proxy(handler, max_inflight=2)
+
+    response = await proxy.forward_model_request(
+        _chat_request(), "/v1/chat/completions"
+    )
+    assert isinstance(response, StreamingResponse)
+    assert proxy.admission.inflight == 1
+
+    # The ASGI stack dropping the response without ever starting its iterator
+    # (e.g. the client vanished between handler return and response send).
+    del response
+    gc.collect()
+    assert proxy.admission.inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_slot_released_when_upstream_close_raises() -> None:
+    class BrokenCloseStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"first": true}'
+            yield b'{"second": true}'
+
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenCloseStream(),
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = _admission_proxy(handler, max_inflight=2)
+
+    response = await proxy.forward_model_request(
+        _chat_request(), "/v1/chat/completions"
+    )
+    iterator = response.body_iterator
+    assert await iterator.__anext__() == b'{"first": true}'
+
+    # Client vanishes mid-stream: the relay generator is closed while the
+    # upstream stream is unconsumed, and closing that stream itself raises.
+    with pytest.raises(RuntimeError, match="close boom"):
+        await iterator.aclose()
+
+    assert proxy.admission.inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_send_failure_releases_all_resources_once() -> None:
+    # Note (Jiaxin Deng): Starlette sends http.response.start before iterating the
+    # body, so a send failure there never enters the iterator's finally. Failing
+    # before: only the admission slot had a GC backstop, so the upstream stream
+    # and the worker in-flight count leaked when the response send failed.
+    aclose_calls = 0
+
+    class TrackedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"chunk": true}'
+
+        async def aclose(self) -> None:
+            nonlocal aclose_calls
+            aclose_calls += 1
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=TrackedStream(),
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    proxy = _admission_proxy(handler, max_inflight=2)
+    worker = proxy._workers[0]
+
+    response = await proxy.forward_model_request(
+        _chat_request(), "/v1/chat/completions"
+    )
+    assert isinstance(response, StreamingResponse)
+    assert worker.active_requests == 1
+    assert proxy.admission.inflight == 1
+
+    start_sends = 0
+
+    async def send(message: dict) -> None:
+        nonlocal start_sends
+        if message["type"] == "http.response.start":
+            start_sends += 1
+            raise RuntimeError("client vanished during response.start")
+
+    never = asyncio.Event()
+
+    async def receive() -> dict:
+        await never.wait()
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+    }
+
+    raised = False
+    try:
+        await response(scope, receive, send)
+    except BaseException:
+        raised = True
+
+    # The failure struck on http.response.start, before any body was iterated.
+    assert start_sends == 1
+    assert raised
+    # The response __call__ is the sole cleanup owner on this path: upstream
+    # close, worker in-flight count, and admission slot each release exactly once.
+    assert aclose_calls == 1
+    assert worker.active_requests == 0
+    assert proxy.admission.inflight == 0
+    # The routed request is still booked once, as a client-side failure.
+    assert worker.routed_requests == 1
+    assert worker.failed_requests == 1
+
+
+def test_admission_slot_released_after_midstream_failure() -> None:
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: start\n\n"
+            raise httpx.ReadError("stream boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
+        assert app.state.admission_controller.inflight == 0
+
+    assert b"upstream stream failed" in body
+
+
+def test_app_fast_rejects_when_admission_bound_reached() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(max_inflight=1), client=async_client)
+
+    with TestClient(app) as client:
+        assert app.state.admission_controller.try_acquire()
+        try:
+            overloaded = client.post(
+                "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+            )
+        finally:
+            app.state.admission_controller.release()
+        recovered = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert overloaded.status_code == 503
+    assert overloaded.headers["retry-after"] == "1"
+    assert overloaded.json()["error"]["type"] == "overloaded_error"
+    assert recovered.status_code == 200
+    assert app.state.admission_controller.inflight == 0
+
+
+def test_admission_exempts_management_endpoints_and_reports_stats() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/model_info":
+            return httpx.Response(200, json={"model": "qwen3-omni"}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(max_inflight=1), client=async_client)
+
+    with TestClient(app) as client:
+        assert app.state.admission_controller.try_acquire()
+        try:
+            for _ in range(2):
+                rejected = client.post(
+                    "/v1/chat/completions",
+                    json={"model": "qwen3-omni", "messages": []},
+                )
+                assert rejected.status_code == 503
+
+            # Health, readiness, and management endpoints are not gated by
+            # admission, and none of them touch its counters.
+            assert client.get("/live").status_code == 200
+            assert client.get("/ready").status_code == 200
+            assert client.get("/workers").status_code == 200
+            assert client.get("/model_info").status_code == 200
+            health = client.get("/health")
+            assert health.status_code == 200
+        finally:
+            app.state.admission_controller.release()
+
+    admission = health.json()["admission"]
+    assert admission["inflight"] == 1
+    assert admission["max_inflight"] == 1
+    assert admission["peak_inflight"] == 1
+    assert admission["rejected_total"] == 2
+
+
 # Streaming-relay semantics for the non-streaming path (Phase 0, #920): the relay
 # no longer buffers the full body, so failures after the status commits truncate,
 # and the response is chunked with a status-code-based worker error string.
@@ -1241,8 +1591,8 @@ def test_worker_failure_last_error_uses_status_code_not_body() -> None:
             return httpx.Response(200, json={"status": "healthy"}, request=request)
         if request.url.path == "/v1/chat/completions":
             return httpx.Response(
-                503,
-                content=b'{"detail": "scheduler overloaded, retry later"}',
+                502,
+                content=b'{"detail": "bad gateway reaching the model backend"}',
                 headers={"content-type": "application/json"},
                 request=request,
             )
@@ -1262,11 +1612,186 @@ def test_worker_failure_last_error_uses_status_code_not_body() -> None:
             "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
         )
 
-    assert response.status_code == 503
+    assert response.status_code == 502
     worker = app.state.workers[0]
-    # Note (Jiaxin Deng): recorded as the status code, not a snippet of the
-    # (non-empty) body, since the streaming relay cannot read it without consuming.
-    assert worker.last_error == "status=503"
+    # Note (Jiaxin Deng): an evicting status (502) is recorded as the status code,
+    # not a snippet of the (non-empty) body, which the streaming relay cannot read
+    # without consuming.
+    assert worker.last_error == "status=502"
+
+
+def test_bad_input_500s_do_not_evict_worker() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                500,
+                json={"error": {"message": "deterministic bad input"}},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            health_failure_threshold=2,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        responses = [
+            client.post(
+                "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+            )
+            for _ in range(3)
+        ]
+
+    # Note (Jiaxin Deng): before the fix, two relayed 500s evicted the only
+    # worker and the third request failed with 503 no_eligible_upstream.
+    assert [response.status_code for response in responses] == [500, 500, 500]
+    assert responses[-1].json() == {"error": {"message": "deterministic bad input"}}
+    worker = app.state.workers[0]
+    assert worker.state == "healthy"
+    assert worker.consecutive_failures == 0
+    assert worker.failed_requests == 3
+
+
+def test_transport_errors_still_evict_worker() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            raise httpx.ConnectError("worker down", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            health_failure_threshold=2,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+        second = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+        third = client.post(
+            "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+        )
+
+    assert first.status_code == 502
+    assert second.status_code == 502
+    assert third.status_code == 503
+    assert third.json() == {"error": {"message": "no eligible upstream"}}
+    assert app.state.workers[0].state == "unhealthy"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "evicts"),
+    [
+        (429, False),  # capacity backpressure
+        (503, False),  # scheduler overloaded, retry later
+        (408, False),  # request timeout
+        (500, False),  # deterministic bad input
+        (502, True),  # bad gateway
+        (504, True),  # gateway timeout
+    ],
+)
+def test_relayed_status_evicts_only_on_gateway_failure(
+    status_code: int, evicts: bool
+) -> None:
+    # Note (Jiaxin Deng): failing before for 429/503/408, which used to feed the
+    # liveness circuit. A reachable worker returning backpressure or an
+    # application status stays routable (liveness is owned by /health probes);
+    # only gateway failures (502/504) evict.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                status_code,
+                json={"detail": "worker response"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            health_failure_threshold=2,
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        responses = [
+            client.post(
+                "/v1/chat/completions", json={"model": "qwen3-omni", "messages": []}
+            )
+            for _ in range(2)
+        ]
+
+    worker = app.state.workers[0]
+    # A healthy worker is never short-circuited into a router-generated 503
+    # no_eligible_upstream; both requests relay the worker's own status.
+    assert [response.status_code for response in responses] == [
+        status_code,
+        status_code,
+    ]
+    # Every relayed response is counted in request statistics whether or not it
+    # touches liveness.
+    assert worker.routed_requests == 2
+    assert worker.failed_requests == 2
+    if evicts:
+        assert worker.state == "unhealthy"
+        assert worker.consecutive_failures == 2
+    else:
+        assert worker.state == "healthy"
+        assert worker.consecutive_failures == 0
+
+
+def test_relayed_500_outcome_labeled_upstream_5xx(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                500, json={"error": {"message": "bad input"}}, request=request
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=async_client,
+    )
+
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                json={"model": "qwen3-omni", "messages": []},
+            )
+
+    assert response.status_code == 500
+    route_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "route_completed" in record.getMessage()
+    ]
+    assert len(route_logs) == 1
+    assert "outcome=upstream_5xx" in route_logs[0]
 
 
 def test_relayed_response_has_no_content_length_header() -> None:

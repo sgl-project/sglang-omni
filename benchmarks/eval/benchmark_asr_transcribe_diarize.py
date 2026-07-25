@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """MOSS-Transcribe-Diarize benchmark.
 
-Evaluate the MOSS-Transcribe-Diarize model on the Movies800Time and AISHELL4
-datasets for multi-speaker dialog transcription. These two datasets are private
-datasets and can only be accessed with zhaochenyang20's Hugging Face account.
+Evaluate the MOSS-Transcribe-Diarize model on the Movies800Time, AISHELL4, and
+GoogleTime datasets for multi-speaker dialog transcription. These datasets are
+private and can only be accessed with zhaochenyang20's Hugging Face account.
 
 Author:
 
@@ -27,6 +27,11 @@ Usage:
         --dataset aishell4_long \
         --max-concurrency 16 \
         --output-dir results/moss_transcribe_diarize_aishell4_long
+
+    python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
+        --dataset googletime \
+        --max-concurrency 16 \
+        --output-dir results/moss_transcribe_diarize_googletime
 """
 
 from __future__ import annotations
@@ -69,6 +74,7 @@ from benchmarks.tasks.transcribe_diarize import (
 )
 
 AISHELL4_REPO_ID: Final[str] = "zhaochenyang20/AISHELL4"
+GOOGLETIME_REPO_ID: Final[str] = "zhaochenyang20/googletime"
 MODEL_PATH: Final[str] = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 RESULTS_FILE: Final[str] = "transcribe_diarize_results.json"
 ASR_RESULTS_FILE: Final[str] = "transcribe_diarize_asr_results.json"
@@ -77,8 +83,10 @@ DEFAULT_SERVER_MEM_FRACTION_STATIC: Final[float] = 0.80
 DEFAULT_MAX_NEW_TOKENS: Final[int] = 65536
 MOVIES800TIMES_EXPECTED_SAMPLE_COUNT: Final[int] = 800
 AISHELL4_LONG_EXPECTED_SAMPLE_COUNT: Final[int] = 20
+GOOGLETIME_EXPECTED_SAMPLE_COUNT: Final[int] = 25
 MOVIES800TIMES_OUTPUT_DIR: Final[str] = "results/moss_transcribe_diarize_movies800times"
 AISHELL4_LONG_OUTPUT_DIR: Final[str] = "results/moss_transcribe_diarize_aishell4_long"
+GOOGLETIME_OUTPUT_DIR: Final[str] = "results/moss_transcribe_diarize_googletime"
 SUMMARY_ORDER: Final[tuple[str, ...]] = (
     "total_samples",
     "evaluated",
@@ -185,6 +193,10 @@ AISHELL4_LONG_KEY_METRICS_ORDER: Final[tuple[str, ...]] = (
     "delta_cer",
     "speaker_timestamp_der",
 )
+GOOGLETIME_DIARIZATION_METRICS_PERCENT_ORDER: Final[tuple[str, ...]] = (
+    AISHELL4_LONG_DIARIZATION_METRICS_PERCENT_ORDER
+)
+GOOGLETIME_KEY_METRICS_ORDER: Final[tuple[str, ...]] = AISHELL4_LONG_KEY_METRICS_ORDER
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +240,20 @@ DATASET_CONFIGS: Final[dict[str, DatasetConfig]] = {
         key_metrics_order=AISHELL4_LONG_KEY_METRICS_ORDER,
         diarization_metrics_percent_order=(
             AISHELL4_LONG_DIARIZATION_METRICS_PERCENT_ORDER
+        ),
+    ),
+    "googletime": DatasetConfig(
+        name="googletime",
+        description="GoogleTime long-audio",
+        repo_id=GOOGLETIME_REPO_ID,
+        split="validation",
+        audio_column="audio",
+        expected_column="transcription",
+        output_dir=GOOGLETIME_OUTPUT_DIR,
+        expected_sample_count=GOOGLETIME_EXPECTED_SAMPLE_COUNT,
+        key_metrics_order=GOOGLETIME_KEY_METRICS_ORDER,
+        diarization_metrics_percent_order=(
+            GOOGLETIME_DIARIZATION_METRICS_PERCENT_ORDER
         ),
     ),
 }

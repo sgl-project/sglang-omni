@@ -2030,8 +2030,13 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     qwen_tts_module.Qwen3TTSModel = FakeQwen3TTSModel
     monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
 
+    from sglang_omni.scheduling import engine_factory
+
     monkeypatch.setattr(stages, "_register_qwen3_tts_hf_config", lambda: None)
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
+    )
     monkeypatch.setattr(
         stages,
         "_load_qwen3_tts_tokenizer",
@@ -2164,7 +2169,7 @@ def test_qwen3_tts_engine_probes_runtime_before_checkpoint_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
-    from sglang_omni.models.qwen3_tts import stages
+    from sglang_omni.scheduling import engine_factory
 
     checkpoint_resolutions: list[str] = []
 
@@ -2179,7 +2184,7 @@ def test_qwen3_tts_engine_probes_runtime_before_checkpoint_resolution(
             raise ImportError("missing qwen_tts")
         return original_import_module(name, package)
 
-    monkeypatch.setattr(stages, "_resolve_checkpoint", fake_resolve_checkpoint)
+    monkeypatch.setattr(engine_factory, "_resolve_checkpoint", fake_resolve_checkpoint)
     monkeypatch.setattr(
         engine_builder_mod.importlib, "import_module", fake_import_module
     )
@@ -2190,3 +2195,62 @@ def test_qwen3_tts_engine_probes_runtime_before_checkpoint_resolution(
         )
 
     assert checkpoint_resolutions == []
+
+
+def test_qwen3_tts_mem_fraction_role_to_stage_targets_tts_engine() -> None:
+    assert Qwen3TTSPipelineConfig.mem_fraction_role_to_stage() == {
+        "talker": "tts_engine"
+    }
+
+
+def test_qwen3_tts_cli_mem_fraction_static_pins_tts_engine() -> None:
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.27,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.27
+    assert all(
+        s.runtime.sglang_server_args.mem_fraction_static is None
+        for s in config.stages
+        if s.name != "tts_engine"
+    )
+
+
+def test_qwen3_tts_cli_talker_mem_fraction_wins_over_global() -> None:
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.27,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=0.3,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.3
+
+
+def test_qwen3_tts_cli_rejects_unsupported_thinker_mem_fraction() -> None:
+    import typer
+
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    with pytest.raises(typer.BadParameter):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.5,
+            talker_mem_fraction_static=None,
+        )

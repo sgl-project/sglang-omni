@@ -28,10 +28,11 @@ _ASYNC_DECODE_FACTORIES = frozenset(
         "create_sglang_thinker_executor_from_config",
         "sglang_omni.models.moss_transcribe_diarize.stages."
         "create_sglang_moss_transcribe_diarize_executor",
+        "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
     }
 )
 _ASYNC_DECODE_SUPPORTED_MODELS = (
-    "Higgs TTS, MOSS-TTS-Local, and MOSS-Transcribe-Diarize"
+    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, and Fun-ASR"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -1144,11 +1145,11 @@ def serve(
             "--decode_mode",
             help=(
                 "Decode execution mode for the supported generation stage: "
-                "async|sync. Omit this flag to use the pipeline config default "
-                "(async for Higgs TTS). Async mode enables one-step lookahead, "
+                "async|sync. Omit this flag to use the model-specific pipeline "
+                "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
                 "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
-                "and MOSS-Transcribe-Diarize."
+                "MOSS-Transcribe-Diarize, and Fun-ASR."
             ),
         ),
     ] = None,

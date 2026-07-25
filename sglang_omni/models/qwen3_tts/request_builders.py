@@ -25,8 +25,7 @@ from sglang_omni.sampling.seed import (
     new_random_sampling_seed,
 )
 from sglang_omni.scheduling.reference_encoder import (
-    ReferenceEncodeHook,
-    ReferenceEncodeKey,
+    KeyedReferenceEncodeHook,
     ReferenceEncodeService,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -570,17 +569,21 @@ class _Qwen3TTSAdhocReferenceInput:
 
 
 class _Qwen3TTSAdhocReferenceHook(
-    ReferenceEncodeHook[
+    KeyedReferenceEncodeHook[
         _Qwen3TTSAdhocReferenceInput,
         tuple[dict[str, Any], str | None],
         dict[str, Any],
     ]
 ):
+    model_id = "qwen3_tts"
+    encoder_id = "qwen3_tts_voice_clone_prompt"
+    artifact_kind = "qwen3_tts_voice_clone_prompt_adhoc"
+
     def __init__(self, *, model: Any, wrapper: Any) -> None:
         self._model = model
         self._wrapper = wrapper
-        self._model_revision = _qwen3_tts_model_revision(model, wrapper)
-        self._encoder_config_hash = _qwen3_tts_encoder_config_hash(model, wrapper)
+        self.model_revision = _qwen3_tts_model_revision(model, wrapper)
+        self.encoder_config_hash = _qwen3_tts_encoder_config_hash(model, wrapper)
 
     def normalize_input(self, raw_input: Any) -> _Qwen3TTSAdhocReferenceInput:
         if isinstance(raw_input, _Qwen3TTSAdhocReferenceInput):
@@ -593,28 +596,17 @@ class _Qwen3TTSAdhocReferenceHook(
             x_vector_only_mode=raw_input.x_vector_only_mode,
         )
 
-    def cache_key(
-        self, item: _Qwen3TTSAdhocReferenceInput
-    ) -> ReferenceEncodeKey | None:
-        input_key = _qwen3_tts_ref_audio_input_key(item.ref_audio)
-        if input_key is None:
-            return None
-        options_key = json.dumps(
+    def input_key(self, item: _Qwen3TTSAdhocReferenceInput) -> str | None:
+        return _qwen3_tts_ref_audio_input_key(item.ref_audio)
+
+    def options_key(self, item: _Qwen3TTSAdhocReferenceInput) -> str:
+        return json.dumps(
             {
                 "ref_text": item.ref_text,
                 "x_vector_only_mode": bool(item.x_vector_only_mode),
             },
             sort_keys=True,
             separators=(",", ":"),
-        )
-        return ReferenceEncodeKey(
-            model_id="qwen3_tts",
-            model_revision=self._model_revision,
-            encoder_id="qwen3_tts_voice_clone_prompt",
-            encoder_config_hash=self._encoder_config_hash,
-            artifact_kind="qwen3_tts_voice_clone_prompt_adhoc",
-            input_key=input_key,
-            options_key=options_key,
         )
 
     def encode_one(
@@ -647,14 +639,6 @@ class _Qwen3TTSAdhocReferenceHook(
         if cached_prompt is None:
             raise RuntimeError("Qwen3-TTS ad-hoc reference cache entry is invalid")
         return cached_prompt
-
-    def revalidate(
-        self,
-        item: _Qwen3TTSAdhocReferenceInput,
-        key: ReferenceEncodeKey,
-    ) -> bool:
-        current_key = _qwen3_tts_ref_audio_input_key(item.ref_audio)
-        return current_key == key.input_key
 
 
 def _qwen3_tts_ref_audio_input_key(ref_audio: Any) -> str | None:

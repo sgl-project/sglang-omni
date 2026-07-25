@@ -1,0 +1,65 @@
+config_cls: MingTTSPipelineConfig
+model_path: inclusionAI/Ming-omni-tts-16.8B-A3B
+name: ming-omni-tts
+stages:
+  - name: preprocessing
+    process: preprocessing
+    factory: sglang_omni.models.ming_tts.stages.create_preprocessing_executor
+    factory_args:
+      context_length: 8192
+      max_decode_steps_cap: 256
+      max_concurrency: 1
+    next: reference_encode
+
+  - name: reference_encode
+    process: ming_tts_aux
+    factory: sglang_omni.models.ming_tts.stages.create_reference_encode_executor
+    factory_args:
+      dtype: bfloat16
+      context_length: 8192
+      max_concurrency: 1
+    gpu: 0
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.08
+    next: tts_engine
+
+  - name: tts_engine
+    process: tts_engine
+    factory: sglang_omni.models.ming_tts.stages.create_sglang_tts_engine_executor
+    factory_args:
+      dtype: bfloat16
+      context_length: 8192
+      server_args_overrides:
+        disable_cuda_graph: false
+        disable_overlap_schedule: true
+        disable_radix_cache: true
+        enable_torch_compile: false
+        max_prefill_tokens: 8192
+        max_running_requests: 8
+        sampling_backend: pytorch
+        trust_remote_code: false
+        chunked_prefill_size: 0
+        mem_fraction_static: 0.75
+        cuda_graph_bs: [1, 2, 4, 8]
+        cuda_graph_max_bs: 8
+    gpu: [0, 1]
+    tp_size: 2
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.72
+    next: audio_decode
+
+  - name: audio_decode
+    process: ming_tts_aux
+    factory: sglang_omni.models.ming_tts.stages.create_audio_decode_executor
+    factory_args:
+      dtype: bfloat16
+      decode_mode: chunked
+      max_batch_size: 1
+      max_batch_wait_ms: 0
+    gpu: 0
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.12
+    terminal: true

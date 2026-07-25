@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import numpy as np
+import torch
+
 from examples.launchers.ming_omni import (
     launch_ming_speech_server as _launch_speech_server,
 )
@@ -223,6 +226,36 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
 
     assert "audio_feats = audio_feats.to(device=self._device)" in source
     assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
+
+
+def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
+    from sglang_omni.models.ming_omni.components import preprocessor
+
+    waveform = np.array([0.0, 0.1, -0.2], dtype=np.float32)
+    mel = np.arange(36, dtype=np.float64).reshape(9, 4)
+
+    def fake_compute_mel_spectrogram(input_waveform):
+        assert input_waveform is waveform
+        return mel
+
+    monkeypatch.setattr(
+        preprocessor,
+        "compute_mel_spectrogram",
+        fake_compute_mel_spectrogram,
+    )
+
+    mel_tensor, mel_len, audio_token_count = (
+        preprocessor._compute_mel_features_for_waveform(
+            waveform,
+            ds_kernel_size=3,
+            ds_stride=2,
+        )
+    )
+
+    assert torch.equal(mel_tensor, torch.from_numpy(mel).float())
+    assert mel_tensor.dtype == torch.float32
+    assert mel_len == 9
+    assert audio_token_count == preprocessor.estimate_audio_feature_length(9, 3, 2)
 
 
 def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> None:
