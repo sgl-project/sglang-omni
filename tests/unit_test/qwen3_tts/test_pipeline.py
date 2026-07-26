@@ -2195,3 +2195,62 @@ def test_qwen3_tts_engine_probes_runtime_before_checkpoint_resolution(
         )
 
     assert checkpoint_resolutions == []
+
+
+def test_qwen3_tts_mem_fraction_role_to_stage_targets_tts_engine() -> None:
+    assert Qwen3TTSPipelineConfig.mem_fraction_role_to_stage() == {
+        "talker": "tts_engine"
+    }
+
+
+def test_qwen3_tts_cli_mem_fraction_static_pins_tts_engine() -> None:
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.27,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.27
+    assert all(
+        s.runtime.sglang_server_args.mem_fraction_static is None
+        for s in config.stages
+        if s.name != "tts_engine"
+    )
+
+
+def test_qwen3_tts_cli_talker_mem_fraction_wins_over_global() -> None:
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.27,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=0.3,
+    )
+
+    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
+    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.3
+
+
+def test_qwen3_tts_cli_rejects_unsupported_thinker_mem_fraction() -> None:
+    import typer
+
+    from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
+
+    config = Qwen3TTSPipelineConfig(model_path="fake-model")
+
+    with pytest.raises(typer.BadParameter):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.5,
+            talker_mem_fraction_static=None,
+        )
