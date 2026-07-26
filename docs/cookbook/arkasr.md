@@ -102,9 +102,9 @@ when the uploaded audio's duration cannot be probed.
 
 ## dtype
 
-- Default serving dtype is **`bfloat16`**. This is the validated path (the audio
-  encoder reimplementation is numerically equivalent to the reference, max abs
-  diff `0.0` on identical mel inputs).
+- Default serving dtype is **`bfloat16`**. This is the validated path: the native
+  audio-encoder reimplementation was checked for parity against the reference
+  `transformers` implementation on identical mel inputs.
 - A `float16` path is also exposed. The encoder layers clamp the post-residual
   activations under fp16 (matching the reference `modeling_audio.py`) so large
   activations stay finite; this clamp is a no-op under `bfloat16`.
@@ -133,8 +133,9 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
 ```
 
-On the full SeedTTS EN set (1088 clips) the served model reports a corpus WER of
-about **1.1%**, matching the official `transformers` checkpoint.
+The script reports corpus WER, throughput, and latency per concurrency level.
+Transcription accuracy tracks the official `transformers` checkpoint on the same
+audio.
 
 ## Known Limitations
 
