@@ -112,6 +112,7 @@ def create_sglang_qwen3_asr_executor(
         tokenizer=tokenizer,
         feature_extractor=feature_extractor,
         max_new_tokens=max_new_tokens,
+        context_length=int(server_args.context_length),
     )
 
     return OmniScheduler(

@@ -53,16 +53,15 @@ print(resp.json()["text"])
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `file` | file | required | Audio file uploaded as multipart form data |
+| `file` | file | required | Audio file uploaded as multipart form data; maximum size is 25 MiB |
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint; `zh`/`cn` select Chinese, other values use English prompting |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
+| `max_new_tokens` | integer | stage default | Maximum generated transcription tokens |
 
 `verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
 `{"text": "..."}`.
-
-`max_new_tokens` is supported inside the model request builder, but the public transcription endpoint does not currently expose it as a form field. The route uses the ASR stage default unless the pipeline is configured another way.
 
 ## Benchmarking
 
@@ -86,5 +85,8 @@ transcriber for the TTS and talker WER stages.
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
+- Audio duration is bounded by the configured context and requested
+  `max_new_tokens`, rather than a fixed 30-second window. Split audio or reduce
+  `max_new_tokens` if the request exceeds that token budget.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

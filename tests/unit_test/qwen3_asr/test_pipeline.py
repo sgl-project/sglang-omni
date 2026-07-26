@@ -59,6 +59,7 @@ def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
 
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
+    adapter_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
         qwen3_asr_stages.AutoTokenizer,
@@ -79,7 +80,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         qwen3_asr_stages,
         "make_qwen3_asr_scheduler_adapters",
-        lambda **kwargs: (object(), object()),
+        lambda **kwargs: (adapter_kwargs.update(kwargs) or object(), object()),
     )
     monkeypatch.setattr(
         qwen3_asr_stages,
@@ -99,7 +100,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
-        return SimpleNamespace(**overrides)
+        return SimpleNamespace(context_length=context_length, **overrides)
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
         model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
@@ -128,3 +129,4 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert adapter_kwargs["context_length"] == 1764

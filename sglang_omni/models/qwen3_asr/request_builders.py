@@ -115,6 +115,7 @@ def make_qwen3_asr_scheduler_adapters(
     tokenizer: Any,
     max_new_tokens: int,
     feature_extractor: Any = None,
+    context_length: int | None = None,
 ) -> tuple[
     Callable[[StagePayload], Qwen3ASRRequestData], Callable[[Any], StagePayload]
 ]:
@@ -140,11 +141,47 @@ def make_qwen3_asr_scheduler_adapters(
         prompt = prompt + f"language {language}<asr_text>"
         return tokenizer(prompt, add_special_tokens=False).input_ids
 
+    def _validate_context_budget(
+        input_ids: list[int], request_max_new_tokens: int
+    ) -> None:
+        if (
+            context_length is not None
+            and len(input_ids) + request_max_new_tokens > context_length
+        ):
+            raise ValueError(
+                "Qwen3-ASR request is longer than the model's context length "
+                f"({len(input_ids)} prompt/audio tokens + "
+                f"{request_max_new_tokens} max_new_tokens > {context_length}); "
+                "reduce max_new_tokens or split the audio"
+            )
+
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
         audio = _load_audio(_audio_source_from_payload(payload))
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
         fingerprint = audio_fingerprint(audio)
+        lang_raw = str(params.get("language") or "en").strip().lower()
+        forced_language = {"zh": "Chinese", "cn": "Chinese"}.get(
+            lang_raw, "Chinese" if lang_raw.startswith("zh") else "English"
+        )
+        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+
+        if context_length is not None:
+            hop_length = int(getattr(feature_extractor, "hop_length", 0))
+            if hop_length <= 0:
+                raise ValueError(
+                    "Qwen3-ASR feature extractor has an invalid hop length"
+                )
+            # WhisperFeatureExtractor emits floor(samples / hop_length) frames.
+            # Check the resulting prompt before the mel FFT so requests that
+            # cannot fit the configured context do not consume preprocessing
+            # memory and CPU.
+            estimated_mel_frames = len(audio) // hop_length
+            estimated_audio_tokens = qwen3_asr_num_audio_tokens(estimated_mel_frames)
+            estimated_input_ids = _build_prompt_ids(
+                estimated_audio_tokens, forced_language
+            )
+            _validate_context_budget(estimated_input_ids, request_max_new_tokens)
 
         # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
         # WhisperFeatureExtractor defaults to padding="max_length", padding every clip to nb_max_frames=3000 (~30s),
@@ -160,9 +197,9 @@ def make_qwen3_asr_scheduler_adapters(
             return_tensors="pt",
             return_attention_mask=True,
             padding="longest",
-            truncation=True,
+            truncation=False,
         )
-        features = extracted.input_features  # [128, true_frames] (<= 3000)
+        features = extracted.input_features
         feature_attention_mask = getattr(extracted, "attention_mask", None)
         if feature_attention_mask is None:
             # WhisperFeatureExtractor normally returns one; fall back to all-valid.
@@ -178,11 +215,8 @@ def make_qwen3_asr_scheduler_adapters(
             f"num_audio_tokens={num_audio_tokens} feat_shape={tuple(features.shape)}"
         )
 
-        lang_raw = str(params.get("language") or "en").strip().lower()
-        forced_language = {"zh": "Chinese", "cn": "Chinese"}.get(
-            lang_raw, "Chinese" if lang_raw.startswith("zh") else "English"
-        )
         input_ids = _build_prompt_ids(num_audio_tokens, forced_language)
+        _validate_context_budget(input_ids, request_max_new_tokens)
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -224,7 +258,6 @@ def make_qwen3_asr_scheduler_adapters(
             # Qwen3-ASR degenerates under pure-greedy (emits only the language
             # tag then EOS); upstream uses 0.01 near-greedy.
             temperature = 0.01
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"
