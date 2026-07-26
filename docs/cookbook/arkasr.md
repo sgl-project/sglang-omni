@@ -6,7 +6,9 @@ is a multilingual open ASR model served through the OpenAI-compatible
 request and returns text. Architecturally it is a Whisper-style audio tower
 (RoPE self-attention) plus an MLP frame-merge adapter feeding a dense Qwen2 LM,
 so it runs on the same single-stage batched ASR pipeline as Qwen3-ASR and reuses
-SGLang's native Qwen2 decoder. Serving requires no `trust_remote_code`.
+SGLang's native Qwen2 decoder. The checkpoint's tokenizer and config are loaded
+with `trust_remote_code=True` (the served `ServerArgs` also sets it), so the
+first launch will prompt to execute the checkpoint's bundled code.
 
 ## Prerequisites
 
@@ -63,10 +65,30 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint recorded on the request. The transcription instruction is a fixed English prompt (`Please transcribe this audio.`); ARK-ASR auto-detects the spoken language, so this field does not switch prompt templates. |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
+| `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. |
 
-`verbose_json` is accepted, but currently returns the same minimal JSON shape as
-`json`: `{"text": "..."}`.
+### Response Formats
+
+The three `response_format` values return different shapes:
+
+- **`text`** — the raw transcript as `text/plain`.
+- **`json`** — `{"text": "...", "usage": {"type": "duration", "seconds": <int>}}`.
+- **`verbose_json`** — the OpenAI verbose shape, built by the default transcription
+  adapter (whole transcript as a single segment):
+
+  ```json
+  {
+    "task": "transcribe",
+    "language": "en",
+    "duration": 12.34,
+    "text": "...",
+    "segments": [{"id": 0, "start": 0.0, "end": 12.34, "text": "..."}],
+    "usage": {"type": "duration", "seconds": 13}
+  }
+  ```
+
+`language`, `duration`, and `usage` are omitted when unknown (`exclude_none`), e.g.
+when the uploaded audio's duration cannot be probed.
 
 ## Audio Handling
 
