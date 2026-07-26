@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import sglang_omni.serve.openai_api as openai_api
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
@@ -22,7 +21,6 @@ from sglang_omni.proto import (
 )
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
-    TranscriptionUploadBodyLimitMiddleware,
     _await_speech_response,
     _build_chat_generate_request,
     _chat_stream,
@@ -934,71 +932,6 @@ def test_speech_request_passes_streaming_control_fields() -> None:
     assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
 
 
-@pytest.mark.asyncio
-async def test_transcription_upload_body_limit_rejects_before_endpoint() -> None:
-    async def unreachable_app(scope, receive, send) -> None:
-        raise AssertionError("oversized body reached downstream app")
-
-    middleware = TranscriptionUploadBodyLimitMiddleware(unreachable_app, max_bytes=8)
-    messages: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: dict[str, Any]) -> None:
-        messages.append(message)
-
-    await middleware(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/v1/audio/transcriptions",
-            "headers": [(b"content-length", b"9")],
-        },
-        receive,
-        send,
-    )
-
-    assert messages[0]["status"] == 413
-
-
-@pytest.mark.asyncio
-async def test_transcription_upload_body_limit_rejects_chunked_body() -> None:
-    async def downstream_app(scope, receive, send) -> None:
-        while True:
-            message = await receive()
-            if not message.get("more_body", False):
-                return
-
-    middleware = TranscriptionUploadBodyLimitMiddleware(downstream_app, max_bytes=4)
-    messages: list[dict[str, Any]] = []
-    chunks = iter(
-        (
-            {"type": "http.request", "body": b"abc", "more_body": True},
-            {"type": "http.request", "body": b"de", "more_body": False},
-        )
-    )
-
-    async def receive() -> dict[str, Any]:
-        return next(chunks)
-
-    async def send(message: dict[str, Any]) -> None:
-        messages.append(message)
-
-    await middleware(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/v1/audio/transcriptions",
-            "headers": [],
-        },
-        receive,
-        send,
-    )
-
-    assert messages[0]["status"] == 413
-
-
 def test_transcription_request_builds_asr_generate_request() -> None:
     gen_req = build_transcription_generate_request(
         audio_bytes=b"RIFF",
@@ -1083,23 +1016,6 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
-
-
-def test_transcription_endpoint_rejects_file_over_upload_limit(monkeypatch) -> None:
-    monkeypatch.setattr(openai_api, "MAX_TRANSCRIPTION_UPLOAD_BYTES", 4)
-    transcription_client = SuccessfulTranscriptionClient()
-    client = TestClient(
-        create_app(transcription_client, model_name="openai/whisper-large-v3")
-    )
-
-    response = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("sample.wav", b"12345", "audio/wav")},
-    )
-
-    assert response.status_code == 413
-    assert "file must be at most 4 bytes" in response.json()["detail"]
-    assert not transcription_client.requests
 
 
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:

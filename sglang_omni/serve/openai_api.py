@@ -117,11 +117,9 @@ logger = logging.getLogger(__name__)
 STREAM_DONE_SENTINEL = "[DONE]"
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
-UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
-MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_VOICE_UPLOAD_BODY_BYTES = MAX_VOICE_UPLOAD_BYTES + UPLOAD_MULTIPART_OVERHEAD_BYTES
-MAX_TRANSCRIPTION_UPLOAD_BODY_BYTES = (
-    MAX_TRANSCRIPTION_UPLOAD_BYTES + UPLOAD_MULTIPART_OVERHEAD_BYTES
+VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+MAX_VOICE_UPLOAD_BODY_BYTES = (
+    MAX_VOICE_UPLOAD_BYTES + VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES
 )
 
 _BAD_REQUEST_MARKERS = (
@@ -143,21 +141,12 @@ class _RequestBodyTooLarge(Exception):
     pass
 
 
-class UploadBodyLimitMiddleware:
-    """Reject an oversized upload before Starlette parses its multipart body."""
+class VoiceUploadBodyLimitMiddleware:
+    """Reject oversized voice uploads before Starlette parses multipart bodies."""
 
-    def __init__(
-        self,
-        app: Callable[..., Awaitable[None]],
-        *,
-        path: str,
-        max_bytes: int,
-        param: str,
-    ) -> None:
+    def __init__(self, app: Callable[..., Awaitable[None]], max_bytes: int) -> None:
         self.app = app
-        self.path = path
         self.max_bytes = max_bytes
-        self.param = param
 
     async def __call__(
         self,
@@ -165,13 +154,13 @@ class UploadBodyLimitMiddleware:
         receive: Callable[[], Awaitable[dict[str, Any]]],
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        if not _is_upload_scope(scope, self.path):
+        if not _is_voice_upload_scope(scope):
             await self.app(scope, receive, send)
             return
 
         content_length = _content_length(scope)
         if content_length is not None and content_length > self.max_bytes:
-            await _send_upload_too_large(send, self.max_bytes, self.param)
+            await _send_voice_upload_too_large(send, self.max_bytes)
             return
 
         received_bytes = 0
@@ -188,27 +177,7 @@ class UploadBodyLimitMiddleware:
         try:
             await self.app(scope, limited_receive, send)
         except _RequestBodyTooLarge:
-            await _send_upload_too_large(send, self.max_bytes, self.param)
-
-
-class VoiceUploadBodyLimitMiddleware(UploadBodyLimitMiddleware):
-    def __init__(self, app: Callable[..., Awaitable[None]], max_bytes: int) -> None:
-        super().__init__(
-            app,
-            path="/v1/audio/voices",
-            max_bytes=max_bytes,
-            param="audio_sample",
-        )
-
-
-class TranscriptionUploadBodyLimitMiddleware(UploadBodyLimitMiddleware):
-    def __init__(self, app: Callable[..., Awaitable[None]], max_bytes: int) -> None:
-        super().__init__(
-            app,
-            path="/v1/audio/transcriptions",
-            max_bytes=max_bytes,
-            param="file",
-        )
+            await _send_voice_upload_too_large(send, self.max_bytes)
 
 
 def create_app(
@@ -265,10 +234,6 @@ def create_app(
     app.add_middleware(
         VoiceUploadBodyLimitMiddleware,
         max_bytes=MAX_VOICE_UPLOAD_BODY_BYTES,
-    )
-    app.add_middleware(
-        TranscriptionUploadBodyLimitMiddleware,
-        max_bytes=MAX_TRANSCRIPTION_UPLOAD_BODY_BYTES,
     )
 
     # Store references in app state for access from route handlers
@@ -372,21 +337,11 @@ async def _read_voice_upload(audio_sample: UploadFile) -> bytes:
     return audio_bytes
 
 
-async def _read_transcription_upload(file: UploadFile) -> bytes:
-    audio_bytes = await file.read(MAX_TRANSCRIPTION_UPLOAD_BYTES + 1)
-    if len(audio_bytes) > MAX_TRANSCRIPTION_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(f"file must be at most {MAX_TRANSCRIPTION_UPLOAD_BYTES} bytes"),
-        )
-    return audio_bytes
-
-
-def _is_upload_scope(scope: dict[str, Any], path: str) -> bool:
+def _is_voice_upload_scope(scope: dict[str, Any]) -> bool:
     return (
         scope.get("type") == "http"
         and scope.get("method") == "POST"
-        and scope.get("path") == path
+        and scope.get("path") == "/v1/audio/voices"
     )
 
 
@@ -401,16 +356,15 @@ def _content_length(scope: dict[str, Any]) -> int | None:
     return None
 
 
-async def _send_upload_too_large(
+async def _send_voice_upload_too_large(
     send: Callable[[dict[str, Any]], Awaitable[None]],
     max_bytes: int,
-    param: str,
 ) -> None:
     body = json.dumps(
         openai_error_payload(
             f"request body must be at most {max_bytes} bytes",
             error_type="RequestTooLargeError",
-            param=param,
+            param="audio_sample",
             code=413,
         )
     ).encode("utf-8")
@@ -1617,7 +1571,9 @@ def _register_transcriptions(app: FastAPI) -> None:
         default_model: str = app.state.model_name
         request_id = f"transcription-{uuid.uuid4()}"
 
-        audio_bytes = await _read_transcription_upload(file)
+        # TODO(Ratish): add the same pre-parser body limit used by voice uploads
+        # once transcription upload limits are defined.
+        audio_bytes = await file.read()
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
 

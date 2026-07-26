@@ -53,7 +53,7 @@ print(resp.json()["text"])
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `file` | file | required | Audio file uploaded as multipart form data; maximum size is 25 MiB |
+| `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint; `zh`/`cn` select Chinese, other values use English prompting |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
