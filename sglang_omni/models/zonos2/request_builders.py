@@ -255,9 +255,9 @@ def make_zonos2_scheduler_adapters(*, model: Any):
         try:
             return apply_sglang_zonos2_result(data.stage_payload, data)
         finally:
-            # Terminal adapters own decode-state lifetime. Release for every
-            # finish reason, including length limits and adapter failures, rather
-            # than relying on the model sampler to observe its own EOS.
+            # note(ratish): For completed requests, scheduler terminalization—not
+            # sampler EOS—is the ownership boundary; finally prevents adapter
+            # errors from stranding the row.
             model.reset_request(data.stage_payload.request_id)
 
     return request_builder, result_adapter
