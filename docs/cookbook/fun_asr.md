@@ -53,6 +53,26 @@ with open("tests/data/query_to_cars.wav", "rb") as f:
 resp.raise_for_status()
 print(resp.json()["text"])
 ```
+
+## Stream Transcription
+
+Set the multipart `stream` field to `true` and keep `response_format` as
+`json` or `text` to receive Server-Sent Events (SSE):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The response contains zero or more `transcript.text.delta` events, followed
+by one `transcript.text.done` event with the complete post-processed
+transcript, then `data: [DONE]`. Streaming primarily reduces time to first
+text; it does not change the final transcript.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -61,6 +81,7 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
 | `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
 
@@ -86,6 +107,11 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
   --max-samples 20 --concurrencies 2 --repeats 1
+
+# Measure text TTFT and inter-chunk latency through the SSE endpoint:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
 
 ## Benchmark Results

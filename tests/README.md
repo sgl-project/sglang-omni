@@ -89,7 +89,9 @@ tests/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   ├── test_stream_output_builder.py
+    │   └── test_streaming_client.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
     │   ├── test_pipeline.py
@@ -373,7 +375,10 @@ that happened to contain an older version of the test.
   - model audio-feature shape and checkpoint weight-loading contracts
   - request builder: inclusive audio offset recording, language-prompt prefix
     construction, encode-after-validation ordering, and result adapter
-    direct-transcript decoding and token telemetry.
+    direct-transcript decoding and token telemetry
+  - streaming output: request-contract validation, chunked-prefill gating,
+    rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
+    and direct-client aggregation without repeating the terminal transcript.
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio

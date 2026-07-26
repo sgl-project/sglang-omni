@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from sglang_omni.models.fun_asr.request_builders import (
     make_fun_asr_stream_output_builder,
 )
@@ -30,7 +32,9 @@ class _ByteTokenizer:
         )
 
 
-def _make_req_data(*, stream: bool = True, is_chunked: int = 0) -> Any:
+def _make_req_data(
+    *, stream: bool = True, is_chunked: int = 0, finished: bool = False
+) -> Any:
     stage_payload = StagePayload(
         request_id="r",
         request=OmniRequest(
@@ -40,7 +44,7 @@ def _make_req_data(*, stream: bool = True, is_chunked: int = 0) -> Any:
         ),
         data={},
     )
-    req = SimpleNamespace(is_chunked=is_chunked)
+    req = SimpleNamespace(is_chunked=is_chunked, finished=lambda: finished)
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
@@ -105,6 +109,26 @@ def test_min_emit_interval_first_delta_immediate_then_eos_flushes() -> None:
     assert [m.data["text"] for m in builder("r", rd, _make_req_output(1))] == ["A"]
     assert builder("r", rd, _make_req_output(2)) == []
     assert [m.data["text"] for m in builder("r", rd, _make_req_output(_EOS))] == ["B"]
+
+
+def test_terminal_finish_flushes_rate_limited_pending_tokens() -> None:
+    builder = _builder({1: b"A", 2: b"B"}, interval_s=3600.0)
+    rd = _make_req_data()
+
+    assert [m.data["text"] for m in builder("r", rd, _make_req_output(1))] == ["A"]
+    assert builder("r", rd, _make_req_output(2)) == []
+
+    rd.req.finished = lambda: True
+    msgs = builder("r", rd, _make_req_output(None))
+    assert [m.data["text"] for m in msgs] == ["B"]
+
+
+def test_missing_required_scheduler_contract_fails_visibly() -> None:
+    builder = _builder({1: b"A"})
+    broken_req_data = SimpleNamespace(stage_payload=None)
+
+    with pytest.raises(AttributeError):
+        builder("r", broken_req_data, _make_req_output(1))
 
 
 def test_per_request_state_is_isolated() -> None:

@@ -6,6 +6,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import numpy as np
@@ -381,22 +382,27 @@ def make_fun_asr_stream_output_builder(
     def _build_stream_output(
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
-        req = getattr(req_data, "req", None)
-        token_data = getattr(req_output, "data", None)
-        if req is None or token_data is None:
+        req = req_data.req
+        token_data = req_output.data
+        if req is None:
             return []
-        if getattr(req, "is_chunked", 0) > 0:
+        if req.is_chunked > 0:
             return []
 
-        stage_payload = getattr(req_data, "stage_payload", None)
+        stage_payload = req_data.stage_payload
         if stage_payload is None:
             return []
         if not (stage_payload.request.params or {}).get("stream", False):
             return []
 
-        try:
-            token_id = int(token_data)
-        except (TypeError, ValueError):
+        is_terminal = req.finished()
+        token_id: int | None = None
+        if token_data is not None:
+            try:
+                token_id = int(token_data)
+            except (TypeError, ValueError):
+                return []
+        elif not is_terminal:
             return []
 
         try:
@@ -405,8 +411,12 @@ def make_fun_asr_stream_output_builder(
             pending = []
             req._fun_asr_stream_pending_ids = pending
 
-        is_eos = resolved_eos is not None and token_id == resolved_eos
-        if not is_eos:
+        is_eos = (
+            token_id is not None
+            and resolved_eos is not None
+            and token_id == resolved_eos
+        )
+        if token_id is not None and not is_eos:
             pending.append(token_id)
         if not pending:
             return []
@@ -418,6 +428,7 @@ def make_fun_asr_stream_output_builder(
             last_emit = 0.0
         if (
             not is_eos
+            and not is_terminal
             and min_emit_interval_s > 0.0
             and last_emit > 0.0
             and (now - last_emit) < min_emit_interval_s
@@ -425,7 +436,7 @@ def make_fun_asr_stream_output_builder(
             return []
 
         delta = _decode_token_ids(tokenizer, pending, skip_special_tokens=True)
-        if delta.endswith("\ufffd"):
+        if delta.endswith("\ufffd") and not is_terminal:
             return []
         pending.clear()
         if not delta:
@@ -447,6 +458,14 @@ def make_fun_asr_stream_output_builder(
             )
         ]
 
+    def _flush_stream_output(request_id: str, req_data: Any) -> list[OutgoingMessage]:
+        return _build_stream_output(
+            request_id,
+            req_data,
+            SimpleNamespace(data=None),
+        )
+
+    setattr(_build_stream_output, "flush", _flush_stream_output)
     return _build_stream_output
 
 

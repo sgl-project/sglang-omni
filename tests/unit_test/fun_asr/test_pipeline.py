@@ -80,6 +80,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     def tokenizer(text, add_special_tokens=False):
         return SimpleNamespace(input_ids=[0] * len(text))
+
     adapter_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
