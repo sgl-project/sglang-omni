@@ -30,7 +30,7 @@ class SGLangOutputProcessor:
         self,
         model_output: Any,
         scheduler_output: SchedulerOutput,
-        host_token_ids: Any = None,
+        host_token_ids: torch.Tensor | None = None,
     ) -> dict[str, RequestOutput]:
         ids = host_token_ids
         if ids is None:
