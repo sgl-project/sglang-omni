@@ -63,6 +63,9 @@ print(resp.json()["text"])
 `verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
 `{"text": "..."}`.
 
+`max_new_tokens` defaults to the ASR stage setting when omitted; an explicit
+form value overrides it for that request.
+
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
