@@ -252,6 +252,12 @@ def make_zonos2_scheduler_adapters(*, model: Any):
         return build_sglang_zonos2_request(payload, model=model)
 
     def result_adapter(data: Zonos2SGLangRequestData) -> StagePayload:
-        return apply_sglang_zonos2_result(data.stage_payload, data)
+        try:
+            return apply_sglang_zonos2_result(data.stage_payload, data)
+        finally:
+            # Terminal adapters own decode-state lifetime. Release for every
+            # finish reason, including length limits and adapter failures, rather
+            # than relying on the model sampler to observe its own EOS.
+            model.reset_request(data.stage_payload.request_id)
 
     return request_builder, result_adapter
