@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Validated on one 80 GB H100: two same-GPU MOSS TTS delay replicas with
+# shared weights. Unshared DP2 does not fit at these budgets; sharing is what
+# makes the second replica's KV pool profile to the common cap.
+
+config_cls: MossTTSPipelineConfig
+name: mossd
+model_path: OpenMOSS-Team/MOSS-TTS-v1.5
+
+stage_overrides:
+  tts_engine:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.37
+      sglang_server_args:
+        mem_fraction_static: 0.30
+
+runtime_overrides:
+  tts_engine:
+    server_args_overrides:
+      max_total_tokens: 30000

@@ -53,6 +53,7 @@ tests/
     ├── qwen3_omni/
     │   ├── test_cli.py
     │   ├── test_code2wav.py
+    │   ├── test_code2wav_cuda_graph.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
     │   ├── test_fp8_backend_config.py
@@ -397,6 +398,15 @@ that happened to contain an older version of the test.
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
   - Code2Wav streaming/cleanup behavior
+  - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory
+    budget enforcement, eager fallbacks, replay failures, and JSON-safe stats;
+    the `gpu`-marked cases exercise real CUDA stream restoration and graph
+    capture/replay. Run them with:
+
+    ```bash
+    pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m gpu -q
+    ```
+
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
 - `unit_test/ming_omni/` Ming-Omni unit tests:

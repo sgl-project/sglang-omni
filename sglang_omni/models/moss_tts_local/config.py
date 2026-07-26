@@ -81,6 +81,31 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         "MossTTSLocal",
         "MossTTSLocalForConditionalGeneration",
     )
+    additional_speech_languages: ClassVar[frozenset[str]] = frozenset(
+        {
+            "Cantonese",
+            "Arabic",
+            "Czech",
+            "Danish",
+            "Dutch",
+            "Finnish",
+            "Greek",
+            "Hebrew",
+            "Hindi",
+            "Hungarian",
+            "Macedonian",
+            "Malay",
+            "Persian (Farsi)",
+            "Polish",
+            "Romanian",
+            "Swahili",
+            "Swedish",
+            "Tagalog",
+            "Thai",
+            "Turkish",
+            "Vietnamese",
+        }
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
