@@ -132,6 +132,8 @@ def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
     language = _resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
+    if language is not None and language.casefold() == "auto":
+        language = None
     instructions = _resolve_optional_text(
         tts_params.get("instructions")
         or tts_params.get("instruct")

@@ -94,6 +94,76 @@ class ModelRunner:
         # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
+        self._token_id_host_bufs: list[torch.Tensor] | None = None
+        self._token_id_host_slot: int = 0
+
+    def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
+        # Note (wenyao): pinned host copy staged once at sample time so downstream
+        # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
+        if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
+            result._host_token_ids = ids
+            result._host_token_ids_event = None
+            return
+        n = ids.shape[0]
+        buf = self._next_token_id_host_buf(ids, n)
+        buf[:n].copy_(ids[:n], non_blocking=True)
+        event = torch.cuda.Event()
+        event.record()
+        result._host_token_ids = buf[:n]
+        result._host_token_ids_event = event
+
+    def _next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+        # Note (wenyao): two buffers ping-ponged so a step's host read never races
+        # the next step's async copy
+        return self._pinned_pingpong(
+            "_token_id_host_bufs",
+            "_token_id_host_slot",
+            (n,),
+            like.dtype,
+            realloc_on_grow=True,
+        )
+
+    def _pinned_pingpong(
+        self,
+        bufs_attr: str,
+        slot_attr: str,
+        shape: Any,
+        dtype: torch.dtype,
+        *,
+        realloc_on_grow: bool,
+    ) -> torch.Tensor:
+        """Return one of two pinned host buffers, alternating slot each call.
+
+        ``realloc_on_grow`` reallocates (and resets the slot) when the request
+        outgrows the buffer or changes dtype; otherwise the pair is allocated
+        once on first use with the given fixed shape.
+        """
+        bufs = getattr(self, bufs_attr)
+        need_alloc = not bufs
+        if realloc_on_grow and bufs:
+            need_alloc = (
+                bufs[0].shape[0] < shape[0]
+                or bufs[0].shape[1:] != tuple(shape[1:])
+                or bufs[0].dtype != dtype
+            )
+        if need_alloc:
+            bufs = [
+                torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
+                for _ in range(2)
+            ]
+            setattr(self, bufs_attr, bufs)
+            setattr(self, slot_attr, 0)
+        slot = getattr(self, slot_attr)
+        buf = bufs[slot]
+        setattr(self, slot_attr, slot ^ 1)
+        return buf
+
+    def _resolve_host_token_ids(self, result: Any) -> Any:
+        event = getattr(result, "_host_token_ids_event", None)
+        if event is not None:
+            event.synchronize()
+            result._host_token_ids_event = None
+        return getattr(result, "_host_token_ids", None)
 
     def _next_host_staging(
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
@@ -112,21 +182,13 @@ class ModelRunner:
         resolve still holding the previous buffer keeps it alive, so
         replacement cannot alias an in-flight snapshot.
         """
-        bufs = self._host_staging_buffers
-        if (
-            not bufs
-            or bufs[0].dtype != dtype
-            or bufs[0].shape[1:] != tuple(shape[1:])
-            or bufs[0].shape[0] < shape[0]
-        ):
-            self._host_staging_buffers = bufs = [
-                torch.empty(tuple(shape), dtype=dtype, device="cpu", pin_memory=True)
-                for _ in range(2)
-            ]
-            self._staging_slot = 0
-        buf = bufs[self._staging_slot]
-        self._staging_slot ^= 1
-        return buf
+        return self._pinned_pingpong(
+            "_host_staging_buffers",
+            "_staging_slot",
+            tuple(shape),
+            dtype,
+            realloc_on_grow=True,
+        )
 
     def execute(self, scheduler_output: Any) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →
@@ -405,7 +467,13 @@ class ModelRunner:
         if set_output_ids:
             schedule_batch.output_ids = batch_result.next_token_ids
 
-        outputs = self.output_processor.process(batch_result, scheduler_output)
+        host_token_ids = self._resolve_host_token_ids(batch_result)
+        if host_token_ids is None:
+            outputs = self.output_processor.process(batch_result, scheduler_output)
+        else:
+            outputs = self.output_processor.process(
+                batch_result, scheduler_output, host_token_ids=host_token_ids
+            )
         self.post_process_outputs(batch_result, scheduler_output, outputs)
         skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
         advanced_steps = []
@@ -429,6 +497,7 @@ class ModelRunner:
             req_ids=req_ids,
             req_id_to_index=req_id_to_index,
             can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
+            host_token_ids=host_token_ids,
         )
 
     # ------------------------------------------------------------------

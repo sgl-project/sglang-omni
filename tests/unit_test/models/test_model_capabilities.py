@@ -72,6 +72,13 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
     ),
+    "Zonos2ForCausalLM": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=True,
+        supports_torch_compile=True,
+    ),
 }
 
 

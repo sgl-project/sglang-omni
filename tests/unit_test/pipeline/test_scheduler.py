@@ -16,6 +16,7 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.scheduling.types import ModelRunnerOutput
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
@@ -258,7 +259,7 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     class FakeModelRunner:
         def execute(self, sched_output):
             sched_output.batch_data.output_ids = next_token_ids
-            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+            return ModelRunnerOutput(outputs={}, can_run_cuda_graph=False)
 
     scheduler = object.__new__(OmniScheduler)
     scheduler._model_runner = FakeModelRunner()
@@ -292,7 +293,7 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     class FakeModelRunner:
         def execute(self, sched_output):
             sched_output.batch_data.output_ids = torch.tensor([1], dtype=torch.int32)
-            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+            return ModelRunnerOutput(outputs={}, can_run_cuda_graph=False)
 
         def execute_launch(self, sched_output):
             return SimpleNamespace()
@@ -363,6 +364,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
         def __init__(self, reqs):
             self.reqs = reqs
             self.out_cache_loc = torch.arange(100, 100 + len(reqs))
+            self.decoding_reqs = None
 
         def filter_batch(self, keep_indices=None):
             captured["keep_indices"] = keep_indices

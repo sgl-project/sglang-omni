@@ -30,12 +30,12 @@ class SGLangOutputProcessor:
         self,
         model_output: Any,
         scheduler_output: SchedulerOutput,
+        host_token_ids: torch.Tensor | None = None,
     ) -> dict[str, RequestOutput]:
-        token_list = (
-            model_output.next_token_ids.tolist()
-            if model_output.next_token_ids is not None
-            else []
-        )
+        ids = host_token_ids
+        if ids is None:
+            ids = model_output.next_token_ids
+        token_list = ids.tolist() if ids is not None else []
 
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
         if self._capture_hidden:

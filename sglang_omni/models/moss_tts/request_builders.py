@@ -311,7 +311,7 @@ def build_generation_kwargs(
         )
 
     for source in (tts_params, params):
-        for field in (
+        for param_name in (
             "text_temperature",
             "text_top_p",
             "text_top_k",
@@ -320,10 +320,10 @@ def build_generation_kwargs(
             "audio_top_k",
             "audio_repetition_penalty",
         ):
-            if source.get(field) is not None:
-                value = source[field]
-                generation_kwargs[field] = (
-                    int(value) if field.endswith("top_k") else float(value)
+            if source.get(param_name) is not None:
+                value = source[param_name]
+                generation_kwargs[param_name] = (
+                    int(value) if param_name.endswith("top_k") else float(value)
                 )
 
     seed = tts_params.get("seed")
@@ -343,17 +343,21 @@ def _validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
         raise ValueError(
             f"MOSS-TTS max_new_tokens must be > 0, got {kwargs['max_new_tokens']!r}"
         )
-    for field in ("text_temperature", "audio_temperature"):
-        if float(kwargs[field]) < 0:
-            raise ValueError(f"MOSS-TTS {field} must be >= 0, got {kwargs[field]!r}")
-    for field in ("text_top_p", "audio_top_p"):
-        if not 0.0 < float(kwargs[field]) <= 1.0:
+    for param_name in ("text_temperature", "audio_temperature"):
+        if float(kwargs[param_name]) < 0:
             raise ValueError(
-                f"MOSS-TTS {field} must be in (0, 1], got {kwargs[field]!r}"
+                f"MOSS-TTS {param_name} must be >= 0, got {kwargs[param_name]!r}"
             )
-    for field in ("text_top_k", "audio_top_k"):
-        if int(kwargs[field]) < -1:
-            raise ValueError(f"MOSS-TTS {field} must be >= -1, got {kwargs[field]!r}")
+    for param_name in ("text_top_p", "audio_top_p"):
+        if not 0.0 < float(kwargs[param_name]) <= 1.0:
+            raise ValueError(
+                f"MOSS-TTS {param_name} must be in (0, 1], got {kwargs[param_name]!r}"
+            )
+    for param_name in ("text_top_k", "audio_top_k"):
+        if int(kwargs[param_name]) < -1:
+            raise ValueError(
+                f"MOSS-TTS {param_name} must be >= -1, got {kwargs[param_name]!r}"
+            )
     if float(kwargs["audio_repetition_penalty"]) <= 0:
         raise ValueError(
             "MOSS-TTS audio_repetition_penalty must be > 0, got "

@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
+from sglang.srt.layers.utils.hash import murmur_hash32
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
@@ -16,6 +17,24 @@ _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
 _UINT64_MASK = (1 << 64) - 1
 _INT64_SEED_MASK = (1 << 63) - 1
+
+
+@torch.compile(dynamic=True)
+def _multinomial_with_seed_and_token_ids(
+    logprobs: torch.Tensor,
+    seed: torch.Tensor,
+    positions: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Seeded Gumbel-max using original vocabulary ids as RNG columns."""
+
+    seed = seed.to(torch.uint64)
+    hashed = murmur_hash32(seed, positions, token_ids)
+    noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
+    noise.log_().clamp_(min=torch.finfo(noise.dtype).min).neg_()
+    noise.log_().neg_()
+    noise.add_(logprobs.to(torch.float64))
+    return torch.argmax(noise, dim=1)
 
 
 class MossTTSModelRunner(ModelRunner):
@@ -147,15 +166,25 @@ class MossTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        channel_logits = self._channel_logits_from_result(result, forward_batch)
+        datas = [sched_req.data for sched_req in requests]
+        is_audio = bool(datas) and all(data.is_audio for data in datas)
+        channel_logits = self._channel_logits_from_result(
+            result,
+            forward_batch,
+            is_audio=is_audio,
+        )
         n_vq = len(channel_logits) - 1
         if n_vq <= 0:
             raise RuntimeError("MOSS-TTS requires at least one audio codebook head")
         if not requests:
             return
 
-        datas = [sched_req.data for sched_req in requests]
-        rows = self._sample_rows(channel_logits, datas, n_vq=n_vq)
+        rows = self._sample_rows(
+            channel_logits,
+            datas,
+            n_vq=n_vq,
+            is_audio=is_audio,
+        )
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
@@ -170,17 +199,30 @@ class MossTTSModelRunner(ModelRunner):
         self,
         result: Any,
         forward_batch: Any,
+        *,
+        is_audio: bool = False,
     ) -> list[torch.Tensor]:
         logits_output = result.logits_output
         customized = getattr(logits_output, "customized_info", None)
         if isinstance(customized, dict):
             values = customized.get("moss_tts_channel_logits")
             if isinstance(values, list) and values:
+                if is_audio:
+                    token_ids = self.model.text_control_token_ids.to(
+                        device=values[0].device
+                    )
+                    return [values[0].index_select(-1, token_ids), *values[1:]]
                 return values
         hidden_states = getattr(logits_output, "hidden_states", None)
         if isinstance(hidden_states, torch.Tensor):
             if hidden_states.ndim == 3:
                 hidden_states = hidden_states[:, -1, :]
+            if is_audio:
+                return self.model.compute_channel_logits(
+                    hidden_states,
+                    forward_batch,
+                    is_audio=True,
+                )
             return self.model.compute_channel_logits(hidden_states, forward_batch)
         raise RuntimeError("MOSS-TTS model output did not include channel logits")
 
@@ -199,7 +241,7 @@ class MossTTSModelRunner(ModelRunner):
                 [
                     int(getattr(data, "audio_length", 0)),
                     delayed,
-                    int(bool(getattr(data, "is_audio", False))),
+                    int(data.is_audio),
                 ],
                 dtype=torch.long,
                 device=device,
@@ -213,6 +255,7 @@ class MossTTSModelRunner(ModelRunner):
         datas: list,
         *,
         n_vq: int,
+        is_audio: bool = False,
     ) -> torch.Tensor:
         """One batched MOSS-TTS delay-pattern decode step over the whole batch.
 
@@ -236,7 +279,7 @@ class MossTTSModelRunner(ModelRunner):
         )
         audio_lengths = delay_state[:, 0]
         delayed = delay_state[:, 1]
-        is_audio = delay_state[:, 2].bool()
+        audio_mask = delay_state[:, 2].bool()
         gen_steps = torch.tensor(
             [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
         )
@@ -273,48 +316,60 @@ class MossTTSModelRunner(ModelRunner):
         num_channels = n_vq + 1
 
         text_logits = channel_logits[0].to(torch.float32)
-        vocab = text_logits.shape[-1]
-
         next_text = torch.full(
             (batch_size,), pad_token_id, dtype=torch.long, device=device
         )
         next_text[delayed < n_vq] = delay_slot
         is_audio_eos = delayed == n_vq
         next_text[is_audio_eos] = audio_end
-        is_audio = is_audio & ~is_audio_eos
-        sampling_text_mask = delayed > n_vq
-
-        not_audio = ~is_audio
-        if bool(not_audio.any()):
-            exclude = torch.tensor(
-                [
-                    t
-                    for t in (pad_token_id, gen_slot, delay_slot, audio_end)
-                    if 0 <= t < vocab
-                ],
-                dtype=torch.long,
-                device=device,
+        audio_mask = audio_mask & ~is_audio_eos
+        text_candidate_token_ids: torch.Tensor | None = None
+        if is_audio:
+            if int(text_logits.shape[-1]) != 2:
+                raise RuntimeError(
+                    "MOSS-TTS control-only text logits must have two columns"
+                )
+            text_candidate_token_ids = self.model.text_control_token_ids.to(
+                device=device
             )
-            text_logits[not_audio] = text_logits[not_audio].index_fill(
-                -1, exclude, _NEG_INF
-            )
-        if bool(is_audio.any()):
-            allow_only = torch.ones(vocab, dtype=torch.bool, device=device)
-            for token_id in (gen_slot, delay_slot):
-                if 0 <= token_id < vocab:
-                    allow_only[token_id] = False
-            text_logits[is_audio] = text_logits[is_audio].masked_fill(
-                allow_only, _NEG_INF
-            )
-
-        if 0 <= delay_slot < vocab:
+            sampling_text_mask = audio_mask & (delayed > n_vq)
             step0 = gen_steps == 0
             if bool(step0.any()):
-                text_logits[step0, delay_slot] = _NEG_INF
-        if 0 <= im_end < vocab:
-            step_le_nvq = gen_steps <= n_vq
-            if bool(step_le_nvq.any()):
-                text_logits[step_le_nvq, im_end] = _NEG_INF
+                text_logits[step0, 1] = _NEG_INF
+        else:
+            vocab = text_logits.shape[-1]
+            sampling_text_mask = delayed > n_vq
+            not_audio = ~audio_mask
+            if bool(not_audio.any()):
+                exclude = torch.tensor(
+                    [
+                        t
+                        for t in (pad_token_id, gen_slot, delay_slot, audio_end)
+                        if 0 <= t < vocab
+                    ],
+                    dtype=torch.long,
+                    device=device,
+                )
+                text_logits[not_audio] = text_logits[not_audio].index_fill(
+                    -1, exclude, _NEG_INF
+                )
+            if bool(audio_mask.any()):
+                allow_only = torch.ones(vocab, dtype=torch.bool, device=device)
+                for token_id in (gen_slot, delay_slot):
+                    if 0 <= token_id < vocab:
+                        allow_only[token_id] = False
+                text_logits[audio_mask] = text_logits[audio_mask].masked_fill(
+                    allow_only, _NEG_INF
+                )
+
+            if 0 <= delay_slot < vocab:
+                step0 = gen_steps == 0
+                if bool(step0.any()):
+                    text_logits[step0, delay_slot] = _NEG_INF
+            if 0 <= im_end < vocab:
+                step_le_nvq = gen_steps <= n_vq
+                if bool(step_le_nvq.any()):
+                    text_logits[step_le_nvq, im_end] = _NEG_INF
 
         if bool(sampling_text_mask.any()):
             idx = sampling_text_mask.nonzero(as_tuple=False).squeeze(1)
@@ -325,9 +380,10 @@ class MossTTSModelRunner(ModelRunner):
                 top_k=text_top_k[idx],
                 seeds=sampling_seeds[idx],
                 positions=gen_steps[idx] * num_channels,
+                candidate_token_ids=text_candidate_token_ids,
             )
-        is_audio = is_audio | (next_text == audio_start)
-        is_audio = is_audio & (next_text != im_end)
+        audio_mask = audio_mask | (next_text == audio_start)
+        audio_mask = audio_mask & (next_text != im_end)
 
         next_audio = torch.full(
             (batch_size, n_vq), audio_pad_code, dtype=torch.long, device=device
@@ -372,7 +428,7 @@ class MossTTSModelRunner(ModelRunner):
         delayed[not_inf] = delayed[not_inf] + 1
         delayed[delayed > n_vq] = _INT64_MAX
 
-        next_state = torch.stack((audio_lengths, delayed, is_audio.long()), dim=1)
+        next_state = torch.stack((audio_lengths, delayed, audio_mask.long()), dim=1)
         for i, data in enumerate(datas):
             data.delay_state = next_state[i].detach()
             if device.type == "cpu":
@@ -409,22 +465,29 @@ class MossTTSModelRunner(ModelRunner):
         top_k: torch.Tensor | int,
         seeds: torch.Tensor,
         positions: torch.Tensor,
+        candidate_token_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Per-row temperature / top-k / top-p sampling for ``[N, vocab]`` logits.
 
         ``temperature``/``top_p``/``top_k`` may be scalars or per-row tensors of
         length N and are applied entirely through vectorized tensor masks (no
         ``.tolist()`` or Python-side grouping, so each row keeps its own params).
-        Sampling uses ``multinomial_with_seed`` so each row draws from its own
-        ``seeds``/``positions`` and is reproducible regardless of batch
-        composition. Rows with temperature <= 0, or rows left fully masked, fall
-        back to greedy argmax; ``logits`` is float32 with disallowed tokens
-        already masked to ``-inf``.
+        When ``candidate_token_ids`` is provided, ``logits`` must contain exactly
+        those two candidates; sampling hashes their original vocabulary ids and
+        maps the local sampled column back to the original id. Rows with
+        temperature <= 0, or rows left fully masked, fall back to greedy argmax;
+        ``logits`` is float32 with disallowed tokens already masked to ``-inf``.
         """
-        num_rows = logits.shape[0]
+        num_rows = int(logits.shape[0])
         if num_rows == 0:
             return torch.empty(0, dtype=torch.long, device=logits.device)
         device = logits.device
+        if candidate_token_ids is not None:
+            candidate_token_ids = candidate_token_ids.to(device=device)
+            if tuple(logits.shape[1:]) != (2,) or int(candidate_token_ids.numel()) != 2:
+                raise ValueError(
+                    "MOSS-TTS compact candidate sampling requires exactly two tokens"
+                )
 
         temp = MossTTSModelRunner._as_row_tensor(
             temperature, num_rows, torch.float32, device
@@ -438,8 +501,16 @@ class MossTTSModelRunner(ModelRunner):
         do_sample = temp > 0
         safe_temp = torch.where(do_sample, temp, torch.ones_like(temp))
         scores = logits / safe_temp.unsqueeze(1)
-        scores = MossTTSModelRunner._apply_top_k(scores, top_k_row)
-        scores = MossTTSModelRunner._apply_top_p(scores, top_p_row)
+        if candidate_token_ids is not None:
+            scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_k_row)
+            scores = MossTTSModelRunner._apply_top_p(
+                scores,
+                top_p_row,
+                skip_inactive_check=True,
+            )
+        else:
+            scores = MossTTSModelRunner._apply_top_k(scores, top_k_row)
+            scores = MossTTSModelRunner._apply_top_p(scores, top_p_row)
 
         probs = torch.softmax(scores, dim=-1)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
@@ -451,8 +522,25 @@ class MossTTSModelRunner(ModelRunner):
             positions, num_rows, torch.long, device
         )
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-        sample_mask = ~fallback
         sampled = torch.argmax(logits, dim=-1)
+        if candidate_token_ids is not None:
+            if device.type == "cpu":
+                candidate_sampled = MossTTSModelRunner._multinomial_with_seed_cpu(
+                    probs,
+                    seeds_row,
+                    positions_row,
+                )
+            else:
+                candidate_sampled = _multinomial_with_seed_and_token_ids(
+                    scores,
+                    seeds_row,
+                    positions_row,
+                    candidate_token_ids,
+                )
+            sampled = torch.where(fallback, sampled, candidate_sampled)
+            return candidate_token_ids[sampled].to(torch.long)
+
+        sample_mask = ~fallback
         if bool(sample_mask.any()):
             if device.type == "cpu":
                 sampled[sample_mask] = MossTTSModelRunner._multinomial_with_seed_cpu(
@@ -470,6 +558,18 @@ class MossTTSModelRunner(ModelRunner):
                     positions_row[sample_mask],
                 ).view(-1)
         return sampled.to(torch.long)
+
+    @staticmethod
+    def _apply_two_token_top_k(
+        scores: torch.Tensor,
+        top_k_row: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply the only active compact top-k case without a host sync."""
+        top1 = top_k_row == 1
+        top1_threshold = scores.max(dim=-1, keepdim=True).values
+        return scores.masked_fill(
+            top1.unsqueeze(1) & (scores < top1_threshold), _NEG_INF
+        )
 
     @staticmethod
     def _multinomial_with_seed_cpu(
@@ -517,10 +617,20 @@ class MossTTSModelRunner(ModelRunner):
         return scores.masked_fill(scores < threshold, _NEG_INF)
 
     @staticmethod
-    def _apply_top_p(scores: torch.Tensor, top_p_row: torch.Tensor) -> torch.Tensor:
-        """Per-row nucleus mask; rows with p <= 0 or p >= 1 are left untouched."""
+    def _apply_top_p(
+        scores: torch.Tensor,
+        top_p_row: torch.Tensor,
+        *,
+        skip_inactive_check: bool = False,
+    ) -> torch.Tensor:
+        """Apply per-row nucleus masking.
+
+        ``skip_inactive_check`` keeps the compact hot path tensor-only instead
+        of synchronizing with the host just to discover that every row uses
+        ``top_p=1``.
+        """
         active = (top_p_row > 0.0) & (top_p_row < 1.0)
-        if not bool(active.any()):
+        if not skip_inactive_check and not bool(active.any()):
             return scores
         sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
         probs = torch.softmax(sorted_scores, dim=-1)
@@ -591,9 +701,18 @@ class MossTTSModelRunner(ModelRunner):
             return
 
         eos_id = int(self.model.config.im_end_token_id)
+        audio_start_id = int(self.model.config.audio_start_token_id)
+        audio_end_id = int(self.model.config.audio_end_token_id)
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
-            if req_output.data is None or int(req_output.data) == eos_id:
+            if req_output.data is None:
+                continue
+            text_token_id = int(req_output.data)
+            if text_token_id == audio_start_id:
+                sched_req.data.is_audio = True
+            elif text_token_id == audio_end_id:
+                sched_req.data.is_audio = False
+            if text_token_id == eos_id:
                 continue
             sched_req.data.output_rows.append(rows[row_idx].detach().clone())
             sched_req.data.pending_feedback_queue.append(

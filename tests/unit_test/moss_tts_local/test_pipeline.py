@@ -730,6 +730,9 @@ def test_build_state_token_count_and_language():
     assert state.text == "hello world"
     assert state.language == "English"
 
+    payload.request.params["language"] = "Auto"
+    assert build_moss_tts_local_state(payload).language is None
+
 
 # Preprocessing handoff + result adapter
 

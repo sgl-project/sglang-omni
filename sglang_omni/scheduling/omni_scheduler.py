@@ -932,6 +932,11 @@ class OmniScheduler:
         next_token_ids = batch.output_ids
         if isinstance(next_token_ids, torch.Tensor):
             batch.input_ids = next_token_ids.to(torch.int64)
+        # Note (wenyao): reuse the runner-staged pinned host copy so the mixin's
+        # .tolist() is host-only; the device tensor still drives the input chain above
+        host_token_ids = mr_output.host_token_ids
+        if host_token_ids is not None:
+            next_token_ids = host_token_ids
         return GenerationBatchResult(
             logits_output=None,
             next_token_ids=next_token_ids,
@@ -1842,12 +1847,74 @@ class OmniScheduler:
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
         out_cache_loc = batch.out_cache_loc
-        self._free_overrun_step_slots(
-            out_cache_loc, [i for i, d in enumerate(drop) if d]
-        )
-        batch.filter_batch(keep_indices=keep)
-        if out_cache_loc is not None:
-            batch.out_cache_loc = out_cache_loc[keep]
+        forward_mode = getattr(batch, "forward_mode", None)
+        if forward_mode is not None and forward_mode.is_extend():
+            # Note:(Wenyao Gao) extend/mixed batches carry per-token fields
+            # (req i owns extend_lens[i] slots) that filter_batch leaves
+            # stale; reslice them here. The asserted fields are never
+            # populated on omni extend batches; trip instead of misslicing.
+            assert (
+                getattr(batch, "input_embeds", None) is None
+                and getattr(batch, "replace_embeds", None) is None
+                and getattr(batch, "token_type_ids", None) is None
+            ), "unhandled per-token field on drop-stale extend batch"
+            lens = batch.extend_lens
+            starts = [0] * len(lens)
+            for i in range(1, len(lens)):
+                starts[i] = starts[i - 1] + lens[i - 1]
+            drop_tokens = [
+                t
+                for i, d in enumerate(drop)
+                if d
+                for t in range(starts[i], starts[i] + lens[i])
+            ]
+            keep_tokens = [
+                t for i in keep for t in range(starts[i], starts[i] + lens[i])
+            ]
+            input_ids = batch.input_ids
+            prefix_lens = batch.prefix_lens
+            extend_logprob_start_lens = batch.extend_logprob_start_lens
+            lp_token_ids = getattr(batch, "extend_input_logprob_token_ids", None)
+            self._free_overrun_step_slots(out_cache_loc, drop_tokens)
+            batch.filter_batch(keep_indices=keep)
+            batch.input_ids = input_ids[keep_tokens]
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep_tokens]
+            batch.extend_lens = [lens[i] for i in keep]
+            batch.extend_num_tokens = sum(batch.extend_lens)
+            batch.prefix_lens = [prefix_lens[i] for i in keep]
+            batch.extend_logprob_start_lens = [
+                extend_logprob_start_lens[i] for i in keep
+            ]
+            if lp_token_ids is not None:
+                # Note:(Wenyao Gao) every req contributes a segment of
+                # lens[i] - start_lens[i] ids; not aligned with the token
+                # slices above.
+                if not batch.return_logprob:
+                    batch.extend_input_logprob_token_ids = None
+                else:
+                    lp_lens = [
+                        lens[i] - extend_logprob_start_lens[i] for i in range(len(lens))
+                    ]
+                    lp_starts = [0] * len(lp_lens)
+                    for i in range(1, len(lp_lens)):
+                        lp_starts[i] = lp_starts[i - 1] + lp_lens[i - 1]
+                    keep_lp_tokens = [
+                        t
+                        for i in keep
+                        for t in range(lp_starts[i], lp_starts[i] + lp_lens[i])
+                    ]
+                    batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
+        else:
+            self._free_overrun_step_slots(
+                out_cache_loc, [i for i, d in enumerate(drop) if d]
+            )
+            batch.filter_batch(keep_indices=keep)
+            if out_cache_loc is not None:
+                batch.out_cache_loc = out_cache_loc[keep]
+        if batch.decoding_reqs:
+            kept_ids = {id(r) for r in batch.reqs}
+            batch.decoding_reqs = [r for r in batch.decoding_reqs if id(r) in kept_ids]
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:

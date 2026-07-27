@@ -42,8 +42,30 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
     assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
+    assert signature.parameters["pre_lm_max_batch_size"].default == 8
+    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 4
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "wait_ms", "match"),
+    [
+        (0, 4, "pre_lm_max_batch_size"),
+        (-1, 4, "pre_lm_max_batch_size"),
+        (8, -1, "pre_lm_max_batch_wait_ms"),
+    ],
+)
+def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
+    batch_size: int, wait_ms: int, match: str
+) -> None:
+    # Validation runs before any model/tokenizer load.
+    with pytest.raises(ValueError, match=match):
+        fun_asr_stages.create_sglang_fun_asr_executor(
+            "dummy",
+            pre_lm_max_batch_size=batch_size,
+            pre_lm_max_batch_wait_ms=wait_ms,
+        )
 
 
 def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:

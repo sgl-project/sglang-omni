@@ -53,6 +53,7 @@ class ModelRunnerOutput:
     req_ids: list[str] = field(default_factory=list)
     req_id_to_index: dict[str, int] = field(default_factory=dict)
     can_run_cuda_graph: bool = False
+    host_token_ids: torch.Tensor | None = None
 
 
 @dataclass
