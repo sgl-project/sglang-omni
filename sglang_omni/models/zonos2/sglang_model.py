@@ -280,6 +280,10 @@ class Zonos2SGLangModel(nn.Module):
     def dtype(self) -> torch.dtype:
         return self.embedders[0].weight.dtype
 
+    def reset_request(self, rid: str) -> None:
+        """Release decode state for a finished or aborted request."""
+        self._decode_state_pool.release_row(rid)
+
     def embed_frames(self, rows: torch.Tensor) -> torch.Tensor:
         """Sum the per-column embeddings of ``(T, frame_width)`` int rows."""
         out = self.embedders[0](rows[:, 0].contiguous())

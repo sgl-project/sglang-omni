@@ -63,6 +63,10 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_emit_snapshot.py
+    │   ├── test_talker_feedback_write.py
+    │   ├── test_talker_row_ownership.py
+    │   ├── test_talker_token_readback.py
     │   └── test_text_template.py
     ├── ming_omni/
     │   ├── test_omni_serve.py
@@ -490,6 +494,12 @@ that happened to contain an older version of the test.
   - MOSS-TTS Local vocoder decoder packing, local-causal FlashAttention window
     equivalence, CUDA bf16 packed-vs-SDPA parity, zero-length handling, and
     flash-unavailable fallback.
+
+- `unit_test/zonos2/`: ZONOS2 unit tests:
+  - pipeline configuration, text normalization, and speaker/component caches
+  - streaming vocoder chunking and flush behavior
+  - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
+    ownership, and async resolve contracts.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
