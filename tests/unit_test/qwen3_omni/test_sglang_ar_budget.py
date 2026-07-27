@@ -39,6 +39,12 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
             sampling_backend=overrides["sampling_backend"],
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
         )
 
     def _fake_create_thinker_scheduler(server_args, gpu_id, **kwargs):
@@ -241,6 +247,78 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     ]
     assert "effective_total_gpu_memory_fraction=0.75" in caplog.text
     assert "encoder_mem_reserve=0.0" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected_max_bs"),
+    [
+        (None, 64),
+        ({"max_running_requests": 16}, 16),
+    ],
+)
+def test_qwen_thinker_threads_explicit_generation_batch_policy(
+    monkeypatch,
+    server_args_overrides,
+    expected_max_bs,
+) -> None:
+    build_calls: list[dict[str, object]] = []
+    validation_calls: list[tuple[str, object]] = []
+    validate_generation_batch_policy = qwen_stages.validate_generation_batch_policy
+
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        assert model_path == "dummy"
+        assert context_length == 8192
+        build_calls.append(dict(overrides))
+        return SimpleNamespace(
+            mem_fraction_static=0.85,
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
+        )
+
+    def _validate_generation_batch_policy(*, model_name, server_args):
+        validation_calls.append((model_name, server_args))
+        validate_generation_batch_policy(
+            model_name=model_name,
+            server_args=server_args,
+        )
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        _fake_server_args_builder,
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "validate_generation_batch_policy",
+        _validate_generation_batch_policy,
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "create_thinker_scheduler",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        server_args_overrides=server_args_overrides,
+    )
+
+    assert build_calls[-1]["max_running_requests"] == expected_max_bs
+    assert build_calls[-1]["cuda_graph_max_bs"] == expected_max_bs
+    assert max(build_calls[-1]["cuda_graph_bs"]) == expected_max_bs
+    assert build_calls[-1]["torch_compile_max_bs"] == expected_max_bs
+    assert validation_calls[-1][0] == "Qwen3-Omni thinker"
+    assert validation_calls[-1][1].max_running_requests == expected_max_bs
 
 
 def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) -> None:

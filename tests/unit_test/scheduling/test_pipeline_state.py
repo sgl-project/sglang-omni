@@ -94,6 +94,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+    from sglang_omni.models.zonos2.payload_types import Zonos2State
 
     # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
@@ -105,6 +106,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         MossTTSLocalState,
         Qwen3TTSState,
         VoxtralTTSState,
+        Zonos2State,
     )
     base_fields = {
         "sample_rate",
@@ -187,6 +189,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+    from sglang_omni.models.zonos2.payload_types import Zonos2State
 
     # Each (state, overrides) pair is checked two ways: the
     # to_dict()-vs-to_dict() comparison (wire-format stability across a
@@ -364,6 +367,27 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
             {
                 "audio_samples": torch.tensor([0.7, 0.8]).tolist(),
             },
+        ),
+        (
+            Zonos2State(
+                text="hello",
+                ref_audio={"path": "ref.wav"},
+                ref_text="reference",
+                language="en",
+                speaking_rate=1.2,
+                conditioning={"emotion": "calm"},
+                input_ids=torch.zeros((3, 10), dtype=torch.long),
+                speaker_token_positions=[0],
+                speaker_emb=torch.tensor([0.1, 0.2, 0.3]),
+                speaker_fingerprint="wav:abc",
+                audio_codes=torch.tensor([[1, 2], [3, 4]]),
+                eos_frame=2,
+                generation_kwargs={"cfg_scale": 2.0},
+                prompt_tokens=3,
+                completion_tokens=2,
+                engine_time_s=0.125,
+            ),
+            {},
         ),
     ]
 
