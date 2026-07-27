@@ -127,6 +127,43 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     assert fake_nvml.shutdown_called is True
 
 
+def test_collect_gpu_capabilities_skips_backend_probes(monkeypatch) -> None:
+    fake_nvml = _FakeNVML()
+    monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_backend_inventory",
+        lambda: (_ for _ in ()).throw(AssertionError("backend probe ran")),
+    )
+
+    report = gpu_diagnostics.collect_gpu_capabilities(
+        env={"CUDA_VISIBLE_DEVICES": "0"},
+        torch_module=_FakeTorch(),
+        pynvml_module=fake_nvml,
+    )
+
+    assert set(report) == {"environment", "gpus", "warnings"}
+    assert report["gpus"][0]["compute_capability"] == "12.0"
+    assert fake_nvml.shutdown_called is True
+
+
+def test_get_gpu_compute_capability_uses_shared_collector(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "collect_gpu_capabilities",
+        lambda **kwargs: {
+            "gpus": [
+                {"logical_index": 0, "compute_capability": "12.0"},
+                {"logical_index": 1, "compute_capability": "9.0"},
+            ]
+        },
+    )
+
+    assert gpu_diagnostics.get_gpu_compute_capability(0) == (12, 0)
+    assert gpu_diagnostics.get_gpu_compute_capability(1) == (9, 0)
+    assert gpu_diagnostics.get_gpu_compute_capability(2) is None
+
+
 def test_nvml_inventory_failure_is_isolated_per_physical_device(
     monkeypatch,
 ) -> None:

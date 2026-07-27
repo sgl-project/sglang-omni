@@ -320,13 +320,13 @@ def _logical_devices(
     return devices
 
 
-def collect_gpu_diagnostics(
+def collect_gpu_capabilities(
     *,
     env: Mapping[str, str] | None = None,
     torch_module: Any | None = None,
     pynvml_module: Any | None = None,
 ) -> dict[str, Any]:
-    """Collect diagnostics without loading model configuration or weights."""
+    """Collect device capability facts without probing optional backends."""
 
     source_env = os.environ if env is None else env
     visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
@@ -341,14 +341,7 @@ def collect_gpu_diagnostics(
         if pynvml is not None:
             _shutdown_nvml(pynvml)
 
-    backends = _backend_inventory()
-    warnings.extend(
-        backend["reason"]
-        for backend in backends
-        if backend["installed"] and not backend["importable"]
-    )
     return {
-        "schema_version": 1,
         "environment": {
             "cuda_visible_devices": visible_value,
             **system,
@@ -361,8 +354,60 @@ def collect_gpu_diagnostics(
             "logical_device_count": len(devices),
         },
         "gpus": devices,
-        "backends": backends,
         "warnings": warnings,
+    }
+
+
+def get_gpu_compute_capability(
+    logical_index: int,
+    *,
+    env: Mapping[str, str] | None = None,
+    torch_module: Any | None = None,
+    pynvml_module: Any | None = None,
+) -> tuple[int, int] | None:
+    """Return one logical GPU's compute capability from the shared collector."""
+
+    report = collect_gpu_capabilities(
+        env=env,
+        torch_module=torch_module,
+        pynvml_module=pynvml_module,
+    )
+    device = next(
+        (gpu for gpu in report["gpus"] if gpu["logical_index"] == logical_index),
+        None,
+    )
+    if device is None or not device["compute_capability"]:
+        return None
+    try:
+        major, minor = str(device["compute_capability"]).split(".", maxsplit=1)
+        return int(major), int(minor)
+    except (TypeError, ValueError):
+        return None
+
+
+def collect_gpu_diagnostics(
+    *,
+    env: Mapping[str, str] | None = None,
+    torch_module: Any | None = None,
+    pynvml_module: Any | None = None,
+) -> dict[str, Any]:
+    """Collect diagnostics without loading model configuration or weights."""
+
+    report = collect_gpu_capabilities(
+        env=env,
+        torch_module=torch_module,
+        pynvml_module=pynvml_module,
+    )
+    backends = _backend_inventory()
+    report["warnings"].extend(
+        backend["reason"]
+        for backend in backends
+        if backend["installed"] and not backend["importable"]
+    )
+    return {
+        "schema_version": 1,
+        **report,
+        "backends": backends,
     }
 
 
