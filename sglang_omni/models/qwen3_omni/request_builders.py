@@ -461,8 +461,6 @@ def _compute_mrope_positions(
     thinker_config: Any,
 ) -> torch.Tensor | None:
     """Compute M-RoPE positions for multimodal inputs."""
-    # Note (guozhihao): local vectorized path; bit-identical to pinned sglang
-    # ``get_rope_index_qwen3_omni`` (#1149 Part A).
     from sglang_omni.models.qwen3_omni.mrope_positions import (
         get_rope_index_qwen3_omni_vectorized,
     )
@@ -748,8 +746,6 @@ def build_sglang_talker_request(
         else None
     )
     if thinker_config is not None and talker_model_inputs:
-        # Note (guozhihao): linear short-circuit only when bit-identical to full
-        # mm MRoPE; see talker_can_use_linear_mrope (#1149 Part B).
         from sglang_omni.models.qwen3_omni.mrope_positions import (
             linear_mrope_positions,
             talker_can_use_linear_mrope,

@@ -254,8 +254,37 @@ def test_audio_in_video_parametrized(
     _assert_bit_identical(oracle, fast)
 
 
+def test_video_non_integer_timescale_25fps() -> None:
+    """(arange * sec) * pps order must match oracle (25 FPS)."""
+    grid = [12, 4, 4]
+    tokens = [1] + _video_span(grid) + [2]
+    ids = torch.tensor([tokens], dtype=torch.long)
+    oracle, fast = _oracle_and_fast(
+        ids,
+        video_grid_thw=torch.tensor([grid], dtype=torch.long),
+        second_per_grid_ts=torch.tensor([1.0 / 25.0], dtype=torch.float),
+    )
+    _assert_bit_identical(oracle, fast)
+
+
+def test_audio_in_video_eos_uses_last_emitted_column() -> None:
+    """AIV eos st_idx follows last emitted column, not max(merged)."""
+    grid = [1, 56, 56]
+    audio_seqlen = 100
+    tokens = [1] + _audio_in_video_span(grid, audio_seqlen) + [2]
+    ids = torch.tensor([tokens], dtype=torch.long)
+    oracle, fast = _oracle_and_fast(
+        ids,
+        video_grid_thw=torch.tensor([grid], dtype=torch.long),
+        second_per_grid_ts=torch.tensor([1.0], dtype=torch.float),
+        audio_seqlens=torch.tensor([audio_seqlen], dtype=torch.long),
+        use_audio_in_video=True,
+    )
+    _assert_bit_identical(oracle, fast)
+
+
 def test_compute_mrope_positions_wires_vectorized_path() -> None:
-    """``_compute_mrope_positions`` returns the vectorized [3, seq] layout."""
+    """_compute_mrope_positions returns the vectorized [3, seq] layout."""
     from types import SimpleNamespace
 
     from sglang_omni.models.qwen3_omni.request_builders import _compute_mrope_positions
@@ -315,7 +344,7 @@ def _thinker_config_ns():
 
 
 def _decode_pos_from_delta(delta: torch.Tensor, seq_len: int) -> float:
-    """``(delta - 1) + seq_len`` (``ForwardBatch._expand_mrope_from_input``)."""
+    """(delta - 1) + seq_len (ForwardBatch._expand_mrope_from_input)."""
     return float(delta.reshape(-1)[0].item()) - 1.0 + float(seq_len)
 
 
@@ -328,7 +357,6 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
     )
 
     grid = [1, 8, 8]
-    # Note (guozhihao): talker-like user mm span + assistant tts-pad tail.
     user = [151644, 872] + _image_span(grid) + [198, 151645]
     assistant = [151675] * 20
     tokens = user + assistant
@@ -359,7 +387,6 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
     assert not torch.equal(mm_pos_2d[0], torch.arange(len(tokens), dtype=torch.float))
     assert not torch.equal(mm_delta.float(), lin_delta.float())
 
-    # Note (guozhihao): first decode token uses seq_len = prefill + 1.
     seq_after_prefill = len(tokens) + 1
     assert _decode_pos_from_delta(
         mm_delta, seq_after_prefill
