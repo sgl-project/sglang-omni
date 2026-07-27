@@ -5,8 +5,9 @@
 """ASR concurrency benchmark on SeedTTS reference audio (issue #646).
 
 This script transcribes SeedTTS reference clips directly through a running ASR
-router and reports WER, throughput, latency, RTF, and worker routing balance.
-It supports both Qwen3-ASR and Fun-ASR-Nano through ``--model-path``.
+router and reports WER, request throughput, RTFx, RTF, latency, and worker
+routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
+``--model-path``.
 
 Usage:
 
@@ -185,46 +186,61 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
     )
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
+    has_evaluated_samples = summary["evaluated"] > 0
+    has_rtf = speed["rtf_p95"] is not None
     return {
         "concurrency": concurrency,
         "repeat": repeat,
         "evaluated": summary["evaluated"],
         "total": summary["total_samples"],
         "skipped": summary["skipped"],
-        "corpus_wer": summary["corpus_wer"],
-        "per_sample_wer_max": summary["wer_per_sample_max"],
+        "corpus_wer": summary["corpus_wer"] if has_evaluated_samples else None,
+        "per_sample_wer_max": (
+            summary["wer_per_sample_max"] if has_evaluated_samples else None
+        ),
         "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
-        "latency_mean_s": speed["latency_mean_s"],
-        "latency_p95_s": speed["latency_p95_s"],
-        "latency_p99_s": speed["latency_p99_s"],
-        "rtf_mean": speed["rtf_mean"],
+        "rtfx": speed["rtfx"],
+        "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
+        "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
+        "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
+        "rtf_mean": speed["rtf_mean"] if has_rtf else None,
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
     }
 
 
 def _aggregate(repeats: list[dict]) -> dict:
-    """Mean/best/worst across repeats for the headline metrics."""
+    """Aggregate repeat metrics without hiding failed or partial work."""
+    if not repeats:
+        raise ValueError("At least one repeat is required")
 
     def _stat(key: str) -> dict:
-        values = [r[key] for r in repeats]
+        values = [r[key] for r in repeats if r[key] is not None]
+        if not values:
+            return {"mean": None, "min": None, "max": None, "n": 0}
         return {
             "mean": statistics.mean(values),
             "min": min(values),
             "max": max(values),
+            "n": len(values),
         }
+
+    total_requests = sum(r["total"] for r in repeats)
+    evaluated = sum(r["evaluated"] for r in repeats)
+    skipped = sum(r["skipped"] for r in repeats)
 
     return {
         "concurrency": repeats[0]["concurrency"],
         "repeats": len(repeats),
-        "evaluated": repeats[0]["evaluated"],
-        "total": repeats[0]["total"],
-        "skipped": repeats[0]["skipped"],
+        "evaluated": evaluated,
+        "total": total_requests,
+        "skipped": skipped,
         "corpus_wer": _stat("corpus_wer"),
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),
         "throughput_samples_per_s": _stat("throughput_samples_per_s"),
+        "rtfx": _stat("rtfx"),
         "latency_mean_s": _stat("latency_mean_s"),
         "latency_p95_s": _stat("latency_p95_s"),
         "latency_p99_s": _stat("latency_p99_s"),
@@ -234,26 +250,36 @@ def _aggregate(repeats: list[dict]) -> dict:
     }
 
 
+def _format_metric(value: float | None, digits: int) -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
 def _print_table(aggregates: list[dict]) -> None:
     header = (
-        "| conc | reps | wall(s) mean | thrpt mean | thrpt best | "
-        "lat mean(s) | lat p95(s) | rtf mean | rtf p95 | corpus WER | max WER |"
+        "| conc | valid reps (lat/RTF/WER) | evaluated/requests | "
+        "wall(s) mean | req/s mean | req/s best | RTFx mean | lat mean(s) | "
+        "lat p95(s) | RTF mean | RTF p95 | corpus WER | max WER |"
     )
-    sep = "|---:" * 11 + "|"
+    sep = "|---:" * 13 + "|"
     print("\n" + header)
     print(sep)
     for agg in aggregates:
         print(
-            f"| {agg['concurrency']} | {agg['repeats']} "
-            f"| {agg['wall_clock_s']['mean']:.3f} "
-            f"| {agg['throughput_samples_per_s']['mean']:.3f} "
-            f"| {agg['throughput_samples_per_s']['max']:.3f} "
-            f"| {agg['latency_mean_s']['mean']:.3f} "
-            f"| {agg['latency_p95_s']['mean']:.3f} "
-            f"| {agg['rtf_mean']['mean']:.4f} "
-            f"| {agg['rtf_p95']['mean']:.4f} "
-            f"| {agg['corpus_wer']['max']:.4f} "
-            f"| {agg['per_sample_wer_max']['max']:.4f} |"
+            f"| {agg['concurrency']} "
+            f"| {agg['latency_mean_s']['n']}/{agg['repeats']} / "
+            f"{agg['rtf_mean']['n']}/{agg['repeats']} / "
+            f"{agg['corpus_wer']['n']}/{agg['repeats']} "
+            f"| {agg['evaluated']}/{agg['total']} "
+            f"| {_format_metric(agg['wall_clock_s']['mean'], 3)} "
+            f"| {_format_metric(agg['throughput_samples_per_s']['mean'], 3)} "
+            f"| {_format_metric(agg['throughput_samples_per_s']['max'], 3)} "
+            f"| {_format_metric(agg['rtfx']['mean'], 3)} "
+            f"| {_format_metric(agg['latency_mean_s']['mean'], 3)} "
+            f"| {_format_metric(agg['latency_p95_s']['mean'], 3)} "
+            f"| {_format_metric(agg['rtf_mean']['mean'], 4)} "
+            f"| {_format_metric(agg['rtf_p95']['mean'], 4)} "
+            f"| {_format_metric(agg['corpus_wer']['max'], 4)} "
+            f"| {_format_metric(agg['per_sample_wer_max']['max'], 4)} |"
         )
 
 
@@ -327,11 +353,12 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 f"[conc={concurrency} rep={repeat}] "
                 f"wall={result['wall_clock_s']:.3f}s "
                 f"thrpt={result['throughput_samples_per_s']:.3f}/s "
-                f"lat_mean={result['latency_mean_s']:.3f}s "
-                f"lat_p95={result['latency_p95_s']:.3f}s "
-                f"rtf_mean={result['rtf_mean']:.4f} "
-                f"corpus_wer={result['corpus_wer']:.4f} "
-                f"skipped={result['skipped']}"
+                f"rtfx={result['rtfx']:.3f} "
+                f"lat_mean={_format_metric(result['latency_mean_s'], 3)}s "
+                f"lat_p95={_format_metric(result['latency_p95_s'], 3)}s "
+                f"rtf_mean={_format_metric(result['rtf_mean'], 4)} "
+                f"corpus_wer={_format_metric(result['corpus_wer'], 4)} "
+                f"evaluated={result['evaluated']}/{result['total']}"
             )
             if result["worker"].get("per_worker_routed"):
                 print(f"    routed per worker: {result['worker']['per_worker_routed']}")

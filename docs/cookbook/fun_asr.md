@@ -93,13 +93,13 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 Measured on a single H100 80 GB (bf16, DP=1, default server settings)
 against the full SeedTTS sets. Each row is the mean of 3 runs with one
 discarded warmup pass per level. RTF is processing time divided by audio
-duration (lower is better). audio_s/s is seconds of audio transcribed per
-wall-clock second.
+duration (lower is better). RTFx is successful input-audio seconds divided by
+wall-clock seconds (higher is better).
 
 SeedTTS EN (1088 clips, mean clip length 4.69 s). Corpus WER was 0.0171 at
 every level through concurrency 32:
 
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 26.44 | 0.038 | 0.047 | 0.0082 | 124 |
 | 2 | 42.55 | 0.047 | 0.058 | 0.0102 | 200 |
@@ -113,7 +113,7 @@ SeedTTS ZH (2020 clips, mean clip length 4.68 s). Corpus WER, effectively
 character level after normalization, was 0.0135 at every level through
 concurrency 32:
 
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 26.96 | 0.037 | 0.048 | 0.0080 | 126 |
 | 2 | 45.97 | 0.043 | 0.056 | 0.0094 | 215 |

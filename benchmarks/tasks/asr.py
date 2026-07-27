@@ -459,6 +459,7 @@ def build_asr_eval_results(
         "asr_model": model_path,
         "asr_concurrency": concurrency,
         "asr_rtf_p95": perf.get("rtf_p95"),
+        "rtfx": perf.get("audio_throughput_s_per_s", 0.0),
         # note (Yue Yin): plain calibration keys read by tune-ci-thresholds + gate
         "throughput_samples_per_s": asr_speed["asr_throughput_samples_per_s"],
         "latency_mean_s": asr_speed["asr_latency_mean_s"],
