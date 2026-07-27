@@ -41,7 +41,7 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
         stage.runtime.resources.total_gpu_memory_fraction
         for stage in config.stages
         if stage.gpu is not None
-    ] == [0.85, 0.10]
+    ] == [None, None]
     build_process_topology_plan(config, build_stage_placement_plan(config))
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")

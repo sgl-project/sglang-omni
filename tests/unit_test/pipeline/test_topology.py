@@ -17,7 +17,20 @@ from sglang_omni.config.manager import ConfigManager
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
 
 
-class _IsolationAliasPipelineConfig(PipelineConfig):
+class _IsolationPipelineConfig(PipelineConfig):
+    @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        return {
+            "a": {},
+            "b": {},
+            "c": {},
+            "audio_decode": {},
+            "thinker": {},
+            "vocoder": {},
+        }
+
+
+class _IsolationAliasPipelineConfig(_IsolationPipelineConfig):
     @classmethod
     def isolation_role_to_stage(cls) -> dict[str, str]:
         return {
@@ -73,7 +86,7 @@ def test_stage_process_parses_from_schema_and_dotted_overrides() -> None:
 
 
 def test_process_override_none_preserves_declared_topology() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", process="pipeline", next_stage="b"),
@@ -91,7 +104,7 @@ def test_process_override_none_preserves_declared_topology() -> None:
 
 
 def test_process_override_isolates_named_stage_without_mutating_source() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", process="pipeline", next_stage="b"),
@@ -107,7 +120,7 @@ def test_process_override_isolates_named_stage_without_mutating_source() -> None
 
 
 def test_process_override_isolates_multiple_stages_separately() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", process="pipeline", next_stage="b"),
@@ -125,7 +138,7 @@ def test_process_override_isolates_multiple_stages_separately() -> None:
 
 
 def test_process_override_rejects_unknown_stage() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[_stage("a", process="pipeline", terminal=True)],
     )
@@ -176,6 +189,19 @@ def test_process_override_rejects_alias_with_missing_stage() -> None:
         apply_stage_process_overrides(config, isolate_stages=["missing_role"])
 
 
+def test_process_override_rejects_stage_without_isolation_contract() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[_stage("preprocessing", process="pipeline", terminal=True)],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stage 'preprocessing' does not support process isolation",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["preprocessing"])
+
+
 def test_process_override_rejects_tp_stage() -> None:
     config = PipelineConfig(
         model_path="dummy",
@@ -214,22 +240,19 @@ def test_process_override_rejects_alias_to_tp_stage() -> None:
 
 
 def test_process_override_same_gpu_requires_memory_fractions() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", gpu=0, process="pipeline", next_stage="b"),
             _stage("b", gpu=0, process="pipeline", terminal=True),
         ],
     )
-    overridden = apply_stage_process_overrides(config, isolate_stages=["b"])
-    gpu_placement = build_stage_placement_plan(overridden)
-
     with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
-        build_process_topology_plan(overridden, gpu_placement)
+        apply_stage_process_overrides(config, isolate_stages=["b"])
 
 
 def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage(
@@ -258,6 +281,39 @@ def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
     ]
 
 
+def test_process_override_rejects_process_name_collision() -> None:
+    config = _IsolationPipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="b", next_stage="b"),
+            _stage("b", process="pipeline", terminal=True),
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stage 'b' cannot be isolated because process group 'b'",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["b"])
+
+
+def test_process_override_rejects_fused_stage_component() -> None:
+    config = _IsolationPipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", terminal=True),
+        ],
+        fused_stages=[["a", "b"]],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stage 'b' cannot be isolated because process group",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["b"])
+
+
 def test_moss_tts_local_preserves_default_and_can_isolate_vocoder() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
@@ -267,9 +323,9 @@ def test_moss_tts_local_preserves_default_and_can_isolate_vocoder() -> None:
         for stage in config.stages
         if stage.gpu is not None
     } == {
-        "preprocessing": 0.05,
+        "preprocessing": None,
         "tts_engine": 0.90,
-        "vocoder": 0.05,
+        "vocoder": None,
     }
     assert [stage.process for stage in config.stages] == [
         "pipeline",
@@ -297,7 +353,16 @@ def test_moss_tts_local_preserves_default_and_can_isolate_vocoder() -> None:
     ]
     assert build_stage_placement_plan(config).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(1.0)
+    ].total_gpu_memory_fraction == pytest.approx(0.90)
+    assert {
+        stage.name: stage.runtime.resources.total_gpu_memory_fraction
+        for stage in isolated.stages
+        if stage.gpu is not None
+    } == {
+        "preprocessing": 0.05,
+        "tts_engine": 0.90,
+        "vocoder": 0.05,
+    }
     assert build_stage_placement_plan(isolated).gpus[
         0
     ].total_gpu_memory_fraction == pytest.approx(1.0)
@@ -312,9 +377,9 @@ def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
         for stage in config.stages
         if stage.gpu is not None
     } == {
-        "reference_encode": 0.08,
-        "tts_engine": 0.72,
-        "audio_decode": 0.12,
+        "reference_encode": None,
+        "tts_engine": None,
+        "audio_decode": None,
     }
     assert [stage.process for stage in config.stages] == ["pipeline"] * 4
 
@@ -332,10 +397,34 @@ def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
     ]
     assert build_stage_placement_plan(config).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(0.92)
+    ].total_gpu_memory_fraction == pytest.approx(0.0)
+    assert {
+        stage.name: stage.runtime.resources.total_gpu_memory_fraction
+        for stage in isolated.stages
+        if stage.gpu is not None
+    } == {
+        "reference_encode": 0.08,
+        "tts_engine": 0.72,
+        "audio_decode": 0.12,
+    }
     assert build_stage_placement_plan(isolated).gpus[
         0
     ].total_gpu_memory_fraction == pytest.approx(0.92)
+
+
+def test_ming_isolation_resources_do_not_change_default_placement_limit() -> None:
+    from sglang_omni.config import PlacementConfig
+    from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
+
+    config = MingTTSPipelineConfig(
+        model_path="dummy",
+        placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.90),
+    )
+
+    _topology(config)
+
+    with pytest.raises(ValueError, match="exceeds placement limit 0.900"):
+        apply_stage_process_overrides(config, isolate_stages=["vocoder"])
 
 
 def test_fishaudio_preserves_default_and_can_isolate_vocoder() -> None:
@@ -364,10 +453,34 @@ def test_fishaudio_preserves_default_and_can_isolate_vocoder() -> None:
     ]
     assert build_stage_placement_plan(config).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(0.95)
+    ].total_gpu_memory_fraction == pytest.approx(0.0)
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in isolated.stages
+        if stage.gpu is not None
+    ] == [0.85, 0.10]
     assert build_stage_placement_plan(isolated).gpus[
         0
     ].total_gpu_memory_fraction == pytest.approx(0.95)
+
+
+def test_process_override_preserves_explicit_isolation_resources() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+
+    config = S2ProPipelineConfig(model_path="dummy")
+    stages = {stage.name: stage for stage in config.stages}
+    stages["tts_engine"].runtime.resources.total_gpu_memory_fraction = 0.80
+    stages["vocoder"].runtime.resources.total_gpu_memory_fraction = 0.15
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+    isolated_stages = {stage.name: stage for stage in isolated.stages}
+
+    assert isolated_stages[
+        "tts_engine"
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.80)
+    assert isolated_stages[
+        "vocoder"
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.15)
 
 
 def test_voxtral_preserves_default_and_can_isolate_vocoder() -> None:
@@ -387,7 +500,12 @@ def test_voxtral_preserves_default_and_can_isolate_vocoder() -> None:
     ]
     assert build_stage_placement_plan(config).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(0.95)
+    ].total_gpu_memory_fraction == pytest.approx(0.0)
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in isolated.stages
+        if stage.gpu is not None
+    ] == [0.85, 0.10]
     assert build_stage_placement_plan(isolated).gpus[
         0
     ].total_gpu_memory_fraction == pytest.approx(0.95)
@@ -398,16 +516,11 @@ def test_moss_split_rejects_vocoder_isolation_without_memory_contract() -> None:
 
     config = MossTTSLocalSplitPipelineConfig(model_path="dummy")
 
-    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
-
     with pytest.raises(
         ValueError,
-        match=(
-            "GPU 0 is shared by multiple process groups without "
-            "runtime.resources.total_gpu_memory_fraction"
-        ),
+        match="Stage 'vocoder' does not support process isolation",
     ):
-        _topology(isolated)
+        apply_stage_process_overrides(config, isolate_stages=["vocoder"])
 
 
 def test_qwen3_tts_rejects_vocoder_isolation_without_memory_contract() -> None:
@@ -415,16 +528,40 @@ def test_qwen3_tts_rejects_vocoder_isolation_without_memory_contract() -> None:
 
     config = Qwen3TTSPipelineConfig(model_path="dummy")
 
-    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+    with pytest.raises(
+        ValueError,
+        match="Stage 'vocoder' does not support process isolation",
+    ):
+        apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+
+@pytest.mark.parametrize(
+    ("config_path", "stage_name"),
+    [
+        (
+            "sglang_omni.models.moss_tts_local.config.MossTTSLocalPipelineConfig",
+            "preprocessing",
+        ),
+        (
+            "sglang_omni.models.qwen3_tts.config.Qwen3TTSPipelineConfig",
+            "preprocessing",
+        ),
+    ],
+)
+def test_process_override_rejects_process_local_handoff_stages(
+    config_path: str,
+    stage_name: str,
+) -> None:
+    from sglang_omni.utils.imports import import_string
+
+    config_cls = import_string(config_path)
+    config = config_cls(model_path="dummy")
 
     with pytest.raises(
         ValueError,
-        match=(
-            "GPU 0 is shared by multiple process groups without "
-            "runtime.resources.total_gpu_memory_fraction"
-        ),
+        match=f"Stage '{stage_name}' does not support process isolation",
     ):
-        _topology(isolated)
+        apply_stage_process_overrides(config, isolate_stages=[stage_name])
 
 
 def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:
@@ -434,7 +571,7 @@ def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:
 
     from sglang_omni.cli import app
 
-    config = PipelineConfig(
+    config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", process="pipeline", next_stage="b"),

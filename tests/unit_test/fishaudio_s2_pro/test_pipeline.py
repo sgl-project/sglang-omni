@@ -70,7 +70,7 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         stage.runtime.resources.total_gpu_memory_fraction
         for stage in config.stages
         if stage.gpu is not None
-    ] == [0.85, 0.10]
+    ] == [None, None]
     build_process_topology_plan(config, build_stage_placement_plan(config))
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}

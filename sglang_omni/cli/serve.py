@@ -933,9 +933,9 @@ def serve(
         typer.Option(
             "--isolate-stage",
             help=(
-                "Run this non-TP stage in a dedicated process. Repeat the flag "
-                "to isolate multiple stages. When omitted, preserve the model's "
-                "declared process topology."
+                "Run this model-supported stage in a dedicated process. Repeat "
+                "the flag to isolate multiple stages. When omitted, preserve "
+                "the model's declared process topology."
             ),
         ),
     ] = None,

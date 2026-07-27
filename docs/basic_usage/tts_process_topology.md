@@ -35,12 +35,12 @@ The option is repeatable. Literal stage names take precedence over role aliases.
 The stable `vocoder` role resolves to Ming-Omni-TTS's model-specific
 `audio_decode` stage.
 
-The current model configs preserve their established colocated vocoder
-topologies. MOSS-TTS Local's colocated variant, Ming-Omni-TTS, FishAudio S2-Pro,
-and Voxtral TTS declare compatible GPU-memory fractions for optional same-GPU
-vocoder isolation. MOSS-TTS Local split mode and Qwen3-TTS do not declare a
-complete same-GPU isolation contract, so the server rejects that override with
-a resource-contract error.
+Only stages that the selected model marks as process-safe can be isolated.
+Being a non-TP stage is not sufficient because some stages exchange state
+through process-local registries. MOSS-TTS Local's single-GPU variant,
+Ming-Omni-TTS, FishAudio S2-Pro, and Voxtral TTS currently support vocoder
+isolation. MOSS-TTS Local split mode and Qwen3-TTS do not declare process-safe
+isolation stages, so the server rejects those overrides.
 
 ## Resource and Performance Trade-offs
 
@@ -51,9 +51,17 @@ VRAM, and may duplicate process-local caches or runtime state.
 
 When multiple processes share one GPU, all affected GPU stages must declare
 compatible `runtime.resources.total_gpu_memory_fraction` values, and their total
-must fit the placement limit. These values are placement-accounting limits; the
-declared total is unchanged when the CLI moves a stage into another process
-group. Unsafe same-GPU overrides are rejected before topology startup.
+must fit the placement limit. Supported models apply recommended fractions to
+the copied config only when `--isolate-stage` is present, preserving explicitly
+configured fractions. Omitting the option therefore leaves both the declared
+process topology and the default placement totals unchanged.
+
+These fractions are placement-accounting declarations, not proof of an
+allocator-enforced runtime limit. A factory receives
+`total_gpu_memory_fraction` only when its signature accepts that argument, and
+an SGLang `mem_fraction_static` override can represent a different runtime
+value. Keep runtime overrides consistent with the placement declaration.
+Unsafe declared same-GPU topologies are rejected before startup.
 
 Performance depends on the model, hardware, concurrency, request shape, and
 streaming mode. Measure the target workload before making isolation persistent

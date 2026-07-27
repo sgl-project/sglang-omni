@@ -5,12 +5,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import (
-    PipelineConfig,
-    StageConfig,
-    StageResourceConfig,
-    StageRuntimeConfig,
-)
+from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.fishaudio_s2_pro"
 
@@ -29,6 +24,10 @@ class S2ProPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
 
+    @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        return {"vocoder": {"tts_engine": 0.85, "vocoder": 0.10}}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -43,9 +42,6 @@ class S2ProPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"device": "cuda:0", "max_new_tokens": 2048},
             gpu=0,
-            runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
-            ),
             next="vocoder",
             stream_to=["vocoder"],
         ),
@@ -54,9 +50,6 @@ class S2ProPipelineConfig(PipelineConfig):
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
-            runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(total_gpu_memory_fraction=0.10)
-            ),
             terminal=True,
             can_accept_stream_before_payload=True,
         ),

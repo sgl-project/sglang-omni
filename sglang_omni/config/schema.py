@@ -264,6 +264,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        """Map process-safe stages to isolation-time GPU memory fractions."""
+        return {}
+
+    @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         """Class-level public role map for SGLang mem_fraction_static overrides."""
         return {}

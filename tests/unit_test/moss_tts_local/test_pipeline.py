@@ -398,9 +398,7 @@ def test_pipeline_stage_wiring():
     assert stages["preprocessing"].factory_args["device"] == "cuda:0"
     assert stages["preprocessing"].factory_args["ref_audio_cache"] is True
     assert stages["preprocessing"].factory_args["ref_audio_cache_max_items"] == 8192
-    assert stages[
-        "preprocessing"
-    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.05)
+    assert stages["preprocessing"].runtime.resources.total_gpu_memory_fraction is None
     assert config.supports_uploaded_voice_references() is True
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
@@ -411,9 +409,7 @@ def test_pipeline_stage_wiring():
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
-    assert stages[
-        "vocoder"
-    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.05)
+    assert stages["vocoder"].runtime.resources.total_gpu_memory_fraction is None
 
     placement = build_stage_placement_plan(config)
     assert placement.stages["tts_engine"].gpu_ids == (0,)

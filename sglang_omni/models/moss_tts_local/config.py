@@ -48,13 +48,6 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             factory_args={"device": codec_device},
-            runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(
-                    total_gpu_memory_fraction=(
-                        _COLOCATED_CODEC_GPU_MEMORY_FRACTION if colocated else None
-                    )
-                )
-            ),
             gpu=0,
             next="tts_engine",
         ),
@@ -73,13 +66,6 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             factory_args={"device": codec_device},
-            runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(
-                    total_gpu_memory_fraction=(
-                        _COLOCATED_CODEC_GPU_MEMORY_FRACTION if colocated else None
-                    )
-                )
-            ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -133,6 +119,16 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
+
+    @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        return {
+            "vocoder": {
+                "preprocessing": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
+                "tts_engine": _COLOCATED_TOTAL_GPU_MEMORY_FRACTION,
+                "vocoder": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
+            }
+        }
 
     model_path: str
     stages: list[StageConfig] = Field(
@@ -208,6 +204,10 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
 
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
+
+    @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        return {}
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)
