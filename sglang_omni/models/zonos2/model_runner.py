@@ -273,30 +273,30 @@ class Zonos2ModelRunner(ModelRunner):
             schedule_batch.output_ids = next_ids
 
         # launch_buf snapshots what the (lagged) resolve reads. Pack codes +
-        # the per-row EOS/finished state into one fresh int64 tensor (advanced
-        # indexing already copies, and cat makes a fresh tensor, so it is a
-        # snapshot even though the next launch mutates these pool rows). Record a
-        # CUDA event right after, so resolve's side-stream D2H waits only for this
-        # (codes ready), not the next forward. next_ids is cloned: the base
-        # aliases it onto output_ids, overwritten in place before this resolve.
+        # per-row EOS metadata into one fresh int64 tensor (advanced indexing
+        # already copies, and cat makes a fresh tensor, so it remains stable
+        # while the next launch mutates these pool rows). Record a CUDA event
+        # right after, so resolve's side-stream D2H waits only for this (codes
+        # ready), not the next forward. next_ids is cloned: the base aliases it
+        # onto output_ids, overwritten in place before this resolve.
         meta = torch.stack(
             (
                 pool.eos_frame_set[row_t].to(torch.int64),
                 pool.eos_frame_val[row_t],
-                finished.to(torch.int64),
             ),
             dim=1,
         )
-        packed = torch.cat((codes, meta), dim=1)  # [B, n+3] int64
+        packed = torch.cat((codes, meta), dim=1)  # [B, n+2] int64
         ev = torch.cuda.Event()
         ev.record()
         return (requests, packed, n, next_ids.clone(), ev)
 
     def _collect_resolve(self, launch_buf, result) -> None:
         # Host half (runs lagged under async, overlapping the next decode forward):
-        # the deferred codes.to('cpu') -> per-request output_codes + eos_frame, and
-        # release-on-finish. Restores next_ids to the launch-time (un-clobbered)
-        # value for the shared finalize tail.
+        # the deferred codes.to('cpu') -> per-request output_codes + eos_frame.
+        # Restores next_ids to the launch-time (un-clobbered) value for the
+        # shared finalize tail. Request release belongs to the scheduler's
+        # terminal result / abort adapters, which cover every finish reason.
         if launch_buf is None:
             return
         requests, packed, n, next_ids_snap, ev = launch_buf
@@ -305,7 +305,7 @@ class Zonos2ModelRunner(ModelRunner):
         # Copy on a side stream gated by the launch event: the copy starts as soon
         # as codes(N) is ready (event recorded before the next forward was queued)
         # and runs on a separate stream, so this no longer whole-stream-syncs on
-        # forward(N+1). One D2H of the packed [B, n+3] snapshot.
+        # forward(N+1). One D2H of the packed [B, n+2] snapshot.
         if self._copy_stream is None:
             self._copy_stream = torch.cuda.Stream(device=packed.device)
         self._copy_stream.wait_event(ev)
@@ -315,14 +315,10 @@ class Zonos2ModelRunner(ModelRunner):
         codes_cpu = packed_cpu[:, :n]
         eos_set_cpu = packed_cpu[:, n]
         eos_val_cpu = packed_cpu[:, n + 1]
-        finished_cpu = packed_cpu[:, n + 2]
-        pool = self.model._decode_state_pool
         for i, sr in enumerate(requests):
             data = sr.data
             data.output_codes.append(codes_cpu[i].clone())
             data.eos_frame = int(eos_val_cpu[i]) if bool(eos_set_cpu[i]) else None
-            if bool(finished_cpu[i]):
-                pool.release_row(sr.request_id)
 
     def _rep_window(self, row_t, n, cb_size, params):
         # Vectorized rep-penalty token window from the on-device history ring.

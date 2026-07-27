@@ -220,6 +220,10 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
 
         return make_zonos2_scheduler_adapters(model=model)
 
+    def make_abort_callback(self) -> Any | None:
+        assert self.model is not None
+        return self.model.reset_request
+
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {"enable_async_decode": self.async_decode}
 
