@@ -113,6 +113,7 @@ def _merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.nd
     order = np.lexsort((secondary, primary))
     return np.concatenate([video_pos, audio_pos], axis=1)[:, order]
 
+
 def get_rope_index_qwen3_omni_vectorized(
     spatial_merge_size: int,
     image_token_id: int,
