@@ -248,3 +248,29 @@ Thanks for the joint effort of the OpenMOSS team and SGLang Omni team.
 MOSS Team: Donghua Yu, Zhengyuan Lin, Hanfu Chen, Yiyang Zhang, Yang Gao, Zhaoye Fei, Qinyuan Cheng, Shimin Li, Xipeng Qiu
 
 SGLang Omni Team: Yijiang Tian, Xinli Jing, Xiangrui Ke, Zhihao Guo, Ruoqi Zhang, Lifan Shen, Jintao Qu, Xuxiang Tian, Kaige Li, Ratish P, Haoguang Cai, Zijie Xia, Chenchen Hong, Xuesong Ye, Jingwen Gu,  Jiaxin Deng, Jiaxuan Luo, Xinyu Lu, Hao Jin, Chenyang Zhao, Yichi Zhang
+
+## Consumer GPU: RTX 5090 (32 GB) profiles
+
+Validated on a single RTX 5090 (SM120, driver 595.71.05, CUDA 13.2, BF16,
+FlashInfer attention). Accuracy matches the H100 CI references on both
+movies800 (CER 5.77–5.83% vs 5.806%) and AISHELL4-Long (CER 13.76–13.86%
+vs 13.80%) with zero failed requests.
+
+Two profiles, selected by audio duration:
+
+| Profile | Config | Audio length | Concurrency |
+|---|---|---|---|
+| Default | `examples/configs/moss_transcribe_diarize_rtx5090.yaml` | ≤ ~30 min | up to 16; **throughput peaks at 8 on this GPU** |
+| Long audio | `examples/configs/moss_transcribe_diarize_rtx5090_long_audio.yaml` | up to ~90 min | 1 (up to 2 for ≤ ~40 min) |
+
+The split exists because the binding constraint for long audio is the
+transient encoder activation (measured 2.66–3.10 GiB per long-audio encode),
+not KV-cache capacity: the default `mem_fraction_static=0.80` pool leaves too
+little free memory for the encode of items beyond ~30 min, which then fails
+as a request-level OOM. The long-audio profile trades pool size for encoder
+headroom; a 90-min request peaks at 31.6 GiB.
+
+24 GB (RTX 4090) note — extrapolated, needs owner validation: measured
+non-pool footprint reaches ~8.4 GiB (60 min) to ~14.4 GiB (90 min), so
+90-min items should be considered a 32 GB-class capability; ≤30-min audio is
+plausible on 24 GB at a reduced fraction.

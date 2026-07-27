@@ -1,0 +1,20 @@
+# Long-audio single-GPU profile validated on one RTX 5090 (SM120, 32 GB).
+# Serves the full advertised ~90-min range at concurrency 1 (peak 31.6 GiB)
+# and ~39-min sessions at concurrency 2. The reduced memory fraction leaves
+# headroom for the transient encoder activation (measured 2.66-3.10 GiB per
+# long-audio encode), which is what fails first under the default profile.
+config_cls: MossTranscribeDiarizePipelineConfig
+name: moss-transcribe-diarize-rtx5090-long-audio
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 4
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.55
+        cuda_graph_max_bs: 4
