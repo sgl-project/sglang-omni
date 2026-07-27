@@ -199,6 +199,43 @@ def test_cli_text_only_selects_text_variant(from_model_path, launch_server):
     launch_server.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("config_cls", "text_only"),
+    [
+        (Qwen3OmniPipelineConfig, True),
+        (Qwen3OmniSpeechPipelineConfig, False),
+    ],
+)
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_cli_thinker_max_running_requests_targets_thinker_in_both_variants(
+    from_model_path,
+    launch_server,
+    config_cls,
+    text_only,
+):
+    from_model_path.return_value = _DummyManager(config_cls(model_path="dummy"))
+
+    serve(
+        **_serve_kwargs(
+            text_only=text_only,
+            thinker_max_running_requests=16,
+        )
+    )
+
+    launched_config = launch_server.call_args.args[0]
+    thinker_overrides = _stage(launched_config, "thinker").factory_args[
+        "server_args_overrides"
+    ]
+    assert thinker_overrides["max_running_requests"] == 16
+    if isinstance(launched_config, Qwen3OmniSpeechPipelineConfig):
+        talker_overrides = _stage(launched_config, "talker_ar").factory_args.get(
+            "server_args_overrides",
+            {},
+        )
+        assert "max_running_requests" not in talker_overrides
+
+
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_cli_hides_merged_config_for_normal_info_launch(

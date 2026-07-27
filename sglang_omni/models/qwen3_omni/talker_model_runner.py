@@ -85,6 +85,7 @@ class QwenTalkerModelRunner(ModelRunner):
             talker_hidden = talker_hidden.unsqueeze(1)
         self.model.code_predictor_forward(layer0_codes, talker_hidden)
         schedule_batch.output_ids = result.next_token_ids
+        self._stage_token_ids(result, result.next_token_ids)
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
             requests=requests,
@@ -103,6 +104,7 @@ class QwenTalkerModelRunner(ModelRunner):
         batch_size = len(requests)
         result.next_token_ids = self.model._sampled_token_ids[:batch_size].clone()
         schedule_batch.output_ids = result.next_token_ids
+        self._stage_token_ids(result, result.next_token_ids)
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
             requests=requests,
@@ -114,10 +116,16 @@ class QwenTalkerModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        bs = len(requests)
+        # Note (wenyao): one batched clone per buffer, not one per row: the
+        # snapshot must be a fresh allocation so its rows survive the next
+        # in-graph write to the fixed-address _output_codes/_output_embeds.
+        codes_snap = self.model._output_codes[:bs].detach().clone()
+        embeds_snap = self.model._output_embeds[:bs].detach().clone()
         for idx, sched_req in enumerate(requests):
             req = schedule_batch.reqs[idx]
-            code_chunk = self.model._output_codes[idx].detach().clone()
-            feedback_row = self.model._output_embeds[idx].detach().clone()
+            code_chunk = codes_snap[idx]
+            feedback_row = embeds_snap[idx]
             # Tell code2wav whether to forward audio chunks to the Coordinator.
             stage_payload = sched_req.data.stage_payload
             is_streaming = bool(
@@ -357,11 +365,18 @@ class QwenTalkerModelRunner(ModelRunner):
             self._append_decode_input_history(sched_req.data, combined)
             rows.append(row_idx)
             embeds.append(combined)
-        if rows:
-            rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
-            embeds_stacked = torch.stack(embeds, dim=0)
-            feedback_buffer[rows_t] = embeds_stacked
-            feedback_mask[rows_t] = True
+        if not rows:
+            return
+        embeds_stacked = torch.stack(embeds, dim=0)
+        if len(rows) == batch_size:
+            # Note (wenyao): dense steady state: rows is exactly range(batch_size),
+            # so slice-assign and skip the per-frame pageable index H2D
+            feedback_buffer[:batch_size] = embeds_stacked
+            feedback_mask[:batch_size] = True
+            return
+        rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
+        feedback_buffer[rows_t] = embeds_stacked
+        feedback_mask[rows_t] = True
 
     @staticmethod
     def _data_has_next_decode_input(data: Any) -> bool:

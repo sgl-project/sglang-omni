@@ -523,23 +523,20 @@ def _make_code_chunk(metadata: dict | None) -> StreamItem:
     )
 
 
-def test_code2wav_chunk_without_stream_metadata_emits_error():
-    """Missing metadata['stream'] surfaces via outbox 'error' instead of raising."""
+def test_code2wav_chunk_without_stream_metadata_raises():
+    """Missing metadata is rejected; the serving loop turns the raise into an
+    outbox 'error' + abort (StreamingSimpleScheduler.start)."""
     sched = Code2WavScheduler(
         model=_FakeCode2Wav(),
         device="cpu",
         stream_chunk_size=10,
         left_context_size=0,
     )
-    sched._on_chunk("req-1", _make_code_chunk(metadata=None))
+    with pytest.raises(RuntimeError, match="missing metadata"):
+        sched._on_chunk("req-1", _make_code_chunk(metadata=None))
 
-    out = sched.outbox.get_nowait()
-    assert out.type == "error"
-    assert out.request_id == "req-1"
-    assert isinstance(out.data, RuntimeError)
-    assert "metadata['stream']" in str(out.data)
-    assert "req-1" not in sched._code_chunks
-    assert "req-1" not in sched._stream_enabled
+    sched.abort("req-1")
+    assert "req-1" not in sched._stream_states
 
 
 def test_code2wav_streaming_emits_per_window_and_slim_final():
@@ -554,9 +551,9 @@ def test_code2wav_streaming_emits_per_window_and_slim_final():
         request=OmniRequest(inputs=[], params={"stream": True}),
         data={},
     )
-    sched._payloads["req-1"] = payload
+    sched._stream_payloads["req-1"] = payload
 
-    # Two chunks → triggers _decode_and_emit (stream_chunk_size=2).
+    # Two chunks trigger the first decode step (stream_chunk_size=2).
     sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
     sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
 
@@ -592,7 +589,7 @@ def test_code2wav_non_streaming_returns_full_pcm():
         request=OmniRequest(inputs=[], params={"stream": False}),
         data={},
     )
-    sched._payloads["req-1"] = payload
+    sched._stream_payloads["req-1"] = payload
 
     sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": False}))
     sched._on_done("req-1")
@@ -609,7 +606,8 @@ def test_code2wav_non_streaming_returns_full_pcm():
     assert not any(m.type == "stream" for m in msgs)
 
 
-def test_code2wav_done_without_audio_emits_error():
+def test_code2wav_done_without_audio_raises():
+    """The serving loop turns the raise into an outbox 'error' + abort."""
     sched = Code2WavScheduler(
         model=_FakeCode2Wav(),
         device="cpu",
@@ -621,24 +619,17 @@ def test_code2wav_done_without_audio_emits_error():
         request=OmniRequest(inputs=[], params={"stream": False}),
         data={},
     )
-    sched._ensure_request_state("req-1")
-    sched._payloads["req-1"] = payload
-    sched._stream_enabled["req-1"] = False
+    sched._stream_payloads["req-1"] = payload
+    state = sched._get_or_create_stream_state("req-1")
+    state.stream_enabled = False
 
-    sched._on_done("req-1")
+    with pytest.raises(RuntimeError, match="produced no audio"):
+        sched._on_done("req-1")
+    assert not any(m.type == "stream" for m in list(sched.outbox.queue))
 
-    msgs: list[OutgoingMessage] = []
-    while not sched.outbox.empty():
-        msgs.append(sched.outbox.get_nowait())
-    assert len(msgs) == 1
-    assert msgs[0].type == "error"
-    assert msgs[0].request_id == "req-1"
-    assert isinstance(msgs[0].data, RuntimeError)
-    assert "produced no audio" in str(msgs[0].data)
-    assert "req-1" not in sched._code_chunks
-    assert "req-1" not in sched._audio_chunks
-    assert "req-1" not in sched._payloads
-    assert "req-1" not in sched._stream_enabled
+    sched.abort("req-1")
+    assert "req-1" not in sched._stream_states
+    assert "req-1" not in sched._stream_payloads
 
 
 def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
@@ -887,15 +878,12 @@ def test_code2wav_abort_clears_all_per_request_state():
         left_context_size=0,
     )
     sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
-    assert "req-1" in sched._code_chunks
-    assert "req-1" in sched._stream_enabled
+    assert "req-1" in sched._stream_states
+    assert sched._stream_states["req-1"].stream_enabled is True
 
     sched.abort("req-1")
-    assert "req-1" not in sched._code_chunks
-    assert "req-1" not in sched._emitted
-    assert "req-1" not in sched._audio_chunks
-    assert "req-1" not in sched._payloads
-    assert "req-1" not in sched._stream_enabled
+    assert "req-1" not in sched._stream_states
+    assert "req-1" not in sched._stream_payloads
     assert "req-1" not in sched._pending_done
 
 

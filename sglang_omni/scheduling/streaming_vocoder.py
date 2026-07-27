@@ -312,10 +312,10 @@ class StreamingVocoderBase(
                 f"{self._stream_source_hint} stream chunk modality must be "
                 f"audio_codes, got {metadata.get('modality')!r}"
             )
-        if metadata.get("stream") is not True:
+        if not isinstance(metadata.get("stream"), bool):
             raise RuntimeError(
                 f"{self._stream_source_hint} stream chunk for {request_id!r} must "
-                "include metadata['stream'] == True"
+                "include a bool metadata['stream']"
             )
         self.latch_stream_contract(
             request_id, state, metadata, origin="stream metadata"

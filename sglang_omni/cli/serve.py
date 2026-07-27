@@ -576,6 +576,7 @@ def apply_thinker_server_args_cli_overrides(
     *,
     cpu_offload_gb: int | None,
     quantization: str | None,
+    thinker_max_running_requests: int | None = None,
 ) -> PipelineConfig:
     updates: dict[str, object] = {}
     if cpu_offload_gb is not None:
@@ -587,6 +588,10 @@ def apply_thinker_server_args_cli_overrides(
         if not quantization:
             raise typer.BadParameter("--quantization must not be empty")
         updates["quantization"] = quantization
+    if thinker_max_running_requests is not None:
+        if thinker_max_running_requests < 1:
+            raise typer.BadParameter("--thinker-max-running-requests must be >= 1")
+        updates["max_running_requests"] = int(thinker_max_running_requests)
 
     if updates:
         _apply_stage_server_args_override(
@@ -1179,6 +1184,18 @@ def serve(
             ),
         ),
     ] = None,
+    thinker_max_running_requests: Annotated[
+        int | None,
+        typer.Option(
+            "--thinker-max-running-requests",
+            "--thinker_max_running_requests",
+            min=1,
+            help=(
+                "Override SGLang thinker stage max_running_requests. "
+                "Omit to use the pipeline config default."
+            ),
+        ),
+    ] = None,
     max_running_requests: Annotated[
         int | None,
         typer.Option(
@@ -1264,6 +1281,7 @@ def serve(
         merged_config,
         cpu_offload_gb=cpu_offload_gb,
         quantization=quantization,
+        thinker_max_running_requests=thinker_max_running_requests,
     )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
