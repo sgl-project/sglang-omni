@@ -50,7 +50,7 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name=VOCODER_STAGE,
-            process=VOCODER_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             runtime=StageRuntimeConfig(

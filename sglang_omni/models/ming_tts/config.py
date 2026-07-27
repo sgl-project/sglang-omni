@@ -80,7 +80,7 @@ class MingTTSPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name=AUDIO_DECODE_STAGE,
-            process=AUDIO_DECODE_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_audio_decode_executor",
             factory_args={
                 "dtype": "bfloat16",

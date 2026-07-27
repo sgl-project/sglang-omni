@@ -64,7 +64,7 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     assert [stage.process for stage in config.stages] == [
         "preprocessing",
         "pipeline",
-        "vocoder",
+        "pipeline",
     ]
     assert [
         stage.runtime.resources.total_gpu_memory_fraction

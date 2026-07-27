@@ -51,7 +51,7 @@ class S2ProPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
-            process="vocoder",
+            process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             runtime=StageRuntimeConfig(

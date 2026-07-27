@@ -51,7 +51,7 @@ stages:
     next: audio_decode
 
   - name: audio_decode
-    process: audio_decode
+    process: ming_tts_aux
     factory: sglang_omni.models.ming_tts.stages.create_audio_decode_executor
     factory_args:
       dtype: bfloat16

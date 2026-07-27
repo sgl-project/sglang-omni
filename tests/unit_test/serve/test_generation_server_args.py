@@ -139,25 +139,7 @@ def test_generation_server_args_explicit_override_reaches_generation_stage(
     assert overrides == {
         "max_running_requests": 32,
         "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
-        "torch_compile_max_bs": 32,
     }
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_qwen3_tts_max_running_requests_expands_compile_bound(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(**_serve_kwargs(max_running_requests=96))
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
-    assert overrides["max_running_requests"] == 96
-    assert overrides["torch_compile_max_bs"] >= 96
 
 
 @patch("sglang_omni.cli.serve.launch_server")

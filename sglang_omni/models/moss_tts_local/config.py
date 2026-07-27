@@ -70,13 +70,7 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
         ),
         StageConfig(
             name="vocoder",
-            # Isolate the codec into its own process only in the single-GPU
-            # colocated topology, where per-stage GPU budgets exist to satisfy
-            # same-GPU process colocation. The split variant carries no per-stage
-            # budgets (it relies on SGLang mem_fraction_static), so keep its
-            # vocoder in the shared pipeline process to avoid an unbudgeted
-            # multi-process-group placement on one GPU.
-            process="vocoder" if colocated else "pipeline",
+            process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             factory_args={"device": codec_device},
             runtime=StageRuntimeConfig(

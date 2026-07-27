@@ -35,7 +35,7 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert [stage.process for stage in config.stages] == [
         "pipeline",
         "pipeline",
-        "vocoder",
+        "pipeline",
     ]
     assert [
         stage.runtime.resources.total_gpu_memory_fraction

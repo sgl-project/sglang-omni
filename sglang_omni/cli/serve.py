@@ -1298,7 +1298,6 @@ def serve(
     generation_server_args_overrides: dict[str, object] = {}
     if max_running_requests is not None:
         generation_server_args_overrides["max_running_requests"] = max_running_requests
-        generation_server_args_overrides["torch_compile_max_bs"] = max_running_requests
     if max_total_tokens is not None:
         generation_server_args_overrides["max_total_tokens"] = max_total_tokens
     if cuda_graph_max_bs is not None:

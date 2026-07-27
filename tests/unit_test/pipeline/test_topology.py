@@ -258,7 +258,7 @@ def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
     ]
 
 
-def test_moss_tts_local_isolates_vocoder_by_default() -> None:
+def test_moss_tts_local_preserves_default_and_can_isolate_vocoder() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
     config = MossTTSLocalPipelineConfig(model_path="dummy")
@@ -271,15 +271,39 @@ def test_moss_tts_local_isolates_vocoder_by_default() -> None:
         "tts_engine": 0.90,
         "vocoder": 0.05,
     }
-    topology = _topology(config)
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+    ]
+    assert _topology(config).groups[0].stage_names == (
+        "preprocessing",
+        "tts_engine",
+        "vocoder",
+    )
 
-    assert [(group.name, group.stage_names) for group in topology.groups] == [
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+    ]
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
         ("pipeline", ("preprocessing", "tts_engine")),
         ("vocoder", ("vocoder",)),
     ]
+    assert build_stage_placement_plan(config).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(1.0)
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(1.0)
 
 
-def test_ming_tts_isolates_audio_decode_by_default() -> None:
+def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
     from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
 
     config = MingTTSPipelineConfig(model_path="dummy")
@@ -292,15 +316,115 @@ def test_ming_tts_isolates_audio_decode_by_default() -> None:
         "tts_engine": 0.72,
         "audio_decode": 0.12,
     }
-    topology = _topology(config)
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 4
 
-    assert [(group.name, group.stage_names) for group in topology.groups] == [
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 4
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
         (
             "pipeline",
             ("preprocessing", "reference_encode", "tts_engine"),
         ),
         ("audio_decode", ("audio_decode",)),
     ]
+    assert build_stage_placement_plan(config).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.92)
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.92)
+
+
+def test_fishaudio_preserves_default_and_can_isolate_vocoder() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+
+    config = S2ProPipelineConfig(model_path="dummy")
+    assert [stage.process for stage in config.stages] == [
+        "preprocessing",
+        "pipeline",
+        "pipeline",
+    ]
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in config.stages] == [
+        "preprocessing",
+        "pipeline",
+        "pipeline",
+    ]
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("preprocessing", ("preprocessing",)),
+        ("pipeline", ("tts_engine",)),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(config).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.95)
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.95)
+
+
+def test_voxtral_preserves_default_and_can_isolate_vocoder() -> None:
+    from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
+
+    config = VoxtralTTSPipelineConfig(model_path="dummy")
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 3
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 3
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("pipeline", ("preprocessing", "tts_generation")),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(config).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.95)
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.95)
+
+
+def test_moss_split_rejects_vocoder_isolation_without_memory_contract() -> None:
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalSplitPipelineConfig
+
+    config = MossTTSLocalSplitPipelineConfig(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "GPU 0 is shared by multiple process groups without "
+            "runtime.resources.total_gpu_memory_fraction"
+        ),
+    ):
+        _topology(isolated)
+
+
+def test_qwen3_tts_rejects_vocoder_isolation_without_memory_contract() -> None:
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "GPU 0 is shared by multiple process groups without "
+            "runtime.resources.total_gpu_memory_fraction"
+        ),
+    ):
+        _topology(isolated)
 
 
 def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:
