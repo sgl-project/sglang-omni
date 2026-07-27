@@ -261,7 +261,7 @@ Two profiles, selected by audio duration:
 | Profile | Config | Audio length | Concurrency |
 |---|---|---|---|
 | Default | `examples/configs/moss_transcribe_diarize_rtx5090.yaml` | ≤ ~30 min | up to 16; **throughput peaks at 8 on this GPU** |
-| Long audio | `examples/configs/moss_transcribe_diarize_rtx5090_long_audio.yaml` | up to ~90 min | 1 (up to 2 for ≤ ~40 min) |
+| Long audio | `examples/configs/moss_transcribe_diarize_rtx5090_long_audio.yaml` | up to ~90 min | ≤2 validated to ~39-min sessions; 60–90 min validated at c=1 |
 
 The split exists because the binding constraint for long audio is the
 transient encoder activation (measured 2.66–3.10 GiB per long-audio encode),

@@ -1,6 +1,6 @@
 # Long-audio single-GPU profile validated on one RTX 5090 (SM120, 32 GB).
-# Serves the full advertised ~90-min range at concurrency 1 (peak 31.6 GiB)
-# and ~39-min sessions at concurrency 2. The reduced memory fraction leaves
+# Concurrency <=2 validated to ~39-min sessions; 60-90 min validated at c=1
+# (90-min peak 31.6 GiB). The reduced memory fraction leaves
 # headroom for the transient encoder activation (measured 2.66-3.10 GiB per
 # long-audio encode), which is what fails first under the default profile.
 config_cls: MossTranscribeDiarizePipelineConfig
