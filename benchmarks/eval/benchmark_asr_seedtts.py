@@ -250,8 +250,8 @@ def _aggregate(repeats: list[dict]) -> dict:
     }
 
 
-def _format_metric(value: float | None, digits: int) -> str:
-    return "n/a" if value is None else f"{value:.{digits}f}"
+def _format_metric(value: float | None, digits: int, suffix: str = "") -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}{suffix}"
 
 
 def _print_table(aggregates: list[dict]) -> None:
@@ -354,8 +354,8 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 f"wall={result['wall_clock_s']:.3f}s "
                 f"thrpt={result['throughput_samples_per_s']:.3f}/s "
                 f"rtfx={result['rtfx']:.3f} "
-                f"lat_mean={_format_metric(result['latency_mean_s'], 3)}s "
-                f"lat_p95={_format_metric(result['latency_p95_s'], 3)}s "
+                f"lat_mean={_format_metric(result['latency_mean_s'], 3, 's')} "
+                f"lat_p95={_format_metric(result['latency_p95_s'], 3, 's')} "
                 f"rtf_mean={_format_metric(result['rtf_mean'], 4)} "
                 f"corpus_wer={_format_metric(result['corpus_wer'], 4)} "
                 f"evaluated={result['evaluated']}/{result['total']}"
