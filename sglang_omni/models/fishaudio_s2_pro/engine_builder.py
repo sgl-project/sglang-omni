@@ -10,6 +10,7 @@ from typing import Any
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
@@ -40,6 +41,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
+        sm_version = get_visible_gpu_sm_version(self.gpu_id)
         return {
             "max_running_requests": 64,
             "disable_cuda_graph": False,
@@ -47,13 +49,12 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             "chunked_prefill_size": 8192,
             "dtype": "bfloat16",
             "enable_torch_compile": True,
+            "attention_backend": "fa3" if sm_version == 90 else "flashinfer",
             "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
         }
 
     def customize_server_args(self, server_args: Any) -> None:
         updates: dict[str, Any] = {"disable_overlap_schedule": True}
-        if server_args.attention_backend is None:
-            updates["attention_backend"] = "fa3"
         override_server_args(
             server_args,
             "sglang_omni.fishaudio_s2_pro.runtime_defaults",

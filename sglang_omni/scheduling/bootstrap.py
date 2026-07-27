@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from sglang_omni.utils.gpu_compat import describe_sglang_runtime_configuration
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+logger = logging.getLogger(__name__)
 
 
 def create_sglang_infrastructure(
@@ -27,6 +31,8 @@ def create_sglang_infrastructure(
         PrefillManager,
         create_tree_cache,
     )
+
+    logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
 
     model_worker = ModelWorker(
         config=ModelWorkerConfig(

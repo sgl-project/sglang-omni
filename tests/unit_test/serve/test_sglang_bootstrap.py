@@ -14,6 +14,12 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     monkeypatch,
 ) -> None:
     events: list[str] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "describe_sglang_runtime_configuration",
+        lambda _server_args, _gpu_id: events.append("runtime_configuration")
+        or "runtime configuration",
+    )
 
     class FakeRunner:
         model = object()
@@ -32,6 +38,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
 
         def __init__(self, **kwargs) -> None:
             del kwargs
+            events.append("model_worker")
             self.model_runner = FakeRunner()
 
         def get_memory_pool(self):
@@ -59,6 +66,10 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     )
 
     server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
         page_size=1,
         disable_overlap_schedule=False,
         chunked_prefill_size=8,
@@ -67,6 +78,8 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
 
     assert events == [
+        "runtime_configuration",
+        "model_worker",
         "alloc_memory_pool",
         "init_attention_backends",
         "init_cuda_graphs",
