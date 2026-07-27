@@ -490,6 +490,12 @@ that happened to contain an older version of the test.
     equivalence, CUDA bf16 packed-vs-SDPA parity, zero-length handling, and
     flash-unavailable fallback.
 
+- `unit_test/zonos2/`: ZONOS2 unit tests:
+  - pipeline configuration, text normalization, and speaker/component caches
+  - streaming vocoder chunking and flush behavior
+  - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
+    ownership, and async resolve contracts.
+
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
   - worker metadata and health-state contracts

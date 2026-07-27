@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""On-device per-request decode state for ZONOS2 (RTF: removes the per-step D2H
-syncs + Python EOS loop in model_runner._collect_frame).
+"""On-device per-request decode state for ZONOS2.
 
 Each in-flight request holds a fixed row; per-step feedback, the EOS state
 machine and the generation step live in pre-allocated GPU tensors indexed by
-row, so the decode tail can run as pure device math without ``codes.to('cpu')``
-/ ``keys.tolist()``. Modelled on ``moss_tts_local.state_pool``. A reserved
-padding row (``P-1``) is never handed out, giving graph replay a stable index
-for padded batch slots.
-
-Step 1 of the eager-tail plan: this is allocated but NOT yet read by the runner,
-so the decode output is byte-identical until the wiring lands.
+row, so the decode tail can update state as device math. Modelled on
+``moss_tts_local.state_pool``. A reserved padding row (``P-1``) is never handed
+out, giving graph replay a stable index for padded batch slots.
 """
 
 from __future__ import annotations
@@ -96,6 +91,11 @@ class Zonos2DecodeStatePool:
         row_idx = self._rid_to_row.pop(rid, None)
         if row_idx is None:
             return
+        # The cached tensor is valid only while every request-to-row mapping
+        # used to build it is still owned. Invalidate it before recycling a row
+        # so an immediately reused request id cannot bypass acquire_row().
+        self._active_ids = None
+        self._active_rows = None
         self.reset_row(row_idx)
         self._free_rows.append(row_idx)
 
@@ -131,11 +131,12 @@ class Zonos2DecodeStatePool:
         return rows
 
     def release_inactive(self, active_rids) -> None:
-        """Free rows whose request is no longer in the batch (finished/dropped).
+        """Reconcile row ownership with the current decode batch.
 
-        The base runner has no per-request finish hook; reconciling against the
-        live batch each decode step self-cleans the pool without one. A request
-        that comes back (retraction/re-prefill) re-acquires a freshly reset row.
+        Terminal result and abort adapters are the primary cleanup paths. This
+        fallback handles batch removal such as retraction and recovers any
+        stranded older row before the next decode. A request that comes back
+        after retraction/re-prefill acquires a freshly reset row.
         """
         stale = [rid for rid in self._rid_to_row if rid not in active_rids]
         for rid in stale:

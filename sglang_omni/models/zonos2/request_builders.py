@@ -252,6 +252,12 @@ def make_zonos2_scheduler_adapters(*, model: Any):
         return build_sglang_zonos2_request(payload, model=model)
 
     def result_adapter(data: Zonos2SGLangRequestData) -> StagePayload:
-        return apply_sglang_zonos2_result(data.stage_payload, data)
+        try:
+            return apply_sglang_zonos2_result(data.stage_payload, data)
+        finally:
+            # note(ratish): For completed requests, scheduler terminalization—not
+            # sampler EOS—is the ownership boundary; finally prevents adapter
+            # errors from stranding the row.
+            model.reset_request(data.stage_payload.request_id)
 
     return request_builder, result_adapter
