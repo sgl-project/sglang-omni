@@ -4,9 +4,10 @@
 ARK-ASR (AutoArk-AI/ARK-ASR-3B) is a Whisper-style audio tower (with RoPE
 self-attention) + MLP frame-merge adapter feeding a dense Qwen2 LM. The
 checkpoint's ``ArkasrConfig`` subclasses ``Qwen2Config`` and carries a nested
-``whisper_config``; here we register a native config so ``trust_remote_code``
-is not needed at serve time (the checkpoint's remote code targets the
-transformers-4 encoder-layer API, incompatible with transformers 5).
+``whisper_config``. Serving loads the checkpoint tokenizer and config with
+``trust_remote_code=True``, while model execution is implemented locally
+because the checkpoint model code targets the transformers-4 encoder-layer API,
+which is incompatible with transformers 5.
 """
 
 from __future__ import annotations
@@ -14,9 +15,7 @@ from __future__ import annotations
 from sglang.srt.multimodal.customized_mm_processor_utils import (
     register_customized_processor,
 )
-from sglang.utils import logger
 from transformers import (
-    AutoConfig,
     AutoFeatureExtractor,
     AutoTokenizer,
     ProcessorMixin,
@@ -60,16 +59,6 @@ class ArkasrConfig(Qwen2Config):
         self.mlp_adapter_act = mlp_adapter_act
         self.audio_token_id = int(audio_token_id)
 
-    @property
-    def text_config(self):
-        """ARK's LM params live at the top level (subclass of Qwen2Config), so the
-        text config is the config itself. Exposed for sglang-omni's _ARCH_CONFIG_MAP,
-        which reads num_attention_heads / hidden_size / num_hidden_layers off it."""
-        return self
-
-    def get_text_config(self, decoder: bool = False):
-        return self
-
     def to_dict(self):
         output = super().to_dict()
         output["whisper_config"] = self.whisper_config.to_dict()
@@ -102,12 +91,8 @@ class ArkasrProcessor(ProcessorMixin):
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
 
-# register model_type -> customized processor, and the native config with AutoConfig
+# Register the processor without changing Transformers' process-global config mapping.
 register_customized_processor(ArkasrProcessor)(ArkasrConfig)
-try:
-    AutoConfig.register("arkasr", ArkasrConfig)
-except Exception as exc:  # already registered (re-import)
-    logger.debug(f"arkasr AutoConfig.register skipped: {exc}")
 
 
 __all__ = ["ArkasrConfig", "ArkasrProcessor", "arkasr_audio_token_lengths"]

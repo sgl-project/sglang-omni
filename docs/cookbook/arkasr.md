@@ -87,8 +87,8 @@ The three `response_format` values return different shapes:
   }
   ```
 
-`language`, `duration`, and `usage` are omitted when unknown (`exclude_none`), e.g.
-when the uploaded audio's duration cannot be probed.
+`language` and `usage` are omitted when unknown (`exclude_none`). If the uploaded
+audio's duration cannot be probed, `duration` and the segment end time are `0.0`.
 
 ## Audio Handling
 

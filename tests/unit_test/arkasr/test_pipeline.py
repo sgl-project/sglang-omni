@@ -68,14 +68,18 @@ def test_arkasr_audio_token_count():
     assert arkasr_audio_token_lengths([400, 8]) == [50, 1]
 
 
-def test_arkasr_config_text_config_is_self():
+def test_arkasr_config_keeps_lm_params_at_top_level():
     cfg = _tiny_config()
-    # ARK's LM params live at top level; text_config must resolve to the config
-    # itself so sglang-omni's _ARCH_CONFIG_MAP reads the right dims.
-    assert cfg.text_config is cfg
-    assert cfg.get_text_config() is cfg
-    assert cfg.text_config.num_attention_heads == 4
-    assert cfg.text_config.hidden_size == 48
+    assert cfg.num_attention_heads == 4
+    assert cfg.num_key_value_heads == 2
+    assert cfg.hidden_size == 48
+    assert cfg.num_hidden_layers == 2
+
+
+def test_arkasr_import_does_not_register_auto_config():
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    assert "arkasr" not in CONFIG_MAPPING._extra_content
 
 
 def test_ark_audio_tower_forward_shape():
