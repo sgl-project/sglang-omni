@@ -16,8 +16,18 @@ from sglang_omni.config.manager import ConfigManager
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
 
+_PLACEMENT_POLICY_CALLS: list[str] = []
+
+
+def _recording_placement_policy(config: PipelineConfig, plan: object) -> None:
+    _PLACEMENT_POLICY_CALLS.append(config.name or "")
+
 
 class _IsolationPipelineConfig(PipelineConfig):
+    @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        return frozenset({"a", "b", "c", "audio_decode", "thinker", "vocoder"})
+
     @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
         return {
@@ -167,13 +177,19 @@ def test_process_override_literal_stage_takes_precedence_over_alias() -> None:
 def test_process_override_alias_does_not_mutate_source_config() -> None:
     config = _IsolationAliasPipelineConfig(
         model_path="dummy",
-        stages=[_stage("audio_decode", process="pipeline", terminal=True)],
+        stages=[
+            _stage("a", process="pipeline", next_stage="audio_decode"),
+            _stage("audio_decode", process="pipeline", terminal=True),
+        ],
     )
 
     overridden = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
 
-    assert config.stages[0].process == "pipeline"
-    assert overridden.stages[0].process == "audio_decode"
+    assert [stage.process for stage in config.stages] == ["pipeline", "pipeline"]
+    assert [stage.process for stage in overridden.stages] == [
+        "pipeline",
+        "audio_decode",
+    ]
 
 
 def test_process_override_rejects_alias_with_missing_stage() -> None:
@@ -189,10 +205,13 @@ def test_process_override_rejects_alias_with_missing_stage() -> None:
         apply_stage_process_overrides(config, isolate_stages=["missing_role"])
 
 
-def test_process_override_rejects_stage_without_isolation_contract() -> None:
+def test_process_override_rejects_stage_not_declared_process_safe() -> None:
     config = PipelineConfig(
         model_path="dummy",
-        stages=[_stage("preprocessing", process="pipeline", terminal=True)],
+        stages=[
+            _stage("preprocessing", process="pipeline", next_stage="tts_engine"),
+            _stage("tts_engine", process="pipeline", terminal=True),
+        ],
     )
 
     with pytest.raises(
@@ -282,11 +301,14 @@ def test_process_override_same_gpu_accepts_valid_memory_fractions() -> None:
 
 
 def test_process_override_rejects_process_name_collision() -> None:
+    # Note (Akazaakane): 'b' must share a process with another stage, otherwise it is
+    # already isolated and the override is a no-op before the collision can happen.
     config = _IsolationPipelineConfig(
         model_path="dummy",
         stages=[
             _stage("a", process="b", next_stage="b"),
-            _stage("b", process="pipeline", terminal=True),
+            _stage("b", process="pipeline", next_stage="c"),
+            _stage("c", process="pipeline", terminal=True),
         ],
     )
 
@@ -511,7 +533,7 @@ def test_voxtral_preserves_default_and_can_isolate_vocoder() -> None:
     ].total_gpu_memory_fraction == pytest.approx(0.95)
 
 
-def test_moss_split_rejects_vocoder_isolation_without_memory_contract() -> None:
+def test_moss_split_rejects_vocoder_isolation_as_not_process_safe() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalSplitPipelineConfig
 
     config = MossTTSLocalSplitPipelineConfig(model_path="dummy")
@@ -523,16 +545,153 @@ def test_moss_split_rejects_vocoder_isolation_without_memory_contract() -> None:
         apply_stage_process_overrides(config, isolate_stages=["vocoder"])
 
 
-def test_qwen3_tts_rejects_vocoder_isolation_without_memory_contract() -> None:
-    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "sglang_omni.models.qwen3_tts.config.Qwen3TTSPipelineConfig",
+        "sglang_omni.models.moss_tts.config.MossTTSPipelineConfig",
+    ],
+)
+def test_ar_to_vocoder_boundary_isolates_with_declared_contract(
+    config_path: str,
+) -> None:
+    """Preprocessing is process-local for these models but the vocoder is not."""
+    from sglang_omni.utils.imports import import_string
 
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    config = import_string(config_path)(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 3
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("pipeline", ("preprocessing", "tts_engine")),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.95)
+
+
+def test_higgs_vocoder_isolation_is_an_unchanged_no_op() -> None:
+    """The model already places the vocoder alone, so the flag must not mutate it."""
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    before = [(group.name, group.stage_names) for group in _topology(config).groups]
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == before
+    assert [stage.process for stage in isolated.stages] == [
+        stage.process for stage in config.stages
+    ]
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction for stage in isolated.stages
+    ] == [None, 0.03, 0.85, 0.10]
+
+
+def test_higgs_can_isolate_audio_encoder_from_declared_fractions() -> None:
+    """A process-safe stage needs no contract when the config declares fractions."""
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    assert HiggsTtsPipelineConfig.isolation_stage_resources() == {}
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["audio_encoder"])
+
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("pipeline", ("preprocessing", "tts_engine")),
+        ("audio_encoder", ("audio_encoder",)),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.98)
+
+
+def test_fishaudio_preprocessing_isolation_is_an_unchanged_no_op() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+
+    config = S2ProPipelineConfig(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(config, isolate_stages=["preprocessing"])
+
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("preprocessing", ("preprocessing",)),
+        ("pipeline", ("tts_engine", "vocoder")),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config_path", "stage_name"),
+    [
+        ("sglang_omni.models.audar_tts.config.AudarTTSPipelineConfig", "vocoder"),
+        ("sglang_omni.models.zonos2.config.Zonos2PipelineConfig", "vocoder"),
+    ],
+)
+def test_process_safe_stage_without_contract_reports_the_missing_fractions(
+    config_path: str,
+    stage_name: str,
+) -> None:
+    """Process safety and resource declarations fail with distinct messages."""
+    from sglang_omni.utils.imports import import_string
+
+    config = import_string(config_path)(model_path="dummy")
 
     with pytest.raises(
         ValueError,
-        match="Stage 'vocoder' does not support process isolation",
+        match="shared by multiple process groups without",
     ):
-        apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+        apply_stage_process_overrides(config, isolate_stages=[stage_name])
+
+
+def test_isolation_contract_fraction_is_validated_before_placement() -> None:
+    """Contract values must go through the field validator, not raw assignment."""
+
+    class _NegativeContractConfig(_IsolationPipelineConfig):
+        @classmethod
+        def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+            return {"b": {"a": -0.5, "b": 0.10}}
+
+    config = _NegativeContractConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", gpu=0, process="pipeline", next_stage="b"),
+            _stage("b", gpu=0, process="pipeline", terminal=True),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+        apply_stage_process_overrides(config, isolate_stages=["b"])
+
+
+def test_process_override_does_not_run_placement_policy() -> None:
+    """Policy execution belongs to prepare_pipeline_runtime, not the override chain."""
+    _PLACEMENT_POLICY_CALLS.clear()
+    config = _IsolationPipelineConfig(
+        model_path="dummy",
+        placement_policy=f"{__name__}._recording_placement_policy",
+        stages=[
+            _stage("a", gpu=0, fraction=0.50, process="pipeline", next_stage="b"),
+            _stage("b", gpu=0, fraction=0.40, process="pipeline", terminal=True),
+        ],
+    )
+
+    apply_stage_process_overrides(config, isolate_stages=["b"])
+
+    assert _PLACEMENT_POLICY_CALLS == []
+
+    build_stage_placement_plan(config)
+
+    assert _PLACEMENT_POLICY_CALLS == ["dummy"]
 
 
 @pytest.mark.parametrize(
@@ -544,6 +703,10 @@ def test_qwen3_tts_rejects_vocoder_isolation_without_memory_contract() -> None:
         ),
         (
             "sglang_omni.models.qwen3_tts.config.Qwen3TTSPipelineConfig",
+            "preprocessing",
+        ),
+        (
+            "sglang_omni.models.moss_tts.config.MossTTSPipelineConfig",
             "preprocessing",
         ),
     ],

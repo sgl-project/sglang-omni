@@ -31,6 +31,18 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
+    @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        # Note (Akazaakane): preprocessing is excluded because it stores prepared
+        # requests in the module-level _PREPROCESSING_CONTEXT/_PREPARED_REQUESTS
+        # registries that the AR engine builder reads in-process. The vocoder loads
+        # its own speech tokenizer and reads audio_codes from the payload.
+        return frozenset({"vocoder"})
+
+    @classmethod
+    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+        return {"vocoder": {"tts_engine": 0.85, "vocoder": 0.10}}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(

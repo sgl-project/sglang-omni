@@ -24,6 +24,10 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
         return {"generation": "tts_generation"}
 
     @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        return frozenset({VOCODER_STAGE})
+
+    @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
         return {
             VOCODER_STAGE: {

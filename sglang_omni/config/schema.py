@@ -264,8 +264,23 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        """Stages whose boundary stays correct across an OS process split.
+
+        Architectural fact only: every input the stage needs must arrive in the
+        payload rather than through a process-local registry. Independent of
+        whether isolating it also needs GPU memory fractions.
+        """
+        return frozenset()
+
+    @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
-        """Map process-safe stages to isolation-time GPU memory fractions."""
+        """Map process-safe stages to isolation-time GPU memory fractions.
+
+        Only a placement recommendation applied when the operator asks for
+        isolation. A stage absent here is still isolatable when the config
+        already declares fractions, or when nothing else shares its GPU.
+        """
         return {}
 
     @classmethod

@@ -54,6 +54,13 @@ class AudarTTSPipelineConfig(PipelineConfig):
     speech_reference_text_required: ClassVar[bool] = True
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset({"Arabic"})
 
+    @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        # Note (Akazaakane): both stages rebuild their inputs from the payload state and
+        # own their codec instance. No fractions are recommended yet, so isolating one
+        # requires the operator to declare them; see tts_process_topology.md.
+        return frozenset({"reference_encoder", "vocoder"})
+
     model_path: str
     stages: list[StageConfig] = Field(default_factory=_stages)
 

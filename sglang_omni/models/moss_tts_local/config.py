@@ -121,6 +121,13 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        # Note (Akazaakane): preprocessing is excluded because it publishes prepared
+        # requests into a module-level PreparedRequestQueue that the AR stage pops
+        # in-process; the vocoder only reads codes carried in the payload.
+        return frozenset({"vocoder"})
+
+    @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
         return {
             "vocoder": {
@@ -204,6 +211,13 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
 
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
+
+    @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        # Note (Akazaakane): split mode declares gpu=0 for placement while running the
+        # codec on cuda:1, so the colocated fractions do not describe this topology.
+        # Isolation stays unsupported here until the split variant declares its own.
+        return frozenset()
 
     @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:

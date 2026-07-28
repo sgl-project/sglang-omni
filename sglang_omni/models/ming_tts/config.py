@@ -43,6 +43,10 @@ class MingTTSPipelineConfig(PipelineConfig):
         return {"vocoder": AUDIO_DECODE_STAGE}
 
     @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        return frozenset({AUDIO_DECODE_STAGE})
+
+    @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
         return {
             AUDIO_DECODE_STAGE: {

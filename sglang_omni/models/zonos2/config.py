@@ -106,6 +106,13 @@ class Zonos2PipelineConfig(PipelineConfig):
         # target the AR engine for single-card throughput tuning.
         return {"generation": "tts_engine"}
 
+    @classmethod
+    def process_isolation_stages(cls) -> frozenset[str]:
+        # Note (Akazaakane): every stage rebuilds Zonos2State from payload.data, so both
+        # auxiliary stages split cleanly. No fractions are recommended yet, so isolating
+        # one requires the operator to declare them; see tts_process_topology.md.
+        return frozenset({"speaker_encode", "vocoder"})
+
     model_path: str
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(auxiliary_gpu=0, auxiliary_process="pipeline")
