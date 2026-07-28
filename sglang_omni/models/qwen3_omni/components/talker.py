@@ -759,8 +759,8 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             raise ValueError(f"Unsupported positions rank: {positions.ndim}")
         return positions.to(device=device, dtype=torch.long).reshape(-1)
 
+    @staticmethod
     def _direct_self_attention(
-        self,
         *,
         attn: Qwen3OmniMoeThinkerTextAttention,
         hidden_states: torch.Tensor,

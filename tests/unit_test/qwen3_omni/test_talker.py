@@ -16,7 +16,6 @@ from torch import nn
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
-    Qwen3OmniMoeTalkerCodePredictor,
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
 )
@@ -35,6 +34,9 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
+from tests.unit_test.fixtures.qwen_predictor import (
+    build_real_step_predictor_graph_talker,
+)
 
 
 def _sched_req(**data_kwargs: object) -> SimpleNamespace:
@@ -541,111 +543,6 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
-class _TupleLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int) -> None:
-        super().__init__()
-        self.proj = nn.Linear(in_features, out_features, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor):
-        return self.proj(hidden_states), None
-
-
-class _IdentityRotary(nn.Module):
-    def forward(
-        self,
-        positions: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        fused_set_kv_buffer_arg=None,
-    ):
-        del positions, fused_set_kv_buffer_arg
-        return q, k
-
-
-def _build_real_step_predictor_graph_talker(
-    device: torch.device,
-    num_heads: int = 2,
-    num_kv_heads: int = 1,
-) -> Qwen3OmniTalker:
-    torch.manual_seed(1)
-    hidden_size = 8
-    head_dim = 4
-    num_code_groups = 4
-    vocab_size = 16
-    max_batch_size = 4
-    predictor_len = num_code_groups + 1
-
-    talker = object.__new__(Qwen3OmniTalker)
-    talker.training = False
-    talker.config = SimpleNamespace(num_code_groups=num_code_groups)
-    talker._predictor_input_buffer = torch.zeros(
-        max_batch_size,
-        predictor_len,
-        hidden_size,
-        device=device,
-    )
-    talker._output_codes = torch.zeros(
-        max_batch_size,
-        num_code_groups,
-        dtype=torch.long,
-        device=device,
-    )
-    talker._output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
-    talker._predictor_positions = torch.arange(
-        predictor_len,
-        device=device,
-        dtype=torch.long,
-    )
-    talker._predictor_k_cache = torch.zeros(
-        1,
-        max_batch_size,
-        num_kv_heads,
-        predictor_len,
-        head_dim,
-        device=device,
-    )
-    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
-    talker._predictor_decode_graphs = {}
-    talker._predictor_decode_graph_disabled = set()
-
-    layer = SimpleNamespace(
-        input_layernorm=nn.Identity(),
-        post_attention_layernorm=nn.Identity(),
-        mlp=nn.Linear(hidden_size, hidden_size, bias=False).to(device),
-    )
-    layer.self_attn = SimpleNamespace(
-        q_size=num_heads * head_dim,
-        kv_size=num_kv_heads * head_dim,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        q_norm=nn.Identity(),
-        k_norm=nn.Identity(),
-        alt_stream=None,
-        qkv_proj=_TupleLinear(
-            hidden_size, (num_heads + 2 * num_kv_heads) * head_dim
-        ).to(device),
-        o_proj=_TupleLinear(num_heads * head_dim, hidden_size).to(device),
-        rotary_emb=_IdentityRotary(),
-    )
-    talker.code_predictor = SimpleNamespace(
-        model=SimpleNamespace(
-            layers=[layer],
-            norm=nn.Identity(),
-            codec_embedding=nn.ModuleList(
-                [nn.Embedding(vocab_size, hidden_size).to(device) for _ in range(3)]
-            ),
-        ),
-        lm_head=nn.ModuleList(
-            [_TupleLinear(hidden_size, vocab_size).to(device) for _ in range(3)]
-        ),
-    )
-    layer0_embedding = nn.Embedding(vocab_size, hidden_size).to(device)
-    talker.get_input_embeddings = lambda: layer0_embedding
-    return talker
-
-
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -660,7 +557,7 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     )
 
     device = torch.device("cuda")
-    talker = _build_real_step_predictor_graph_talker(device)
+    talker = build_real_step_predictor_graph_talker(device)
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
@@ -723,139 +620,6 @@ def test_qwen_predictor_decode_graph_uses_tensor_device_when_current_device_diff
     assert (2, torch.int) in talker._predictor_decode_graphs
     torch.testing.assert_close(graph_codes, eager_codes)
     torch.testing.assert_close(graph_embeds, eager_embeds)
-
-
-def _materialized_kv_direct_attention(
-    *,
-    attn: SimpleNamespace,
-    hidden_states: torch.Tensor,
-) -> torch.Tensor:
-    """Reference direct attention that materializes KV heads before SDPA."""
-    batch_size, seq_len, hidden_size = hidden_states.shape
-    qkv, _ = attn.qkv_proj(hidden_states.reshape(-1, hidden_size))
-    q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
-    q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(1, 2)
-    k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-    v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-    num_kv_groups = attn.num_heads // attn.num_kv_heads
-    k = k.repeat_interleave(num_kv_groups, dim=1)
-    v = v.repeat_interleave(num_kv_groups, dim=1)
-    attn_output = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, is_causal=True
-    )
-    attn_output = attn_output.transpose(1, 2).reshape(
-        batch_size * seq_len, attn.num_heads * attn.head_dim
-    )
-    attn_output, _ = attn.o_proj(attn_output)
-    return attn_output.reshape(batch_size, seq_len, hidden_size)
-
-
-def _materialized_kv_cached_attention(
-    *,
-    talker: Qwen3OmniTalker,
-    attn: SimpleNamespace,
-    hidden_states: torch.Tensor,
-    batch_size: int,
-    cache_len: int,
-) -> torch.Tensor:
-    """Reference cached attention that materializes KV heads before SDPA."""
-    _, _, hidden_size = hidden_states.shape
-    qkv, _ = attn.qkv_proj(hidden_states.reshape(-1, hidden_size))
-    q, _, _ = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
-    q = q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
-    cached_k = talker._predictor_k_cache[0, :batch_size, :, : cache_len + 1, :]
-    cached_v = talker._predictor_v_cache[0, :batch_size, :, : cache_len + 1, :]
-    num_kv_groups = attn.num_heads // attn.num_kv_heads
-    cached_k = cached_k.repeat_interleave(num_kv_groups, dim=1)
-    cached_v = cached_v.repeat_interleave(num_kv_groups, dim=1)
-    attn_output = torch.nn.functional.scaled_dot_product_attention(
-        q, cached_k, cached_v, is_causal=False
-    )
-    attn_output = attn_output.transpose(1, 2).reshape(
-        batch_size, attn.num_heads * attn.head_dim
-    )
-    attn_output, _ = attn.o_proj(attn_output)
-    return attn_output.reshape(batch_size, 1, hidden_size)
-
-
-def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Direct-path SDPA with enable_gqa must equal materialized KV expansion."""
-    monkeypatch.setattr(
-        talker_module,
-        "apply_qk_norm",
-        lambda q, k, **_: (q, k),
-    )
-
-    device = torch.device("cpu")
-    talker = _build_real_step_predictor_graph_talker(
-        device, num_heads=4, num_kv_heads=2
-    )
-    attn = talker.code_predictor.model.layers[0].self_attn
-    # note (EdwardZhang1108): kv heads > 1, else wrong GQA group order passes by broadcast
-    assert attn.num_heads != attn.num_kv_heads and attn.num_kv_heads > 1
-    predictor = object.__new__(Qwen3OmniMoeTalkerCodePredictor)
-
-    batch_size, seq_len, hidden_size = 2, 3, 8
-    torch.manual_seed(7)
-    hidden_states = torch.randn(batch_size, seq_len, hidden_size, device=device)
-    positions = torch.arange(seq_len, device=device).repeat(batch_size)
-
-    with torch.no_grad():
-        actual = predictor._direct_self_attention(
-            attn=attn,
-            hidden_states=hidden_states,
-            positions=positions,
-        )
-        expected = _materialized_kv_direct_attention(
-            attn=attn,
-            hidden_states=hidden_states,
-        )
-
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-
-
-def test_qwen_predictor_cached_attention_gqa_matches_materialized_kv(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Cached-decode SDPA with enable_gqa must equal materialized KV expansion."""
-    monkeypatch.setattr(
-        talker_module,
-        "apply_qk_norm",
-        lambda q, k, **_: (q, k),
-    )
-
-    device = torch.device("cpu")
-    talker = _build_real_step_predictor_graph_talker(
-        device, num_heads=4, num_kv_heads=2
-    )
-    attn = talker.code_predictor.model.layers[0].self_attn
-    # note (EdwardZhang1108): kv heads > 1, else wrong GQA group order passes by broadcast
-    assert attn.num_heads != attn.num_kv_heads and attn.num_kv_heads > 1
-    batch_size, hidden_size = 2, 8
-
-    torch.manual_seed(11)
-    with torch.no_grad():
-        for cache_len in range(3):
-            hidden_states = torch.randn(batch_size, 1, hidden_size, device=device)
-            positions = torch.full((batch_size,), cache_len, device=device)
-            actual = talker._predictor_cached_self_attention(
-                layer_idx=0,
-                attn=attn,
-                hidden_states=hidden_states,
-                positions=positions,
-                batch_size=batch_size,
-                cache_len=cache_len,
-            )
-            expected = _materialized_kv_cached_attention(
-                talker=talker,
-                attn=attn,
-                hidden_states=hidden_states,
-                batch_size=batch_size,
-                cache_len=cache_len,
-            )
-            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 def _build_assistant_part_for_n_chunks(n: int) -> dict[str, torch.Tensor]:
