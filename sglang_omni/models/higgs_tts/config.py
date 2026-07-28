@@ -38,11 +38,17 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
-    def process_isolation_stages(cls) -> frozenset[str]:
-        # Note (Akazaakane): both stages hand off through HiggsTtsState in the payload
-        # and only share process-local caches, which re-fill on a miss. No resource
-        # contract is needed because all three GPU stages already declare fractions.
-        return frozenset({"audio_encoder", "vocoder"})
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): every handoff travels as HiggsTtsState in the payload and
+        # the stages only share process-local caches, which re-fill on a miss. No
+        # resource contract is needed because all three GPU stages declare fractions.
+        return frozenset(
+            {
+                ("preprocessing", "audio_encoder"),
+                ("audio_encoder", "tts_engine"),
+                ("tts_engine", "vocoder"),
+            }
+        )
 
     model_path: str
     stages: list[StageConfig] = [

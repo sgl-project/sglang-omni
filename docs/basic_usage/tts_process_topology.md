@@ -20,10 +20,11 @@ stages:
     process: pipeline
 ```
 
-## Temporary Isolation Override
+## Temporary Placement Overrides
 
-Use `--isolate-stage` to test or deploy a temporary override without editing
-the source config:
+Two CLI options change process placement without editing the source config.
+
+`--isolate-stage STAGE` puts one stage in a dedicated process:
 
 ```bash
 python -m sglang_omni.cli serve \
@@ -31,62 +32,90 @@ python -m sglang_omni.cli serve \
   --isolate-stage vocoder
 ```
 
-The option is repeatable. Literal stage names take precedence over role aliases.
-The stable `vocoder` role resolves to Ming-Omni-TTS's model-specific
-`audio_decode` stage.
+`--stage-process STAGE=PROCESS` assigns a stage to a named process. Repeating
+one process name colocates stages in it:
 
-Isolating a stage in a dedicated process asks two independent questions, and a
-model answers them with two separate declarations:
+```bash
+python -m sglang_omni.cli serve \
+  --model-path bosonai/higgs-tts-3-4b \
+  --stage-process preprocessing=tts_frontend \
+  --stage-process audio_encoder=tts_frontend
+```
 
-- `process_isolation_stages()` — does the boundary stay correct across an OS
-  process? Being a non-TP stage is not sufficient, because some stages exchange
-  state through process-local registries that a second process cannot read.
-- `isolation_stage_resources()` — which GPU memory fractions should be applied
-  when isolation creates another process on a GPU that is already in use? This
-  is a recommendation, not a capability. A process-safe stage with no
-  recommendation is still isolatable when the config already declares fractions
-  or when nothing else shares its GPU; otherwise placement validation names the
-  stages whose fractions are missing.
+```text
+tts_frontend : preprocessing, audio_encoder
+pipeline     : tts_engine
+vocoder      : vocoder
+```
+
+`--isolate-stage X` is shorthand for `--stage-process X=X`, so it can only ever
+produce a singleton. Use `--stage-process` for grouped topologies. Naming the
+same stage in both options is an error. Both are repeatable, and literal stage
+names take precedence over role aliases — the stable `vocoder` role resolves to
+Ming-Omni-TTS's model-specific `audio_decode` stage.
 
 Requesting a stage the model already runs alone is an idempotent no-op: the
 declared topology and every declared fraction are returned unchanged.
 
+## How a Placement Request Is Validated
+
+Moving a stage asks two independent questions, and a model answers them with two
+separate declarations:
+
+- `process_safe_edges()` — does the handoff stay correct once it crosses a
+  process boundary? Declared per **edge**, not per stage, because correctness
+  depends on which handoff is split rather than on which stage moved. Grouping
+  `preprocessing` with `audio_encoder` leaves their shared handoff local and
+  only crosses `audio_encoder -> tts_engine`, so it is checked against that edge
+  alone. Being a non-TP stage is not sufficient, because some stages exchange
+  state through process-local registries a second process cannot read.
+- `isolation_stage_resources()` — which GPU memory fractions to apply when
+  isolation creates another process on a GPU already in use. A recommendation,
+  not a capability. A stage with no recommendation is still placeable when the
+  config already declares fractions or nothing else shares its GPU; otherwise
+  placement validation names the stages whose fractions are missing.
+
+An unsupported handoff is reported before a missing fraction, because declaring
+fractions would not make that split correct.
+
 ## Applicability by Model
 
-| Model | Process-safe stages | Recommended fractions | Not process-safe |
+| Model | Process-safe edges | Recommended fractions | Unsupported edges |
 | --- | --- | --- | --- |
-| Higgs-TTS | `audio_encoder`, `vocoder` | none needed; the config already declares 0.03 / 0.85 / 0.10 | `preprocessing` (not evaluated) |
-| FishAudio S2-Pro | `preprocessing`, `vocoder` | `vocoder` | `tts_engine` |
-| Voxtral TTS | `vocoder` | `vocoder` | `preprocessing`, `tts_generation` |
-| Ming-Omni-TTS | `audio_decode` | `audio_decode` | `preprocessing`, `reference_encode`, `tts_engine` |
-| MOSS-TTS Local (single-GPU) | `vocoder` | `vocoder` | `preprocessing` — publishes into a process-local `PreparedRequestQueue` the AR stage pops |
-| MOSS-TTS Local (split) | none | — | placement declares GPU 0 while the codec runs on `cuda:1`, so the colocated fractions do not describe this topology |
-| Qwen3-TTS | `vocoder` | `vocoder` | `preprocessing` — stores prepared requests in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
-| MOSS-TTS Delay | `vocoder` | `vocoder` | `preprocessing` — same process-local `PreparedRequestQueue` handoff |
-| Audar-TTS | `reference_encoder`, `vocoder` | none yet — declare fractions before isolating | `preprocessing` (not evaluated) |
-| Zonos2 | `speaker_encode`, `vocoder` | none yet — declare fractions before isolating | `preprocessing` (not evaluated) |
+| Higgs-TTS | `preprocessing -> audio_encoder`, `audio_encoder -> tts_engine`, `tts_engine -> vocoder` | none needed; the config already declares 0.03 / 0.85 / 0.10 | — |
+| FishAudio S2-Pro | `preprocessing -> tts_engine`, `tts_engine -> vocoder` | `vocoder` | — |
+| Voxtral TTS | `tts_generation -> vocoder` | `vocoder` | `preprocessing -> tts_generation` |
+| Ming-Omni-TTS | `tts_engine -> audio_decode` | `audio_decode` | `preprocessing -> reference_encode`, `reference_encode -> tts_engine` |
+| MOSS-TTS Local (single-GPU) | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops |
+| MOSS-TTS Local (split) | none | — | all; placement declares GPU 0 while the codec runs on `cuda:1`, so the colocated fractions do not describe this topology |
+| Qwen3-TTS | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
+| MOSS-TTS Delay | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
+| Audar-TTS | `preprocessing -> reference_encoder`, `reference_encoder -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
+| Zonos2 | `preprocessing -> speaker_encode`, `speaker_encode -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 
 Higgs-TTS already places `vocoder` in its own process by default, so isolating
-it is a no-op; `audio_encoder` is the boundary the flag actually moves.
+it is a no-op; the frontend stages are the boundaries the options actually move.
 
-Audar-TTS and Zonos2 are declared process-safe from stage state that is carried
-entirely in `StagePayload.data`, but neither has benchmark coverage yet and
-neither ships recommended fractions. Isolating one of their stages on a shared
-GPU therefore fails with the missing-fraction error until the operator declares
+Audar-TTS and Zonos2 are declared safe from stage state carried entirely in
+`StagePayload.data`, but neither has benchmark coverage yet and neither ships
+recommended fractions, so a split on a shared GPU fails with the missing-fraction
+error until the operator declares
 `runtime.resources.total_gpu_memory_fraction` for every stage on that GPU.
 
 ## Resource and Performance Trade-offs
 
-Isolation creates another OS process and usually another CUDA context. It can
-improve throughput by overlapping vocoder scheduling and GPU work with
-generation, but it also changes IPC and serialization paths, can increase idle
-VRAM, and may duplicate process-local caches or runtime state.
+Splitting a stage out creates another OS process and usually another CUDA
+context. It can improve throughput by overlapping vocoder scheduling and GPU
+work with generation, but it also changes IPC and serialization paths, can
+increase idle VRAM, and may duplicate process-local caches or runtime state.
+Grouping stages that share a cache or a local handoff keeps that cost down,
+which is what `--stage-process` expresses and `--isolate-stage` cannot.
 
 When multiple processes share one GPU, all affected GPU stages must declare
 compatible `runtime.resources.total_gpu_memory_fraction` values, and their total
 must fit the placement limit. Supported models apply recommended fractions to
-the copied config only when `--isolate-stage` is present, preserving explicitly
-configured fractions. Omitting the option therefore leaves both the declared
+the copied config only when a placement option is present, preserving explicitly
+configured fractions. Omitting both options therefore leaves the declared
 process topology and the default placement totals unchanged.
 
 These fractions are placement-accounting declarations, not proof of an

@@ -3,80 +3,223 @@
 
 from __future__ import annotations
 
-from sglang_omni.config.schema import PipelineConfig, StageResourceConfig
+from sglang_omni.config.schema import PipelineConfig, StageConfig, StageResourceConfig
+
+
+def parse_stage_process_assignment(value: str) -> tuple[str, str]:
+    """Parse one ``STAGE=PROCESS`` placement assignment."""
+    stage_name, separator, process_name = value.partition("=")
+
+    stage_name = stage_name.strip()
+    process_name = process_name.strip()
+
+    if not separator or not stage_name or not process_name:
+        raise ValueError(
+            f"Invalid stage process assignment {value!r}; expected STAGE=PROCESS"
+        )
+
+    return stage_name, process_name
 
 
 def apply_stage_process_overrides(
     pipeline_config: PipelineConfig,
     *,
     isolate_stages: list[str] | None = None,
+    stage_processes: list[str] | None = None,
 ) -> PipelineConfig:
-    """Return a config with selected process-safe stages in their own process."""
-    if not isolate_stages:
+    """Return a config with stages moved into the requested processes.
+
+    ``isolate_stages`` is singleton shorthand: ``--isolate-stage X`` requests the
+    same placement as ``--stage-process X=X``. ``stage_processes`` additionally
+    expresses grouping, because repeating one process name colocates stages.
+    """
+    if not isolate_stages and not stage_processes:
         return pipeline_config
 
     config = pipeline_config.model_copy(deep=True)
     stages = {stage.name: stage for stage in config.stages}
     role_map = type(config).isolation_role_to_stage()
-    process_safe_stages = type(config).process_isolation_stages()
     resource_contracts = type(config).isolation_stage_resources()
-    baseline_groups = _stage_process_groups(config)
-    isolated_stage_names: list[str] = []
+    baseline_processes = _declared_process_map(config)
 
-    for requested_name in isolate_stages:
-        stage = stages.get(requested_name)
-        if stage is None:
-            resolved_name = role_map.get(requested_name)
-            stage = stages.get(resolved_name) if resolved_name is not None else None
-        if stage is None:
-            raise ValueError(f"Unknown stage or isolation role: {requested_name}")
-        if stage.tp_size > 1:
+    requested: dict[str, str] = {}
+    for assignment in stage_processes or []:
+        requested_name, process_name = parse_stage_process_assignment(assignment)
+        stage = _resolve_stage(stages, role_map, requested_name)
+        _reject_tp_stage(stage)
+        requested[stage.name] = process_name
+
+    singleton_stage_names: list[str] = []
+    for requested_name in isolate_stages or []:
+        stage = _resolve_stage(stages, role_map, requested_name)
+        _reject_tp_stage(stage)
+        if stage.name in requested:
             raise ValueError(
-                f"Stage {stage.name!r} already uses one process per TP rank"
+                f"Stage {stage.name!r} cannot use both --isolate-stage and "
+                "--stage-process"
             )
-        # Note (Akazaakane): a stage the model already places alone is the requested
+        # Note (Akazaakane): a stage the model already runs alone is the requested
         # topology, so accept it unchanged instead of demanding a resource contract
         # that would only re-declare fractions the config already carries.
-        if baseline_groups[stage.name][1] == (stage.name,):
+        if _runs_alone(baseline_processes, stage.name):
             continue
-        if stage.name not in process_safe_stages:
-            raise ValueError(f"Stage {stage.name!r} does not support process isolation")
-        for resource_stage_name, memory_fraction in resource_contracts.get(
-            stage.name, {}
-        ).items():
-            resource_stage = stages.get(resource_stage_name)
-            if resource_stage is None:
-                raise ValueError(
-                    f"Isolation resources for stage {stage.name!r} reference "
-                    f"unknown stage {resource_stage_name!r}"
-                )
-            resources = resource_stage.runtime.resources
-            if resources.total_gpu_memory_fraction is None:
-                # Note (Akazaakane): plain attribute assignment skips the field
-                # validator, so an out-of-range contract value would reach placement
-                # accounting unchecked. Re-validate the whole resource block.
-                resource_stage.runtime.resources = StageResourceConfig.model_validate(
-                    {
-                        **resources.model_dump(),
-                        "total_gpu_memory_fraction": memory_fraction,
-                    }
-                )
-        stage.process = stage.name
-        isolated_stage_names.append(stage.name)
+        requested[stage.name] = stage.name
+        singleton_stage_names.append(stage.name)
 
-    if not isolated_stage_names:
+    if not requested:
         return config
 
+    for stage_name, process_name in requested.items():
+        stages[stage_name].process = process_name
+
+    # Capability first: report an unsupported handoff before a missing fraction,
+    # because declaring fractions would not make that split correct.
+    _validate_process_safe_edges(config, baseline_processes)
+
+    for stage_name in singleton_stage_names:
+        _apply_isolation_resources(stages, stage_name, resource_contracts)
+
     resolved_groups = _stage_process_groups(config)
-    for stage_name in isolated_stage_names:
+    for stage_name in singleton_stage_names:
         process_name, group_stage_names = resolved_groups[stage_name]
         if group_stage_names != (stage_name,):
             raise ValueError(
                 f"Stage {stage_name!r} cannot be isolated because process group "
                 f"{process_name!r} also contains stages {list(group_stage_names)}"
             )
+    for stage_name, process_name in requested.items():
+        resolved_name = resolved_groups[stage_name][0]
+        if resolved_name != process_name:
+            raise ValueError(
+                f"Stage {stage_name!r} was assigned to process {process_name!r} "
+                f"but resolved to process group {resolved_name!r}"
+            )
 
     return config
+
+
+def _resolve_stage(
+    stages: dict[str, StageConfig],
+    role_map: dict[str, str],
+    requested_name: str,
+) -> StageConfig:
+    stage = stages.get(requested_name)
+    if stage is None:
+        resolved_name = role_map.get(requested_name)
+        stage = stages.get(resolved_name) if resolved_name is not None else None
+    if stage is None:
+        raise ValueError(f"Unknown stage or isolation role: {requested_name}")
+    return stage
+
+
+def _reject_tp_stage(stage: StageConfig) -> None:
+    if stage.tp_size > 1:
+        raise ValueError(f"Stage {stage.name!r} already uses one process per TP rank")
+
+
+def _runs_alone(process_map: dict[str, str], stage_name: str) -> bool:
+    process_name = process_map.get(stage_name)
+    if process_name is None:
+        return False
+    return sum(1 for name in process_map.values() if name == process_name) == 1
+
+
+def _apply_isolation_resources(
+    stages: dict[str, StageConfig],
+    stage_name: str,
+    resource_contracts: dict[str, dict[str, float]],
+) -> None:
+    for resource_stage_name, memory_fraction in resource_contracts.get(
+        stage_name, {}
+    ).items():
+        resource_stage = stages.get(resource_stage_name)
+        if resource_stage is None:
+            raise ValueError(
+                f"Isolation resources for stage {stage_name!r} reference "
+                f"unknown stage {resource_stage_name!r}"
+            )
+        resources = resource_stage.runtime.resources
+        if resources.total_gpu_memory_fraction is None:
+            # Note (Akazaakane): plain attribute assignment skips the field validator,
+            # so an out-of-range contract value would reach placement accounting
+            # unchecked. Re-validate the whole resource block.
+            resource_stage.runtime.resources = StageResourceConfig.model_validate(
+                {
+                    **resources.model_dump(),
+                    "total_gpu_memory_fraction": memory_fraction,
+                }
+            )
+
+
+def _validate_process_safe_edges(
+    config: PipelineConfig,
+    baseline_processes: dict[str, str],
+) -> None:
+    """Reject handoffs the model has not declared safe to split."""
+    safe_edges = type(config).process_safe_edges()
+    requested_processes = _declared_process_map(config)
+
+    for source, destination in sorted(_pipeline_edges(config)):
+        was_cross_process = _is_cross_process(baseline_processes, source, destination)
+        becomes_cross_process = _is_cross_process(
+            requested_processes, source, destination
+        )
+        if (
+            becomes_cross_process
+            and not was_cross_process
+            and (source, destination) not in safe_edges
+        ):
+            raise ValueError(
+                f"Process split across {source!r} -> {destination!r} is not "
+                "supported by this model"
+            )
+
+
+def _is_cross_process(
+    process_map: dict[str, str],
+    source: str,
+    destination: str,
+) -> bool:
+    # Note (Akazaakane): a TP stage is absent from this map because it already runs
+    # one process per rank, so any edge touching it is crossed either way.
+    if source not in process_map or destination not in process_map:
+        return True
+    return process_map[source] != process_map[destination]
+
+
+def _declared_process_map(config: PipelineConfig) -> dict[str, str]:
+    """Process name per non-TP stage from declarations alone.
+
+    Deliberately independent of GPU placement so an unsupported split is
+    reported before placement accounting rejects a missing memory fraction.
+    """
+    process_by_stage = {
+        stage.name: stage.process
+        for stage in config.stages
+        if stage.tp_size == 1 and stage.process
+    }
+    for group in config.fused_stages or []:
+        members = [name for name in group if name in process_by_stage]
+        if not members:
+            continue
+        shared = process_by_stage[members[0]]
+        for name in members:
+            process_by_stage[name] = shared
+    return process_by_stage
+
+
+def _pipeline_edges(config: PipelineConfig) -> set[tuple[str, str]]:
+    """Every statically declared handoff between two stages."""
+    edges: set[tuple[str, str]] = set()
+    for stage in config.stages:
+        targets = stage.next
+        if isinstance(targets, str):
+            targets = [targets]
+        for target in list(targets or []) + list(stage.stream_to):
+            edges.add((stage.name, target))
+        for source in stage.wait_for or []:
+            edges.add((source, stage.name))
+    return edges
 
 
 def _stage_process_groups(

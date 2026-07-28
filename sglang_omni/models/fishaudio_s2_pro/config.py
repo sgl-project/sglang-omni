@@ -25,9 +25,9 @@ class S2ProPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
-    def process_isolation_stages(cls) -> frozenset[str]:
-        # preprocessing already runs in its own process by default.
-        return frozenset({"preprocessing", "vocoder"})
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # preprocessing -> tts_engine is already cross-process by default.
+        return frozenset({("preprocessing", "tts_engine"), ("tts_engine", "vocoder")})
 
     @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:

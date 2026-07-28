@@ -35,11 +35,12 @@ class MossTTSPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
-    def process_isolation_stages(cls) -> frozenset[str]:
-        # Note (Akazaakane): preprocessing is excluded because it publishes into the
-        # module-level PreparedRequestQueue that the AR stage pops in-process. The
-        # vocoder loads its own processor and reads delayed codes from MossTTSState.
-        return frozenset({"vocoder"})
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
+        # preprocessing publishes into the module-level PreparedRequestQueue that the
+        # AR stage pops in-process. The vocoder loads its own processor and reads
+        # delayed codes from MossTTSState.
+        return frozenset({("tts_engine", "vocoder")})
 
     @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:

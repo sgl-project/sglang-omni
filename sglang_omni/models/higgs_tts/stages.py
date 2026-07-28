@@ -80,6 +80,14 @@ _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
 _REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _VOCODER_COMPILE_WARMUP_FRAME_COUNTS = (1, 8)
 
+# note (kaige li): preprocessing folds these into HiggsTtsState and nothing
+# downstream reads request.inputs again. Leaving them on the request re-pickles
+# the raw reference audio into the payload header on every cross-process hop
+# (audio_encoder -> tts_engine, tts_engine -> vocoder).
+_CONSUMED_REFERENCE_INPUT_KEYS = frozenset(
+    {"reference_audio", "references", "reference_codes"}
+)
+
 
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     """Safe source key for preprocessing waveform-cache lookup."""
@@ -100,6 +108,17 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
         return None
     raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
     return hash_media_item(raw)
+
+
+def _without_consumed_reference_media(inputs: Any) -> Any:
+    """Return inputs with the reference media preprocessing already consumed."""
+    if not isinstance(inputs, dict):
+        return inputs
+    return {
+        key: value
+        for key, value in inputs.items()
+        if key not in _CONSUMED_REFERENCE_INPUT_KEYS
+    }
 
 
 def _reference_code_cache_key_from_waveform(
@@ -202,6 +221,10 @@ def create_preprocessing_executor(
     pre-encoded ``reference_codes``. When raw audio is supplied, defers
     codec encoding (and prompt assembly) to the audio_encoder stage —
     only the loaded waveform is shipped forward.
+
+    Reference media is dropped from ``request.inputs`` once folded into the
+    state, so downstream cross-process hops stop re-pickling the raw audio
+    into the payload header.
     """
     checkpoint_dir = resolve_checkpoint(model_path)
 
@@ -343,6 +366,9 @@ def create_preprocessing_executor(
             return_omni_rollout=bool(params.get("return_omni_rollout", False)),
         )
         payload.data = state.to_dict()
+        payload.request.inputs = _without_consumed_reference_media(
+            payload.request.inputs
+        )
         return payload
 
     return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)

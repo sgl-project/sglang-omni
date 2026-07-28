@@ -11,6 +11,7 @@ from sglang_omni.config import (
     apply_stage_process_overrides,
     build_process_topology_plan,
     build_stage_placement_plan,
+    parse_stage_process_assignment,
 )
 from sglang_omni.config.manager import ConfigManager
 
@@ -25,8 +26,15 @@ def _recording_placement_policy(config: PipelineConfig, plan: object) -> None:
 
 class _IsolationPipelineConfig(PipelineConfig):
     @classmethod
-    def process_isolation_stages(cls) -> frozenset[str]:
-        return frozenset({"a", "b", "c", "audio_decode", "thinker", "vocoder"})
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        return frozenset(
+            {
+                ("a", "b"),
+                ("b", "c"),
+                ("a", "audio_decode"),
+                ("vocoder", "audio_decode"),
+            }
+        )
 
     @classmethod
     def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
@@ -216,7 +224,7 @@ def test_process_override_rejects_stage_not_declared_process_safe() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Stage 'preprocessing' does not support process isolation",
+        match="Process split across 'preprocessing' -> 'tts_engine' is not supported",
     ):
         apply_stage_process_overrides(config, isolate_stages=["preprocessing"])
 
@@ -540,7 +548,7 @@ def test_moss_split_rejects_vocoder_isolation_as_not_process_safe() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Stage 'vocoder' does not support process isolation",
+        match="Process split across 'tts_engine' -> 'vocoder' is not supported",
     ):
         apply_stage_process_overrides(config, isolate_stages=["vocoder"])
 
@@ -722,9 +730,108 @@ def test_process_override_rejects_process_local_handoff_stages(
 
     with pytest.raises(
         ValueError,
-        match=f"Stage '{stage_name}' does not support process isolation",
+        match=f"Process split across '{stage_name}' -> 'tts_engine' is not supported",
     ):
         apply_stage_process_overrides(config, isolate_stages=[stage_name])
+
+
+def test_higgs_can_isolate_preprocessing_and_audio_encoder_separately() -> None:
+    """Singleton isolation of both frontend stages leaves tts_engine alone."""
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(
+        config,
+        isolate_stages=["preprocessing", "audio_encoder"],
+    )
+
+    assert [
+        (group.name, group.stage_names) for group in _topology(isolated).groups
+    ] == [
+        ("preprocessing", ("preprocessing",)),
+        ("audio_encoder", ("audio_encoder",)),
+        ("pipeline", ("tts_engine",)),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(isolated).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.98)
+
+
+def test_higgs_can_group_preprocessing_and_audio_encoder() -> None:
+    """The #1159 topology: one frontend process, keeping their handoff local."""
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    grouped = apply_stage_process_overrides(
+        config,
+        stage_processes=[
+            "preprocessing=tts_frontend",
+            "audio_encoder=tts_frontend",
+        ],
+    )
+
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+        "vocoder",
+    ]
+    assert [(group.name, group.stage_names) for group in _topology(grouped).groups] == [
+        ("tts_frontend", ("preprocessing", "audio_encoder")),
+        ("pipeline", ("tts_engine",)),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(grouped).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.98)
+
+
+def test_stage_process_rejects_unsafe_grouped_split() -> None:
+    """Grouping is validated by the edge it crosses, not by the stage that moved."""
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        ValueError,
+        match="Process split across 'preprocessing' -> 'tts_engine' is not supported",
+    ):
+        apply_stage_process_overrides(
+            config,
+            stage_processes=["preprocessing=frontend"],
+        )
+
+
+def test_stage_process_conflicts_with_isolate_stage() -> None:
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        ValueError,
+        match="cannot use both --isolate-stage and --stage-process",
+    ):
+        apply_stage_process_overrides(
+            config,
+            isolate_stages=["audio_encoder"],
+            stage_processes=["audio_encoder=frontend"],
+        )
+
+
+@pytest.mark.parametrize("value", ["preprocessing", "preprocessing=", "=frontend", ""])
+def test_parse_stage_process_assignment_rejects_malformed_values(value: str) -> None:
+    with pytest.raises(ValueError, match="expected STAGE=PROCESS"):
+        parse_stage_process_assignment(value)
+
+
+def test_parse_stage_process_assignment_strips_whitespace() -> None:
+    assert parse_stage_process_assignment(" preprocessing = frontend ") == (
+        "preprocessing",
+        "frontend",
+    )
 
 
 def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:

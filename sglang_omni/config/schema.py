@@ -264,12 +264,17 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
-    def process_isolation_stages(cls) -> frozenset[str]:
-        """Stages whose boundary stays correct across an OS process split.
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        """Pipeline edges that stay correct once they become cross-process.
 
-        Architectural fact only: every input the stage needs must arrive in the
-        payload rather than through a process-local registry. Independent of
-        whether isolating it also needs GPU memory fractions.
+        Keyed by edge rather than by stage because correctness depends on which
+        handoff crosses a process boundary, not on which stage moved. Grouping
+        ``preprocessing`` with ``audio_encoder`` leaves their shared handoff
+        local and only crosses ``audio_encoder -> tts_engine``.
+
+        An edge is safe when the downstream stage rebuilds everything it needs
+        from the payload rather than from a process-local registry. Independent
+        of whether the split also needs GPU memory fractions.
         """
         return frozenset()
 
