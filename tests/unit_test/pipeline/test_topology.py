@@ -489,12 +489,12 @@ def test_fishaudio_preserves_default_and_can_isolate_vocoder() -> None:
     ].total_gpu_memory_fraction == pytest.approx(0.95)
 
 
-def test_process_override_preserves_explicit_isolation_resources() -> None:
+def test_process_override_warns_but_preserves_understated_resources(caplog) -> None:
     from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 
     config = S2ProPipelineConfig(model_path="dummy")
     stages = {stage.name: stage for stage in config.stages}
-    stages["tts_engine"].runtime.resources.total_gpu_memory_fraction = 0.80
+    stages["tts_engine"].runtime.resources.total_gpu_memory_fraction = 0.01
     stages["vocoder"].runtime.resources.total_gpu_memory_fraction = 0.15
 
     isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
@@ -502,10 +502,14 @@ def test_process_override_preserves_explicit_isolation_resources() -> None:
 
     assert isolated_stages[
         "tts_engine"
-    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.80)
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.01)
     assert isolated_stages[
         "vocoder"
     ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.15)
+    assert (
+        "Stage 'tts_engine' declares total_gpu_memory_fraction=0.01 below "
+        "process-edge resource contract 0.85"
+    ) in caplog.text
 
 
 def test_voxtral_preserves_default_and_can_isolate_vocoder() -> None:
@@ -729,6 +733,36 @@ def test_process_edge_contract_fraction_is_validated_before_placement() -> None:
         apply_stage_process_overrides(config, isolate_stages=["b"])
 
 
+def test_process_edge_contract_rejects_conflicting_stage_recommendations() -> None:
+    class _ConflictingContractConfig(_IsolationPipelineConfig):
+        @classmethod
+        def process_edge_resources(
+            cls,
+        ) -> dict[tuple[str, str], dict[str, float]]:
+            return {
+                ("a", "b"): {"b": 0.30},
+                ("b", "c"): {"b": 0.40},
+            }
+
+    config = _ConflictingContractConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", next_stage="c"),
+            _stage("c", process="pipeline", terminal=True),
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Conflicting process-edge resources for stage 'b'",
+    ):
+        apply_stage_process_overrides(
+            config,
+            stage_processes=["b=b"],
+        )
+
+
 def test_process_override_does_not_run_placement_policy() -> None:
     """Policy execution belongs to prepare_pipeline_runtime, not the override chain."""
     _PLACEMENT_POLICY_CALLS.clear()
@@ -866,6 +900,40 @@ def test_stage_process_conflicts_with_isolate_stage() -> None:
             config,
             isolate_stages=["audio_encoder"],
             stage_processes=["audio_encoder=frontend"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("config_path", "assignments", "stage_name"),
+    [
+        (
+            "sglang_omni.models.higgs_tts.config.HiggsTtsPipelineConfig",
+            ["preprocessing=frontend", "preprocessing=other"],
+            "preprocessing",
+        ),
+        (
+            "sglang_omni.models.ming_tts.config.MingTTSPipelineConfig",
+            ["vocoder=g1", "audio_decode=g2"],
+            "audio_decode",
+        ),
+    ],
+)
+def test_stage_process_rejects_duplicate_resolved_stage(
+    config_path: str,
+    assignments: list[str],
+    stage_name: str,
+) -> None:
+    from sglang_omni.utils.imports import import_string
+
+    config = import_string(config_path)(model_path="dummy")
+
+    with pytest.raises(
+        ValueError,
+        match=f"Stage '{stage_name}' has multiple --stage-process assignments",
+    ):
+        apply_stage_process_overrides(
+            config,
+            stage_processes=assignments,
         )
 
 

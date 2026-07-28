@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from sglang_omni.config.schema import PipelineConfig, StageConfig, StageResourceConfig
+
+logger = logging.getLogger(__name__)
 
 
 def parse_stage_process_assignment(value: str) -> tuple[str, str]:
@@ -47,6 +51,11 @@ def apply_stage_process_overrides(
         requested_name, process_name = parse_stage_process_assignment(assignment)
         stage = _resolve_stage(stages, role_map, requested_name)
         _reject_tp_stage(stage)
+        if stage.name in requested:
+            raise ValueError(
+                f"Stage {stage.name!r} has multiple --stage-process assignments: "
+                f"{requested[stage.name]!r} and {process_name!r}"
+            )
         requested[stage.name] = process_name
 
     singleton_stage_names: list[str] = []
@@ -133,6 +142,7 @@ def _apply_process_edge_resources(
     new_cross_process_edges: set[tuple[str, str]],
     resource_contracts: dict[tuple[str, str], dict[str, float]],
 ) -> None:
+    recommendations: dict[str, tuple[float, tuple[str, str]]] = {}
     for edge in sorted(new_cross_process_edges):
         for resource_stage_name, memory_fraction in resource_contracts.get(
             edge, {}
@@ -143,17 +153,43 @@ def _apply_process_edge_resources(
                     f"Process-edge resources for {edge!r} reference unknown stage "
                     f"{resource_stage_name!r}"
                 )
-            resources = resource_stage.runtime.resources
-            if resources.total_gpu_memory_fraction is None:
-                # Note (Akazaakane): plain attribute assignment skips the field
-                # validator, so an out-of-range contract value would reach placement
-                # accounting unchecked. Re-validate the whole resource block.
-                resource_stage.runtime.resources = StageResourceConfig.model_validate(
-                    {
-                        **resources.model_dump(),
-                        "total_gpu_memory_fraction": memory_fraction,
-                    }
+            validated_fraction = StageResourceConfig.model_validate(
+                {"total_gpu_memory_fraction": memory_fraction}
+            ).total_gpu_memory_fraction
+            assert validated_fraction is not None
+            previous = recommendations.get(resource_stage_name)
+            if previous is not None and previous[0] != validated_fraction:
+                raise ValueError(
+                    f"Conflicting process-edge resources for stage "
+                    f"{resource_stage_name!r}: edge {previous[1]!r} recommends "
+                    f"{previous[0]} but edge {edge!r} recommends "
+                    f"{validated_fraction}"
                 )
+            recommendations[resource_stage_name] = (validated_fraction, edge)
+
+    for resource_stage_name, (memory_fraction, edge) in sorted(recommendations.items()):
+        resource_stage = stages[resource_stage_name]
+        resources = resource_stage.runtime.resources
+        explicit_fraction = resources.total_gpu_memory_fraction
+        if explicit_fraction is None:
+            # Note (Akazaakane): plain attribute assignment skips the field
+            # validator, so re-validate the whole resource block.
+            resource_stage.runtime.resources = StageResourceConfig.model_validate(
+                {
+                    **resources.model_dump(),
+                    "total_gpu_memory_fraction": memory_fraction,
+                }
+            )
+        elif explicit_fraction < memory_fraction:
+            logger.warning(
+                "Stage %r declares total_gpu_memory_fraction=%s below "
+                "process-edge resource contract %s for edge %r; preserving "
+                "the explicit value",
+                resource_stage_name,
+                explicit_fraction,
+                memory_fraction,
+                edge,
+            )
 
 
 def _new_cross_process_edges(

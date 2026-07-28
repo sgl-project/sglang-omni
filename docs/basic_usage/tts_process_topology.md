@@ -32,8 +32,8 @@ python -m sglang_omni.cli serve \
   --isolate-stage vocoder
 ```
 
-`--stage-process STAGE=PROCESS` assigns a stage to a named process. Repeating
-one process name colocates stages in it:
+`--stage-process STAGE=PROCESS` reads left to right: place `STAGE` in
+`PROCESS`. Repeating one process name colocates stages in it:
 
 ```bash
 python -m sglang_omni.cli serve \
@@ -50,9 +50,10 @@ vocoder      : vocoder
 
 `--isolate-stage X` is shorthand for `--stage-process X=X`, so it can only ever
 produce a singleton. Use `--stage-process` for grouped topologies. Naming the
-same stage in both options is an error. Both are repeatable, and literal stage
-names take precedence over role aliases — the stable `vocoder` role resolves to
-Ming-Omni-TTS's model-specific `audio_decode` stage.
+same resolved stage more than once, or naming it in both options, is an error.
+Both options are repeatable, and literal stage names take precedence over role
+aliases — the stable `vocoder` role resolves to Ming-Omni-TTS's model-specific
+`audio_decode` stage.
 
 Requesting a stage the model already runs alone is an idempotent no-op: the
 declared topology and every declared fraction are returned unchanged.
@@ -116,8 +117,10 @@ When multiple processes share one GPU, all affected GPU stages must declare
 compatible `runtime.resources.total_gpu_memory_fraction` values, and their total
 must fit the placement limit. Supported models apply recommended fractions to
 the copied config only when a placement option is present, preserving explicitly
-configured fractions. Omitting both options therefore leaves the declared
-process topology and the default placement totals unchanged.
+configured fractions. An explicit value below the recommendation emits a
+warning, and conflicting recommendations for one stage are rejected. Omitting
+both options therefore leaves the declared process topology and the default
+placement totals unchanged.
 
 These fractions are placement-accounting declarations, not proof of an
 allocator-enforced runtime limit. A factory receives

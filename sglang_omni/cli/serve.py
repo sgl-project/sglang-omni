@@ -946,9 +946,9 @@ def serve(
             "--stage-process",
             metavar="STAGE=PROCESS",
             help=(
-                "Place this stage in the named process. Repeat the flag with "
-                "one process name to colocate several stages in it. Use this "
-                "instead of --isolate-stage for grouped topologies."
+                "Read left to right: place STAGE in PROCESS. Repeat the flag "
+                "with one process name to colocate several stages in it. Use "
+                "this instead of --isolate-stage for grouped topologies."
             ),
         ),
     ] = None,
