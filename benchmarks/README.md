@@ -209,8 +209,10 @@ docstring (sequential phases on CI to reduce OOM risk).
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
 or Fun-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. Use it to measure how ASR concurrency affects throughput,
-latency, and WER for a given workload.
+concurrency level. It reports evaluation coverage and RTFx (successful
+input-audio seconds per wall-clock second) alongside the existing RTF. Use it
+to measure how ASR concurrency affects capacity, latency, and WER for a given
+workload.
 
 Add `--stream` to exercise the transcription SSE path and report text TTFT and
 inter-chunk latency while retaining the terminal transcript for WER:
