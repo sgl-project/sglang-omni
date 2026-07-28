@@ -431,7 +431,7 @@ def test_chunk_scaffold_errors_name_subclass() -> None:
         scheduler.on_stream_chunk(
             "r2", _item([1], {"stream": True, "modality": "text"})
         )
-    with pytest.raises(RuntimeError, match=r"metadata\['stream'\] == True"):
+    with pytest.raises(RuntimeError, match=r"bool metadata\['stream'\]"):
         scheduler.on_stream_chunk("r3", _item([1], {"modality": "audio_codes"}))
     with pytest.raises(TypeError, match="_FakeStreamingVocoder.*torch.Tensor"):
         scheduler.on_stream_chunk(
@@ -618,3 +618,18 @@ def test_stop_release_failure_still_tears_down_session() -> None:
     scheduler.stop()
     assert scheduler._stream_states == {}
     assert scheduler.calls[-3:] == ["release:a", "release:b", "serving_stop"]
+
+
+def test_stream_chunk_accepts_bool_false_stream_flag() -> None:
+    """Talker latches the CLIENT streaming flag into chunk metadata; False is
+    a valid transport value and must not be rejected (see qwen3
+    talker_model_runner metadata={'stream': is_streaming})."""
+    scheduler = _FakeStreamingVocoder(threshold=10)
+    state = scheduler._ingest_stream_item("r", _item([1], {"stream": False}))
+    assert state is not None
+
+
+def test_stream_chunk_rejects_non_bool_stream_flag() -> None:
+    scheduler = _FakeStreamingVocoder(threshold=10)
+    with pytest.raises(RuntimeError, match=r"bool metadata\['stream'\]"):
+        scheduler._ingest_stream_item("r", _item([1], {"stream": "yes"}))

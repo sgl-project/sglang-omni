@@ -53,6 +53,26 @@ with open("tests/data/query_to_cars.wav", "rb") as f:
 resp.raise_for_status()
 print(resp.json()["text"])
 ```
+
+## Stream Transcription
+
+Set the multipart `stream` field to `true` and keep `response_format` as
+`json` or `text` to receive Server-Sent Events (SSE):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The response contains zero or more `transcript.text.delta` events, followed
+by one `transcript.text.done` event with the complete post-processed
+transcript, then `data: [DONE]`. Streaming primarily reduces time to first
+text; it does not change the final transcript.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -61,6 +81,7 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
 | `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
 
@@ -86,6 +107,11 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
   --max-samples 20 --concurrencies 2 --repeats 1
+
+# Measure text TTFT and inter-chunk latency through the SSE endpoint:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
 
 ## Benchmark Results
@@ -93,13 +119,13 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 Measured on a single H100 80 GB (bf16, DP=1, default server settings)
 against the full SeedTTS sets. Each row is the mean of 3 runs with one
 discarded warmup pass per level. RTF is processing time divided by audio
-duration (lower is better). audio_s/s is seconds of audio transcribed per
-wall-clock second.
+duration (lower is better). RTFx is successful input-audio seconds divided by
+wall-clock seconds (higher is better).
 
 SeedTTS EN (1088 clips, mean clip length 4.69 s). Corpus WER was 0.0171 at
 every level through concurrency 32:
 
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 26.44 | 0.038 | 0.047 | 0.0082 | 124 |
 | 2 | 42.55 | 0.047 | 0.058 | 0.0102 | 200 |
@@ -113,7 +139,7 @@ SeedTTS ZH (2020 clips, mean clip length 4.68 s). Corpus WER, effectively
 character level after normalization, was 0.0135 at every level through
 concurrency 32:
 
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | audio_s/s |
+| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
 |---:|---:|---:|---:|---:|---:|
 | 1 | 26.96 | 0.037 | 0.048 | 0.0080 | 126 |
 | 2 | 45.97 | 0.043 | 0.056 | 0.0094 | 215 |

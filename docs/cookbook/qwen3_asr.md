@@ -70,6 +70,8 @@ Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
 SeedTTS reference audio through `/v1/audio/transcriptions`. It defaults to
 `--model-path Qwen/Qwen3-ASR-1.7B`; the shared request and metric logic lives in
 `benchmarks.tasks.asr` and also supports Fun-ASR through `--model-path`.
+The report includes RTF (processing time divided by audio duration) and RTFx
+(successful input-audio seconds divided by wall-clock seconds).
 
 ```bash
 sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8000

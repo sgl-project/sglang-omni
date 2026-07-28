@@ -161,5 +161,5 @@ class FakeCode2WavModel:
     def __call__(self, codes: torch.Tensor) -> torch.Tensor:
         self.calls.append(tuple(codes.shape))
         samples = int(codes.shape[-1]) * self.total_upsample
-        base = codes.to(dtype=torch.float32).sum().item()
+        base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
