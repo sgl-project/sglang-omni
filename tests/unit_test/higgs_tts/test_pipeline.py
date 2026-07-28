@@ -372,6 +372,99 @@ def test_higgs_reference_source_key_ignores_media_type() -> None:
     assert stages._reference_audio_cache_key({"bytes": raw}) == key_wav
 
 
+def test_higgs_preprocessing_prunes_preencoded_reference_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+
+    class FakeAdapter:
+        def __init__(self, _tokenizer) -> None:
+            pass
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [len(text), num_ref_tokens, len(reference_text or "")]
+
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2)._fn
+    payload = StagePayload(
+        request_id="preencoded",
+        request=OmniRequest(
+            inputs={
+                "text": "hello",
+                "reference_text": "speaker",
+                "reference_codes": [[11, 12], [21, 22]],
+                "unrelated": {"keep": True},
+            },
+            params={},
+        ),
+        data={},
+    )
+
+    result = preprocess(payload)
+    state = HiggsTtsState.from_dict(result.data)
+
+    assert result.request.inputs == {
+        "text": "hello",
+        "reference_text": "speaker",
+        "unrelated": {"keep": True},
+    }
+    assert state.reference_codes_delayed is not None
+    assert state.prompt_token_ids == [5, 3, 7]
+    assert state.reference_waveform is None
+
+
+def test_higgs_preprocessing_prunes_raw_reference_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", lambda _tokenizer: object())
+    monkeypatch.setattr(
+        stages,
+        "load_audio_to_24k",
+        lambda _reference_audio: (np.zeros(16, dtype=np.float32), 24000),
+    )
+
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2)._fn
+    payload = StagePayload(
+        request_id="raw-audio",
+        request=OmniRequest(
+            inputs={
+                "text": "hello",
+                "reference_text": "speaker",
+                "reference_audio": {"bytes": b"fake wav"},
+                "references": [{"audio_path": "unused.wav", "text": "speaker"}],
+                "unrelated": 7,
+            },
+            params={},
+        ),
+        data={},
+    )
+
+    result = preprocess(payload)
+    state = HiggsTtsState.from_dict(result.data)
+
+    assert result.request.inputs == {
+        "text": "hello",
+        "reference_text": "speaker",
+        "unrelated": 7,
+    }
+    assert state.target_text == "hello"
+    assert state.reference_text == "speaker"
+    assert state.reference_waveform is not None
+    assert tuple(state.reference_waveform.shape) == (1, 1, 16)
+    assert state.reference_code_cache_key is not None
+
+
 def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(

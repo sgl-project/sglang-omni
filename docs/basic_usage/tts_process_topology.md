@@ -69,11 +69,12 @@ separate declarations:
   only crosses `audio_encoder -> tts_engine`, so it is checked against that edge
   alone. Being a non-TP stage is not sufficient, because some stages exchange
   state through process-local registries a second process cannot read.
-- `isolation_stage_resources()` — which GPU memory fractions to apply when
-  isolation creates another process on a GPU already in use. A recommendation,
-  not a capability. A stage with no recommendation is still placeable when the
-  config already declares fractions or nothing else shares its GPU; otherwise
-  placement validation names the stages whose fractions are missing.
+- `process_edge_resources()` — which GPU memory fractions to apply when an
+  override makes that edge cross processes on a GPU already in use. A
+  recommendation, not a capability. An edge with no recommendation is still
+  splittable when the config already declares fractions or nothing else shares
+  its GPU; otherwise placement validation names the stages whose fractions are
+  missing.
 
 An unsupported handoff is reported before a missing fraction, because declaring
 fractions would not make that split correct.
@@ -83,13 +84,13 @@ fractions would not make that split correct.
 | Model | Process-safe edges | Recommended fractions | Unsupported edges |
 | --- | --- | --- | --- |
 | Higgs-TTS | `preprocessing -> audio_encoder`, `audio_encoder -> tts_engine`, `tts_engine -> vocoder` | none needed; the config already declares 0.03 / 0.85 / 0.10 | — |
-| FishAudio S2-Pro | `preprocessing -> tts_engine`, `tts_engine -> vocoder` | `vocoder` | — |
-| Voxtral TTS | `tts_generation -> vocoder` | `vocoder` | `preprocessing -> tts_generation` |
-| Ming-Omni-TTS | `tts_engine -> audio_decode` | `audio_decode` | `preprocessing -> reference_encode`, `reference_encode -> tts_engine` |
-| MOSS-TTS Local (single-GPU) | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops |
+| FishAudio S2-Pro | `preprocessing -> tts_engine`, `tts_engine -> vocoder` | `tts_engine -> vocoder` | — |
+| Voxtral TTS | `tts_generation -> vocoder` | `tts_generation -> vocoder` | `preprocessing -> tts_generation` |
+| Ming-Omni-TTS | `tts_engine -> audio_decode` | `tts_engine -> audio_decode` | `preprocessing -> reference_encode`, `reference_encode -> tts_engine` |
+| MOSS-TTS Local (single-GPU) | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — preprocessing publishes into a process-local `PreparedRequestQueue` the AR stage pops |
 | MOSS-TTS Local (split) | none | — | all; placement declares GPU 0 while the codec runs on `cuda:1`, so the colocated fractions do not describe this topology |
-| Qwen3-TTS | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
-| MOSS-TTS Delay | `tts_engine -> vocoder` | `vocoder` | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
+| Qwen3-TTS | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
+| MOSS-TTS Delay | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
 | Audar-TTS | `preprocessing -> reference_encoder`, `reference_encoder -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 | Zonos2 | `preprocessing -> speaker_encode`, `speaker_encode -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 

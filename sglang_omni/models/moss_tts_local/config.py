@@ -129,9 +129,11 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return frozenset({("tts_engine", "vocoder")})
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
         return {
-            "vocoder": {
+            ("tts_engine", "vocoder"): {
                 "preprocessing": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
                 "tts_engine": _COLOCATED_TOTAL_GPU_MEMORY_FRACTION,
                 "vocoder": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
@@ -221,7 +223,9 @@ class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
         return frozenset()
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
         return {}
 
     stages: list[StageConfig] = Field(

@@ -279,12 +279,14 @@ class PipelineConfig(BaseModel):
         return frozenset()
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
-        """Map process-safe stages to isolation-time GPU memory fractions.
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        """Map newly crossed pipeline edges to GPU memory fractions.
 
-        Only a placement recommendation applied when the operator asks for
-        isolation. A stage absent here is still isolatable when the config
-        already declares fractions, or when nothing else shares its GPU.
+        Only a placement recommendation applied when an override makes the
+        edge cross processes. An edge absent here is still splittable when the
+        config already declares fractions, or when nothing else shares its GPU.
         """
         return {}
 

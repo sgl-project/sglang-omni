@@ -47,9 +47,11 @@ class MingTTSPipelineConfig(PipelineConfig):
         return frozenset({(TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE)})
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
         return {
-            AUDIO_DECODE_STAGE: {
+            (TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE): {
                 REFERENCE_ENCODE_STAGE: 0.08,
                 TTS_ENGINE_STAGE: 0.72,
                 AUDIO_DECODE_STAGE: 0.12,

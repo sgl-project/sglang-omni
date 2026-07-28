@@ -37,15 +37,10 @@ class _IsolationPipelineConfig(PipelineConfig):
         )
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
-        return {
-            "a": {},
-            "b": {},
-            "c": {},
-            "audio_decode": {},
-            "thinker": {},
-            "vocoder": {},
-        }
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {}
 
 
 class _IsolationAliasPipelineConfig(_IsolationPipelineConfig):
@@ -582,6 +577,57 @@ def test_ar_to_vocoder_boundary_isolates_with_declared_contract(
     ].total_gpu_memory_fraction == pytest.approx(0.95)
 
 
+def test_stage_process_singleton_matches_isolate_stage_resources() -> None:
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+
+    isolated = apply_stage_process_overrides(
+        config,
+        isolate_stages=["vocoder"],
+    )
+    assigned = apply_stage_process_overrides(
+        config,
+        stage_processes=["vocoder=vocoder"],
+    )
+
+    assert assigned.model_dump() == isolated.model_dump()
+
+
+def test_resource_contract_depends_on_split_edge_not_moved_stage() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+
+    config = S2ProPipelineConfig(model_path="dummy")
+
+    overridden = apply_stage_process_overrides(
+        config,
+        stage_processes=["tts_engine=tts_engine"],
+    )
+
+    stages = {stage.name: stage for stage in overridden.stages}
+    assert stages[
+        "tts_engine"
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.85)
+    assert stages[
+        "vocoder"
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.10)
+
+
+def test_qwen_tts_engine_assignment_rejects_unsafe_preprocessing_edge() -> None:
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        ValueError,
+        match="Process split across 'preprocessing' -> 'tts_engine' is not supported",
+    ):
+        apply_stage_process_overrides(
+            config,
+            stage_processes=["tts_engine=tts_engine"],
+        )
+
+
 def test_higgs_vocoder_isolation_is_an_unchanged_no_op() -> None:
     """The model already places the vocoder alone, so the flag must not mutate it."""
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -607,7 +653,7 @@ def test_higgs_can_isolate_audio_encoder_from_declared_fractions() -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="dummy")
-    assert HiggsTtsPipelineConfig.isolation_stage_resources() == {}
+    assert HiggsTtsPipelineConfig.process_edge_resources() == {}
 
     isolated = apply_stage_process_overrides(config, isolate_stages=["audio_encoder"])
 
@@ -661,13 +707,15 @@ def test_process_safe_stage_without_contract_reports_the_missing_fractions(
         apply_stage_process_overrides(config, isolate_stages=[stage_name])
 
 
-def test_isolation_contract_fraction_is_validated_before_placement() -> None:
+def test_process_edge_contract_fraction_is_validated_before_placement() -> None:
     """Contract values must go through the field validator, not raw assignment."""
 
     class _NegativeContractConfig(_IsolationPipelineConfig):
         @classmethod
-        def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
-            return {"b": {"a": -0.5, "b": 0.10}}
+        def process_edge_resources(
+            cls,
+        ) -> dict[tuple[str, str], dict[str, float]]:
+            return {("a", "b"): {"a": -0.5, "b": 0.10}}
 
     config = _NegativeContractConfig(
         model_path="dummy",
@@ -878,6 +926,56 @@ def test_serve_cli_accepts_repeatable_isolate_stage(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert len(launched) == 1
     assert [stage.process for stage in launched[0].stages] == ["pipeline", "b", "c"]
+
+
+def test_serve_cli_accepts_repeatable_stage_process(monkeypatch) -> None:
+    import importlib
+
+    from typer.testing import CliRunner
+
+    from sglang_omni.cli import app
+
+    config = _IsolationPipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", next_stage="c"),
+            _stage("c", process="pipeline", terminal=True),
+        ],
+    )
+    launched: list[PipelineConfig] = []
+    serve_module = importlib.import_module("sglang_omni.cli.serve")
+    monkeypatch.setattr(
+        ConfigManager,
+        "from_file",
+        staticmethod(lambda _path: ConfigManager(config)),
+    )
+    monkeypatch.setattr(
+        serve_module,
+        "launch_server",
+        lambda pipeline_config, **_kwargs: launched.append(pipeline_config),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--config",
+            "ignored.yaml",
+            "--stage-process",
+            "a=frontend",
+            "--stage-process",
+            "b=frontend",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(launched) == 1
+    assert [stage.process for stage in launched[0].stages] == [
+        "frontend",
+        "frontend",
+        "pipeline",
+    ]
 
 
 def test_non_tp_stages_must_declare_process() -> None:

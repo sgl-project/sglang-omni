@@ -28,9 +28,11 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
         return frozenset({(GENERATION_STAGE, VOCODER_STAGE)})
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
         return {
-            VOCODER_STAGE: {
+            (GENERATION_STAGE, VOCODER_STAGE): {
                 GENERATION_STAGE: 0.85,
                 VOCODER_STAGE: 0.10,
             }

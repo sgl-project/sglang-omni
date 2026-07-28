@@ -30,8 +30,15 @@ class S2ProPipelineConfig(PipelineConfig):
         return frozenset({("preprocessing", "tts_engine"), ("tts_engine", "vocoder")})
 
     @classmethod
-    def isolation_stage_resources(cls) -> dict[str, dict[str, float]]:
-        return {"vocoder": {"tts_engine": 0.85, "vocoder": 0.10}}
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {
+            ("tts_engine", "vocoder"): {
+                "tts_engine": 0.85,
+                "vocoder": 0.10,
+            }
+        }
 
     model_path: str
     stages: list[StageConfig] = [

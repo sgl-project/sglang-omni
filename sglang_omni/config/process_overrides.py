@@ -39,7 +39,7 @@ def apply_stage_process_overrides(
     config = pipeline_config.model_copy(deep=True)
     stages = {stage.name: stage for stage in config.stages}
     role_map = type(config).isolation_role_to_stage()
-    resource_contracts = type(config).isolation_stage_resources()
+    resource_contracts = type(config).process_edge_resources()
     baseline_processes = _declared_process_map(config)
 
     requested: dict[str, str] = {}
@@ -72,12 +72,16 @@ def apply_stage_process_overrides(
     for stage_name, process_name in requested.items():
         stages[stage_name].process = process_name
 
+    new_cross_process_edges = _new_cross_process_edges(config, baseline_processes)
+
     # Capability first: report an unsupported handoff before a missing fraction,
     # because declaring fractions would not make that split correct.
-    _validate_process_safe_edges(config, baseline_processes)
-
-    for stage_name in singleton_stage_names:
-        _apply_isolation_resources(stages, stage_name, resource_contracts)
+    _validate_process_safe_edges(config, new_cross_process_edges)
+    _apply_process_edge_resources(
+        stages,
+        new_cross_process_edges,
+        resource_contracts,
+    )
 
     resolved_groups = _stage_process_groups(config)
     for stage_name in singleton_stage_names:
@@ -124,51 +128,56 @@ def _runs_alone(process_map: dict[str, str], stage_name: str) -> bool:
     return sum(1 for name in process_map.values() if name == process_name) == 1
 
 
-def _apply_isolation_resources(
+def _apply_process_edge_resources(
     stages: dict[str, StageConfig],
-    stage_name: str,
-    resource_contracts: dict[str, dict[str, float]],
+    new_cross_process_edges: set[tuple[str, str]],
+    resource_contracts: dict[tuple[str, str], dict[str, float]],
 ) -> None:
-    for resource_stage_name, memory_fraction in resource_contracts.get(
-        stage_name, {}
-    ).items():
-        resource_stage = stages.get(resource_stage_name)
-        if resource_stage is None:
-            raise ValueError(
-                f"Isolation resources for stage {stage_name!r} reference "
-                f"unknown stage {resource_stage_name!r}"
-            )
-        resources = resource_stage.runtime.resources
-        if resources.total_gpu_memory_fraction is None:
-            # Note (Akazaakane): plain attribute assignment skips the field validator,
-            # so an out-of-range contract value would reach placement accounting
-            # unchecked. Re-validate the whole resource block.
-            resource_stage.runtime.resources = StageResourceConfig.model_validate(
-                {
-                    **resources.model_dump(),
-                    "total_gpu_memory_fraction": memory_fraction,
-                }
-            )
+    for edge in sorted(new_cross_process_edges):
+        for resource_stage_name, memory_fraction in resource_contracts.get(
+            edge, {}
+        ).items():
+            resource_stage = stages.get(resource_stage_name)
+            if resource_stage is None:
+                raise ValueError(
+                    f"Process-edge resources for {edge!r} reference unknown stage "
+                    f"{resource_stage_name!r}"
+                )
+            resources = resource_stage.runtime.resources
+            if resources.total_gpu_memory_fraction is None:
+                # Note (Akazaakane): plain attribute assignment skips the field
+                # validator, so an out-of-range contract value would reach placement
+                # accounting unchecked. Re-validate the whole resource block.
+                resource_stage.runtime.resources = StageResourceConfig.model_validate(
+                    {
+                        **resources.model_dump(),
+                        "total_gpu_memory_fraction": memory_fraction,
+                    }
+                )
+
+
+def _new_cross_process_edges(
+    config: PipelineConfig,
+    baseline_processes: dict[str, str],
+) -> set[tuple[str, str]]:
+    requested_processes = _declared_process_map(config)
+    return {
+        (source, destination)
+        for source, destination in _pipeline_edges(config)
+        if not _is_cross_process(baseline_processes, source, destination)
+        and _is_cross_process(requested_processes, source, destination)
+    }
 
 
 def _validate_process_safe_edges(
     config: PipelineConfig,
-    baseline_processes: dict[str, str],
+    new_cross_process_edges: set[tuple[str, str]],
 ) -> None:
     """Reject handoffs the model has not declared safe to split."""
     safe_edges = type(config).process_safe_edges()
-    requested_processes = _declared_process_map(config)
 
-    for source, destination in sorted(_pipeline_edges(config)):
-        was_cross_process = _is_cross_process(baseline_processes, source, destination)
-        becomes_cross_process = _is_cross_process(
-            requested_processes, source, destination
-        )
-        if (
-            becomes_cross_process
-            and not was_cross_process
-            and (source, destination) not in safe_edges
-        ):
+    for source, destination in sorted(new_cross_process_edges):
+        if (source, destination) not in safe_edges:
             raise ValueError(
                 f"Process split across {source!r} -> {destination!r} is not "
                 "supported by this model"
