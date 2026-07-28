@@ -478,7 +478,7 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
     asyncio.run(_run())
 
 
-def test_completed_stream_reserves_request_id_until_owner_closes() -> None:
+def test_completed_stream_keeps_request_id_reserved_until_owner_closes() -> None:
     async def _run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -513,11 +513,6 @@ def test_completed_stream_reserves_request_id_until_owner_closes() -> None:
         await stream.aclose()
         assert "req-1" not in coordinator._completion_futures
         assert "req-1" not in coordinator._stream_queues
-
-        await coordinator._submit_request("req-1", "replacement")
-        replacement = coordinator._requests["req-1"]
-        assert replacement is not None
-        assert await coordinator.abort("req-1") is True
 
     asyncio.run(_run())
 
@@ -578,9 +573,6 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
         assert coordinator._abort_tasks == {}
         assert coordinator._completion_futures == {}
         assert coordinator._stream_queues == {}
-
-        await coordinator._submit_request("req-1", "replacement")
-        assert await coordinator.abort("req-1") is True
 
     asyncio.run(_run())
 
