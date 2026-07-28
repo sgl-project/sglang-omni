@@ -44,22 +44,11 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
-    state = MingOmniPipelineState.from_dict(payload.data)
-    projected = MingOmniPipelineState(
-        prompt=_project_prompt_for_usage(state.prompt),
-        thinker_out=_slim_thinker_out(state.thinker_out),
-        stream_state=_copy_mutable_containers(state.stream_state),
-    )
-    return _payload_with_state(payload, projected)
+    return _project_thinker_output(payload, keep_stream_state=True)
 
 
 def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
-    state = MingOmniPipelineState.from_dict(payload.data)
-    projected = MingOmniPipelineState(
-        prompt=_project_prompt_for_usage(state.prompt),
-        thinker_out=_slim_thinker_out(state.thinker_out),
-    )
-    return _payload_with_state(payload, projected)
+    return _project_thinker_output(payload, keep_stream_state=False)
 
 
 def project_thinker_to_segmenter(payload: StagePayload) -> StagePayload:
@@ -68,6 +57,22 @@ def project_thinker_to_segmenter(payload: StagePayload) -> StagePayload:
         request=payload.request,
         data={},
     )
+
+
+def _project_thinker_output(
+    payload: StagePayload,
+    *,
+    keep_stream_state: bool,
+) -> StagePayload:
+    state = MingOmniPipelineState.from_dict(payload.data)
+    projected = MingOmniPipelineState(
+        prompt=_project_prompt_for_usage(state.prompt),
+        thinker_out=_slim_thinker_out(state.thinker_out),
+        stream_state=(
+            _copy_mutable_containers(state.stream_state) if keep_stream_state else {}
+        ),
+    )
+    return _payload_with_state(payload, projected)
 
 
 def _project_preprocessing_to_encoder(
