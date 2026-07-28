@@ -199,7 +199,13 @@ def make_fun_asr_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> FunASRRequestData:
         params = payload.request.params or {}
-        audio = _load_audio(_audio_source_from_payload(payload))
+        try:
+            audio = _load_audio(_audio_source_from_payload(payload))
+        except Exception as exc:
+            raise ValueError(
+                "Fun-ASR could not decode the uploaded audio; provide a valid "
+                "audio file."
+            ) from exc
         audio_duration_s = float(len(audio) / _SAMPLE_RATE)
         if audio_duration_s > _MAX_AUDIO_DURATION_S:
             raise ValueError(

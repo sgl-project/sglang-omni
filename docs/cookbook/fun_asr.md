@@ -12,7 +12,9 @@ then download the model:
 
 ```bash
 # Use the -hf variant
-hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
+MODEL_REVISION=854d88f94205cd17d2afdb24332130d86fbe654a
+MODEL_PATH=$(hf download FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --revision "${MODEL_REVISION}")
 ```
 
 ## Server Configuration
@@ -22,6 +24,21 @@ Fun-ASR-Nano runs a single ASR stage on one GPU.
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --port 8000
+```
+
+### RTX 4090 (24 GB)
+
+The consumer profile uses BF16, FlashInfer language-model attention, Triton
+multimodal attention, CUDA Graph batches through 16,
+`max_running_requests=16`, `mem_fraction_static=0.65`, and no
+`torch.compile`.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --config examples/configs/fun_asr_rtx4090.yaml \
+  --model-path "${MODEL_PATH}" \
+  --model-name FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
 
@@ -74,13 +91,15 @@ path with `--model-path`.
 # Download the test set once:
 python -m benchmarks.dataset.prepare --dataset seedtts
 
-# Launch Fun-ASR-Nano:
-sgl-omni serve --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+# Launch the RTX 4090 profile:
+sgl-omni serve --config examples/configs/fun_asr_rtx4090.yaml --port 8000
 
-# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
+# Sweep the full SeedTTS EN set (1088 clips), 3 measured repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
-  --concurrencies 1,2,4,8,16,32,64 --repeats 3
+  --model-revision 854d88f94205cd17d2afdb24332130d86fbe654a \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --concurrencies 1,2,4,8,16,32 --repeats 3 --warmup
 
 # Quick smoke on a 20-sample subset:
 python -m benchmarks.eval.benchmark_asr_seedtts \
@@ -89,6 +108,47 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 ```
 
 ## Benchmark Results
+
+### RTX 4090
+
+Measured on Linux 6.8 with one RTX 4090 24,564 MiB (SM89), driver 580.126.20,
+CUDA 13.0, PyTorch 2.11.0, SGLang 0.5.12.post1, and Transformers 5.6.0.
+Each level completed the full pinned dataset with zero skips.
+
+SeedTTS EN (1088 clips), mean of three measured repeats:
+
+| Concurrency | Requests/s | Mean latency (s) | p95 latency (s) | Mean RTF | Audio s/s | Worst corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 20.16 | 0.050 | 0.065 | 0.0107 | 95.46 | 0.0171 |
+| 2 | 34.68 | 0.058 | 0.073 | 0.0125 | 164.24 | 0.0171 |
+| 4 | 55.09 | 0.072 | 0.096 | 0.0157 | 260.90 | 0.0188 |
+| 8 | 85.37 | 0.093 | 0.130 | 0.0203 | 404.30 | 0.0178 |
+| 16 | 114.26 | 0.139 | 0.192 | 0.0302 | 541.14 | 0.0175 |
+| 32 | 111.75 | 0.284 | 0.350 | 0.0619 | 529.25 | 0.0178 |
+
+SeedTTS ZH (2020 clips), mean of three measured repeats:
+
+| Concurrency | Requests/s | Mean latency (s) | p95 latency (s) | Mean RTF | Audio s/s | Worst corpus CER |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 14.36 | 0.071 | 0.102 | 0.0153 | 67.21 | 0.0168 |
+| 2 | 36.95 | 0.054 | 0.068 | 0.0117 | 173.00 | 0.0162 |
+| 4 | 58.50 | 0.068 | 0.091 | 0.0147 | 273.88 | 0.0162 |
+| 8 | 93.33 | 0.085 | 0.123 | 0.0185 | 436.95 | 0.0164 |
+| 16 | 127.25 | 0.125 | 0.182 | 0.0271 | 595.75 | 0.0164 |
+| 32 | 130.64 | 0.243 | 0.305 | 0.0526 | 611.63 | 0.0167 |
+
+The 30-minute mixed workload completed 105,067 requests with zero unexpected
+errors. All 28 malformed-input and 28 cancel/reconnect events passed. Sampled
+free GPU memory never fell below 7,104 MiB, cooldown retained 104 MiB, and
+`/health` remained available. The same run confirmed 29.9-second English audio
+succeeds and 30.1-second audio returns HTTP 400.
+
+EN remains within the existing H100 CI tolerance, but RTX 4090 ZH CER
+(`0.0148`–`0.0168`) is above the H100 raw reference (`0.0135`). This is a
+measured cross-architecture quality difference rather than an H100 parity
+claim.
+
+### H100 reference
 
 Measured on a single H100 80 GB (bf16, DP=1, default server settings)
 against the full SeedTTS sets. Each row is the mean of 3 runs with one
@@ -141,3 +201,5 @@ DP=2 managed router, matching the ASR CI topology.
   context biasing instead).
 - Audio is resampled to 16 kHz before transcription.
 - bf16 is strongly recommended; fp16 can overflow to NaN in the adaptor path.
+- Nsight Compute kernel counters were unavailable on the validation host due to
+  `ERR_NVGPUCTRPERM`; NVML and scheduler-level resource metrics were collected.

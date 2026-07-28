@@ -3,6 +3,7 @@
 
 Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
+    python -m benchmarks.dataset.prepare --dataset covost2-zh-en
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
     python -m benchmarks.dataset.prepare --dataset seedtts-50
     python -m benchmarks.dataset.prepare --dataset mmmu
@@ -23,8 +24,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
+SEEDTTS_DATASET_REVISION = "27f4c1adee83b5b29b7c4b375f6b976324bda308"
+COVOST2_DATASET_ID = "lmms-lab/covost2"
+COVOST2_DATASET_CONFIG = "zh_en"
+COVOST2_DATASET_REVISION = "e38a7a7fba8adcd1563b2169afc3bc7eed202a25"
+
 DATASETS: dict[str, str] = {
-    "seedtts": "zhaochenyang20/seed-tts-eval-arrow",
+    "seedtts": SEEDTTS_DATASET_ID,
+    "covost2-zh-en": f"{COVOST2_DATASET_ID}:{COVOST2_DATASET_CONFIG}",
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
     "seedtts-50": "zhaochenyang20/seed-tts-eval-50-arrow",
     "mmmu": "MMMU/MMMU",
@@ -40,22 +48,47 @@ DATASETS: dict[str, str] = {
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
 }
 
+DATASET_REVISIONS: dict[str, str] = {
+    "seedtts": SEEDTTS_DATASET_REVISION,
+    "covost2-zh-en": COVOST2_DATASET_REVISION,
+}
 
-def download_dataset(repo_id: str, *, quiet: bool = False) -> None:
+
+def download_dataset(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    quiet: bool = False,
+) -> None:
     """Pre-warm the HuggingFace ``datasets`` cache for *repo_id*."""
     from datasets import get_dataset_config_names, load_dataset
     from huggingface_hub import hf_hub_download
 
+    revision_kwargs = {"revision": revision} if revision else {}
     if not quiet:
-        logger.info(f"Pre-warming HuggingFace cache for {repo_id} ...")
+        logger.info(
+            "Pre-warming HuggingFace cache for %s revision=%s ...",
+            repo_id,
+            revision or "default",
+        )
 
     if repo_id == "MMMU/MMMU":
-        config_names = get_dataset_config_names(repo_id)
+        config_names = get_dataset_config_names(repo_id, **revision_kwargs)
         for config_name in config_names:
-            load_dataset(repo_id, config_name, split="validation")
+            load_dataset(
+                repo_id,
+                config_name,
+                split="validation",
+                **revision_kwargs,
+            )
     elif repo_id == "BoJack/MMAR":
-        load_dataset(repo_id)
-        hf_hub_download(repo_id, "mmar-audio.tar.gz", repo_type="dataset")
+        load_dataset(repo_id, **revision_kwargs)
+        hf_hub_download(
+            repo_id,
+            "mmar-audio.tar.gz",
+            repo_type="dataset",
+            **revision_kwargs,
+        )
     elif repo_id.startswith("lmms-lab/mmau:"):
         dataset_id, split = repo_id.split(":", 1)
         load_dataset(
@@ -63,9 +96,16 @@ def download_dataset(repo_id: str, *, quiet: bool = False) -> None:
             split=split,
             data_files={split: f"data/{split}-*.parquet"},
             verification_mode="no_checks",
+            **revision_kwargs,
+        )
+    elif repo_id == f"{COVOST2_DATASET_ID}:{COVOST2_DATASET_CONFIG}":
+        load_dataset(
+            COVOST2_DATASET_ID,
+            COVOST2_DATASET_CONFIG,
+            **revision_kwargs,
         )
     else:
-        load_dataset(repo_id)
+        load_dataset(repo_id, **revision_kwargs)
 
     if not quiet:
         logger.info(f"Dataset {repo_id} cached.")
@@ -79,10 +119,16 @@ def main() -> None:
         default="seedtts",
         help="Dataset to download.",
     )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Dataset revision; known evaluation datasets use a pinned default.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-    download_dataset(DATASETS[args.dataset])
+    revision = args.revision or DATASET_REVISIONS.get(args.dataset)
+    download_dataset(DATASETS[args.dataset], revision=revision)
 
 
 if __name__ == "__main__":

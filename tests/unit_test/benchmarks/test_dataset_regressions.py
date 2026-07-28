@@ -64,6 +64,46 @@ def test_download_dataset_prewarms_all_mmmu_configs(monkeypatch) -> None:
     ]
 
 
+def test_download_dataset_uses_pinned_covost2_config(monkeypatch) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    def fake_load_dataset(
+        repo_id: str,
+        config_name: str,
+        revision: str | None = None,
+    ):
+        calls.append((repo_id, config_name, revision))
+        return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        types.SimpleNamespace(
+            get_dataset_config_names=lambda *args, **kwargs: [],
+            load_dataset=fake_load_dataset,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=lambda *args, **kwargs: None),
+    )
+
+    prepare.download_dataset(
+        prepare.DATASETS["covost2-zh-en"],
+        revision=prepare.COVOST2_DATASET_REVISION,
+        quiet=True,
+    )
+
+    assert calls == [
+        (
+            prepare.COVOST2_DATASET_ID,
+            prepare.COVOST2_DATASET_CONFIG,
+            prepare.COVOST2_DATASET_REVISION,
+        )
+    ]
+
+
 def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     meta_dir = tmp_path / "en"
     meta_dir.mkdir()
@@ -102,9 +142,10 @@ def test_load_seedtts_samples_stages_only_selected_rows(
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
 
-    def fake_load_dataset(repo_id: str, split: str):
+    def fake_load_dataset(repo_id: str, split: str, revision: str | None = None):
         assert repo_id == "zhaochenyang20/seed-tts-eval-arrow"
         assert split == "en"
+        assert revision == prepare.SEEDTTS_DATASET_REVISION
         return dataset
 
     monkeypatch.setitem(
@@ -122,6 +163,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         "zhaochenyang20/seed-tts-eval-arrow",
         max_samples=2,
         split="en",
+        revision=prepare.SEEDTTS_DATASET_REVISION,
     )
 
     assert dataset.selected_indices == [0, 1]

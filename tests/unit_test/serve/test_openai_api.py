@@ -25,6 +25,7 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _speech_audio_response,
+    _transcription_stream,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
@@ -267,6 +268,29 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+
+class BlockingStreamingTranscriptionClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request
+        yield GenerateChunk(
+            request_id=request_id or "transcription-1",
+            modality="text",
+            text="hello",
+            finish_reason=None,
+        )
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class _IdentityTranscriptionAdapter:
+    def postprocess_text(self, text: str) -> str:
+        return text
 
 
 class AdminClient:
@@ -961,6 +985,37 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.stream is False
 
 
+def test_translation_request_builds_whisper_translate_request() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language=None,
+        prompt=None,
+        temperature=None,
+        task="translate",
+    )
+
+    assert gen_req.extra_params == {"task": "translate"}
+    assert gen_req.metadata == {"task": "asr"}
+    assert gen_req.output_modalities == ["text"]
+
+
+def test_audio_text_request_rejects_unknown_task() -> None:
+    with pytest.raises(ValueError, match="Unsupported audio text task"):
+        build_transcription_generate_request(
+            audio_bytes=b"RIFF",
+            filename="sample.wav",
+            content_type="audio/wav",
+            model="openai/whisper-large-v3",
+            language=None,
+            prompt=None,
+            temperature=None,
+            task="summarize",
+        )
+
+
 def test_transcription_request_passes_explicit_temperature() -> None:
     gen_req = build_transcription_generate_request(
         audio_bytes=b"RIFF",
@@ -1016,6 +1071,104 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.model == "openai/whisper-large-v3"
     assert request.prompt["filename"] == "sample.wav"
     assert request.extra_params["language"] == "en"
+
+
+def test_translation_endpoint_returns_english_text_json() -> None:
+    translation_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            translation_client,
+            model_name="openai/whisper-large-v3",
+            architectures=["WhisperForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/translations",
+        data={"model": "openai/whisper-large-v3", "language": "zh"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "hello world"}
+    assert translation_client.requests
+    request = translation_client.requests[0]
+    assert request.model == "openai/whisper-large-v3"
+    assert request.extra_params == {"task": "translate", "language": "zh"}
+
+
+def test_translation_endpoint_marks_verbose_response() -> None:
+    translation_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            translation_client,
+            model_name="openai/whisper-large-v3",
+            architectures=["WhisperForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/translations",
+        data={
+            "model": "openai/whisper-large-v3",
+            "response_format": "verbose_json",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task"] == "translate"
+    assert response.json()["language"] == "english"
+    assert response.json()["text"] == "hello world"
+
+
+def test_translation_endpoint_rejects_non_whisper_pipeline() -> None:
+    translation_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            translation_client,
+            model_name="FunAudioLLM/Fun-ASR-Nano-2512-hf",
+            architectures=["FunAsrNanoForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/translations",
+        data={"model": "FunAudioLLM/Fun-ASR-Nano-2512-hf"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "requires a Whisper ASR pipeline" in response.json()["detail"]
+    assert not translation_client.requests
+
+
+@pytest.mark.asyncio
+async def test_transcription_stream_aborts_when_consumer_closes() -> None:
+    transcription_client = BlockingStreamingTranscriptionClient()
+    request = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="Qwen/Qwen3-ASR-1.7B",
+        language="en",
+        prompt=None,
+        temperature=None,
+        stream=True,
+    )
+    stream = _transcription_stream(
+        transcription_client,
+        request,
+        request_id="transcription-disconnect",
+        adapter=_IdentityTranscriptionAdapter(),
+        duration_s=1.0,
+    )
+
+    first_event = await anext(stream)
+    assert "transcript.text.delta" in first_event
+    await stream.aclose()
+
+    assert transcription_client.aborted == ["transcription-disconnect"]
 
 
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:

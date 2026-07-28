@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -23,6 +24,9 @@ from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 
 _WHISPER_SAMPLE_RATE = 16000
+_MAX_AUDIO_DURATION_S = 30.0
+_SUPPORTED_TASKS = frozenset({"transcribe", "translate"})
+_PREFIX_TOKEN_LOCK = threading.Lock()
 _LANGUAGE_ALIASES = {
     "en": "english",
     "eng": "english",
@@ -35,7 +39,8 @@ class WhisperASRRequestData(SGLangARRequestData):
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
     audio_duration_s: float = 0.0
-    language: str = "en"
+    language: str | None = "english"
+    task: str = "transcribe"
     engine_start_s: float = 0.0
 
 
@@ -61,12 +66,21 @@ def _load_audio(source: Any) -> np.ndarray:
     )
 
 
-def _resolve_language(value: Any) -> str:
+def _resolve_task(value: Any) -> str:
+    task = str(value or "transcribe").strip().lower()
+    if task not in _SUPPORTED_TASKS:
+        raise ValueError(
+            f"Whisper task must be one of {sorted(_SUPPORTED_TASKS)}, got {task!r}"
+        )
+    return task
+
+
+def _resolve_language(value: Any, *, task: str) -> str | None:
     if value is None:
-        return "english"
+        return None if task == "translate" else "english"
     language = str(value).strip().lower()
     if not language:
-        return "english"
+        return None if task == "translate" else "english"
     return _LANGUAGE_ALIASES.get(language, language)
 
 
@@ -77,13 +91,48 @@ def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] |
     return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
 
 
-def _build_prefix_tokens(tokenizer: Any, *, language: str, task: str) -> list[int]:
-    tokenizer.set_prefix_tokens(
-        language=language,
-        task=task,
-        predict_timestamps=False,
-    )
-    return list(tokenizer.prefix_tokens)
+def _build_prefix_tokens(
+    tokenizer: Any, *, language: str | None, task: str
+) -> list[int]:
+    """Build a request-local prefix without leaking tokenizer state.
+
+    Whisper tokenizers store language/task as mutable attributes. Request
+    builders run concurrently, so serialize the short prefix construction and
+    restore the prior state before returning.
+    """
+
+    missing = object()
+    with _PREFIX_TOKEN_LOCK:
+        previous = {
+            name: getattr(tokenizer, name, missing)
+            for name in ("language", "task", "predict_timestamps")
+        }
+        tokenizer.language = language
+        tokenizer.task = task
+        tokenizer.predict_timestamps = False
+        try:
+            return list(tokenizer.prefix_tokens)
+        finally:
+            for name, value in previous.items():
+                if value is missing:
+                    delattr(tokenizer, name)
+                else:
+                    setattr(tokenizer, name, value)
+
+
+def _request_token_budget(params: dict[str, Any], max_new_tokens: int) -> int:
+    explicit = params.get("max_new_tokens")
+    if explicit is None:
+        return max_new_tokens
+    try:
+        requested = int(explicit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_new_tokens must be an integer") from exc
+    if requested < 1 or requested > max_new_tokens:
+        raise ValueError(
+            f"max_new_tokens must be between 1 and {max_new_tokens}, got {requested}"
+        )
+    return requested
 
 
 def make_whisper_scheduler_adapters(
@@ -103,12 +152,23 @@ def make_whisper_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
-        audio = _load_audio(_audio_source_from_payload(payload))
+        try:
+            audio = _load_audio(_audio_source_from_payload(payload))
+        except Exception as exc:
+            raise ValueError(
+                "Whisper ASR could not decode the uploaded audio; provide a valid "
+                "audio file."
+            ) from exc
         audio_duration_s = float(len(audio) / _WHISPER_SAMPLE_RATE)
+        if audio_duration_s > _MAX_AUDIO_DURATION_S:
+            raise ValueError(
+                "Whisper ASR accepts audio up to 30.0 seconds; split longer audio "
+                "before inference."
+            )
         fingerprint = audio_fingerprint(audio)
 
-        language = _resolve_language(params.get("language"))
-        task = str(params.get("task") or "transcribe")
+        task = _resolve_task(params.get("task"))
+        language = _resolve_language(params.get("language"), task=task)
         prompt_token_ids = _build_prefix_tokens(
             tokenizer,
             language=language,
@@ -133,7 +193,7 @@ def make_whisper_scheduler_adapters(
         )
 
         temperature = float(params.get("temperature") or 0.0)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        request_max_new_tokens = _request_token_budget(params, max_new_tokens)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -161,7 +221,8 @@ def make_whisper_scheduler_adapters(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             audio_duration_s=audio_duration_s,
-            language=language,
+            language="english" if task == "translate" else language,
+            task=task,
             engine_start_s=time.perf_counter(),
             stage_payload=payload,
         )
@@ -179,6 +240,7 @@ def make_whisper_scheduler_adapters(
             data={
                 "text": text,
                 "language": data.language,
+                "task": data.task,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
                 "usage": {"engine_time_s": engine_time_s},

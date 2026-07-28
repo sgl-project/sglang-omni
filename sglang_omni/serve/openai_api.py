@@ -126,6 +126,7 @@ _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",
+    "could not decode the uploaded audio",
     "max_new_tokens must be",
     "multimodal_train_inputs",
 )
@@ -1388,7 +1389,9 @@ async def _speech_audio_response(
             if disconnect_task in done:
                 if not next_chunk_task.done():
                     await _cancel_task_bounded(next_chunk_task)
-                await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+                await _abort_and_close_generation_stream(
+                    client, request_id, chunk_stream
+                )
                 stream_closed = True
                 raise asyncio.CancelledError
 
@@ -1414,11 +1417,11 @@ async def _speech_audio_response(
             raise RuntimeError("No audio output generated from the pipeline.")
     except asyncio.CancelledError:
         if not stream_closed:
-            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            await _abort_and_close_generation_stream(client, request_id, chunk_stream)
         raise
     except Exception:
         if not stream_completed:
-            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            await _abort_and_close_generation_stream(client, request_id, chunk_stream)
         else:
             await _close_async_iterator_if_supported(chunk_stream)
         raise
@@ -1454,7 +1457,9 @@ async def _speech_audio_response(
             active_request = False
         finally:
             if active_request:
-                await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+                await _abort_and_close_generation_stream(
+                    client, request_id, chunk_stream
+                )
             else:
                 await _close_async_iterator_if_supported(chunk_stream)
 
@@ -1543,7 +1548,7 @@ async def _close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None
     await close()
 
 
-async def _abort_and_close_speech_stream(
+async def _abort_and_close_generation_stream(
     client: Client,
     request_id: str,
     stream: AsyncIterator[Any],
@@ -1566,107 +1571,165 @@ def _register_transcriptions(app: FastAPI) -> None:
         max_new_tokens: int | None = Form(default=None, ge=1),
         stream: bool = Form(default=False),
     ) -> Response:
-        client: Client = app.state.client
-        default_model: str = app.state.model_name
-        request_id = f"transcription-{uuid.uuid4()}"
-
-        # TODO(Ratish): add the same pre-parser body limit used by voice uploads
-        # once transcription upload limits are defined.
-        audio_bytes = await file.read()
-        if not audio_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
-
-        normalized_response_format = response_format.strip().lower()
-        if stream:
-            if normalized_response_format not in {"json", "text"}:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "stream=true supports only response_format 'json' or "
-                        f"'text', got {response_format!r}"
-                    ),
-                )
-            gen_req = build_transcription_generate_request(
-                audio_bytes=audio_bytes,
-                filename=file.filename,
-                content_type=file.content_type,
-                model=model or default_model,
-                language=language,
-                prompt=prompt,
-                temperature=temperature,
-                max_new_tokens=max_new_tokens,
-                stream=True,
-            )
-            adapter = resolve_adapter(getattr(app.state, "architectures", None))
-            duration_s = _probe_audio_duration(audio_bytes)
-            return StreamingResponse(
-                _transcription_stream(
-                    client,
-                    gen_req,
-                    request_id=request_id,
-                    adapter=adapter,
-                    duration_s=duration_s,
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
-            )
-
-        gen_req = build_transcription_generate_request(
-            audio_bytes=audio_bytes,
-            filename=file.filename,
-            content_type=file.content_type,
-            model=model or default_model,
+        return await _create_audio_text_response(
+            app,
+            file=file,
+            model=model,
             language=language,
             prompt=prompt,
+            response_format=response_format,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
+            stream=stream,
+            task="transcribe",
         )
 
-        try:
-            result = await client.completion(gen_req, request_id=request_id)
-        except ClientError as exc:
-            if _is_bad_request_error(exc):
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        except Exception as exc:
-            if _is_bad_request_error(exc):
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            logger.exception("Error transcribing audio for request %s", request_id)
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        text = result.text
-        if normalized_response_format == "text":
-            return PlainTextResponse(text)
-        if normalized_response_format not in {"json", "verbose_json"}:
+    @app.post("/v1/audio/translations")
+    async def create_translation(
+        file: UploadFile = File(...),
+        model: str | None = Form(default=None),
+        language: str | None = Form(default=None),
+        prompt: str | None = Form(default=None),
+        response_format: str = Form(default="json"),
+        temperature: float | None = Form(default=None),
+    ) -> Response:
+        if not _supports_audio_translation(app):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Unsupported response_format for /v1/audio/transcriptions: "
-                    f"{response_format!r}"
+                    "/v1/audio/translations requires a Whisper ASR pipeline; "
+                    f"the active model is {app.state.model_name!r}."
                 ),
             )
+        return await _create_audio_text_response(
+            app,
+            file=file,
+            model=model,
+            language=language,
+            prompt=prompt,
+            response_format=response_format,
+            temperature=temperature,
+            max_new_tokens=None,
+            stream=False,
+            task="translate",
+        )
 
+
+def _supports_audio_translation(app: FastAPI) -> bool:
+    architectures = getattr(app.state, "architectures", None) or []
+    if architectures:
+        return any(
+            architecture == "WhisperForConditionalGeneration"
+            for architecture in architectures
+        )
+    return "whisper" in str(getattr(app.state, "model_name", "")).lower()
+
+
+async def _create_audio_text_response(
+    app: FastAPI,
+    *,
+    file: UploadFile,
+    model: str | None,
+    language: str | None,
+    prompt: str | None,
+    response_format: str,
+    temperature: float | None,
+    max_new_tokens: int | None,
+    stream: bool,
+    task: str,
+) -> Response:
+    client: Client = app.state.client
+    default_model: str = app.state.model_name
+    request_id = f"{task}-{uuid.uuid4()}"
+
+    # TODO(Ratish): add the same pre-parser body limit used by voice uploads
+    # once transcription upload limits are defined.
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+
+    normalized_response_format = response_format.strip().lower()
+    gen_req = build_transcription_generate_request(
+        audio_bytes=audio_bytes,
+        filename=file.filename,
+        content_type=file.content_type,
+        model=model or default_model,
+        language=language,
+        prompt=prompt,
+        temperature=temperature,
+        max_new_tokens=max_new_tokens,
+        stream=stream,
+        task=task,
+    )
+    if stream:
+        if normalized_response_format not in {"json", "text"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stream=true supports only response_format 'json' or "
+                    f"'text', got {response_format!r}"
+                ),
+            )
         adapter = resolve_adapter(getattr(app.state, "architectures", None))
-        text = adapter.postprocess_text(text)
         duration_s = _probe_audio_duration(audio_bytes)
-        usage = (
-            TranscriptionUsage(seconds=math.ceil(duration_s))
-            if duration_s > 0
-            else None
+        return StreamingResponse(
+            _transcription_stream(
+                client,
+                gen_req,
+                request_id=request_id,
+                adapter=adapter,
+                duration_s=duration_s,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
         )
-        if normalized_response_format == "verbose_json":
-            response = adapter.build_verbose_response(
-                text=text,
-                language=language,
-                audio_duration_s=duration_s,
-            )
-            response.usage = usage
-            return JSONResponse(content=response.model_dump(exclude_none=True))
-        return JSONResponse(
-            content=TranscriptionResponse(text=text, usage=usage).model_dump(
-                exclude_none=True
-            )
+
+    try:
+        result = await client.completion(gen_req, request_id=request_id)
+    except ClientError as exc:
+        if _is_bad_request_error(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        if _is_bad_request_error(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("Error processing audio task=%s request=%s", task, request_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    text = result.text
+    if normalized_response_format == "text":
+        return PlainTextResponse(text)
+    if normalized_response_format not in {"json", "verbose_json"}:
+        endpoint = (
+            "/v1/audio/translations"
+            if task == "translate"
+            else "/v1/audio/transcriptions"
         )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported response_format for {endpoint}: {response_format!r}",
+        )
+
+    adapter = resolve_adapter(getattr(app.state, "architectures", None))
+    text = adapter.postprocess_text(text)
+    duration_s = _probe_audio_duration(audio_bytes)
+    usage = (
+        TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
+    )
+    if normalized_response_format == "verbose_json":
+        response = adapter.build_verbose_response(
+            text=text,
+            language="english" if task == "translate" else language,
+            audio_duration_s=duration_s,
+        )
+        response.task = task
+        response.usage = usage
+        return JSONResponse(content=response.model_dump(exclude_none=True))
+    return JSONResponse(
+        content=TranscriptionResponse(text=text, usage=usage).model_dump(
+            exclude_none=True
+        )
+    )
 
 
 async def _transcription_stream(
@@ -1684,8 +1747,11 @@ async def _transcription_stream(
     post-processed transcript.
     """
     final_text: str | None = None
+    stream = client.generate(gen_req, request_id=request_id)
+    stream_completed = False
+    stream_closed = False
     try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
+        async for chunk in stream:
             if chunk.finish_reason is not None:
                 if isinstance(chunk.text, str) and chunk.text:
                     final_text = chunk.text
@@ -1693,11 +1759,23 @@ async def _transcription_stream(
             if chunk.modality == "text" and chunk.text:
                 event = TranscriptionTextDeltaEvent(delta=chunk.text)
                 yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        stream_completed = True
+    except asyncio.CancelledError:
+        await _abort_and_close_generation_stream(client, request_id, stream)
+        stream_closed = True
+        raise
     except Exception as exc:
+        await _abort_and_close_generation_stream(client, request_id, stream)
+        stream_closed = True
         logger.exception("Error streaming transcription for request %s", request_id)
         payload = {"type": "error", "error": {"message": str(exc)}}
         yield f"data: {json.dumps(payload)}\n\n"
         return
+    finally:
+        if stream_completed:
+            await _close_async_iterator_if_supported(stream)
+        elif not stream_closed:
+            await _abort_and_close_generation_stream(client, request_id, stream)
 
     text = adapter.postprocess_text(final_text or "")
     usage = (
@@ -1737,8 +1815,13 @@ def build_transcription_generate_request(
     temperature: float | None,
     max_new_tokens: int | None = None,
     stream: bool = False,
+    task: str = "transcribe",
 ) -> GenerateRequest:
-    params: dict[str, Any] = {"task": "transcribe"}
+    if task not in {"transcribe", "translate"}:
+        raise ValueError(
+            f"Unsupported audio text task {task!r}; expected 'transcribe' or 'translate'"
+        )
+    params: dict[str, Any] = {"task": task}
     metadata: dict[str, Any] = {"task": "asr"}
     explicit_fields: list[str] = []
     if language is not None:

@@ -1,0 +1,17 @@
+# Conservative single-GPU profile for one RTX 4090 (SM89, 24 GB).
+config_cls: FunASRPipelineConfig
+name: fun-asr-rtx4090
+model_path: FunAudioLLM/Fun-ASR-Nano-2512-hf
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 16
+    enable_torch_compile: false
+    mm_attention_backend: triton_attn
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.65
