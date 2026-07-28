@@ -54,13 +54,13 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             next="audio_encoder",
         ),
         StageConfig(
             name="audio_encoder",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_audio_encoder_executor",
             factory_args={"device": "cuda"},
             gpu=0,

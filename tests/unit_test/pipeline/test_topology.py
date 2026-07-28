@@ -664,8 +664,9 @@ def test_higgs_can_isolate_audio_encoder_from_declared_fractions() -> None:
     assert [
         (group.name, group.stage_names) for group in _topology(isolated).groups
     ] == [
-        ("pipeline", ("preprocessing", "tts_engine")),
+        ("tts_frontend", ("preprocessing",)),
         ("audio_encoder", ("audio_encoder",)),
+        ("pipeline", ("tts_engine",)),
         ("vocoder", ("vocoder",)),
     ]
     assert build_stage_placement_plan(isolated).gpus[
@@ -841,8 +842,22 @@ def test_higgs_can_isolate_preprocessing_and_audio_encoder_separately() -> None:
     ].total_gpu_memory_fraction == pytest.approx(0.98)
 
 
-def test_higgs_can_group_preprocessing_and_audio_encoder() -> None:
-    """The #1159 topology: one frontend process, keeping their handoff local."""
+def test_higgs_groups_preprocessing_and_audio_encoder_by_default() -> None:
+    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    assert [(group.name, group.stage_names) for group in _topology(config).groups] == [
+        ("tts_frontend", ("preprocessing", "audio_encoder")),
+        ("pipeline", ("tts_engine",)),
+        ("vocoder", ("vocoder",)),
+    ]
+    assert build_stage_placement_plan(config).gpus[
+        0
+    ].total_gpu_memory_fraction == pytest.approx(0.98)
+
+
+def test_higgs_can_rename_grouped_frontend() -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="dummy")
@@ -850,19 +865,19 @@ def test_higgs_can_group_preprocessing_and_audio_encoder() -> None:
     grouped = apply_stage_process_overrides(
         config,
         stage_processes=[
-            "preprocessing=tts_frontend",
-            "audio_encoder=tts_frontend",
+            "preprocessing=frontend",
+            "audio_encoder=frontend",
         ],
     )
 
     assert [stage.process for stage in config.stages] == [
-        "pipeline",
-        "pipeline",
+        "tts_frontend",
+        "tts_frontend",
         "pipeline",
         "vocoder",
     ]
     assert [(group.name, group.stage_names) for group in _topology(grouped).groups] == [
-        ("tts_frontend", ("preprocessing", "audio_encoder")),
+        ("frontend", ("preprocessing", "audio_encoder")),
         ("pipeline", ("tts_engine",)),
         ("vocoder", ("vocoder",)),
     ]

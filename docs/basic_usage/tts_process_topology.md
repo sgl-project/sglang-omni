@@ -33,7 +33,9 @@ python -m sglang_omni.cli serve \
 ```
 
 `--stage-process STAGE=PROCESS` reads left to right: place `STAGE` in
-`PROCESS`. Repeating one process name colocates stages in it:
+`PROCESS`. Repeating one process name colocates stages in it. For example, the
+following explicit override produces the topology already declared by the
+built-in Higgs-TTS config:
 
 ```bash
 python -m sglang_omni.cli serve \
@@ -95,8 +97,10 @@ fractions would not make that split correct.
 | Audar-TTS | `preprocessing -> reference_encoder`, `reference_encoder -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 | Zonos2 | `preprocessing -> speaker_encode`, `speaker_encode -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 
-Higgs-TTS already places `vocoder` in its own process by default, so isolating
-it is a no-op; the frontend stages are the boundaries the options actually move.
+Higgs-TTS already groups `preprocessing` and `audio_encoder` in a
+`tts_frontend` process and places `vocoder` in its own process by default.
+Reapplying either placement is a no-op; the options can still fully separate
+the frontend stages or regroup them under another process name.
 
 Audar-TTS and Zonos2 are declared safe from stage state carried entirely in
 `StagePayload.data`, but neither has benchmark coverage yet and neither ships
