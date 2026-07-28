@@ -75,6 +75,14 @@ def _activate_event_capture(monkeypatch) -> list[dict]:
     return events
 
 
+def _seed_stream_state(
+    scheduler: Code2WavScheduler,
+    request_id: str = "req-1",
+) -> None:
+    scheduler._stream_payloads[request_id] = make_qwen_payload(request_id=request_id)
+    scheduler._get_or_create_stream_state(request_id)
+
+
 def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
     from transformers import AutoConfig
     from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
@@ -148,6 +156,30 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
             "dummy",
             device="cuda:0",
             enable_cuda_graph=True,
+        )
+
+    assert load_calls == 0
+
+
+def test_qwen_code2wav_factory_rejects_batching_with_cuda_graph_before_load(
+    monkeypatch,
+) -> None:
+    load_calls = 0
+
+    def _load(*args, **kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        return _FactoryModel()
+
+    monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
+
+    with pytest.raises(ValueError, match="cannot be enabled together"):
+        code2wav_scheduler.create_code2wav_scheduler(
+            "dummy",
+            device="cuda:0",
+            enable_batching=True,
+            enable_cuda_graph=True,
+            total_gpu_memory_fraction=0.02,
         )
 
     assert load_calls == 0
@@ -301,8 +333,7 @@ def test_qwen_code2wav_threshold_context_windows_hit_cuda_graph(monkeypatch) -> 
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
 
     for chunk_id in range(40):
@@ -349,8 +380,7 @@ def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
 
     for chunk_id in range(11):
@@ -388,8 +418,7 @@ def test_qwen_code2wav_request_events_are_symmetric_and_keep_start_metadata(
         left_context_size=1,
         sample_rate=24000,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
 
     for chunk_id, codes in enumerate(([1, 10], [2, 20], [3, 30])):
@@ -462,8 +491,7 @@ def test_qwen_code2wav_eligible_key_miss_has_json_safe_fallback_metadata(
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
 
     for chunk_id in range(6):
@@ -505,8 +533,7 @@ def _run_code2wav_stream(*, cuda_graph: bool) -> tuple[list[tuple], object]:
         enable_cuda_graph=cuda_graph,
         _cuda_graph_runner=runner,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     for chunk_id in range(11):
         scheduler._on_chunk(
             "req-1",
@@ -581,8 +608,7 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
         _cuda_graph_runner=runner,
     )
     runner.scheduler = scheduler
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
 
     for chunk_id in range(2):
         scheduler._on_chunk(
@@ -596,7 +622,9 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
         )
 
     assert runner.lock_was_held == [True, True]
-    assert [chunk.tolist() for chunk in scheduler._audio_chunks["req-1"]] == [
+    assert [
+        chunk.tolist() for chunk in scheduler._stream_states["req-1"].audio_parts
+    ] == [
         [1.0, 1.0],
         [2.0, 2.0],
     ]
@@ -614,8 +642,7 @@ def test_qwen_code2wav_replay_error_reaches_base_abort_without_eager_retry() -> 
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
+    _seed_stream_state(scheduler)
     scheduler.inbox.put(
         IncomingMessage(
             request_id="req-1",
@@ -644,35 +671,40 @@ def test_qwen_code2wav_replay_error_reaches_base_abort_without_eager_retry() -> 
     assert message.type == "error"
     assert message.data is replay_error
     assert scheduler._is_aborted("req-1")
-    assert "req-1" not in scheduler._code_chunks
+    assert "req-1" not in scheduler._stream_states
 
 
-def test_qwen_code2wav_streams_incrementally_and_abort_clears_state() -> None:
-    """Preserves incremental waveform emission and request-state cleanup on abort."""
-    model = FakeCode2WavModel(total_upsample=2)
-    scheduler = Code2WavScheduler(
+def _make_scheduler(model: FakeCode2WavModel) -> Code2WavScheduler:
+    return Code2WavScheduler(
         model,
         device="cpu",
         stream_chunk_size=2,
         left_context_size=1,
         sample_rate=24000,
     )
-    scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._ensure_request_state("req-1")
 
-    chunk_meta = {"stream": False}  # non-streaming: final result carries full PCM
-    scheduler._on_chunk(
-        "req-1",
-        StreamItem(0, torch.tensor([1, 10]), "talker", metadata=chunk_meta),
-    )
-    scheduler._on_chunk(
-        "req-1",
-        StreamItem(1, torch.tensor([2, 20]), "talker", metadata=chunk_meta),
-    )
-    scheduler._on_chunk(
-        "req-1",
-        StreamItem(2, torch.tensor([3, 30]), "talker", metadata=chunk_meta),
-    )
+
+def _feed(
+    scheduler: Code2WavScheduler,
+    request_id: str,
+    codes: tuple[int, ...],
+    *,
+    stream: bool,
+) -> None:
+    meta = {"stream": stream}
+    for i, code in enumerate(codes):
+        scheduler._handle_stream_chunk(
+            request_id,
+            StreamItem(i, torch.tensor([code, code * 10]), "talker", metadata=meta),
+        )
+
+
+def test_qwen_code2wav_streams_incrementally_and_abort_clears_state() -> None:
+    """Preserves incremental waveform windows and request-state cleanup on abort."""
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_scheduler(model)
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    _feed(scheduler, "req-1", (1, 2, 3), stream=False)
     scheduler._on_done("req-1")
 
     message = scheduler.outbox.get_nowait()
@@ -680,10 +712,50 @@ def test_qwen_code2wav_streams_incrementally_and_abort_clears_state() -> None:
     assert model.calls == [(1, 2, 2), (1, 2, 2)]
     assert audio.shape == (6,)
 
-    scheduler._payloads["req-2"] = make_qwen_payload(request_id="req-2")
-    scheduler._ensure_request_state("req-2")
-    scheduler._pending_done.add("req-2")
+    scheduler._stream_payloads["req-2"] = make_qwen_payload(request_id="req-2")
+    scheduler._get_or_create_stream_state("req-2")
     scheduler.abort("req-2")
-    assert "req-2" not in scheduler._code_chunks
-    assert "req-2" not in scheduler._payloads
-    assert "req-2" not in scheduler._pending_done
+    assert "req-2" not in scheduler._stream_states
+
+
+def test_streaming_client_gets_stream_chunks_and_metadata_final() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_scheduler(model)
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    _feed(scheduler, "req-1", (1, 2, 3), stream=True)
+    scheduler._on_done("req-1")
+
+    first = scheduler.outbox.get_nowait()
+    assert first.type == "stream"
+    first_audio = np.frombuffer(first.data["audio_waveform"], dtype=np.float32)
+    assert first_audio.shape == (4,)
+
+    remainder = scheduler.outbox.get_nowait()
+    assert remainder.type == "stream"
+    remainder_audio = np.frombuffer(remainder.data["audio_waveform"], dtype=np.float32)
+    assert remainder_audio.shape == (2,)
+
+    result = scheduler.outbox.get_nowait()
+    assert result.type == "result"
+    assert result.data.data == {"modality": "audio", "sample_rate": 24000}
+    assert model.calls == [(1, 2, 2), (1, 2, 2)]
+
+
+def test_eos_chunk_is_skipped_and_never_decoded() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_scheduler(model)
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    _feed(scheduler, "req-1", (1, 2), stream=False)
+    assert model.calls == [(1, 2, 2)]
+
+    scheduler._handle_stream_chunk(
+        "req-1",
+        StreamItem(2, torch.tensor([2150, 0]), "talker", metadata={"stream": False}),
+    )
+    assert model.calls == [(1, 2, 2)]
+
+    scheduler._on_done("req-1")
+    message = scheduler.outbox.get_nowait()
+    audio = np.frombuffer(message.data.data["audio_waveform"], dtype=np.float32)
+    assert model.calls == [(1, 2, 2)]
+    assert audio.shape == (4,)

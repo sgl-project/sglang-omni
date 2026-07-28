@@ -53,6 +53,7 @@ tests/
     ├── qwen3_omni/
     │   ├── test_cli.py
     │   ├── test_code2wav.py
+    │   ├── test_code2wav_batching.py
     │   ├── test_code2wav_cuda_graph.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
@@ -93,7 +94,9 @@ tests/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   ├── test_stream_output_builder.py
+    │   └── test_streaming_client.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
     │   ├── test_pipeline.py
@@ -101,7 +104,8 @@ tests/
     │   ├── test_stream_output_builder.py
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
-    │   └── test_pipeline.py
+    │   ├── test_pipeline.py
+    │   └── test_predictor_cuda_graph.py
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
@@ -377,7 +381,10 @@ that happened to contain an older version of the test.
   - model audio-feature shape and checkpoint weight-loading contracts
   - request builder: inclusive audio offset recording, language-prompt prefix
     construction, encode-after-validation ordering, and result adapter
-    direct-transcript decoding and token telemetry.
+    direct-transcript decoding and token telemetry
+  - streaming output: request-contract validation, chunked-prefill gating,
+    rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
+    and direct-client aggregation without repeating the terminal transcript.
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
@@ -401,7 +408,8 @@ that happened to contain an older version of the test.
     `_rollback_decode_prep_after_skip` idempotency contract, projected prefill
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
-  - Code2Wav streaming/cleanup behavior
+  - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
+    fire rules, sub-batch decomposition, output equivalence, and lifecycle
   - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory
     budget enforcement, eager fallbacks, replay failures, and JSON-safe stats;
     the `gpu`-marked cases exercise real CUDA stream restoration and graph
@@ -410,7 +418,6 @@ that happened to contain an older version of the test.
     ```bash
     pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m gpu -q
     ```
-
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
 - `unit_test/ming_omni/` Ming-Omni unit tests:
@@ -460,7 +467,9 @@ that happened to contain an older version of the test.
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation
-  - pipeline payload state serialization.
+  - pipeline payload state serialization
+  - code-predictor CUDA-graph bit-identity, capture-failure fallback, top-k
+    ladder masking, and enablement gating (env, `disable_cuda_graph`, TP).
 
 - `unit_test/higgs_tts/`: Higgs TTS unit tests:
   - OmniScheduler-backed AR stage factory wiring

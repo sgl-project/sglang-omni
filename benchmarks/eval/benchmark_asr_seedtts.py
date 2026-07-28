@@ -42,6 +42,11 @@ Usage:
         --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
         --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
 
+    # Run Fun-ASR-Nano with SSE streaming and TTFT metrics:
+    python -m benchmarks.eval.benchmark_asr_seedtts \
+        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+        --concurrencies 32 --repeats 3 --warmup --stream
+
 Reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
 4080 SUPER 32 GB, DP=1, three repeats plus one discarded warmup per level):
 
@@ -147,6 +152,7 @@ async def run_asr_seedtts_once(
     lang: str = "en",
     warmup: int = 0,
     disable_tqdm: bool = True,
+    stream: bool = False,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -159,6 +165,7 @@ async def run_asr_seedtts_once(
         concurrency=concurrency,
         warmup=warmup,
         disable_tqdm=disable_tqdm,
+        stream=stream,
     )
     after = _fetch_worker_snapshot(host, port)
 
@@ -183,12 +190,13 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         model_path=args.model_path,
         lang=args.lang,
         concurrency=concurrency,
+        stream=args.stream,
     )
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
     has_evaluated_samples = summary["evaluated"] > 0
     has_rtf = speed["rtf_p95"] is not None
-    return {
+    result = {
         "concurrency": concurrency,
         "repeat": repeat,
         "evaluated": summary["evaluated"],
@@ -208,6 +216,18 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
     }
+    for key in (
+        "text_ttft_mean_s",
+        "text_ttft_median_s",
+        "text_ttft_p95_s",
+        "text_ttft_p99_s",
+        "inter_chunk_mean_s",
+        "inter_chunk_p95_s",
+        "inter_chunk_p99_s",
+    ):
+        if key in speed:
+            result[key] = speed[key]
+    return result
 
 
 def _aggregate(repeats: list[dict]) -> dict:
@@ -216,7 +236,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         raise ValueError("At least one repeat is required")
 
     def _stat(key: str) -> dict:
-        values = [r[key] for r in repeats if r[key] is not None]
+        values = [r[key] for r in repeats if r.get(key) is not None]
         if not values:
             return {"mean": None, "min": None, "max": None, "n": 0}
         return {
@@ -230,7 +250,7 @@ def _aggregate(repeats: list[dict]) -> dict:
     evaluated = sum(r["evaluated"] for r in repeats)
     skipped = sum(r["skipped"] for r in repeats)
 
-    return {
+    aggregate = {
         "concurrency": repeats[0]["concurrency"],
         "repeats": len(repeats),
         "evaluated": evaluated,
@@ -248,6 +268,18 @@ def _aggregate(repeats: list[dict]) -> dict:
         "rtf_p95": _stat("rtf_p95"),
         "per_repeat": repeats,
     }
+    for key in (
+        "text_ttft_mean_s",
+        "text_ttft_median_s",
+        "text_ttft_p95_s",
+        "text_ttft_p99_s",
+        "inter_chunk_mean_s",
+        "inter_chunk_p95_s",
+        "inter_chunk_p99_s",
+    ):
+        if any(key in repeat for repeat in repeats):
+            aggregate[key] = _stat(key)
+    return aggregate
 
 
 def _format_metric(value: float | None, digits: int, suffix: str = "") -> str:
@@ -255,16 +287,20 @@ def _format_metric(value: float | None, digits: int, suffix: str = "") -> str:
 
 
 def _print_table(aggregates: list[dict]) -> None:
+    include_ttft = any("text_ttft_mean_s" in agg for agg in aggregates)
     header = (
         "| conc | valid reps (lat/RTF/WER) | evaluated/requests | "
         "wall(s) mean | req/s mean | req/s best | RTFx mean | lat mean(s) | "
-        "lat p95(s) | RTF mean | RTF p95 | corpus WER | max WER |"
+        "lat p95(s) | RTF mean | RTF p95 | "
     )
-    sep = "|---:" * 13 + "|"
+    if include_ttft:
+        header += "TTFT mean(s) | TTFT p95(s) | ITL mean(s) | "
+    header += "corpus WER | max WER |"
+    sep = "|---:" * (16 if include_ttft else 13) + "|"
     print("\n" + header)
     print(sep)
     for agg in aggregates:
-        print(
+        row = (
             f"| {agg['concurrency']} "
             f"| {agg['latency_mean_s']['n']}/{agg['repeats']} / "
             f"{agg['rtf_mean']['n']}/{agg['repeats']} / "
@@ -278,9 +314,18 @@ def _print_table(aggregates: list[dict]) -> None:
             f"| {_format_metric(agg['latency_p95_s']['mean'], 3)} "
             f"| {_format_metric(agg['rtf_mean']['mean'], 4)} "
             f"| {_format_metric(agg['rtf_p95']['mean'], 4)} "
+        )
+        if include_ttft:
+            row += (
+                f"| {_format_metric(agg.get('text_ttft_mean_s', {}).get('mean'), 4)} "
+                f"| {_format_metric(agg.get('text_ttft_p95_s', {}).get('mean'), 4)} "
+                f"| {_format_metric(agg.get('inter_chunk_mean_s', {}).get('mean'), 4)} "
+            )
+        row += (
             f"| {_format_metric(agg['corpus_wer']['max'], 4)} "
             f"| {_format_metric(agg['per_sample_wer_max']['max'], 4)} |"
         )
+        print(row)
 
 
 def parse_args() -> argparse.Namespace:
@@ -325,6 +370,14 @@ def parse_args() -> argparse.Namespace:
         help="Run one discarded warmup pass before timing each concurrency.",
     )
     parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Use SSE streaming transcription (stream=true). Fills text_ttft_* "
+            "and inter_chunk_* speed metrics while preserving final-text WER."
+        ),
+    )
+    parser.add_argument(
         "--output",
         default="asr_seedtts_results.json",
         help="Where to write the full JSON results.",
@@ -344,12 +397,13 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 model_path=args.model_path,
                 lang=args.lang,
                 concurrency=concurrency,
+                stream=args.stream,
             )
         repeats: list[dict] = []
         for repeat in range(1, args.repeats + 1):
             result = await _run_repeat(args, samples, concurrency, repeat)
             repeats.append(result)
-            print(
+            line = (
                 f"[conc={concurrency} rep={repeat}] "
                 f"wall={result['wall_clock_s']:.3f}s "
                 f"thrpt={result['throughput_samples_per_s']:.3f}/s "
@@ -357,9 +411,17 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 f"lat_mean={_format_metric(result['latency_mean_s'], 3, 's')} "
                 f"lat_p95={_format_metric(result['latency_p95_s'], 3, 's')} "
                 f"rtf_mean={_format_metric(result['rtf_mean'], 4)} "
+            )
+            if "text_ttft_mean_s" in result:
+                line += (
+                    f"ttft_mean="
+                    f"{_format_metric(result['text_ttft_mean_s'], 4, 's')} "
+                )
+            line += (
                 f"corpus_wer={_format_metric(result['corpus_wer'], 4)} "
                 f"evaluated={result['evaluated']}/{result['total']}"
             )
+            print(line)
             if result["worker"].get("per_worker_routed"):
                 print(f"    routed per worker: {result['worker']['per_worker_routed']}")
         aggregates.append(_aggregate(repeats))
@@ -392,6 +454,7 @@ def main() -> None:
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,
+            "stream": args.stream,
         },
         "results": aggregates,
     }

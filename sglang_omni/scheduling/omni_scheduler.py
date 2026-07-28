@@ -910,18 +910,33 @@ class OmniScheduler:
             if rid in skip_rids or rid in self._aborted_request_ids:
                 continue
             req_output = mr_output.outputs[rid]
-            emitted_any = False
-            for msg in self._stream_output_builder(rid, sched_req.data, req_output):
-                if not emitted_any:
-                    if rid not in self._first_emit_done:
-                        self._first_emit_done.add(rid)
-                        _emit_event(
-                            request_id=rid,
-                            stage=None,
-                            event_name="scheduler_first_emit",
-                        )
-                    emitted_any = True
-                self.outbox.put(msg)
+            self._put_stream_messages(
+                rid,
+                self._stream_output_builder(rid, sched_req.data, req_output),
+            )
+
+    def _put_stream_messages(self, request_id: str, messages: Any) -> None:
+        emitted_any = False
+        for msg in messages:
+            if not emitted_any:
+                if request_id not in self._first_emit_done:
+                    self._first_emit_done.add(request_id)
+                    _emit_event(
+                        request_id=request_id,
+                        stage=None,
+                        event_name="scheduler_first_emit",
+                    )
+                emitted_any = True
+            self.outbox.put(msg)
+
+    def _flush_stream_output(self, request_id: str, req_data: Any) -> None:
+        stream_output_builder = self.__dict__.get("_stream_output_builder")
+        if stream_output_builder is None:
+            return
+        flush = getattr(stream_output_builder, "flush", None)
+        if flush is None:
+            return
+        self._put_stream_messages(request_id, flush(request_id, req_data))
 
     @staticmethod
     def _make_batch_result(batch, mr_output):
@@ -1044,10 +1059,12 @@ class OmniScheduler:
                 else None
             )
             try:
+                self._flush_stream_output(rid, data)
                 result = self._result_adapter(data)
             except Exception as exc:
                 logger.exception(
-                    "OmniScheduler result adapter failed for request %s", rid
+                    "OmniScheduler terminal output handling failed for request %s",
+                    rid,
                 )
                 self._first_emit_done.discard(rid)
                 self._prefill_start_done.discard(rid)

@@ -1783,7 +1783,8 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     assert talker._sub_sample_row_indices_tensor[:1].tolist() == [0]
     assert talker._sub_has_sampled_rows is True
     assert talker._sub_sampled_has_top_p is True
-    assert talker._sub_sampled_max_top_k == 40
+    # top_k=40 ladder-quantizes to 50 (shared predictor-graph key width).
+    assert talker._sub_sampled_max_top_k == 50
     assert talker._sub_sampled_has_unbounded_top_k is False
 
 

@@ -56,6 +56,10 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert code2wav.gpu == 1
     assert code2wav_args["enable_cuda_graph"] is True
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
+    assert "enable_batching" not in code2wav.factory_args
+    assert "max_batch_wait_ms" not in code2wav.factory_args
+    assert "batch_floor" not in code2wav.factory_args
+    assert "batch_ceiling" not in code2wav.factory_args
     assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is True
     assert config.placement.require_memory_fraction_for_colocation is False
     assert {stage.name: stage.process for stage in config.stages} == {
