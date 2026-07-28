@@ -354,8 +354,19 @@ class Coordinator:
                 else:
                     yield msg
         finally:
-            self._stream_queues.pop(request_id, None)
-            self._completion_futures.pop(request_id, None)
+            try:
+                if request_id in self._requests:
+                    try:
+                        await self.abort(request_id)
+                    except Exception:
+                        logger.warning(
+                            "Failed to abort request %s after stream interruption",
+                            request_id,
+                            exc_info=True,
+                        )
+            finally:
+                self._stream_queues.pop(request_id, None)
+                self._completion_futures.pop(request_id, None)
 
     async def _submit_request(
         self, request_id: str, request: OmniRequest | Any

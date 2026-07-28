@@ -330,6 +330,131 @@ async def _drive_stream_until_registered(coordinator: Coordinator, request_id: s
     return task, error_sink, future
 
 
+def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        first_chunk = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id="req-1",
+                from_stage="decode",
+                chunk={"text": "hello"},
+                modality="text",
+            )
+        )
+        await first_chunk
+        await stream.aclose()
+
+        assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
+        assert "req-1" not in coordinator._requests
+        assert "req-1" not in coordinator._stream_queues
+        assert "req-1" not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stream_natural_completion_does_not_abort() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        async def _consume() -> list[CompleteMessage | StreamMessage]:
+            return [
+                message
+                async for message in coordinator.stream(
+                    "req-1", OmniRequest(inputs="hello")
+                )
+            ]
+
+        task = asyncio.create_task(_consume())
+        for _ in range(100):
+            if "req-1" in coordinator._requests:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_completion(
+            CompleteMessage(
+                request_id="req-1",
+                from_stage="decode",
+                success=True,
+                result={"text": "hello"},
+            )
+        )
+        messages = await task
+
+        assert len(messages) == 1
+        assert control_plane.aborts == []
+        assert "req-1" not in coordinator._requests
+        assert "req-1" not in coordinator._stream_queues
+        assert "req-1" not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stream_abort_failure_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingAbortControlPlane(RecordingCoordinatorControlPlane):
+        async def broadcast_abort(self, msg) -> None:
+            self.aborts.append(msg)
+            raise RuntimeError("abort transport unavailable")
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = FailingAbortControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
+        first_chunk = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if "req-1" in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id="req-1",
+                from_stage="decode",
+                chunk={"text": "hello"},
+                modality="text",
+            )
+        )
+        await first_chunk
+        await stream.aclose()
+
+        assert "req-1" not in coordinator._stream_queues
+        assert "req-1" not in coordinator._completion_futures
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(_run())
+    assert "Failed to abort request req-1 after stream interruption" in caplog.text
+
+
 def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception() -> (
     None
 ):

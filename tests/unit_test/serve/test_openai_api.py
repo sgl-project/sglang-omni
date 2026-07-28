@@ -24,7 +24,9 @@ from sglang_omni.serve.openai_api import (
     _await_speech_response,
     _build_chat_generate_request,
     _chat_stream,
+    _ClosableStreamingResponse,
     _speech_audio_response,
+    _transcription_stream,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
@@ -267,6 +269,24 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+
+class _IdentityTranscriptionAdapter:
+    def postprocess_text(self, text: str) -> str:
+        return text
+
+
+def _streaming_client() -> tuple[Client, Coordinator, RecordingCoordinatorControlPlane]:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        terminal_stages=["decode"],
+    )
+    control_plane = RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("preprocess", "inproc://preprocess")
+    return Client(coordinator), coordinator, control_plane
 
 
 class AdminClient:
@@ -643,6 +663,149 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
 
     assert chunks
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+
+
+def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-asgi-disconnect"
+        request = ChatCompletionRequest(
+            model="qwen3-omni",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+        response = _ClosableStreamingResponse(
+            _chat_stream(
+                client=client,
+                gen_req=GenerateRequest(
+                    model="qwen3-omni", prompt="hello", stream=True
+                ),
+                request_id=request_id,
+                response_id=f"chatcmpl-{request_id}",
+                created=0,
+                model="qwen3-omni",
+                req=request,
+                audio_format="wav",
+            ),
+            media_type="text/event-stream",
+        )
+
+        body_ready = asyncio.Event()
+
+        async def send(message: dict[str, Any]) -> None:
+            if message["type"] != "http.response.body":
+                return
+            body_ready.set()
+            raise RuntimeError("client vanished during body send")
+
+        async def receive() -> dict[str, Any]:
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/v1/chat/completions",
+            "raw_path": b"/v1/chat/completions",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        }
+        response_task = asyncio.create_task(response(scope, receive, send))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+
+        await body_ready.wait()
+        with pytest.raises(RuntimeError, match="client vanished during body send"):
+            await response_task
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_client_completion_stream_close_reaches_coordinator_owner() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-client-close"
+        stream = client.completion_stream(
+            GenerateRequest(model="qwen3-omni", prompt="hello", stream=True),
+            request_id=request_id,
+        )
+        first_chunk = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+        await first_chunk
+        await stream.aclose()
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_transcription_stream_close_reaches_coordinator_owner() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-transcription-close"
+        stream = _transcription_stream(
+            client,
+            GenerateRequest(model="whisper", prompt="hello", stream=True),
+            request_id=request_id,
+            adapter=_IdentityTranscriptionAdapter(),
+            duration_s=1.0,
+        )
+        first_event = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+        await first_event
+        await stream.aclose()
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
 
 
 def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
