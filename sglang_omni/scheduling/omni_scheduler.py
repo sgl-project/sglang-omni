@@ -122,6 +122,7 @@ class OmniScheduler:
         prefill_coalesce_wait_ms: float = 60.0,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -135,6 +136,8 @@ class OmniScheduler:
         self._stream_chunk_handler = stream_chunk_handler
         self._stream_done_handler = stream_done_handler
         self._abort_callback = abort_callback
+        self._shutdown_callback = shutdown_callback
+        self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
@@ -1096,13 +1099,24 @@ class OmniScheduler:
                 self._event_loop_normal()
         finally:
             self._scheduler_thread_id = None
-            self._shutdown_request_build_executor()
+            try:
+                self._shutdown_request_build_executor()
+            finally:
+                self._shutdown_resources()
 
     def event_loop(self) -> None:
         self.start()
 
     def stop(self) -> None:
         self._running = False
+        self._shutdown_resources()
+
+    def _shutdown_resources(self) -> None:
+        with self._shutdown_lock:
+            callback = self._shutdown_callback
+            self._shutdown_callback = None
+        if callback is not None:
+            callback()
 
     def _shutdown_request_build_executor(self) -> None:
         executor = self._request_build_executor

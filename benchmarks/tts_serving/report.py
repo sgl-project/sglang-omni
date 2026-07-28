@@ -31,7 +31,11 @@ from benchmarks.tts_serving.scenarios import (
     Scenario,
     scenario_set_hash,
 )
-from benchmarks.tts_serving.spec import BenchmarkSpec, redact_sensitive_metadata
+from benchmarks.tts_serving.spec import (
+    BenchmarkSpec,
+    redact_sensitive_metadata,
+    workload_spec_hash,
+)
 
 
 def build_results_report(
@@ -90,9 +94,10 @@ def build_results_report(
         and _is_benchmark_passed(spec, results, capabilities)
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "scenario_schema_version": SCENARIO_SCHEMA_VERSION,
         "scenario_set_hash": scenario_set_hash(scenarios) if scenarios else None,
+        "workload_spec_hash": workload_spec_hash(spec),
         "harness_status": harness_status,
         "harness_error": harness_error,
         "overall": {
@@ -165,11 +170,13 @@ def build_results_report(
             ),
             "load_generation_error": _load_generation_error(results),
             "rtf": _summary(rtfs),
-            "rtf_sampled_formats": ["wav", "pcm"],
-            "rtf_unsupported_format_counts": _rtf_unsupported_format_counts(results),
+            "rtf_sampled_formats": list(RESPONSE_FORMATS),
+            "rtf_missing_duration_format_counts": (
+                _rtf_missing_duration_format_counts(results)
+            ),
             "rtf_note": (
-                "RTF is computed only when audio duration can be derived from WAV "
-                "headers or raw PCM byte counts; compressed responses are excluded."
+                "RTF is computed when response validation derives a positive "
+                "audio duration."
             ),
             "status_counts": dict(status_counts),
             "http_status_counts": dict(
@@ -187,6 +194,8 @@ def build_results_report(
             "endpoint_mix": dict(Counter(result.endpoint for result in results)),
             "by_category": _by_category(spec, results),
             "by_stage": _by_stage(spec, results),
+            "by_workload": _by_workload(spec, results),
+            "by_stage_and_workload": _by_stage_and_workload(spec, results),
             "by_endpoint": _by_endpoint(spec, results),
             "by_operation": _by_operation(spec, results),
             "by_configured_concurrency": _by_configured_concurrency(spec, results),
@@ -274,6 +283,7 @@ def _endpoint_capabilities(
 def _summary(values: list[float]) -> dict[str, float | None]:
     if not values:
         return {
+            "min": None,
             "mean": None,
             "p50": None,
             "p95": None,
@@ -283,6 +293,7 @@ def _summary(values: list[float]) -> dict[str, float | None]:
         }
     values_sorted = sorted(values)
     return {
+        "min": min(values_sorted),
         "mean": statistics.fmean(values_sorted),
         "p50": _percentile(values_sorted, 0.50),
         "p95": _percentile(values_sorted, 0.95),
@@ -320,6 +331,39 @@ def _by_stage(
     return {
         stage_id: _result_group_summary(spec, stage_results)
         for stage_id, stage_results in sorted(grouped.items())
+    }
+
+
+def _by_workload(
+    spec: BenchmarkSpec,
+    results: list[ScenarioResult],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[ScenarioResult]] = defaultdict(list)
+    for result in results:
+        if result.workload is not None:
+            grouped[result.workload].append(result)
+    return {
+        workload: _result_group_summary(spec, workload_results)
+        for workload, workload_results in sorted(grouped.items())
+    }
+
+
+def _by_stage_and_workload(
+    spec: BenchmarkSpec,
+    results: list[ScenarioResult],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    grouped: dict[str, dict[str, list[ScenarioResult]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for result in results:
+        if result.workload is not None:
+            grouped[result.stage_id or "unknown"][result.workload].append(result)
+    return {
+        stage_id: {
+            workload: _result_group_summary(spec, workload_results)
+            for workload, workload_results in sorted(by_workload.items())
+        }
+        for stage_id, by_workload in sorted(grouped.items())
     }
 
 
@@ -459,10 +503,8 @@ def _coverage_failures(
         failures.append(_coverage_gap(f"{endpoint}.enabled", [endpoint]))
     if "speech" in enabled_endpoint_set:
         failures.extend(_speech_coverage_failures(spec, scenarios))
-    if "speech_stream" in enabled_endpoint_set and not _has_capability(
-        scenarios, "speech.stream"
-    ):
-        failures.append(_coverage_gap("speech.stream", ["speech.stream"]))
+    if "speech_stream" in enabled_endpoint_set:
+        failures.extend(_speech_stream_coverage_failures(scenarios))
     if "batch" in enabled_endpoint_set:
         failures.extend(_batch_coverage_failures(scenarios))
     if "voices" in enabled_endpoint_set:
@@ -509,6 +551,8 @@ def _coverage_matrix(
 
     if "speech" in enabled_endpoint_set:
         rows.extend(_speech_coverage_matrix(spec, scenarios))
+    if "speech_stream" in enabled_endpoint_set:
+        rows.extend(_speech_stream_coverage_matrix(spec, scenarios))
     if "batch" in enabled_endpoint_set:
         rows.extend(_batch_coverage_matrix(spec, scenarios))
     if "voices" in enabled_endpoint_set:
@@ -605,6 +649,7 @@ def _speech_coverage_matrix(
                 {
                     "valid_reference",
                     "valid_base64_ref_audio",
+                    "valid_structured_references",
                     "valid_file_ref_audio",
                     "x_vector_only_mode",
                     *(case for case, _ in REFERENCE_FAILURES),
@@ -614,6 +659,7 @@ def _speech_coverage_matrix(
             expected=[
                 "valid_reference",
                 "valid_base64_ref_audio",
+                "valid_structured_references",
                 "valid_file_ref_audio",
                 "x_vector_only_mode",
                 *(case for case, _ in REFERENCE_FAILURES),
@@ -702,8 +748,38 @@ def _speech_coverage_matrix(
                 }
             ),
         ),
+        _coverage_matrix_row(
+            spec,
+            "speech.disconnect",
+            tested=_has_capability(speech_scenarios, "speech.disconnect"),
+            expected=["speech.disconnect"],
+            observed=_capabilities_for(speech_scenarios, {"speech.disconnect"}),
+        ),
     ]
     return rows
+
+
+def _speech_stream_coverage_matrix(
+    spec: BenchmarkSpec,
+    scenarios: list[Scenario],
+) -> list[dict[str, Any]]:
+    stream_scenarios = [
+        scenario for scenario in scenarios if scenario.endpoint == "speech_stream"
+    ]
+    return [
+        _coverage_matrix_row(
+            spec,
+            capability,
+            tested=_has_capability(stream_scenarios, capability),
+            expected=[capability],
+            observed=_capabilities_for(stream_scenarios, {capability}),
+        )
+        for capability in (
+            "speech.stream",
+            "speech.stream.validation",
+            "speech.stream_disconnect",
+        )
+    ]
 
 
 def _batch_coverage_matrix(
@@ -730,11 +806,18 @@ def _batch_coverage_matrix(
             "batch.cases",
             tested=not _value_coverage_gap(
                 "batch.cases",
-                {"all_valid", "item_error", "item_overrides"},
+                {"all_valid", "disconnect", "item_error", "item_overrides"},
                 _metadata_values(batch_scenarios, "batch_case"),
             ),
-            expected=["all_valid", "item_error", "item_overrides"],
+            expected=["all_valid", "disconnect", "item_error", "item_overrides"],
             observed=sorted(_metadata_values(batch_scenarios, "batch_case")),
+        ),
+        _coverage_matrix_row(
+            spec,
+            "batch.disconnect",
+            tested=_has_capability(batch_scenarios, "batch.disconnect"),
+            expected=["batch.disconnect"],
+            observed=_capabilities_for(batch_scenarios, {"batch.disconnect"}),
         ),
     ]
 
@@ -1094,6 +1177,7 @@ def _speech_coverage_failures(
             {
                 "valid_reference",
                 "valid_base64_ref_audio",
+                "valid_structured_references",
                 "valid_file_ref_audio",
                 "x_vector_only_mode",
                 *(case for case, _ in REFERENCE_FAILURES),
@@ -1127,7 +1211,26 @@ def _speech_coverage_failures(
                 ["speech.openai_sdk_error"],
             )
         )
+    if not _has_capability(speech_scenarios, "speech.disconnect"):
+        failures.append(_coverage_gap("speech.disconnect", ["speech.disconnect"]))
     return failures
+
+
+def _speech_stream_coverage_failures(
+    scenarios: list[Scenario],
+) -> list[dict[str, Any]]:
+    stream_scenarios = [
+        scenario for scenario in scenarios if scenario.endpoint == "speech_stream"
+    ]
+    return [
+        _coverage_gap(capability, [capability])
+        for capability in (
+            "speech.stream",
+            "speech.stream.validation",
+            "speech.stream_disconnect",
+        )
+        if not _has_capability(stream_scenarios, capability)
+    ]
 
 
 def _batch_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
@@ -1145,10 +1248,12 @@ def _batch_coverage_failures(scenarios: list[Scenario]) -> list[dict[str, Any]]:
     failures.extend(
         _value_coverage_gap(
             "batch.cases",
-            {"all_valid", "item_error", "item_overrides"},
+            {"all_valid", "disconnect", "item_error", "item_overrides"},
             _metadata_values(batch_scenarios, "batch_case"),
         )
     )
+    if not _has_capability(batch_scenarios, "batch.disconnect"):
+        failures.append(_coverage_gap("batch.disconnect", ["batch.disconnect"]))
     return failures
 
 
@@ -1528,6 +1633,24 @@ def _result_group_summary(
         result.ttfa_s for result in successful_results if result.ttfa_s is not None
     ]
     rtfs = [result.rtf for result in successful_results if result.rtf > 0]
+    inter_chunks = [
+        interval for result in successful_results for interval in result.inter_chunk_s
+    ]
+    prompt_tokens = [
+        float(result.prompt_tokens)
+        for result in successful_results
+        if result.prompt_tokens is not None
+    ]
+    completion_tokens = [
+        float(result.completion_tokens)
+        for result in successful_results
+        if result.completion_tokens is not None
+    ]
+    audio_durations = [
+        result.audio_duration_s
+        for result in successful_results
+        if result.audio_duration_s > 0
+    ]
     queue_waits = [
         result.queue_wait_s
         for result in successful_results
@@ -1581,6 +1704,8 @@ def _result_group_summary(
     failed = len(results) - succeeded
     return {
         "total": len(results),
+        "successful_request_count": len(successful_results),
+        "metric_sample_counts": _metric_sample_counts(successful_results),
         "succeeded": succeeded,
         "failed": failed,
         "wall_time_s": wall_time_s,
@@ -1632,6 +1757,11 @@ def _result_group_summary(
         ),
         "latency_s": _summary(latencies),
         "ttfa_s": _summary(ttfas),
+        "inter_chunk_s": _summary(inter_chunks),
+        "prompt_tokens": _summary(prompt_tokens),
+        "completion_tokens": _summary(completion_tokens),
+        "audio_duration_s": _summary(audio_durations),
+        "output_tok_per_req_s": _output_tok_per_req_s(successful_results),
         "queue_wait_s": _summary(queue_waits),
         "generator_lag_s": _summary(generator_lags),
         "rtf": _summary(rtfs),
@@ -1653,6 +1783,50 @@ def _result_group_summary(
 
 def _roll_up_endpoint_capability(statuses: list[str]) -> str:
     return _roll_up_capability(statuses)
+
+
+def _metric_sample_counts(results: list[ScenarioResult]) -> dict[str, int]:
+    return {
+        "latency_s": sum(result.latency_s > 0 for result in results),
+        "ttfa_s": sum(result.ttfa_s is not None for result in results),
+        "inter_chunk_s": sum(bool(result.inter_chunk_s) for result in results),
+        "prompt_tokens": sum(result.prompt_tokens is not None for result in results),
+        "completion_tokens": sum(
+            result.completion_tokens is not None for result in results
+        ),
+        "audio_duration_s": sum(result.audio_duration_s > 0 for result in results),
+        "output_tok_per_req_s": sum(
+            result.completion_tokens is not None
+            and result.engine_time_s is not None
+            and result.engine_time_s > 0
+            for result in results
+        ),
+        "generation_metrics_complete": sum(
+            result.prompt_tokens is not None
+            and result.completion_tokens is not None
+            and result.engine_time_s is not None
+            and result.engine_time_s > 0
+            and result.audio_duration_s > 0
+            for result in results
+        ),
+        "rtf": sum(result.rtf > 0 for result in results),
+    }
+
+
+def _output_tok_per_req_s(results: list[ScenarioResult]) -> float | None:
+    measured = [
+        result
+        for result in results
+        if result.completion_tokens is not None
+        and result.engine_time_s is not None
+        and result.engine_time_s > 0
+    ]
+    total_engine_time_s = sum(result.engine_time_s or 0.0 for result in measured)
+    if not measured or total_engine_time_s <= 0:
+        return None
+    return (
+        sum(result.completion_tokens or 0 for result in measured) / total_engine_time_s
+    )
 
 
 def _admission_status_counts(results: list[ScenarioResult]) -> dict[str, int]:
@@ -1686,16 +1860,13 @@ def _load_generation_error(results: list[ScenarioResult]) -> str | None:
     return None
 
 
-def _rtf_unsupported_format_counts(results: list[ScenarioResult]) -> dict[str, int]:
+def _rtf_missing_duration_format_counts(
+    results: list[ScenarioResult],
+) -> dict[str, int]:
     counts = Counter()
     for result in results:
         response_format = (result.response_format or "").lower()
-        if (
-            response_format
-            and response_format not in {"wav", "pcm"}
-            and result.audio_bytes > 0
-            and result.rtf == 0
-        ):
+        if response_format and result.audio_bytes > 0 and result.rtf == 0:
             counts[response_format] += 1
     return dict(counts)
 

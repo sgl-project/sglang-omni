@@ -26,6 +26,7 @@ class ScenarioResult:
     endpoint: str
     category: str
     capability_key: str | None = None
+    workload: str | None = None
     stage_id: str | None = None
     load_mode: str | None = None
     load_concurrency: int | None = None
@@ -57,6 +58,9 @@ class ScenarioResult:
     batch_size: int | None = None
     audio_duration_s: float = 0.0
     rtf: float = 0.0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    engine_time_s: float | None = None
     error_type: str | None = None
     error_class: str | None = None
     error: str | None = None

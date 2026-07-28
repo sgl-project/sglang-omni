@@ -793,6 +793,20 @@ def test_stage_output_cache_tracks_bytes_and_detaches() -> None:
     assert cache.current_bytes == 8
 
 
+def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    shutdowns: list[None] = []
+    scheduler._running = True
+    scheduler._shutdown_lock = threading.Lock()
+    scheduler._shutdown_callback = lambda: shutdowns.append(None)
+
+    scheduler.stop()
+    scheduler.stop()
+
+    assert scheduler._running is False
+    assert shutdowns == [None]
+
+
 def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     """Covers per-request build errors before an SGLang Req exists."""
     scheduler = object.__new__(OmniScheduler)

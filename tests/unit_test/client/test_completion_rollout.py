@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from sglang_omni.client import Client
+from sglang_omni.client.client import _extract_inputs
 from sglang_omni.client.types import GenerateRequest
 
 
@@ -164,3 +167,26 @@ def test_completion_concatenates_streamed_logprobs() -> None:
     assert out.output_token_logprobs == [[-0.1, 11], [-0.2, 22], [-0.3, 33]]
     assert out.weight_version == "v7"
     assert out.omni_rollout == {"version": 1, "action_streams": []}
+
+
+def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
+    request = GenerateRequest(
+        prompt="hi",
+        multimodal_train_inputs={"version": 1, "tensors": {}},
+    )
+
+    with pytest.raises(ValueError, match="requires prompt_token_ids"):
+        _extract_inputs(request)
+
+
+def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
+    bundle = {"version": 1, "tensors": {}}
+    request = GenerateRequest(
+        prompt_token_ids=[1, 2, 3],
+        multimodal_train_inputs=bundle,
+    )
+
+    assert _extract_inputs(request) == {
+        "input_ids": [1, 2, 3],
+        "multimodal_train_inputs": bundle,
+    }
