@@ -16,6 +16,7 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.scheduling.types import ModelRunnerOutput
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
@@ -258,7 +259,7 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     class FakeModelRunner:
         def execute(self, sched_output):
             sched_output.batch_data.output_ids = next_token_ids
-            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+            return ModelRunnerOutput(outputs={}, can_run_cuda_graph=False)
 
     scheduler = object.__new__(OmniScheduler)
     scheduler._model_runner = FakeModelRunner()
@@ -292,7 +293,7 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     class FakeModelRunner:
         def execute(self, sched_output):
             sched_output.batch_data.output_ids = torch.tensor([1], dtype=torch.int32)
-            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+            return ModelRunnerOutput(outputs={}, can_run_cuda_graph=False)
 
         def execute_launch(self, sched_output):
             return SimpleNamespace()
@@ -541,6 +542,54 @@ def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
 
     assert scheduler.outbox.get_nowait().request_id == "req-live"
     assert scheduler.outbox.empty()
+
+
+def test_omni_scheduler_flushes_stream_before_terminal_result() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.server_args = SimpleNamespace(weight_version=None)
+    scheduler._aborted_request_ids = set()
+    scheduler._first_emit_done = {"req-finished"}
+    scheduler._prefill_start_done = {"req-finished"}
+    calls: list[str] = []
+
+    request_data = SimpleNamespace(
+        prefill_input_embeds=None,
+        decode_input_embeds=None,
+    )
+    req = SimpleNamespace(
+        rid="req-finished",
+        _omni_data=request_data,
+        output_ids=[1, 2],
+        finished=lambda: True,
+        finished_reason=None,
+    )
+    request_data.req = req
+
+    def stream_output_builder(rid, data, output):
+        raise AssertionError("terminal flush must use the explicit flush hook")
+
+    def flush_stream_output(rid, data):
+        assert rid == "req-finished"
+        assert data is request_data
+        calls.append("flush")
+        return [SimpleNamespace(request_id=rid, type="stream")]
+
+    stream_output_builder.flush = flush_stream_output
+
+    def result_adapter(data):
+        assert data is request_data
+        calls.append("result")
+        return {"text": "AB"}
+
+    scheduler._stream_output_builder = stream_output_builder
+    scheduler._result_adapter = result_adapter
+
+    scheduler.stream_output([req])
+
+    assert calls == ["flush", "result"]
+    assert scheduler.outbox.get_nowait().type == "stream"
+    assert scheduler.outbox.get_nowait().type == "result"
 
 
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:

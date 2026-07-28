@@ -209,8 +209,19 @@ docstring (sequential phases on CI to reduce OOM risk).
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
 or Fun-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. Use it to measure how ASR concurrency affects throughput,
-latency, and WER for a given workload.
+concurrency level. It reports evaluation coverage and RTFx (successful
+input-audio seconds per wall-clock second) alongside the existing RTF. Use it
+to measure how ASR concurrency affects capacity, latency, and WER for a given
+workload.
+
+Add `--stream` to exercise the transcription SSE path and report text TTFT and
+inter-chunk latency while retaining the terminal transcript for WER:
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
+```
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

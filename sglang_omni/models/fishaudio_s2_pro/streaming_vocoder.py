@@ -282,7 +282,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         codec: Any,
         *,
         device: str,
-        stream_stride: int = 10,
+        stream_stride: int = 40,
         stream_followup_stride: int = 90,
         stream_overlap_tokens: int | None = 20,
         stream_crossfade_samples: int = 512,

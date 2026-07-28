@@ -7,7 +7,13 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    PlacementConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -202,8 +208,11 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
-        factory_args={"device": "cuda"},
+        factory_args={"device": "cuda", "enable_cuda_graph": True},
         gpu=gpu,
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(total_gpu_memory_fraction=0.02)
+        ),
         terminal=True,
         can_accept_stream_before_payload=True,
     )

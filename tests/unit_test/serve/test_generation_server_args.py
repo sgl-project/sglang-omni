@@ -12,12 +12,15 @@ import typer
 from sglang_omni.cli.serve import _apply_stage_server_args_override, serve
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
+from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
+from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -189,6 +192,27 @@ def test_generation_server_args_support_qwen3_omni_speech() -> None:
     _apply_generation_server_args(config)
 
     overrides = _stage_args(config, "talker_ar")["server_args_overrides"]
+    assert overrides == GENERATION_SERVER_ARGS
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [
+        Qwen3ASRPipelineConfig,
+        WhisperASRPipelineConfig,
+        FunASRPipelineConfig,
+    ],
+)
+def test_generation_server_args_support_asr_configs(
+    config_cls: type[PipelineConfig],
+) -> None:
+    # Note (Jiaxin Deng): the ASR role maps exist so the same-GPU DP launcher
+    # can pin caps and mem fraction; losing either silently breaks that path.
+    assert config_cls.mem_fraction_role_to_stage() == {"asr": "asr"}
+    config = config_cls(model_path="dummy")
+    _apply_generation_server_args(config)
+
+    overrides = _stage_args(config, "asr")["server_args_overrides"]
     assert overrides == GENERATION_SERVER_ARGS
 
 
