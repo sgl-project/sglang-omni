@@ -42,8 +42,31 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
     assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
+    assert signature.parameters["pre_lm_max_batch_size"].default == 8
+    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 4
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["stream_emit_interval_s"].default == 0.05
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "wait_ms", "match"),
+    [
+        (0, 4, "pre_lm_max_batch_size"),
+        (-1, 4, "pre_lm_max_batch_size"),
+        (8, -1, "pre_lm_max_batch_wait_ms"),
+    ],
+)
+def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
+    batch_size: int, wait_ms: int, match: str
+) -> None:
+    # Validation runs before any model/tokenizer load.
+    with pytest.raises(ValueError, match=match):
+        fun_asr_stages.create_sglang_fun_asr_executor(
+            "dummy",
+            pre_lm_max_batch_size=batch_size,
+            pre_lm_max_batch_wait_ms=wait_ms,
+        )
 
 
 def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
@@ -74,14 +97,18 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
     validations: list[dict[str, object]] = []
+    stream_builder_calls: list[dict[str, object]] = []
+    stream_output_builder = object()
+
+    def tokenizer(text, add_special_tokens=False):
+        return SimpleNamespace(input_ids=[0] * len(text))
+
     adapter_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
         fun_asr_stages.AutoTokenizer,
         "from_pretrained",
-        lambda *args, **kwargs: lambda text, add_special_tokens=False: SimpleNamespace(
-            input_ids=[0] * len(text)
-        ),
+        lambda *args, **kwargs: tokenizer,
     )
     monkeypatch.setattr(
         fun_asr_stages.AutoFeatureExtractor,
@@ -98,6 +125,11 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         fun_asr_stages,
         "make_fun_asr_scheduler_adapters",
         lambda **kwargs: (adapter_kwargs.update(kwargs) or object(), object()),
+    )
+    monkeypatch.setattr(
+        fun_asr_stages,
+        "make_fun_asr_stream_output_builder",
+        lambda **kwargs: stream_builder_calls.append(kwargs) or stream_output_builder,
     )
     monkeypatch.setattr(fun_asr_stages, "ModelRunner", lambda *args, **kwargs: object())
     monkeypatch.setattr(
@@ -187,6 +219,10 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
     assert scheduler.request_build_max_workers == 8
     assert scheduler.request_build_max_pending == 16
+    assert stream_builder_calls == [
+        {"tokenizer": tokenizer, "min_emit_interval_s": 0.05}
+    ]
+    assert scheduler.stream_output_builder is stream_output_builder
     assert scheduler.enable_async_decode is True
     assert scheduler.async_decode_min_batch_size == 2
     scheduler.shutdown_callback()
