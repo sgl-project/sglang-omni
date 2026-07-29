@@ -54,8 +54,8 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
     thinker_inputs = build_thinker_inputs(state, encoder_outs)
 
-    state.encoder_outs = encoder_outs
     state.thinker_inputs = thinker_inputs
+    state.encoder_outs = {}
     state.encoder_inputs = {}
     base.data = state.to_dict()
     return base
