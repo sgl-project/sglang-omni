@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - depends on the runtime image
 
 
 if triton is not None:
-
+    # TODO: maybe move these to a shared module
     @triton.jit
     def _rotl32(x, r: tl.constexpr):
         x = x.to(tl.uint64)
@@ -63,14 +63,15 @@ if triton is not None:
         logits_stride_b: tl.constexpr,
     ):
         row = tl.program_id(0)
+        # load one row
         logit0 = tl.load(logits + row * logits_stride_b).to(tl.float32)
         logit1 = tl.load(logits + row * logits_stride_b + 1).to(tl.float32)
         temperature = tl.load(temperatures + row).to(tl.float32)
         top_p = tl.load(top_ps + row).to(tl.float32)
         top_k = tl.load(top_ks + row)
 
-        # Greedy rows do not consume RNG. Match torch.argmax's first-index tie
-        # break and the eager path's fallback for invalid probability rows.
+        # Fallback for temperature <= 0 or probs are not valid
+        # fallback = (~do_sample) | (probs.sum(dim=-1) <= 0) in eager version
         greedy = tl.where(logit1 > logit0, 1, 0)
         valid0 = (logit0 == logit0) & (logit0 != -float("inf"))
         valid1 = (logit1 == logit1) & (logit1 != -float("inf"))
@@ -88,8 +89,8 @@ if triton is not None:
         score0 = tl.where(remove0_top_k, -float("inf"), score0)
         score1 = tl.where(remove1_top_k, -float("inf"), score1)
 
-        # For two candidates, eager nucleus filtering retains the lower-scored
-        # candidate iff the leading candidate's probability is <= top_p.
+        # Mask the lower-scored candidate exactly
+        # when the leading candidate’s probability exceeds top_p
         active_top_p = (top_p > 0.0) & (top_p < 1.0)
         max_score = tl.maximum(score0, score1)
         exp0 = tl.exp(score0 - max_score)
@@ -107,6 +108,9 @@ if triton is not None:
         token1 = tl.load(token_ids + 1)
         hash0 = _murmur_hash_seed_position_token(seed, position, token0)
         hash1 = _murmur_hash_seed_position_token(seed, position, token1)
+
+        # Sample Gumbel noise and add to the scores
+        # noise = -log(-log(u))
         denom = 4294967295.0
         u0 = hash0.to(tl.float64) / denom
         u1 = hash1.to(tl.float64) / denom
@@ -116,6 +120,7 @@ if triton is not None:
         sampled1 = score1.to(tl.float64) + gumbel1
         sampled = tl.where(sampled1 > sampled0, 1, 0)
         local_token = tl.where(do_sample, sampled, greedy)
+        # output mapped id
         tl.store(out + row, tl.where(local_token == 0, token0, token1))
 
 else:
