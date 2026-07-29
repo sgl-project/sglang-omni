@@ -8,13 +8,13 @@ import triton.language as tl
 
 
 @triton.jit
-def rotl32(x, r: tl.constexpr):
+def rotl32(x, r: tl.constexpr) -> tl.uint32:
     x = x.to(tl.uint64)
     return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
 
 
 @triton.jit
-def fmix32(h):
+def fmix32(h: tl.uint32) -> tl.uint32:
     h ^= h >> 16
     h = (h * 0x85EBCA6B) & 0xFFFFFFFF
     h ^= h >> 13
@@ -24,7 +24,7 @@ def fmix32(h):
 
 
 @triton.jit
-def murmur3_mix(h, k):
+def murmur3_mix(h: tl.uint32, k: tl.uint32) -> tl.uint32:
     k = (k * 0xCC9E2D51) & 0xFFFFFFFF
     k = rotl32(k, 15)
     k = (k * 0x1B873593) & 0xFFFFFFFF
@@ -35,7 +35,7 @@ def murmur3_mix(h, k):
 
 
 @triton.jit
-def murmur_hash_seed_position_key(seed, position, key):
+def murmur_hash_seed_position_key(seed, position, key) -> tl.uint32:
     """Hash one sampling key from seed, generation position, and candidate key."""
 
     seed = seed.to(tl.uint64)
