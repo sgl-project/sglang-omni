@@ -19,6 +19,11 @@ from benchmarks.tasks.tts import (
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
+from sglang_omni.models.moss_tts.model_runner import (
+    MossTTSModelRunner,
+    _multinomial_with_seed_and_token_ids,
+)
+from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
@@ -1456,14 +1461,97 @@ def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
         do_sample, temperatures, torch.ones_like(temperatures)
     ).unsqueeze(1)
     scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_ks)
-    scores = MossTTSModelRunner._apply_top_p(
-        scores, top_ps, skip_inactive_check=True
-    )
+    scores = MossTTSModelRunner._apply_top_p(scores, top_ps, skip_inactive_check=True)
     probs = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-    local = _multinomial_with_seed_and_token_ids(
-        scores, seeds, positions, token_ids
+    local = _multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
+    local = torch.where(fallback, torch.argmax(logits, dim=-1), local)
+    expected = token_ids[local]
+
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
     )
+    assert actual is not None
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+def test_moss_two_candidate_kernel_randomized_parity_gpu() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    device = torch.device("cuda")
+    row_count = 4096
+    generator = torch.Generator(device=device).manual_seed(20260729)
+    rows = torch.arange(row_count, device=device)
+
+    logits = torch.randn(
+        row_count,
+        2,
+        generator=generator,
+        dtype=torch.float32,
+        device=device,
+    )
+    # Exercise exact ties and large score gaps in addition to random logits.
+    tie_rows = rows.remainder(97) == 0
+    logits[tie_rows, 1] = logits[tie_rows, 0]
+    extreme_rows = rows.remainder(89) == 0
+    logits[extreme_rows, 0] = 30.0
+    logits[extreme_rows, 1] = -30.0
+
+    temperature_values = torch.tensor(
+        [0.0, 0.25, 0.7, 1.0, 1.8],
+        dtype=torch.float32,
+        device=device,
+    )
+    top_p_values = torch.tensor(
+        [0.05, 0.5, 0.8, 0.95, 1.0],
+        dtype=torch.float32,
+        device=device,
+    )
+    top_k_values = torch.tensor([-1, 0, 1, 2], dtype=torch.long, device=device)
+    temperatures = temperature_values[rows.remainder(temperature_values.numel())]
+    top_ps = top_p_values[(rows // temperature_values.numel()).remainder(5)]
+    top_ks = top_k_values[
+        (rows // (temperature_values.numel() * top_p_values.numel())).remainder(4)
+    ]
+    # torch.sort is intentionally unstable, so its ordering of exact ties is
+    # unspecified and changes with batch shape. Keep ties in the RNG parity
+    # coverage while avoiding an undefined nucleus-ordering comparison.
+    top_ps[tie_rows] = 1.0
+    top_ks[tie_rows] = 2
+    seeds = torch.randint(
+        0,
+        torch.iinfo(torch.int32).max,
+        (row_count,),
+        generator=generator,
+        dtype=torch.long,
+        device=device,
+    )
+    positions = torch.randint(
+        0,
+        1 << 30,
+        (row_count,),
+        generator=generator,
+        dtype=torch.long,
+        device=device,
+    )
+    token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
+
+    do_sample = temperatures > 0
+    scores = logits / torch.where(
+        do_sample, temperatures, torch.ones_like(temperatures)
+    ).unsqueeze(1)
+    scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_ks)
+    scores = MossTTSModelRunner._apply_top_p(scores, top_ps, skip_inactive_check=True)
+    probs = torch.nan_to_num(
+        torch.softmax(scores, dim=-1),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
+    local = _multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
     local = torch.where(fallback, torch.argmax(logits, dim=-1), local)
     expected = token_ids[local]
 

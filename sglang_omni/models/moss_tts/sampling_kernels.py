@@ -97,7 +97,7 @@ if triton is not None:
         leading_prob = tl.maximum(exp0, exp1) / (exp0 + exp1)
         remove_lower = active_top_p & (leading_prob > top_p)
         remove0_top_p = remove_lower & (score0 < score1)
-        remove1_top_p = remove_lower & (score1 < score0)
+        remove1_top_p = remove_lower & (score1 <= score0)
         score0 = tl.where(remove0_top_p, -float("inf"), score0)
         score1 = tl.where(remove1_top_p, -float("inf"), score1)
 
@@ -110,12 +110,8 @@ if triton is not None:
         denom = 4294967295.0
         u0 = hash0.to(tl.float64) / denom
         u1 = hash1.to(tl.float64) / denom
-        gumbel0 = tl.where(
-            hash0 == 0, -709.782712893384, -tl.log(-tl.log(u0))
-        )
-        gumbel1 = tl.where(
-            hash1 == 0, -709.782712893384, -tl.log(-tl.log(u1))
-        )
+        gumbel0 = tl.where(hash0 == 0, -709.782712893384, -tl.log(-tl.log(u0)))
+        gumbel1 = tl.where(hash1 == 0, -709.782712893384, -tl.log(-tl.log(u1)))
         sampled0 = score0.to(tl.float64) + gumbel0
         sampled1 = score1.to(tl.float64) + gumbel1
         sampled = tl.where(sampled1 > sampled0, 1, 0)
