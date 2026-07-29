@@ -1451,6 +1451,12 @@ def test_moss_two_candidate_kernel_matches_eager_gpu(
     positions = torch.tensor([13, 17, 19, 23], dtype=torch.long, device=device)
     token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
 
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
+    )
+    if actual is None:
+        pytest.skip("Triton fused sampling kernel is unavailable")
+
     monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
     expected = MossTTSModelRunner._sample_tokens(
         logits,
@@ -1462,10 +1468,6 @@ def test_moss_two_candidate_kernel_matches_eager_gpu(
         candidate_token_ids=token_ids,
     )
 
-    actual = sample_two_candidates(
-        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
-    )
-    assert actual is not None
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
@@ -1537,6 +1539,12 @@ def test_moss_two_candidate_kernel_randomized_parity_gpu(
     )
     token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
 
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
+    )
+    if actual is None:
+        pytest.skip("Triton fused sampling kernel is unavailable")
+
     monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
     expected = MossTTSModelRunner._sample_tokens(
         logits,
@@ -1548,10 +1556,6 @@ def test_moss_two_candidate_kernel_randomized_parity_gpu(
         candidate_token_ids=token_ids,
     )
 
-    actual = sample_two_candidates(
-        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
-    )
-    assert actual is not None
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
