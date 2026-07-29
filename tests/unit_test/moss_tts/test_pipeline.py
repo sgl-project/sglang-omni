@@ -19,13 +19,12 @@ from benchmarks.tasks.tts import (
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
+from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
+from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.model_runner import (
     MossTTSModelRunner,
     _multinomial_with_seed_and_token_ids,
 )
-from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
-from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
-from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.request_builders import (
     _INF_DELAY,
@@ -36,6 +35,7 @@ from sglang_omni.models.moss_tts.request_builders import (
     preprocess_moss_tts_payload,
     set_moss_tts_preprocessing_context,
 )
+from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
@@ -1437,12 +1437,6 @@ def test_moss_two_candidate_kernel_cpu_falls_back() -> None:
 def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
-
-    from sglang_omni.models.moss_tts.model_runner import (
-        MossTTSModelRunner,
-        _multinomial_with_seed_and_token_ids,
-    )
-    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
 
     device = torch.device("cuda")
     logits = torch.tensor(
