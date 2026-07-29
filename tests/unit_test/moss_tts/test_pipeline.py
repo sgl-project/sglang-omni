@@ -21,10 +21,7 @@ from benchmarks.tasks.tts import (
 )
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
-from sglang_omni.models.moss_tts.model_runner import (
-    MossTTSModelRunner,
-    _multinomial_with_seed_and_token_ids,
-)
+from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.request_builders import (
     _INF_DELAY,
@@ -1434,9 +1431,13 @@ def test_moss_two_candidate_kernel_cpu_falls_back() -> None:
 
 
 @pytest.mark.gpu
-def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
+def test_moss_two_candidate_kernel_matches_eager_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
+
+    from sglang_omni.models.moss_tts import model_runner
 
     device = torch.device("cuda")
     logits = torch.tensor(
@@ -1450,17 +1451,16 @@ def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
     positions = torch.tensor([13, 17, 19, 23], dtype=torch.long, device=device)
     token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
 
-    do_sample = temperatures > 0
-    scores = logits / torch.where(
-        do_sample, temperatures, torch.ones_like(temperatures)
-    ).unsqueeze(1)
-    scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_ks)
-    scores = MossTTSModelRunner._apply_top_p(scores, top_ps, skip_inactive_check=True)
-    probs = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
-    fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-    local = _multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
-    local = torch.where(fallback, torch.argmax(logits, dim=-1), local)
-    expected = token_ids[local]
+    monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
+    expected = MossTTSModelRunner._sample_tokens(
+        logits,
+        temperature=temperatures,
+        top_p=top_ps,
+        top_k=top_ks,
+        seeds=seeds,
+        positions=positions,
+        candidate_token_ids=token_ids,
+    )
 
     actual = sample_two_candidates(
         logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
@@ -1470,9 +1470,13 @@ def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
 
 
 @pytest.mark.gpu
-def test_moss_two_candidate_kernel_randomized_parity_gpu() -> None:
+def test_moss_two_candidate_kernel_randomized_parity_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
+
+    from sglang_omni.models.moss_tts import model_runner
 
     device = torch.device("cuda")
     row_count = 4096
@@ -1532,22 +1536,16 @@ def test_moss_two_candidate_kernel_randomized_parity_gpu() -> None:
     )
     token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
 
-    do_sample = temperatures > 0
-    scores = logits / torch.where(
-        do_sample, temperatures, torch.ones_like(temperatures)
-    ).unsqueeze(1)
-    scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_ks)
-    scores = MossTTSModelRunner._apply_top_p(scores, top_ps, skip_inactive_check=True)
-    probs = torch.nan_to_num(
-        torch.softmax(scores, dim=-1),
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
+    monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
+    expected = MossTTSModelRunner._sample_tokens(
+        logits,
+        temperature=temperatures,
+        top_p=top_ps,
+        top_k=top_ks,
+        seeds=seeds,
+        positions=positions,
+        candidate_token_ids=token_ids,
     )
-    fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-    local = _multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
-    local = torch.where(fallback, torch.argmax(logits, dim=-1), local)
-    expected = token_ids[local]
 
     actual = sample_two_candidates(
         logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
