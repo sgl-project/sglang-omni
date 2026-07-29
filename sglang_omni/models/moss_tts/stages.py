@@ -127,6 +127,14 @@ def _resolve_audio_tokenizer_model_path(
     )
 
 
+def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
+    if device:
+        return device
+    if gpu_id is not None:
+        return f"cuda:{int(gpu_id)}"
+    return "cuda:0"
+
+
 class _MossTTSReferenceEncoder:
     """Reference-encode boundary backed by a standalone audio tokenizer."""
 
@@ -150,11 +158,13 @@ class _MossTTSReferenceEncoder:
 def create_preprocessing_executor(
     model_path: str,
     *,
-    device: str = "cpu",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "float32",
     codec_model_path: str | None = None,
     max_concurrency: int = 8,
 ) -> SimpleScheduler:
+    device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_processor(model_path)
     audio_tokenizer = load_moss_tts_audio_tokenizer(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
@@ -169,13 +179,9 @@ def create_preprocessing_executor(
         processor=processor,
         reference_encoder=reference_encoder,
     )
-    # Preprocessing is CPU-heavy: every request tokenizes text and encodes the
-    # reference audio through the MOSS audio tokenizer. Serial execution
-    # (max_concurrency=1) lets the codec encode dominate wall-clock and starves
-    # the AR engine to batch size 1 (the dominant RTF cost). Run several in
-    # parallel — threads release the GIL during the torch codec forward — so the
-    # AR OmniScheduler receives a steady, batchable request stream. Mirrors the
-    # fishaudio_s2_pro preprocessing stage, which encodes references the same way.
+    # Reference loading and text tokenization remain CPU-side, while the codec
+    # forward follows the preprocessing stage's GPU placement. Keep multiple
+    # workers so those CPU portions do not starve the AR engine.
     return SimpleScheduler(
         preprocess_moss_tts_payload,
         abort_callback=cleanup_prepared_moss_tts_request,

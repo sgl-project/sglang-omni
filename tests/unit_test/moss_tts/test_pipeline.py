@@ -104,7 +104,11 @@ def test_moss_tts_config_and_registry_contracts() -> None:
         "vocoder",
     ]
     assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert config.gpu_placement == {
+        "preprocessing": 0,
+        "tts_engine": 0,
+        "vocoder": 0,
+    }
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert config.supports_uploaded_voice_references() is True
     assert (
@@ -117,6 +121,31 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     assert MossTTSPipelineConfig.talker_sglang_role_to_stage() == {
         "talker": "tts_engine"
     }
+    preprocessing = next(
+        stage for stage in config.stages if stage.name == "preprocessing"
+    )
+    assert preprocessing.factory_args == {"dtype": "float32"}
+
+
+def test_moss_tts_preprocessing_factory_receives_placement_gpu_id() -> None:
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.config.runtime import resolve_stage_factory_args
+
+    config = ConfigManager(MossTTSPipelineConfig(model_path="model")).merge_config(
+        {"stages.preprocessing.gpu": 2}
+    )
+    preprocessing = next(
+        stage for stage in config.stages if stage.name == "preprocessing"
+    )
+    factory_args = resolve_stage_factory_args(
+        preprocessing,
+        config,
+        gpu_id=2,
+    )
+
+    assert preprocessing.gpu == 2
+    assert factory_args["gpu_id"] == 2
+    assert "device" not in factory_args
 
 
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
@@ -369,6 +398,48 @@ def test_moss_tts_preprocessing_loads_separate_codec(
         rb.clear_moss_tts_preprocessing_context()
 
     assert loaded == [("codec-from-model-config", "cpu", "float32")]
+
+
+def test_moss_tts_preprocessing_uses_placement_gpu_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import request_builders as rb
+    from sglang_omni.models.moss_tts import stages
+
+    processor = SimpleNamespace(
+        audio_tokenizer=None,
+        model_config=SimpleNamespace(
+            n_vq=32,
+            audio_tokenizer_name_or_path="codec",
+        ),
+    )
+    codec = SimpleNamespace()
+    loaded: list[tuple[str, str, str]] = []
+
+    def load_codec(model_path, *, device, dtype):
+        loaded.append((model_path, device, dtype))
+        return codec
+
+    monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
+    monkeypatch.setattr(stages, "load_moss_tts_audio_tokenizer", load_codec)
+
+    try:
+        stages.create_preprocessing_executor("model", gpu_id=2)
+        context = rb._QUEUE.snapshot().context
+        assert context is not None
+        assert context.reference_encoder.audio_tokenizer is codec
+
+        stages.create_preprocessing_executor("model", device="cpu", gpu_id=2)
+        context = rb._QUEUE.snapshot().context
+        assert context is not None
+        assert context.reference_encoder.audio_tokenizer is codec
+    finally:
+        rb.clear_moss_tts_preprocessing_context()
+
+    assert loaded == [
+        ("codec", "cuda:2", "float32"),
+        ("codec", "cpu", "float32"),
+    ]
 
 
 def test_moss_tts_pathlike_reference_uses_separate_codec() -> None:
