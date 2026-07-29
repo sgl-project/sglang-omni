@@ -1,5 +1,4 @@
-"""Rolling PCM16 audio buffer for streaming WebSocket sessions.
-"""
+"""Rolling PCM16 audio buffer for streaming WebSocket sessions."""
 
 from __future__ import annotations
 
@@ -38,6 +37,11 @@ class RealtimeAudioBuffer:
 
     def append_b64(self, audio_b64: str) -> int:
         chunk = base64.b64decode(audio_b64, validate=False)
+        return self.append_bytes(chunk)
+
+    def append_bytes(self, chunk: bytes) -> int:
+        if not isinstance(chunk, bytes):
+            raise TypeError("chunk must be bytes")
         if len(self.buf) + len(chunk) > self.max_bytes:
             raise BufferOverflow(self.max_bytes)
         self.buf.extend(chunk)
@@ -74,3 +78,15 @@ class RealtimeAudioBuffer:
     def tail(self, num_bytes: int) -> bytes:
         assert len(self.buf) >= num_bytes, "Not enough bytes in buffer"
         return bytes(self.buf[-num_bytes:])
+
+    def pop_left(self, num_bytes: int) -> bytes:
+        if num_bytes < 0:
+            raise ValueError("num_bytes must be non-negative")
+        if len(self.buf) < num_bytes:
+            raise ValueError(
+                f"Realtime audio buffer has {len(self.buf)} bytes, "
+                f"cannot pop {num_bytes}"
+            )
+        chunk = bytes(self.buf[:num_bytes])
+        del self.buf[:num_bytes]
+        return chunk

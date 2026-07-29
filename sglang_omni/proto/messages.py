@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control plane messages."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import msgspec
 
 from sglang_omni.proto.admin import AdminOperation, AdminResult
 from sglang_omni.proto.request import StagePayload
+
+# This is a wire-size guard, not the model's decoded media limit. A 4 MiB
+# decoded audio/frame payload expands to roughly 5.34 MiB when carried as
+# base64, so leave enough headroom for the command envelope.
+MAX_INLINE_SESSION_COMMAND_BYTES = 6 * 1024 * 1024
 
 
 @dataclass
@@ -155,13 +160,26 @@ class AbortMessage:
     """Broadcast abort signal to all stages."""
 
     request_id: str
+    generation: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "abort", "request_id": self.request_id}
+        data: dict[str, Any] = {
+            "type": "abort",
+            "request_id": _require_str(self.request_id, "request_id"),
+        }
+        if self.generation is not None:
+            data["generation"] = _require_positive_int(self.generation, "generation")
+        return data
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
-        return cls(request_id=d["request_id"])
+        generation = d.get("generation")
+        if generation is not None:
+            generation = _require_positive_int(generation, "generation")
+        return cls(
+            request_id=_require_str(d.get("request_id"), "request_id"),
+            generation=generation,
+        )
 
 
 @dataclass
@@ -173,9 +191,10 @@ class CompleteMessage:
     success: bool
     result: Any = None
     error: str | None = None
+    generation: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "type": "complete",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -183,15 +202,22 @@ class CompleteMessage:
             "result": self.result,
             "error": self.error,
         }
+        if self.generation is not None:
+            d["generation"] = _require_positive_int(self.generation, "generation")
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CompleteMessage":
+        generation = d.get("generation")
+        if generation is not None:
+            generation = _require_positive_int(generation, "generation")
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
             success=d["success"],
             result=d.get("result"),
             error=d.get("error"),
+            generation=generation,
         )
 
 
@@ -206,6 +232,7 @@ class StreamMessage:
     stage_name: str | None = None
     modality: str | None = None
     chunk_id: int | None = None
+    generation: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -219,10 +246,15 @@ class StreamMessage:
         }
         if self.chunk_id is not None:
             d["chunk_id"] = self.chunk_id
+        if self.generation is not None:
+            d["generation"] = _require_positive_int(self.generation, "generation")
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
+        generation = d.get("generation")
+        if generation is not None:
+            generation = _require_positive_int(generation, "generation")
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
@@ -231,6 +263,7 @@ class StreamMessage:
             stage_name=d.get("stage_name"),
             modality=d.get("modality"),
             chunk_id=d.get("chunk_id"),
+            generation=generation,
         )
 
 
@@ -253,6 +286,89 @@ class SubmitMessage:
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
         return cls(request_id=d["request_id"], data=data)
+
+
+@dataclass
+class SessionCommandMessage:
+    """Send an ordered command to an active long-lived session."""
+
+    session_id: str
+    generation: int
+    input_seq: int
+    response_epoch: int
+    command: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+    _COMMANDS = frozenset({"append", "interrupt", "playback_ack", "close"})
+    _FIELDS = frozenset(
+        {
+            "type",
+            "session_id",
+            "generation",
+            "input_seq",
+            "response_epoch",
+            "command",
+            "data",
+        }
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        session_id = _require_str(self.session_id, "session_id")
+        generation = _require_positive_int(self.generation, "generation")
+        input_seq = _require_positive_int(self.input_seq, "input_seq")
+        response_epoch = _require_non_negative_int(
+            self.response_epoch, "response_epoch"
+        )
+        command = _require_str(self.command, "command")
+        if command not in self._COMMANDS:
+            raise ValueError(
+                f"command must be one of {sorted(self._COMMANDS)}, got {command!r}"
+            )
+        if not isinstance(self.data, dict):
+            raise TypeError("data must be a dict")
+        wire_message = {
+            "type": "session_command",
+            "session_id": session_id,
+            "generation": generation,
+            "input_seq": input_seq,
+            "response_epoch": response_epoch,
+            "command": command,
+            "data": self.data.copy(),
+        }
+        if len(msgspec.msgpack.encode(wire_message)) > MAX_INLINE_SESSION_COMMAND_BYTES:
+            raise ValueError(
+                "session command exceeds the inline wire limit of "
+                f"{MAX_INLINE_SESSION_COMMAND_BYTES} bytes"
+            )
+        return wire_message
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "SessionCommandMessage":
+        if not isinstance(d, dict):
+            raise TypeError("session_command message must be a dict")
+        unknown = set(d) - cls._FIELDS
+        missing = cls._FIELDS - set(d)
+        if unknown:
+            raise ValueError(f"session_command has unknown fields: {sorted(unknown)}")
+        if missing:
+            raise ValueError(f"session_command is missing fields: {sorted(missing)}")
+        if d.get("type") != "session_command":
+            raise ValueError("session_command type must be 'session_command'")
+        data = d.get("data")
+        if not isinstance(data, dict):
+            raise TypeError("session_command data must be a dict")
+        message = cls(
+            session_id=_require_str(d.get("session_id"), "session_id"),
+            generation=_require_positive_int(d.get("generation"), "generation"),
+            input_seq=_require_positive_int(d.get("input_seq"), "input_seq"),
+            response_epoch=_require_non_negative_int(
+                d.get("response_epoch"), "response_epoch"
+            ),
+            command=_require_str(d.get("command"), "command"),
+            data=data.copy(),
+        )
+        message.to_dict()
+        return message
 
 
 @dataclass
@@ -348,6 +464,7 @@ def parse_message(
     | CompleteMessage
     | StreamMessage
     | SubmitMessage
+    | SessionCommandMessage
     | ShutdownMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
@@ -366,6 +483,8 @@ def parse_message(
         return StreamMessage.from_dict(d)
     elif msg_type == "submit":
         return SubmitMessage.from_dict(d)
+    elif msg_type == "session_command":
+        return SessionCommandMessage.from_dict(d)
     elif msg_type == "shutdown":
         return ShutdownMessage.from_dict(d)
     elif msg_type == "profiler_start":
@@ -395,4 +514,10 @@ def _require_bool(value: Any, name: str) -> bool:
 def _require_non_negative_int(value: Any, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
+    return value
+
+
+def _require_positive_int(value: Any, name: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise TypeError(f"{name} must be a positive int")
     return value

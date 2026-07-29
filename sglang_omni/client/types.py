@@ -5,7 +5,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypeAlias
+
+DuplexEvent: TypeAlias = dict[str, Any]
+
+DUPLEX_EVENT_TYPES = frozenset(
+    {
+        "session.created",
+        "session.input_processed",
+        "response.output.delta",
+        "response.output.done",
+        "session.closed",
+        "session.error",
+    }
+)
 
 
 @dataclass

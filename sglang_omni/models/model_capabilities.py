@@ -28,6 +28,11 @@ class ModelCapabilities:
     - supports_torch_compile: the architecture has an owned ``torch.compile``
       path, including codec, codebook, or frame-sampler compiles. This is not
       limited to the generic SGLang ``enable_torch_compile`` server arg.
+    - supports_native_duplex: the architecture owns a long-lived model session
+      that can receive input while output from an earlier unit is still playing.
+    - supports_realtime_audio_output: native realtime sessions stream audio.
+    - supports_realtime_video_input: native realtime sessions accept video
+      frames alongside continuous audio input.
     """
 
     supports_reference_audio: bool
@@ -35,6 +40,9 @@ class ModelCapabilities:
     supports_streaming_vocoder: bool
     supports_cuda_graph: bool
     supports_torch_compile: bool
+    supports_native_duplex: bool
+    supports_realtime_audio_output: bool
+    supports_realtime_video_input: bool
 
 
 def get_model_capabilities(architecture: str) -> ModelCapabilities | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.radix_cache import RadixCache
+from sglang.srt.session.streaming_session import StreamingSession
 
 
 def create_tree_cache(
@@ -28,6 +29,17 @@ def create_tree_cache(
     if server_args.disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
-        return ChunkCache(params)
+        tree_cache = ChunkCache(params)
+    else:
+        tree_cache = RadixCache(params)
 
-    return RadixCache(params)
+    # Match the cache composition used by SGLang's Scheduler.  The wrapper
+    # keeps a session's request/KV-cache slot alive between append-only turns
+    # while delegating ordinary requests to the underlying prefix cache.
+    if (
+        getattr(server_args, "enable_streaming_session", False)
+        and not tree_cache.supports_streaming_session()
+    ):
+        tree_cache = StreamingSession(tree_cache)
+
+    return tree_cache

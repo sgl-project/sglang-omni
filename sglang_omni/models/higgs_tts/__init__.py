@@ -25,6 +25,9 @@ CAPABILITIES = ModelCapabilities(
     supports_streaming_vocoder=True,
     supports_cuda_graph=True,
     supports_torch_compile=True,
+    supports_native_duplex=False,
+    supports_realtime_audio_output=False,
+    supports_realtime_video_input=False,
 )
 
 __all__ = ["CAPABILITIES", "config", "HiggsMultimodalQwen3Config"]

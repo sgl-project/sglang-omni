@@ -215,6 +215,7 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.models.registry import ModelRegistry
 
         sglang_omni_models = {
+            "MiniCPMO": "sglang_omni.models.minicpmo_4_5.sglang_model:MiniCPMO45ForCausalLM",
             "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
             "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",

@@ -17,6 +17,7 @@ from sglang_omni.client.audio import (
     encode_audio,
     to_numpy,
 )
+from sglang_omni.client.duplex import DuplexSession
 from sglang_omni.client.types import (
     AbortLevel,
     AbortResult,
@@ -285,6 +286,36 @@ class Client:
 
     def health(self) -> dict[str, Any]:
         return self._coordinator.health()
+
+    def duplex_session(
+        self,
+        request: GenerateRequest,
+        *,
+        session_id: str | None = None,
+        output_queue_size: int = 64,
+        handshake_timeout_s: float = 30.0,
+        command_timeout_s: float = 30.0,
+    ) -> DuplexSession:
+        """Create a full-duplex session handle without starting it."""
+        omni_request = self._build_omni_request(replace(request, stream=True))
+        return DuplexSession(
+            self._coordinator,
+            omni_request,
+            session_id=session_id or str(uuid.uuid4()),
+            output_queue_size=output_queue_size,
+            handshake_timeout_s=handshake_timeout_s,
+            command_timeout_s=command_timeout_s,
+        )
+
+    async def open_duplex_session(
+        self,
+        request: GenerateRequest,
+        **kwargs: Any,
+    ) -> DuplexSession:
+        """Create, start, and return a full-duplex session handle."""
+        session = self.duplex_session(request, **kwargs)
+        await session.start()
+        return session
 
     async def admin(
         self,

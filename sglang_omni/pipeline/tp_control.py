@@ -22,6 +22,7 @@ from sglang_omni.proto import (
     AdminResultMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
+    SessionCommandMessage,
     ShutdownMessage,
 )
 
@@ -57,7 +58,11 @@ class TPLeaderFanout:
     async def fanout_control(
         self,
         msg: (
-            ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | AdminMessage
+            ShutdownMessage
+            | ProfilerStartMessage
+            | ProfilerStopMessage
+            | AdminMessage
+            | SessionCommandMessage
         ),
     ) -> None:
         for q in self._follower_work_queues:
@@ -99,8 +104,7 @@ class TPLeaderFanout:
                 )
             if msg.result.op_id != op_id:
                 raise ValueError(
-                    "Unexpected TP follower admin op id: "
-                    f"{msg.result.op_id} != {op_id}"
+                    f"Unexpected TP follower admin op id: {msg.result.op_id} != {op_id}"
                 )
             results.append(msg)
         return results
@@ -140,6 +144,7 @@ class TPFollowerControlPlane:
         | ShutdownMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
+        | SessionCommandMessage
         | TPWorkMessage
     ):
         msg = await self._recv_from_queue(self._work_queue)
@@ -150,6 +155,7 @@ class TPFollowerControlPlane:
                 ShutdownMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
+                SessionCommandMessage,
                 TPWorkMessage,
             ),
         ):

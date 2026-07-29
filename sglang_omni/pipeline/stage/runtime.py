@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +15,7 @@ import logging
 import os
 import queue as _queue_mod
 import threading
+from collections import OrderedDict
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Literal
 
@@ -39,6 +41,7 @@ from sglang_omni.proto import (
     DataReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
+    SessionCommandMessage,
     ShutdownMessage,
     StageInfo,
     StagePayload,
@@ -52,6 +55,9 @@ logger = logging.getLogger(__name__)
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
+
+_SESSION_WATERMARK_HIGH_WATER = 10000
+_SESSION_WATERMARK_RETAIN = 5000
 
 
 def _error_text(exc: BaseException) -> str:
@@ -138,6 +144,8 @@ class Stage:
         self._running = False
         self._aborted: set[str] = set()
         self._active_requests: set[str] = set()
+        self._session_generations: dict[str, int] = {}
+        self._session_generation_watermarks: OrderedDict[str, int] = OrderedDict()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
         self._first_stream_chunk_seen: set[str] = set()
@@ -263,6 +271,7 @@ class Stage:
                             ProfilerStartMessage,
                             ProfilerStopMessage,
                             AdminMessage,
+                            SessionCommandMessage,
                         ),
                     )
                 ):
@@ -270,6 +279,8 @@ class Stage:
                 if isinstance(msg, ShutdownMessage):
                     break
                 if isinstance(msg, TPWorkMessage):
+                    if not self._admit_tp_work(msg.data):
+                        continue
                     await self._execute(msg.data)
                     continue
                 await self._handle_message(msg)
@@ -296,6 +307,8 @@ class Stage:
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
             await self._on_submit(msg)
+        elif isinstance(msg, SessionCommandMessage):
+            self._on_session_command(msg)
         elif isinstance(msg, DataAckMessage):
             self._comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
@@ -363,9 +376,9 @@ class Stage:
 
     async def _on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
-        if request_id in self._aborted:
+        payload = msg.data  # StagePayload from coordinator
+        if not self._admit_request_payload(request_id, payload):
             return
-        self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
         _emit_event(
@@ -375,8 +388,74 @@ class Stage:
             metadata={"from_stage": "coordinator", "kind": "submit"},
         )
 
-        payload = msg.data  # StagePayload from coordinator
         await self._execute(payload)
+
+    def _admit_request_payload(self, request_id: str, payload: Any) -> bool:
+        session = getattr(getattr(payload, "request", None), "metadata", {}).get(
+            "duplex_session"
+        )
+        if isinstance(session, dict):
+            session_id = session.get("session_id")
+            generation = session.get("generation")
+            if session_id != request_id:
+                raise ValueError("duplex session_id must match request_id")
+            if type(generation) is not int or generation <= 0:
+                raise ValueError("duplex session generation must be a positive int")
+            if self._session_generations.get(request_id) == generation:
+                self._active_requests.add(request_id)
+                return True
+            watermark = self._session_generation_watermarks.get(request_id, 0)
+            if generation <= watermark:
+                logger.debug(
+                    "Stage %s ignored stale session payload session=%s generation=%s "
+                    "watermark=%s",
+                    self.name,
+                    request_id,
+                    generation,
+                    watermark,
+                )
+                return False
+            self._aborted.discard(request_id)
+            self._session_generations[request_id] = generation
+            self._record_session_generation_watermark(request_id, generation)
+        elif request_id in self._aborted:
+            return False
+        self._active_requests.add(request_id)
+        return True
+
+    def _on_session_command(self, msg: SessionCommandMessage) -> None:
+        session_id = msg.session_id
+        if session_id in self._aborted or session_id not in self._active_requests:
+            logger.debug(
+                "Stage %s ignored command for inactive session %s",
+                self.name,
+                session_id,
+            )
+            return
+        generation = self._session_generations.get(session_id)
+        if generation != msg.generation:
+            logger.debug(
+                "Stage %s ignored stale session command session=%s generation=%s "
+                "active_generation=%s",
+                self.name,
+                session_id,
+                msg.generation,
+                generation,
+            )
+            return
+        self.scheduler.inbox.put(
+            IncomingMessage(
+                request_id=session_id,
+                type="session_command",
+                data=msg,
+            )
+        )
+
+    def _admit_tp_work(self, payload: Any) -> bool:
+        request_id = getattr(payload, "request_id", None)
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("TP work payload must carry a request_id")
+        return self._admit_request_payload(request_id, payload)
 
     async def _on_data_ready(
         self,
@@ -384,13 +463,6 @@ class Stage:
         predecessor: asyncio.Future[None] | None = None,
     ) -> None:
         request_id = msg.request_id
-        if request_id in self._aborted:
-            await self._discard_payload_data(msg)
-            return
-        self._active_requests.add(request_id)
-        if self._stream_queue is not None and not self._stream_queue.has(request_id):
-            self._stream_queue.open(request_id)
-
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
                 payload = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
@@ -486,9 +558,8 @@ class Stage:
         from_stage: str,
         payload: Any,
     ) -> None:
-        if request_id in self._aborted:
+        if not self._admit_request_payload(request_id, payload):
             return
-        self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
@@ -951,6 +1022,8 @@ class Stage:
 
             if out.request_id not in self._active_requests:
                 continue
+            if not self._is_current_session_output(out):
+                continue
 
             if out.type == "result":
                 await self._route_result(out.request_id, out.data)
@@ -982,7 +1055,16 @@ class Stage:
                         out.metadata,
                     )
             elif out.type == "error":
-                await self._send_failure(out.request_id, str(out.data))
+                terminal_event = None
+                if isinstance(out.metadata, dict):
+                    candidate = out.metadata.get("terminal_event")
+                    if isinstance(candidate, dict):
+                        terminal_event = candidate
+                await self._send_failure(
+                    out.request_id,
+                    str(out.data),
+                    result=terminal_event,
+                )
 
     async def _drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
@@ -995,6 +1077,11 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.request_id not in self._active_requests:
+                continue
+            if not self._is_current_session_output(out):
+                continue
+
             if out.type == "result":
                 self._clear_request_state(out.request_id)
             elif out.type == "stream":
@@ -1003,6 +1090,38 @@ class Stage:
                 raise RuntimeError(
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
+
+    def _is_current_session_output(self, output: Any) -> bool:
+        generation = self._session_generations.get(output.request_id)
+        if generation is None:
+            if output.request_id not in self._session_generation_watermarks:
+                return True
+            # Note:(Chenchen Hong) A request id may be reused by the legacy,
+            # non-session API after a duplex generation has completed.
+            if output.request_id not in self._active_requests:
+                return False
+            return not isinstance(output.metadata, dict) or (
+                "generation" not in output.metadata
+            )
+        output_generations: list[Any] = []
+        if isinstance(output.metadata, dict) and "generation" in output.metadata:
+            output_generations.append(output.metadata["generation"])
+        if isinstance(output.data, dict) and "generation" in output.data:
+            output_generations.append(output.data["generation"])
+        if not output_generations or any(
+            type(value) is not int or value != generation
+            for value in output_generations
+        ):
+            logger.debug(
+                "Stage %s dropped stale session output session=%s "
+                "output_generations=%s active_generation=%s",
+                self.name,
+                output.request_id,
+                output_generations,
+                generation,
+            )
+            return False
+        return True
 
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
@@ -1042,6 +1161,7 @@ class Stage:
                     from_stage=self.name,
                     success=True,
                     result=result.data if isinstance(result, StagePayload) else result,
+                    generation=self._session_generations.get(request_id),
                 )
             )
         else:
@@ -1458,6 +1578,7 @@ class Stage:
             stage_name=self.name,
             modality=modality,
             chunk_id=chunk_id,
+            generation=self._session_generations.get(request_id),
         )
         if request_id not in self._first_stream_chunk_seen:
             self._first_stream_chunk_seen.add(request_id)
@@ -1483,7 +1604,13 @@ class Stage:
         )
         await self.control_plane.send_stream(msg)
 
-    async def _send_failure(self, request_id: str, error: str) -> None:
+    async def _send_failure(
+        self,
+        request_id: str,
+        error: str,
+        *,
+        result: Any = None,
+    ) -> None:
         self._record_aborted_request_id(request_id)
         if not self._owns_external_io:
             self._clear_request_state(request_id)
@@ -1493,13 +1620,16 @@ class Stage:
                 request_id=request_id,
                 from_stage=self.name,
                 success=False,
+                result=result,
                 error=error,
+                generation=self._session_generations.get(request_id),
             )
         )
         self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
         self._active_requests.discard(request_id)
+        self._session_generations.pop(request_id, None)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
             self._stream_queue.close(request_id)
@@ -1539,12 +1669,13 @@ class Stage:
                 abort_msg = await self.control_plane.recv_abort()
                 if self.role == "leader" and self._tp_fanout is not None:
                     await self._tp_fanout.fanout_abort(abort_msg)
-                self._on_abort(abort_msg.request_id)
+                self._on_abort(abort_msg.request_id, abort_msg.generation)
         except asyncio.CancelledError:
             pass
         except Exception:
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
+                raise
 
     def _record_aborted_request_id(self, request_id: str) -> None:
         self._aborted.add(request_id)
@@ -1554,7 +1685,53 @@ class Stage:
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
 
-    def _on_abort(self, request_id: str) -> None:
+    def _record_session_generation_watermark(
+        self, request_id: str, generation: int
+    ) -> None:
+        current = self._session_generation_watermarks.get(request_id, 0)
+        if generation > current:
+            self._session_generation_watermarks.pop(request_id, None)
+            self._session_generation_watermarks[request_id] = generation
+        if len(self._session_generation_watermarks) <= _SESSION_WATERMARK_HIGH_WATER:
+            return
+
+        remove_count = (
+            len(self._session_generation_watermarks) - _SESSION_WATERMARK_RETAIN
+        )
+        removed = 0
+        for candidate in list(self._session_generation_watermarks):
+            if candidate == request_id or candidate in self._active_requests:
+                continue
+            self._session_generation_watermarks.pop(candidate, None)
+            removed += 1
+            if removed >= remove_count:
+                break
+
+    def _on_abort(self, request_id: str, generation: int | None = None) -> None:
+        active_generation = self._session_generations.get(request_id)
+        if generation is None and active_generation is not None:
+            logger.debug(
+                "Stage %s ignored unversioned abort for active session %s "
+                "generation=%s",
+                self.name,
+                request_id,
+                active_generation,
+            )
+            return
+        if generation is not None:
+            if generation != active_generation:
+                # Note:(Chenchen Hong) Submit and abort traffic use independent
+                # sockets, so the watermark fences abort-before-submit races.
+                self._record_session_generation_watermark(request_id, generation)
+                logger.debug(
+                    "Stage %s fenced inactive session abort session=%s "
+                    "generation=%s active_generation=%s",
+                    self.name,
+                    request_id,
+                    generation,
+                    active_generation,
+                )
+                return
         self._record_aborted_request_id(request_id)
         self._comm.cleanup(request_id)
         self._clear_request_state(request_id)

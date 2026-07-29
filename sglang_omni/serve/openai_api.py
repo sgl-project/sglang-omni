@@ -1169,17 +1169,32 @@ def _build_generate_response(
 
 def _register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
+    from sglang_omni.models.model_capabilities import get_model_capabilities
     from sglang_omni.serve.realtime import RealtimeSessionManager
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
-    manager = RealtimeSessionManager(client=client, model_name=model_name)
+    native_duplex = False
+    for architecture in app.state.architectures:
+        capabilities = get_model_capabilities(architecture)
+        if capabilities is not None and capabilities.supports_native_duplex:
+            native_duplex = True
+            break
+    manager = RealtimeSessionManager(
+        client=client,
+        model_name=model_name,
+        native_duplex=native_duplex,
+    )
     app.state.realtime_manager = manager
 
     @app.websocket("/v1/realtime")
     async def realtime(websocket: WebSocket) -> None:
         await websocket.accept()
-        session = manager.open(websocket)
+        try:
+            session = manager.open(websocket)
+        except RuntimeError as exc:
+            await websocket.close(code=1013, reason=str(exc)[:123])
+            return
         try:
             await session.run()
         finally:

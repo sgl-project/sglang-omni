@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.types import ARRequestData
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -15,6 +18,19 @@ class SGLangARRequestData(ARRequestData):
     """Per-request state for SGLang-backed AR stages."""
 
     req: Any = None
+    # Optional upstream TokenizedGenerateReqInput for an append-only SGLang
+    # streaming-session turn. OmniScheduler materializes the final Req on its
+    # scheduler thread so Session/StreamingSession state is never mutated by a
+    # parallel request-builder worker.
+    tokenized_session_req: Any = None
+    session_tokenizer: Any = None
+    session_req_setup: Any = None
+    # Admission is transactional: Session.create_req marks a streaming
+    # session inflight before request-limit/KV checks run. These fields let the
+    # scheduler roll that mark and model-specific setup back on rejection.
+    session_req_rollback: Any = None
+    session_req_session: Any = None
+    session_req_owns_inflight: bool = False
     synced: bool = False
     generation_steps: int = 0
     suppress_tokens: list[int] | None = None

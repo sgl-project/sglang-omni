@@ -177,6 +177,9 @@ def _model_capabilities_log_summary(
         "streaming_vocoder": capabilities.supports_streaming_vocoder,
         "cuda_graph": capabilities.supports_cuda_graph,
         "torch_compile": capabilities.supports_torch_compile,
+        "native_duplex": capabilities.supports_native_duplex,
+        "realtime_audio_output": capabilities.supports_realtime_audio_output,
+        "realtime_video_input": capabilities.supports_realtime_video_input,
     }
 
 

@@ -16,12 +16,25 @@ from sglang_omni.models.model_capabilities import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 EXPECTED_TTS_CAPABILITIES = {
+    "MiniCPMO": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=False,
+        supports_torch_compile=False,
+        supports_native_duplex=True,
+        supports_realtime_audio_output=True,
+        supports_realtime_video_input=True,
+    ),
     "AudarTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=False,
         supports_streaming_vocoder=False,
         supports_cuda_graph=False,
         supports_torch_compile=False,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -29,6 +42,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "HiggsMultimodalQwen3ForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -36,6 +52,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "MossTTSDelayModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -43,6 +62,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=False,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "MossTTSLocalModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -50,6 +72,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "FishQwen3OmniForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -57,6 +82,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "BailingMMNativeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -64,6 +92,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=False,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "VoxtralTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
@@ -71,6 +102,9 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_native_duplex=False,
+        supports_realtime_audio_output=False,
+        supports_realtime_video_input=False,
     ),
     "Zonos2ForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -197,6 +231,9 @@ def test_launcher_model_capabilities_log_summary() -> None:
         "streaming_vocoder": False,
         "cuda_graph": True,
         "torch_compile": True,
+        "native_duplex": False,
+        "realtime_audio_output": False,
+        "realtime_video_input": False,
     }
 
 

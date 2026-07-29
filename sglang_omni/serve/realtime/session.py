@@ -15,9 +15,12 @@ from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
+    PlaybackAck,
     ResponseCancel,
+    SessionClose,
     SessionObject,
     SessionUpdate,
+    TurnDetectionType,
     make_event,
     parse_client_event,
 )
@@ -44,6 +47,8 @@ HANDLERS: dict[type, str] = {
     InputAudioBufferAppend: "handle_audio_append",
     InputAudioBufferClear: "handle_audio_clear",
     ResponseCancel: "handle_response_cancel",
+    PlaybackAck: "handle_playback_ack",
+    SessionClose: "handle_session_close",
 }
 
 
@@ -147,6 +152,13 @@ class RealtimeSession:
             self.session_object.model_dump() | update
         )
         assert candidate.input_audio_format == "pcm16", "Only pcm16 is supported"
+        if (
+            candidate.turn_detection is not None
+            and candidate.turn_detection.type == TurnDetectionType.MODEL_NATIVE
+        ):
+            raise ValueError(
+                "model_native turn detection requires a native-duplex model"
+            )
         self.session_object = candidate
         await self.send(
             make_event(
@@ -221,6 +233,20 @@ class RealtimeSession:
         if self.active_request_id is not None:
             await self.client.abort(self.active_request_id)
         self.active_task.cancel()
+
+    async def handle_playback_ack(self, event: PlaybackAck) -> None:
+        del event
+        raise ValueError("playback acknowledgement requires a native-duplex model")
+
+    async def handle_session_close(self, event: SessionClose) -> None:
+        await self.send(
+            make_event(
+                "session.closed",
+                session_id=self.session_id,
+                reason=event.reason,
+            )
+        )
+        self.closed = True
 
     async def drain_queue(self) -> None:
         while not self.closed:

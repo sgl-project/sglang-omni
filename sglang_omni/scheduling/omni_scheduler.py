@@ -29,6 +29,7 @@ from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
@@ -80,6 +81,16 @@ class _NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
+
+
+class _NoOpSessionController:
+    """Compatibility surface when SGLang streaming sessions are disabled."""
+
+    def __init__(self) -> None:
+        self.sessions: dict = {}
+
+    def maybe_reap(self, now: float) -> None:
+        del now
 
 
 class OmniScheduler:
@@ -411,13 +422,9 @@ class OmniScheduler:
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
-        # Upstream scheduler_runtime_checker_mixin._streaming_session_count
-        # iterates ``self.session_controller.sessions.values()`` during
-        # report_decode_stats. We don't host SGLang's interactive-session
-        # feature, so a stub with an empty sessions dict is sufficient.
         from types import SimpleNamespace
 
-        self.session_controller = SimpleNamespace(sessions={})
+        self._init_session_controller(server_args)
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         device = getattr(self, "device", None)
         self.device_module = (
@@ -425,6 +432,22 @@ class OmniScheduler:
             if device is not None
             else torch.get_device_module()
         )
+
+    def _init_session_controller(self, server_args: Any) -> None:
+        """Install SGLang's controller only for streaming-session stages."""
+        if getattr(server_args, "enable_streaming_session", False):
+            self.session_controller = SessionController(self.tree_cache)
+        else:
+            self.session_controller = _NoOpSessionController()
+
+    def _maybe_reap_sessions(self) -> None:
+        """Run periodic session cleanup from the scheduler event-loop cycle."""
+        # A few focused unit-test fixtures construct OmniScheduler via
+        # object.__new__. Keep those partial instances harmless while normal
+        # initialized schedulers always have a controller (real or no-op).
+        controller = self.__dict__.get("session_controller")
+        if controller is not None:
+            controller.maybe_reap(time.monotonic())
 
     def self_check_during_idle(self) -> None:
         self.new_token_ratio = self.init_new_token_ratio
@@ -536,6 +559,9 @@ class OmniScheduler:
 
     def process_input_requests(self, recv_reqs):
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        # Every normal/overlap/async-decode loop calls this once per cycle.
+        # Keep reaping here, matching upstream Scheduler.process_input_requests.
+        self._maybe_reap_sessions()
         self._drain_request_build_results()
         recv_reqs, rejected_reqs = self._stage_request_build_payloads(recv_reqs)
         for payload in rejected_reqs:
@@ -713,30 +739,41 @@ class OmniScheduler:
         if pending_stream_done:
             self._pending_stream_done.discard(req_id)
         self._deferred_request_payloads.pop(req_id, None)
-        req = req_data.req
-        req._omni_data = req_data
-        req_id = req.rid
-        if bool(getattr(req_data, "enforce_request_limits", False)):
-            error_msg = self._prepare_request_limits(req_data)
-            if error_msg:
-                self._emit_request_error(req_id, ValueError(error_msg))
-                self.abort(req_id)
-                return
-        kv_error = self._request_kv_capacity_error(req)
-        if kv_error is not None:
-            logger.warning(f"Rejecting request {req_id} before scheduling: {kv_error}")
-            self._emit_request_error(req_id, ValueError(kv_error))
+        try:
+            req = self._materialize_streaming_session_req(req_data)
+        except Exception as exc:
+            logger.exception(
+                "OmniScheduler: streaming-session request failed for %s", req_id
+            )
+            self._emit_request_error(req_id, exc)
             self.abort(req_id)
             return
-        self._initialize_request_stream_state(req_data, payload)
-        for chunk in self._pending_stream_chunks.pop(req_id, []) or []:
-            self._append_stream_chunk(req_data, chunk)
-        if req_id in self._pending_stream_done:
-            self._pending_stream_done.discard(req_id)
-            self._mark_stream_done(req_data)
+        req._omni_data = req_data
+        req_id = req.rid
+        try:
+            if bool(getattr(req_data, "enforce_request_limits", False)):
+                error_msg = self._prepare_request_limits(req_data)
+                if error_msg:
+                    raise ValueError(error_msg)
+            kv_error = self._request_kv_capacity_error(req)
+            if kv_error is not None:
+                raise ValueError(kv_error)
+            self._initialize_request_stream_state(req_data, payload)
+            for chunk in self._pending_stream_chunks.pop(req_id, []) or []:
+                self._append_stream_chunk(req_data, chunk)
+            if req_id in self._pending_stream_done:
+                self._pending_stream_done.discard(req_id)
+                self._mark_stream_done(req_data)
+        except Exception as exc:
+            self._rollback_materialized_streaming_session_req(req_data)
+            logger.warning("Rejecting request %s before scheduling: %s", req_id, exc)
+            self._emit_request_error(req_id, exc)
+            self.abort(req_id)
+            return
 
         def enqueue_if_live() -> None:
             if req_id in self._aborted_request_ids:
+                self._rollback_materialized_streaming_session_req(req_data)
                 return
             _emit_event(
                 request_id=req_id,
@@ -746,12 +783,88 @@ class OmniScheduler:
             if not hasattr(req, "_coalesce_enqueue_t"):
                 req._coalesce_enqueue_t = time.perf_counter()
             self.waiting_queue.append(req)
+            # From this point normal finish/abort owns the Session lifecycle;
+            # admission rollback must never touch the live request.
+            req_data.session_req_rollback = None
+            req_data.session_req_session = None
+            req_data.session_req_owns_inflight = False
 
         if request_admission_lock_held:
             enqueue_if_live()
         else:
             with self._request_admission_lock:
                 enqueue_if_live()
+
+    def _materialize_streaming_session_req(self, req_data: Any) -> Any:
+        """Create the turn's Req through SGLang's append-only Session API.
+
+        Ordinary builders keep returning ``req_data.req`` unchanged. A
+        session-aware builder instead supplies ``tokenized_session_req`` and a
+        tokenizer; this method runs after request building, on the scheduler
+        thread, and lets upstream Session.create_req append prior tokens while
+        binding the Req to StreamingSession KV save/restore.
+        """
+        recv_req = getattr(req_data, "tokenized_session_req", None)
+        if recv_req is None:
+            return req_data.req
+
+        session_params = getattr(recv_req, "session_params", None)
+        session_id = getattr(session_params, "id", None)
+        if not session_id:
+            raise ValueError("tokenized_session_req must carry session_params.id")
+
+        controller = self.session_controller
+        session = controller.get(session_id)
+        if session is None:
+            raise ValueError(f"streaming session {session_id!r} does not exist")
+        if session.close_on_finish:
+            raise ValueError(f"streaming session {session_id!r} is closing")
+
+        was_inflight = bool(getattr(session, "_inflight", False))
+        req = session.create_req(
+            recv_req,
+            getattr(req_data, "session_tokenizer", None),
+            self.model_config.vocab_size,
+            eos_token_ids=getattr(self.model_config, "hf_eos_token_id", None),
+        )
+        req_data.session_req_session = session
+        req_data.session_req_owns_inflight = bool(
+            not was_inflight and getattr(session, "_inflight", False)
+        )
+        try:
+            if req.finished():
+                reason = getattr(req, "finished_reason", None)
+                raise ValueError(
+                    f"streaming session {session_id!r} rejected request: {reason}"
+                )
+            setup = getattr(req_data, "session_req_setup", None)
+            if setup is not None:
+                req_data.session_req_rollback = setup(req)
+        except Exception:
+            self._rollback_materialized_streaming_session_req(req_data)
+            raise
+        req_data.req = req
+        req_data.output_ids = req.output_ids
+        return req
+
+    @staticmethod
+    def _rollback_materialized_streaming_session_req(req_data: Any) -> None:
+        """Undo pre-enqueue Session/create/setup mutations exactly once."""
+
+        rollback = getattr(req_data, "session_req_rollback", None)
+        req_data.session_req_rollback = None
+        if rollback is not None:
+            try:
+                rollback()
+            except Exception:
+                logger.exception("streaming-session model setup rollback failed")
+
+        session = getattr(req_data, "session_req_session", None)
+        owns_inflight = bool(getattr(req_data, "session_req_owns_inflight", False))
+        req_data.session_req_session = None
+        req_data.session_req_owns_inflight = False
+        if session is not None and owns_inflight:
+            session.abort_req()
 
     def _prepare_request_limits(self, req_data: Any) -> str | None:
         req = req_data.req
@@ -1153,6 +1266,7 @@ class OmniScheduler:
             if defer_running_cleanup
             else False
         )
+        aborted_waiting_reqs: list[Any] = []
         with self._request_admission_lock:
             if request_id not in self._aborted_request_ids:
                 if len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
@@ -1177,9 +1291,19 @@ class OmniScheduler:
                 ]
                 self._backlogged_request_build_payloads.clear()
                 self._backlogged_request_build_payloads.extend(retained)
+            aborted_waiting_reqs = [
+                req for req in self.waiting_queue if req.rid == request_id
+            ]
             self.waiting_queue = [
                 req for req in self.waiting_queue if req.rid != request_id
             ]
+        self._abort_waiting_streaming_session_reqs(aborted_waiting_reqs)
+        if not running_abort:
+            self._release_immediate_request_resources(request_id)
+            _remove_from_batch(self.running_batch, request_id)
+            _remove_from_batch(self.cur_batch, request_id)
+            _remove_from_batch(self.last_batch, request_id)
+            _remove_from_batch(self._async_pending_batch(), request_id)
         if self._abort_callback is not None and not running_abort:
             try:
                 self._abort_callback(request_id)
@@ -1193,13 +1317,26 @@ class OmniScheduler:
         self._dirty_deferred_request_ids.discard(request_id)
         self._first_emit_done.discard(request_id)
         self._prefill_start_done.discard(request_id)
-        if not running_abort:
-            self._release_immediate_request_resources(request_id)
-            _remove_from_batch(self.running_batch, request_id)
-            _remove_from_batch(self.cur_batch, request_id)
-            _remove_from_batch(self.last_batch, request_id)
-            _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
+
+    @staticmethod
+    def _abort_waiting_streaming_session_reqs(reqs: list[Any]) -> None:
+        aborted_sessions: set[int] = set()
+        for req in reqs:
+            session = getattr(req, "session", None)
+            if session is None or not bool(getattr(session, "streaming", False)):
+                continue
+            session_key = id(session)
+            if session_key not in aborted_sessions:
+                try:
+                    session.abort_req()
+                except Exception:
+                    logger.exception(
+                        "OmniScheduler: waiting streaming-session abort failed"
+                    )
+                    continue
+                aborted_sessions.add(session_key)
+            req.session = None
 
     def admin(
         self, action: str, payload: dict[str, Any] | None = None

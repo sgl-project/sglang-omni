@@ -34,15 +34,31 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
 
 
 @lru_cache(maxsize=4)
-def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Path:
+def resolve_model_path(
+    model_path: str,
+    *,
+    local_files_only: bool = False,
+    revision: str | None = None,
+) -> Path:
     """Resolve a model_path to a local path, downloading if needed."""
     path = Path(model_path)
     if path.exists():
         return path
     if local_files_only:
-        config_path = cached_file(model_path, "config.json", local_files_only=True)
+        config_path = cached_file(
+            model_path,
+            "config.json",
+            local_files_only=True,
+            revision=revision,
+        )
         return Path(config_path).parent
-    return Path(snapshot_download(model_path, local_files_only=False))
+    return Path(
+        snapshot_download(
+            model_path,
+            local_files_only=False,
+            revision=revision,
+        )
+    )
 
 
 def _load_bin_shard(path: str) -> dict[str, torch.Tensor]:
@@ -221,8 +237,12 @@ def load_module(
     device: str | torch.device | None = None,
     strict: bool = True,
     local_files_only: bool = False,
+    require_all_module_keys: bool = False,
+    allowed_unexpected_prefixes: tuple[str, ...] = (),
 ) -> nn.Module:
     """Load weights into module by prefix, optionally move to device."""
+    if strict and (require_all_module_keys or allowed_unexpected_prefixes):
+        raise ValueError("non-strict load validation options require strict=False")
     state_dict = load_weights_by_prefix(
         model_path,
         prefix=prefix,
@@ -230,9 +250,25 @@ def load_module(
     )
     # Prefer assign=True to avoid expensive in-place tensor copies during load.
     try:
-        module.load_state_dict(state_dict, strict=strict, assign=True)
+        incompatible = module.load_state_dict(state_dict, strict=strict, assign=True)
     except (TypeError, RuntimeError):
-        module.load_state_dict(state_dict, strict=strict)
+        incompatible = module.load_state_dict(state_dict, strict=strict)
+    if require_all_module_keys and incompatible.missing_keys:
+        raise RuntimeError(
+            "checkpoint is missing required module keys: "
+            f"{sorted(incompatible.missing_keys)!r}"
+        )
+    if allowed_unexpected_prefixes:
+        disallowed = [
+            key
+            for key in incompatible.unexpected_keys
+            if not key.startswith(allowed_unexpected_prefixes)
+        ]
+        if disallowed:
+            raise RuntimeError(
+                "checkpoint has unsupported unexpected module keys: "
+                f"{sorted(disallowed)!r}"
+            )
     module.eval()
     if device is not None or dtype is not None:
         if device is not None and dtype is not None:

@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config_cls: MiniCPMO45PipelineConfig
+model_path: openbmb/MiniCPM-o-4_5
+# Keep the native SGLang weights, remote processor code, and TTS assets on the
+# same audited snapshot. A local snapshot directory can be used instead.
+revision: 1f761131fa83f5ed3cd6f2f22b225c4501d154fa
+dtype: bfloat16
+context_length: 40960
+max_sessions: 1
+max_pending_units: 4
+max_pending_commands: 16
+session_ttl_s: 300
+
+# Omit both paths to use the checkpoint's assets/HT_ref_audio.wav for both the
+# LLM system voice reference and Token2wav prompt, matching the official path.
+ref_audio_path: null
+prompt_wav_path: null
+
+duplex_sampling:
+  generate_audio: true
+  ls_mode: explicit
+  force_listen_count: 3
+  max_new_speak_tokens_per_chunk: 20
+  decode_mode: sampling
+  temperature: 0.7
+  top_k: 20
+  top_p: 0.8
+  listen_prob_scale: 1.0
+  listen_top_k: null
+  text_repetition_penalty: 1.05
+  text_repetition_window_size: 512
+  length_penalty: 1.1
+  tts_temperature: 0.8
+  tts_repetition_penalty: 1.05
