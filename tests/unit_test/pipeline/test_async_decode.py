@@ -727,6 +727,7 @@ class _DFBatch:
     def __init__(self, reqs):
         self.reqs = list(reqs)
         self.out_cache_loc = torch.arange(100, 100 + len(reqs))
+        self.decoding_reqs = None
 
     def copy(self):
         return _DFBatch(self.reqs)
@@ -911,3 +912,119 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
 
     assert failures == [(stranded_batch, RuntimeError, "drain boom")]
     assert s._async_pending is None
+
+
+class _MixedBatch:
+    def __init__(self, lens, done, lp_start_lens=None, logprob=None):
+        self.forward_mode = types.SimpleNamespace(
+            is_decode=lambda: False, is_extend=lambda: True
+        )
+        logprob = logprob or [False] * len(lens)
+        self.reqs = [
+            types.SimpleNamespace(finished=lambda d=d: d, return_logprob=lp)
+            for d, lp in zip(done, logprob)
+        ]
+        self.extend_lens = list(lens)
+        self.extend_num_tokens = sum(lens)
+        self.prefix_lens = [10 * (i + 1) for i in range(len(lens))]
+        self.extend_logprob_start_lens = (
+            list(lp_start_lens) if lp_start_lens else [0] * len(lens)
+        )
+        self.out_cache_loc = torch.arange(100, 100 + sum(lens))
+        self.input_ids = torch.arange(sum(lens))
+        self.input_embeds = None
+        self.replace_embeds = None
+        self.token_type_ids = None
+        self.decoding_reqs = None
+        self.return_logprob = any(logprob)
+        if self.return_logprob:
+            self.extend_input_logprob_token_ids = torch.tensor(
+                [
+                    100 * (i + 1) + k
+                    for i, (length, start) in enumerate(
+                        zip(self.extend_lens, self.extend_logprob_start_lens)
+                    )
+                    for k in range(length - start)
+                ]
+            )
+        else:
+            self.extend_input_logprob_token_ids = None
+
+    def filter_batch(self, keep_indices):
+        self.reqs = [self.reqs[i] for i in keep_indices]
+        self.out_cache_loc = None
+        self.return_logprob = any(r.return_logprob for r in self.reqs)
+
+
+def _drop_stale_scheduler(freed):
+    s = OmniScheduler.__new__(OmniScheduler)
+    s.page_size = 1
+    s.server_args = types.SimpleNamespace(disable_radix_cache=False)
+    s.token_to_kv_pool_allocator = types.SimpleNamespace(
+        free=lambda t: freed.extend(t.tolist())
+    )
+    return s
+
+
+def test_drop_stale_overrun_mixed_reslices_per_token():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
+    out = s._drop_stale_overrun(batch)
+    assert out is batch
+    assert freed == [103]
+    assert out.out_cache_loc.tolist() == [100, 101, 102, 104]
+    assert out.input_ids.tolist() == [0, 1, 2, 4]
+    assert out.extend_lens == [3, 1]
+    assert out.extend_num_tokens == 4
+    assert out.prefix_lens == [10, 30]
+    assert out.extend_input_logprob_token_ids is None
+
+
+def test_drop_stale_overrun_extend_multitoken_drop():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[2, 3], done=[True, False])
+    out = s._drop_stale_overrun(batch)
+    assert freed == [100, 101]
+    assert out.out_cache_loc.tolist() == [102, 103, 104]
+    assert out.input_ids.tolist() == [2, 3, 4]
+    assert out.extend_lens == [3]
+    assert out.extend_num_tokens == 3
+    assert out.prefix_lens == [20]
+
+
+def test_drop_stale_overrun_reslices_logprob_token_ids():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(
+        lens=[3, 2, 2],
+        done=[False, True, False],
+        lp_start_lens=[1, 0, 2],
+        logprob=[True, True, True],
+    )
+    assert batch.extend_input_logprob_token_ids.tolist() == [100, 101, 200, 201]
+    out = s._drop_stale_overrun(batch)
+    assert out.extend_input_logprob_token_ids.tolist() == [100, 101]
+    assert out.extend_lens == [3, 2]
+    assert out.extend_logprob_start_lens == [1, 2]
+
+
+def test_drop_stale_overrun_drops_last_logprob_req():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[2, 2], done=[True, False], logprob=[True, False])
+    out = s._drop_stale_overrun(batch)
+    assert out.return_logprob is False
+    assert out.extend_input_logprob_token_ids is None
+
+
+def test_drop_stale_overrun_filters_decoding_reqs():
+    # dropped folded-decode row must also be removed from decoding_reqs
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
+    batch.decoding_reqs = [batch.reqs[1], batch.reqs[2]]
+    live_decode = batch.reqs[2]
+    out = s._drop_stale_overrun(batch)
+    assert out.decoding_reqs == [live_decode]

@@ -168,6 +168,7 @@ class Client:
         Audio data is base64-encoded before yielding so that callers never
         need to touch numpy / raw bytes.
         """
+        streamed_text = ""
         async for chunk in self.generate(request, request_id=request_id):
             audio_b64: str | None = None
             if chunk.modality == "audio" and chunk.audio_data is not None:
@@ -177,9 +178,16 @@ class Client:
                     output_format=audio_format,
                 )
 
+            text = chunk.text
+            if chunk.modality == "text" and text:
+                if chunk.finish_reason is None:
+                    streamed_text += text
+                elif streamed_text and text.startswith(streamed_text):
+                    text = text[len(streamed_text) :] or None
+
             yield CompletionStreamChunk(
                 request_id=request_id,
-                text=chunk.text,
+                text=text,
                 modality=chunk.modality,
                 audio_b64=audio_b64,
                 finish_reason=chunk.finish_reason,
