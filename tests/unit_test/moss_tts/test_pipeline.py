@@ -1413,6 +1413,67 @@ def test_moss_sample_tokens_seeded_is_reproducible() -> None:
     assert len(outs) > 1
 
 
+def test_moss_two_candidate_kernel_cpu_falls_back() -> None:
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
+
+    result = sample_two_candidates(
+        torch.randn(3, 2),
+        torch.ones(3),
+        torch.ones(3),
+        torch.full((3,), 2, dtype=torch.long),
+        torch.arange(3, dtype=torch.long),
+        torch.arange(3, dtype=torch.long),
+        torch.tensor([7, 11], dtype=torch.long),
+    )
+    assert result is None
+
+
+@pytest.mark.gpu
+def test_moss_two_candidate_kernel_matches_eager_gpu() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    from sglang_omni.models.moss_tts.model_runner import (
+        MossTTSModelRunner,
+        _multinomial_with_seed_and_token_ids,
+    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
+
+    device = torch.device("cuda")
+    logits = torch.tensor(
+        [[3.0, 1.0], [1.0, 3.0], [0.1, 0.2], [2.0, 2.0]],
+        device=device,
+    )
+    temperatures = torch.tensor([0.0, 1.0, 0.7, 1.5], device=device)
+    top_ps = torch.tensor([1.0, 0.5, 1.0, 0.9], device=device)
+    top_ks = torch.tensor([2, 2, 1, -1], dtype=torch.long, device=device)
+    seeds = torch.tensor([3, 5, 7, 11], dtype=torch.long, device=device)
+    positions = torch.tensor([13, 17, 19, 23], dtype=torch.long, device=device)
+    token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
+
+    do_sample = temperatures > 0
+    scores = logits / torch.where(
+        do_sample, temperatures, torch.ones_like(temperatures)
+    ).unsqueeze(1)
+    scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_ks)
+    scores = MossTTSModelRunner._apply_top_p(
+        scores, top_ps, skip_inactive_check=True
+    )
+    probs = torch.nan_to_num(torch.softmax(scores, dim=-1), nan=0.0)
+    fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
+    local = _multinomial_with_seed_and_token_ids(
+        scores, seeds, positions, token_ids
+    )
+    local = torch.where(fallback, torch.argmax(logits, dim=-1), local)
+    expected = token_ids[local]
+
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
+    )
+    assert actual is not None
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def test_moss_tts_rejects_invalid_sampling_params() -> None:
     for bad in (
         {"audio_temperature": -1.0},
