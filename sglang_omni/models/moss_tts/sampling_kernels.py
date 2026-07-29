@@ -8,47 +8,14 @@ import torch
 try:
     import triton
     import triton.language as tl
+
+    from sglang_omni.sampling.triton.hash import murmur_hash_seed_position_key
 except ImportError:  # pragma: no cover - depends on the runtime image
     triton = None
     tl = None
 
 
 if triton is not None:
-    # TODO: maybe move these to a shared module
-    @triton.jit
-    def _rotl32(x, r: tl.constexpr):
-        x = x.to(tl.uint64)
-        return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
-
-    @triton.jit
-    def _fmix32(h):
-        h ^= h >> 16
-        h = (h * 0x85EBCA6B) & 0xFFFFFFFF
-        h ^= h >> 13
-        h = (h * 0xC2B2AE35) & 0xFFFFFFFF
-        h ^= h >> 16
-        return h
-
-    @triton.jit
-    def _murmur3_mix(h, k):
-        k = (k * 0xCC9E2D51) & 0xFFFFFFFF
-        k = _rotl32(k, 15)
-        k = (k * 0x1B873593) & 0xFFFFFFFF
-        h ^= k
-        h = _rotl32(h, 13)
-        h = (h * 5 + 0xE6546B64) & 0xFFFFFFFF
-        return h
-
-    @triton.jit
-    def _murmur_hash_seed_position_token(seed, position, token):
-        seed = seed.to(tl.uint64)
-        h: tl.uint32 = 0
-        h = _murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, position.to(tl.uint32))
-        h = _murmur3_mix(h, token.to(tl.uint32))
-        h ^= 16
-        return _fmix32(h)
 
     @triton.jit
     def _sample_two_candidates_kernel(
@@ -106,8 +73,8 @@ if triton is not None:
         position = tl.load(positions + row)
         token0 = tl.load(token_ids)
         token1 = tl.load(token_ids + 1)
-        hash0 = _murmur_hash_seed_position_token(seed, position, token0)
-        hash1 = _murmur_hash_seed_position_token(seed, position, token1)
+        hash0 = murmur_hash_seed_position_key(seed, position, token0)
+        hash1 = murmur_hash_seed_position_key(seed, position, token1)
 
         # Sample Gumbel noise and add to the scores
         # noise = -log(-log(u))
