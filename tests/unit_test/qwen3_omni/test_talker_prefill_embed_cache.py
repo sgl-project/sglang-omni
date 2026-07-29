@@ -18,6 +18,8 @@ def model_dir(tmp_path):
     index = {"weight_map": {"thinker.model.embed_tokens.weight": shard}}
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
     talker_prefill._EMBED_SOURCE_CACHE.clear()
+    talker_prefill._EMBED_HANDLE_CACHE.clear()
+    talker_prefill._EMBED_ROW_CACHE.clear()
     return tmp_path
 
 
@@ -42,9 +44,42 @@ def test_index_parsed_once_across_calls(model_dir, monkeypatch):
     assert calls["n"] == 1
 
 
+def test_shard_opened_once_across_calls(model_dir, monkeypatch):
+    opens = {"n": 0}
+    real_safe_open = talker_prefill.safe_open
+
+    def counting_safe_open(*args, **kwargs):
+        opens["n"] += 1
+        return real_safe_open(*args, **kwargs)
+
+    monkeypatch.setattr(talker_prefill, "safe_open", counting_safe_open)
+    talker_prefill.load_thinker_embedding_rows(str(model_dir), [1])
+    talker_prefill.load_thinker_embedding_rows(str(model_dir), [2, 9])
+    talker_prefill.load_thinker_embedding_rows(str(model_dir), [15])
+    assert opens["n"] == 1
+
+
+def test_repeated_rows_served_from_cache(model_dir):
+    first = talker_prefill.load_thinker_embedding_rows(str(model_dir), [4, 11])
+    handle = talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)]
+
+    class Exploding:
+        def __getattr__(self, name):
+            raise AssertionError("cached rows must not touch the shard handle")
+
+    talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)] = Exploding()
+    try:
+        again = talker_prefill.load_thinker_embedding_rows(str(model_dir), [11, 4])
+    finally:
+        talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)] = handle
+    assert torch.equal(again, first[[1, 0]])
+
+
 def test_no_index_fallback_cached(model_dir, monkeypatch):
     (model_dir / "model.safetensors.index.json").unlink()
     talker_prefill._EMBED_SOURCE_CACHE.clear()
+    talker_prefill._EMBED_HANDLE_CACHE.clear()
+    talker_prefill._EMBED_ROW_CACHE.clear()
     rows = talker_prefill.load_thinker_embedding_rows(str(model_dir), [5])
     expected = torch.arange(VOCAB * HIDDEN, dtype=torch.float32).reshape(VOCAB, HIDDEN)
     assert torch.equal(rows, expected[[5]])

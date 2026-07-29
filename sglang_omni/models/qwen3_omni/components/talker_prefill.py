@@ -28,20 +28,9 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
 )
 
 
-def _read_rows_from_safetensor(
-    file_path: Path, tensor_name: str, row_ids: list[int]
-) -> torch.Tensor:
-    with safe_open(str(file_path), framework="pt", device="cpu") as handle:
-        tensor_slice = handle.get_slice(tensor_name)
-        try:
-            rows = [tensor_slice[row_id] for row_id in row_ids]
-            return torch.stack(rows, dim=0)
-        except (IndexError, RuntimeError, TypeError, ValueError):
-            tensor = handle.get_tensor(tensor_name)
-            return tensor[row_ids]
-
-
 _EMBED_SOURCE_CACHE: dict[str, tuple[Path, str]] = {}
+_EMBED_HANDLE_CACHE: dict[str, Any] = {}
+_EMBED_ROW_CACHE: dict[str, dict[int, torch.Tensor]] = {}
 
 
 def _resolve_embed_source(model_path: str) -> tuple[Path, str]:
@@ -72,8 +61,23 @@ def _resolve_embed_source(model_path: str) -> tuple[Path, str]:
 
 
 def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Tensor:
-    shard_path, tensor_name = _resolve_embed_source(model_path)
-    return _read_rows_from_safetensor(shard_path, tensor_name, row_ids)
+    row_cache = _EMBED_ROW_CACHE.setdefault(model_path, {})
+    missing_ids = [row_id for row_id in row_ids if row_id not in row_cache]
+    if missing_ids:
+        shard_path, tensor_name = _resolve_embed_source(model_path)
+        handle = _EMBED_HANDLE_CACHE.get(model_path)
+        if handle is None:
+            handle = safe_open(str(shard_path), framework="pt", device="cpu")
+            _EMBED_HANDLE_CACHE[model_path] = handle
+        tensor_slice = handle.get_slice(tensor_name)
+        try:
+            for row_id in missing_ids:
+                row_cache[row_id] = tensor_slice[row_id]
+        except (IndexError, RuntimeError, TypeError, ValueError):
+            tensor = handle.get_tensor(tensor_name)
+            for row_id in missing_ids:
+                row_cache[row_id] = tensor[row_id].clone()
+    return torch.stack([row_cache[row_id] for row_id in row_ids], dim=0)
 
 
 def coerce_feature_tensor(value: Any) -> torch.Tensor | None:
