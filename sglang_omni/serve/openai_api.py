@@ -26,7 +26,7 @@ import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import Any, AsyncIterator
 
 from fastapi import (
@@ -46,6 +46,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from starlette.types import Receive, Scope, Send
 
 from sglang_omni.client import (
     Client,
@@ -138,6 +139,29 @@ def _is_bad_request_error(exc: Exception) -> bool:
 
 class _RequestBodyTooLarge(Exception):
     pass
+
+
+class _ClosableStreamingResponse(StreamingResponse):
+    """Close the response body iterator at the ASGI ownership boundary."""
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._close_body_iterator()
+
+    async def _close_body_iterator(self) -> None:
+        try:
+            await _close_async_iterator_if_supported(self.body_iterator)
+        except asyncio.CancelledError:
+            logger.warning("Cancelled while closing streaming response body")
+        except Exception:
+            logger.warning("Failed to close streaming response body", exc_info=True)
 
 
 class VoiceUploadBodyLimitMiddleware:
@@ -650,7 +674,7 @@ def _register_chat_completions(app: FastAPI) -> None:
             audio_format = req.audio.get("format", "wav")
 
         if req.stream:
-            return StreamingResponse(
+            return _ClosableStreamingResponse(
                 _chat_stream(
                     client,
                     gen_req,
@@ -756,87 +780,93 @@ async def _chat_stream(
     model: str,
     req: ChatCompletionRequest,
     audio_format: str,
-):
+) -> AsyncIterator[str]:
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
     requested_modalities = req.modalities or ["text"]
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
 
-    async for chunk in client.completion_stream(
+    chunk_stream = client.completion_stream(
         gen_req,
         request_id=request_id,
         audio_format=audio_format,
-    ):
-        # Capture finish info for the dedicated finish chunk after the loop.
-        # Some pipelines only emit a final aggregate chunk; do not drop its
-        # text/audio just because it already carries a finish reason.
-        if chunk.finish_reason is not None:
-            finish_reason = chunk.finish_reason
-            if chunk.usage is not None:
-                final_usage = UsageResponse(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
+    )
+    async with aclosing(chunk_stream):
+        async for chunk in chunk_stream:
+            # Capture finish info for the dedicated finish chunk after the loop.
+            # Some pipelines only emit a final aggregate chunk; do not drop its
+            # text/audio just because it already carries a finish reason.
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    final_usage = UsageResponse(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                    )
+                has_payload = (
+                    chunk.modality == "text"
+                    and bool(chunk.text)
+                    and "text" in requested_modalities
+                ) or (
+                    chunk.modality == "audio"
+                    and chunk.audio_b64 is not None
+                    and "audio" in requested_modalities
                 )
-            has_payload = (
+                if not has_payload:
+                    continue
+
+            delta = ChatCompletionStreamDelta()
+            emit = False
+
+            # Send role on first chunk
+            if not role_sent:
+                delta.role = "assistant"
+                role_sent = True
+                emit = True
+
+            # Text chunk
+            if (
                 chunk.modality == "text"
-                and bool(chunk.text)
+                and chunk.text
                 and "text" in requested_modalities
-            ) or (
+            ):
+                delta.content = chunk.text
+                emit = True
+
+            # Audio chunk
+            if (
                 chunk.modality == "audio"
                 and chunk.audio_b64 is not None
                 and "audio" in requested_modalities
-            )
-            if not has_payload:
+            ):
+                delta.audio = ChatCompletionAudio(
+                    id=f"audio-{request_id}",
+                    data=chunk.audio_b64,
+                )
+                emit = True
+
+            if not emit:
                 continue
 
-        delta = ChatCompletionStreamDelta()
-        emit = False
-
-        # Send role on first chunk
-        if not role_sent:
-            delta.role = "assistant"
-            role_sent = True
-            emit = True
-
-        # Text chunk
-        if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
-            delta.content = chunk.text
-            emit = True
-
-        # Audio chunk
-        if (
-            chunk.modality == "audio"
-            and chunk.audio_b64 is not None
-            and "audio" in requested_modalities
-        ):
-            delta.audio = ChatCompletionAudio(
-                id=f"audio-{request_id}",
-                data=chunk.audio_b64,
+            stream_resp = ChatCompletionStreamResponse(
+                id=response_id,
+                created=created,
+                model=model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=delta,
+                        finish_reason=None,
+                    )
+                ],
             )
-            emit = True
 
-        if not emit:
-            continue
-
-        stream_resp = ChatCompletionStreamResponse(
-            id=response_id,
-            created=created,
-            model=model,
-            choices=[
-                ChatCompletionStreamChoice(
-                    index=0,
-                    delta=delta,
-                    finish_reason=None,
-                )
-            ],
-        )
-
-        data = stream_resp.model_dump(exclude_none=True)
-        for choice in data.get("choices", []):
-            choice.setdefault("finish_reason", None)
-        yield f"data: {json.dumps(data)}\n\n"
+            data = stream_resp.model_dump(exclude_none=True)
+            for choice in data.get("choices", []):
+                choice.setdefault("finish_reason", None)
+            yield f"data: {json.dumps(data)}\n\n"
 
     # Finish chunk: empty delta + finish_reason.
     finish_resp = ChatCompletionStreamResponse(
@@ -1599,7 +1629,7 @@ def _register_transcriptions(app: FastAPI) -> None:
             )
             adapter = resolve_adapter(getattr(app.state, "architectures", None))
             duration_s = _probe_audio_duration(audio_bytes)
-            return StreamingResponse(
+            return _ClosableStreamingResponse(
                 _transcription_stream(
                     client,
                     gen_req,
@@ -1684,15 +1714,17 @@ async def _transcription_stream(
     post-processed transcript.
     """
     final_text: str | None = None
+    chunk_stream = client.generate(gen_req, request_id=request_id)
     try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
-            if chunk.finish_reason is not None:
-                if isinstance(chunk.text, str) and chunk.text:
-                    final_text = chunk.text
-                continue
-            if chunk.modality == "text" and chunk.text:
-                event = TranscriptionTextDeltaEvent(delta=chunk.text)
-                yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        async with aclosing(chunk_stream):
+            async for chunk in chunk_stream:
+                if chunk.finish_reason is not None:
+                    if isinstance(chunk.text, str) and chunk.text:
+                        final_text = chunk.text
+                    continue
+                if chunk.modality == "text" and chunk.text:
+                    event = TranscriptionTextDeltaEvent(delta=chunk.text)
+                    yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
     except Exception as exc:
         logger.exception("Error streaming transcription for request %s", request_id)
         payload = {"type": "error", "error": {"message": str(exc)}}
