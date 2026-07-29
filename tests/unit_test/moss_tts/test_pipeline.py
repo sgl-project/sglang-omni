@@ -19,6 +19,7 @@ from benchmarks.tasks.tts import (
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
+from sglang_omni.models.moss_tts import model_runner
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
@@ -1416,8 +1417,6 @@ def test_moss_sample_tokens_seeded_is_reproducible() -> None:
 
 
 def test_moss_two_candidate_kernel_cpu_falls_back() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
-
     result = sample_two_candidates(
         torch.randn(3, 2),
         torch.ones(3),
@@ -1436,8 +1435,6 @@ def test_moss_two_candidate_kernel_matches_eager_gpu(
 ) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
-
-    from sglang_omni.models.moss_tts import model_runner
 
     device = torch.device("cuda")
     logits = torch.tensor(
@@ -1476,8 +1473,6 @@ def test_moss_two_candidate_kernel_randomized_parity_gpu(
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
 
-    from sglang_omni.models.moss_tts import model_runner
-
     device = torch.device("cuda")
     row_count = 4096
     generator = torch.Generator(device=device).manual_seed(20260729)
@@ -1514,8 +1509,7 @@ def test_moss_two_candidate_kernel_randomized_parity_gpu(
         (rows // (temperature_values.numel() * top_p_values.numel())).remainder(4)
     ]
     # torch.sort is intentionally unstable, so its ordering of exact ties is
-    # unspecified and changes with batch shape. Keep ties in the RNG parity
-    # coverage while avoiding an undefined nucleus-ordering comparison.
+    # unspecified and changes with batch shape.
     top_ps[tie_rows] = 1.0
     top_ks[tie_rows] = 2
     seeds = torch.randint(
