@@ -25,6 +25,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.compiled_stage import CompiledStage
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +120,25 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
         "max-autotune-no-cudagraphs",
     )
     text_model._compiled_decode_layers = [
-        torch.compile(layer, mode=compile_mode) for layer in layers
+        CompiledStage(
+            f"qwen3_tts.decode_backbone.layer_{index}",
+            layer,
+            compile_kwargs={"mode": compile_mode},
+            bucket_fn=lambda *args, **kwargs: _decode_layer_batch_bucket(args, kwargs),
+        )
+        for index, layer in enumerate(layers)
     ]
+
+
+def _decode_layer_batch_bucket(
+    args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> int | None:
+    hidden_states = kwargs.get("hidden_states")
+    if hidden_states is None and len(args) >= 2:
+        hidden_states = args[1]
+    if not isinstance(hidden_states, torch.Tensor) or hidden_states.ndim == 0:
+        return None
+    return int(hidden_states.shape[0])
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:

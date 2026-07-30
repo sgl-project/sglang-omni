@@ -12,6 +12,7 @@ import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
@@ -404,6 +405,7 @@ def test_pipeline_stage_wiring():
     assert tts_engine_runtime.resources.total_gpu_memory_fraction == pytest.approx(0.90)
     assert tts_engine_runtime.sglang_server_args.mem_fraction_static is None
     assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.15)
+    assert stages["tts_engine"].factory_args["compile_frame_sampler"] is True
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
@@ -432,6 +434,19 @@ def test_pipeline_stage_wiring():
     assert split_runtime.resources.total_gpu_memory_fraction is None
     assert split_runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)
     assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
+
+
+def test_moss_local_frame_sampler_compile_has_explicit_off_switch() -> None:
+    config = MossTTSLocalPipelineConfig(
+        model_path="OpenMOSS-Team/moss-local-test",
+        runtime_overrides={"tts_engine": {"compile_frame_sampler": False}},
+    )
+    stage = next(stage for stage in config.stages if stage.name == "tts_engine")
+
+    assert (
+        resolve_stage_static_factory_args(stage, config)["compile_frame_sampler"]
+        is False
+    )
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():

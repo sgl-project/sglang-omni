@@ -68,6 +68,7 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.compiled_stage import CompiledStage, CompileWarmupCase
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +356,7 @@ def create_audio_encoder_executor(
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
+    compile_encoder: bool = True,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -368,12 +370,38 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    codec.model.acoustic_encoder = torch.compile(
-        codec.model.acoustic_encoder, mode="default", dynamic=True
-    )
-    codec.encode_reference(
-        torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
-    )
+    acoustic_encoder = codec.model.acoustic_encoder
+    if compile_encoder:
+        encoder_compile = CompiledStage(
+            "higgs_tts.audio_encoder",
+            acoustic_encoder.forward,
+            compile_kwargs={"mode": "default", "dynamic": True},
+            bucket_fn=lambda waveform, *args, **kwargs: tuple(waveform.shape),
+        )
+        acoustic_encoder.forward = encoder_compile
+        parameter = next(acoustic_encoder.parameters(), None)
+        warmup_device = (
+            parameter.device if parameter is not None else torch.device("cpu")
+        )
+        warmup_dtype = parameter.dtype if parameter is not None else torch.float32
+        encoder_compile.warmup(
+            [
+                CompileWarmupCase(
+                    "one-second-reference",
+                    args=(
+                        torch.zeros(
+                            1,
+                            1,
+                            codec.SAMPLE_RATE,
+                            device=warmup_device,
+                            dtype=warmup_dtype,
+                        ),
+                    ),
+                    bucket=(1, 1, codec.SAMPLE_RATE),
+                )
+            ]
+        )
+        codec._compiled_audio_encoder = encoder_compile
     reference_service = ReferenceEncodeService(
         _HiggsReferenceEncodeHook(
             codec,
@@ -492,29 +520,37 @@ def create_vocoder_executor(
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if compile_decode:
         eager_decode = codec.model.decode
-        try:
-            codec.model.decode = torch.compile(eager_decode, dynamic=True)
-            warm_codes_TN = torch.zeros(
-                (
-                    max(_VOCODER_COMPILE_WARMUP_FRAME_COUNTS),
-                    int(codec.model.config.num_quantizers),
-                ),
-                dtype=torch.long,
-                device="cpu",
-            )
-            # Note: (stephenkgli) match serving's contiguous [T, N] layout and
-            # warm the zero-one-specialized batch and frame-count classes.
-            for frame_count in _VOCODER_COMPILE_WARMUP_FRAME_COUNTS:
-                frame_codes_TN = warm_codes_TN[:frame_count]
-                codec.decode(frame_codes_TN)
-                codec.decode_batch([frame_codes_TN, frame_codes_TN])
-        except Exception:
-            logger.warning(
-                "torch.compile of the codec decode failed; falling back to the "
-                "eager vocoder decode",
-                exc_info=True,
-            )
-            codec.model.decode = eager_decode
+        decode_compile = CompiledStage(
+            "higgs_tts.vocoder_decode",
+            eager_decode,
+            compile_kwargs={"dynamic": True},
+            bucket_fn=lambda codes, *args, **kwargs: (
+                int(codes.shape[0]),
+                int(codes.shape[-1]),
+            ),
+        )
+        codec.model.decode = decode_compile
+        num_quantizers = int(codec.model.config.num_quantizers)
+        warmup_cases = []
+        for frame_count in _VOCODER_COMPILE_WARMUP_FRAME_COUNTS:
+            for batch_size in (1, 2):
+                warmup_cases.append(
+                    CompileWarmupCase(
+                        f"batch={batch_size},frames={frame_count}",
+                        args=(
+                            torch.zeros(
+                                batch_size,
+                                num_quantizers,
+                                frame_count,
+                                dtype=torch.long,
+                                device=codec.device,
+                            ),
+                        ),
+                        bucket=(batch_size, frame_count),
+                    )
+                )
+        decode_compile.warmup(warmup_cases)
+        codec._compiled_decode = decode_compile
 
     return HiggsStreamingVocoderScheduler(
         codec,

@@ -1935,6 +1935,33 @@ def test_qwen3_tts_compile_backbone_requires_text_layers(
         _compile_qwen3_tts_backbone(SimpleNamespace())
 
 
+def test_qwen3_tts_declares_talker_stage_for_compile_cli() -> None:
+    from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
+    assert Qwen3TTSPipelineConfig.talker_sglang_role_to_stage() == {
+        "talker": "tts_engine"
+    }
+    config = Qwen3TTSPipelineConfig(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+    updated = apply_torch_compile_cli_overrides(
+        config,
+        thinker_torch_compile="default",
+        talker_torch_compile="off",
+        thinker_torch_compile_max_bs=None,
+        talker_torch_compile_max_bs=None,
+    )
+    stage = next(stage for stage in updated.stages if stage.name == "tts_engine")
+    assert stage.factory_args["server_args_overrides"]["enable_torch_compile"] is False
+
+
+def test_qwen3_tts_compile_preserves_enabled_default() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+
+    assert defaults["enable_torch_compile"] is True
+
+
 def test_qwen3_tts_compile_backbone_compiles_every_layer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1964,7 +1991,7 @@ def test_qwen3_tts_compile_backbone_compiles_every_layer(
 
     assert set_config_calls == [True]
     assert compiled == [(layer, "max-autotune-no-cudagraphs") for layer in layers]
-    assert text_model._compiled_decode_layers == [
+    assert [stage.compiled for stage in text_model._compiled_decode_layers] == [
         "compiled-1",
         "compiled-2",
         "compiled-3",
@@ -2119,6 +2146,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
         device="cuda:0",
         server_args_overrides={
             "cuda_graph_max_bs": 32,
+            "enable_torch_compile": True,
             "mem_fraction_static": 0.7,
             "max_running_requests": 2,
         },

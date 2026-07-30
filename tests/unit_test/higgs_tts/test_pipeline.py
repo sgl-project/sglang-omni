@@ -40,7 +40,27 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
     assert "server_args_overrides" not in stages_by_name["tts_engine"].factory_args
+    assert stages_by_name["audio_encoder"].factory_args["compile_encoder"] is True
+    assert stages_by_name["vocoder"].factory_args["compile_decode"] is True
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
+
+
+def test_higgs_compiled_stages_have_explicit_off_switches() -> None:
+    config = HiggsTtsPipelineConfig(
+        model_path="fake-model",
+        runtime_overrides={
+            "audio_encoder": {"compile_encoder": False},
+            "vocoder": {"compile_decode": False},
+        },
+    )
+    stages_by_name = {stage.name: stage for stage in config.stages}
+
+    encoder_args = resolve_stage_static_factory_args(
+        stages_by_name["audio_encoder"], config
+    )
+    vocoder_args = resolve_stage_static_factory_args(stages_by_name["vocoder"], config)
+    assert encoder_args["compile_encoder"] is False
+    assert vocoder_args["compile_decode"] is False
 
 
 def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> None:
@@ -418,11 +438,19 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     fake_codec = FakeCodec()
     monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
     monkeypatch.setattr(stages, "get_or_load_codec", lambda *args, **kwargs: fake_codec)
+    monkeypatch.setattr(
+        stages,
+        "CompiledStage",
+        lambda *args, **kwargs: pytest.fail(
+            "compile-disabled encoder must keep the eager callable"
+        ),
+    )
 
     scheduler = stages.create_audio_encoder_executor(
         "ckpt",
         device="cuda:0",
         num_codebooks=2,
+        compile_encoder=False,
     )
     # Ignore the construction-time codec warm-up call added by #612.
     fake_codec.calls = 0
@@ -500,6 +528,7 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
         "ckpt",
         device="cuda:0",
         num_codebooks=2,
+        compile_encoder=False,
     )
     fake_codec.calls = 0
     encode = scheduler._fn

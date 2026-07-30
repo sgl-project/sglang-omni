@@ -75,7 +75,10 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
         lambda: None,
     )
     warmups: list[tuple[int, ...]] = []
-    runner = lambda feats, pos, forward_batch: warmups.append(tuple(feats.shape))
+
+    def runner(feats, pos, forward_batch):
+        warmups.append(tuple(feats.shape))
+
     monkeypatch.setattr(torch, "compile", lambda module, **kwargs: runner)
 
     encoder = torch.nn.Linear(4, 4)
@@ -88,7 +91,7 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
 
     Model.compile_encoder(model, [2, 1, 1], input_feature_len=6)
 
-    assert model._compiled_encoder is runner
+    assert model._compiled_encoder.compiled is runner
     assert model._compiled_chunk_buckets == frozenset({1, 2})
     assert model._compiled_input_feature_len == 6
     assert len(warmups) == 6

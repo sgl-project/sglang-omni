@@ -548,6 +548,7 @@ def create_sglang_tts_engine_executor(
     async_decode_min_batch_size: int = 2,
     total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
+    compile_frame_sampler: bool = True,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
@@ -558,6 +559,7 @@ def create_sglang_tts_engine_executor(
         async_decode_min_batch_size=async_decode_min_batch_size,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         codec_mem_reserve=codec_mem_reserve,
+        compile_frame_sampler=compile_frame_sampler,
     ).build(
         model_path,
         device=device,

@@ -32,6 +32,7 @@ from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.utils.compiled_stage import CompiledStage, CompileWarmupCase
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self._encoder_cache: Optional[StageOutputCache] = None
         self._encoder_graph_runner = None
-        self._compiled_encoder = None
+        self._compiled_encoder: CompiledStage | None = None
         self._compiled_chunk_buckets: frozenset[int] = frozenset()
         self._compiled_input_feature_len = 0
 
@@ -150,30 +151,41 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         if not buckets:
             return
         set_torch_compile_config()
-        self._compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
         self._compiled_input_feature_len = int(input_feature_len)
         p = next(self.whisper_encoder.parameters())
         frames = int(input_feature_len)
         num_mel_bins = int(self.config.audio_config.num_mel_bins)
         pos = torch.arange((frames - 1) // 2 + 1, device=p.device, dtype=torch.long)
-        warmed: list[int] = []
+        self._compiled_encoder = CompiledStage(
+            "moss_transcribe_diarize.whisper_encoder",
+            self.whisper_encoder,
+            compile_kwargs={"dynamic": False},
+            bucket_fn=lambda feats, *args, **kwargs: (
+                int(feats.shape[0]),
+                int(feats.shape[-1]),
+            ),
+            restrict_to_warmed_buckets=True,
+        )
+        cases = [
+            CompileWarmupCase(
+                f"chunks={n}",
+                args=(
+                    torch.zeros(
+                        n, num_mel_bins, frames, device=p.device, dtype=p.dtype
+                    ),
+                    pos,
+                    None,
+                ),
+                bucket=(n, frames),
+                repeat=3,
+            )
+            for n in buckets
+        ]
         with torch.no_grad():
-            for n in buckets:
-                feats = torch.zeros(
-                    n, num_mel_bins, frames, device=p.device, dtype=p.dtype
-                )
-                try:
-                    for _ in range(3):
-                        self._compiled_encoder(feats, pos, None)
-                except Exception as exc:
-                    logger.warning(
-                        f"MOSS-TD encoder torch.compile warmup failed for "
-                        f"chunks={n}: {exc}; that chunk count will run eager"
-                    )
-                    continue
-                warmed.append(n)
-        self._compiled_chunk_buckets = frozenset(warmed)
-        logger.info(f"MOSS-TD encoder torch.compile warmed buckets={warmed}")
+            stats = self._compiled_encoder.warmup(cases)
+        self._compiled_chunk_buckets = frozenset(
+            int(bucket[0]) for bucket in stats.warmed_buckets
+        )
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, hidden_size = features.shape
@@ -268,11 +280,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             encoder_position_ids = torch.arange(
                 encoder_len, device=device, dtype=torch.long
             )
-            if (
-                self._compiled_encoder is not None
-                and batched_features.shape[0] in self._compiled_chunk_buckets
-                and batched_features.shape[-1] == self._compiled_input_feature_len
-            ):
+            if self._compiled_encoder is not None:
                 features = self._compiled_encoder(
                     batched_features, encoder_position_ids, forward_batch
                 )

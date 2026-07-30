@@ -23,11 +23,13 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         async_decode_min_batch_size: int,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
+        compile_frame_sampler: bool = True,
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
+        self.compile_frame_sampler = bool(compile_frame_sampler)
         self.memory_budget = moss_local_stages._ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
@@ -113,7 +115,10 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         # (1 + n_vq micro-steps and 13 seeded sampling passes per frame):
         # eager it is kernel-launch-bound at ~22 ms/frame independent of batch
         # size.
-        model.init_frame_decode_graphs(list(server_args.cuda_graph_bs))
+        model.init_frame_decode_graphs(
+            list(server_args.cuda_graph_bs),
+            compile_frame_sampler=self.compile_frame_sampler,
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

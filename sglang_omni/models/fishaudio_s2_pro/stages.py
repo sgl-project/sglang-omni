@@ -27,6 +27,7 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.compiled_stage import CompiledStage
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,13 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     )
     audio_decoder = model._audio_decoder
     compiled_forward_kvcached_layers = [
-        torch.compile(layer.forward_kvcached, mode=compile_mode)
-        for layer in audio_decoder.layers
+        CompiledStage(
+            f"fishaudio_s2_pro.codebook_decoder.layer_{index}",
+            layer.forward_kvcached,
+            compile_kwargs={"mode": compile_mode},
+            bucket_fn=lambda x, *args, **kwargs: int(x.shape[0]),
+        )
+        for index, layer in enumerate(audio_decoder.layers)
     ]
     audio_decoder.set_compiled_forward_kvcached_layers(
         compiled_forward_kvcached_layers,
