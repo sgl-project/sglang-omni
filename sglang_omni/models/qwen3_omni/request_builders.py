@@ -859,6 +859,44 @@ def make_thinker_stream_output_builder():
                 break
         return _normalize_chunk_hidden(embed), _normalize_chunk_hidden(layer_hidden)
 
+    def _prefill_prompt_offset(req_data: Any) -> int:
+        req = getattr(req_data, "req", None)
+        prefix_indices = getattr(req, "prefix_indices", None)
+        if prefix_indices is None:
+            return 0
+        try:
+            return len(prefix_indices)
+        except TypeError:
+            return 0
+
+    def _prefill_prompt_states(
+        hidden: dict[str | int, torch.Tensor] | torch.Tensor,
+        req_data: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(hidden, dict):
+            return {}
+
+        layer_hidden = None
+        for key, value in hidden.items():
+            if key in ("embed", 0, "0"):
+                continue
+            if isinstance(value, torch.Tensor):
+                layer_hidden = value
+                break
+
+        metadata: dict[str, Any] = {}
+        if (
+            isinstance(layer_hidden, torch.Tensor)
+            and layer_hidden.ndim == 2
+            and layer_hidden.shape[0] > 0
+        ):
+            metadata["prefill_layer_hidden"] = layer_hidden.detach().to(
+                device="cpu", copy=True
+            )
+        if metadata:
+            metadata["prefill_offset"] = _prefill_prompt_offset(req_data)
+        return metadata
+
     def _build_stream_output(
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
@@ -903,6 +941,9 @@ def make_thinker_stream_output_builder():
             embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
             if embed is not None:
                 metadata = {"token_id": token_id}
+                metadata.update(
+                    _prefill_prompt_states(extra["hidden_states"], req_data)
+                )
                 if layer_hidden is not None:
                     metadata["layer_hidden"] = layer_hidden
                 messages.append(

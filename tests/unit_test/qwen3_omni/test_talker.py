@@ -19,8 +19,14 @@ from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
 )
-from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
-from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.components.talker_input import (
+    build_assistant_part,
+    build_prefill_input,
+)
+from sglang_omni.models.qwen3_omni.components.talker_prefill import (
+    TalkerPrefillBuilder,
+    merge_prompt_modality,
+)
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
@@ -230,6 +236,133 @@ def test_qwen_talker_assistant_part_handles_short_prefix() -> None:
         result["future_text_rows"],
         torch.tensor([[12.0, 13.0]], dtype=torch.float32),
     )
+
+
+def test_qwen_talker_prefill_uses_multimodal_prompt_features() -> None:
+    """Multimodal user rows must reach hidden_projection during talker prefill."""
+    im_start_token_id = 10
+    user_token_id = 20
+    audio_token_id = 30
+    im_end_token_id = 40
+    prompt_ids = torch.tensor(
+        [im_start_token_id, user_token_id, audio_token_id, im_end_token_id],
+        dtype=torch.long,
+    )
+    prompt_embed = torch.zeros((4, 2), dtype=torch.float32)
+    prompt_hidden = prompt_embed.clone()
+    audio_features = torch.tensor([[3.0, 5.0]], dtype=torch.float32)
+
+    merge_prompt_modality(
+        prompt_ids,
+        prompt_embed,
+        prompt_hidden,
+        token_id=audio_token_id,
+        features=audio_features,
+    )
+    result = build_prefill_input(
+        thinker_embed=prompt_embed,
+        thinker_hidden=prompt_hidden,
+        thinker_input_ids=prompt_ids,
+        multimodal_mask=prompt_ids == audio_token_id,
+        text_projection=lambda tensor: tensor + 100.0,
+        hidden_projection=lambda tensor: tensor + 200.0,
+        codec_embed_fn=lambda token_ids: torch.zeros(
+            (token_ids.shape[0], 2), dtype=torch.float32
+        ),
+        tts_bos_embed=torch.zeros((1, 2), dtype=torch.float32),
+        tts_eos_embed=torch.zeros((1, 2), dtype=torch.float32),
+        tts_pad_embed=torch.zeros((1, 2), dtype=torch.float32),
+        im_start_token_id=im_start_token_id,
+        system_token_id=99,
+        user_token_id=user_token_id,
+        assistant_token_id=88,
+        speaker_id=0,
+        codec_nothink_id=1,
+        codec_think_bos_id=2,
+        codec_think_eos_id=3,
+        codec_pad_id=4,
+        codec_bos_id=5,
+        tts_pad_token_id=0,
+        im_end_token_id=im_end_token_id,
+    )
+
+    assert torch.equal(result["input_embeds"][2], audio_features[0] + 200.0)
+
+
+def test_qwen_talker_prefill_prefers_captured_prompt_states() -> None:
+    """Talker prefill should use captured hidden states for multimodal prompt rows."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._device = torch.device("cpu")
+    builder._dtype = torch.float32
+    builder._audio_token_id = 100
+    builder._image_token_id = None
+    builder._video_token_id = None
+    prompt_ids = torch.tensor([1, 100, 2], dtype=torch.long)
+    fallback_embed = torch.tensor(
+        [[101.0, 102.0], [103.0, 104.0], [105.0, 106.0]],
+        dtype=torch.float32,
+    )
+    fallback_hidden = torch.zeros((3, 2), dtype=torch.float32)
+    prefill_hidden = torch.tensor(
+        [[11.0, 12.0], [13.0, 14.0], [15.0, 16.0], [17.0, 18.0]],
+        dtype=torch.float32,
+    )
+    chunks = [
+        SimpleNamespace(
+            metadata={
+                "prefill_layer_hidden": prefill_hidden,
+            }
+        )
+    ]
+
+    prompt_embed, prompt_hidden = builder.apply_captured_prefill_prompt_states(
+        chunks,
+        prompt_ids=prompt_ids,
+        prompt_len=3,
+        prompt_embed=fallback_embed,
+        prompt_hidden=fallback_hidden,
+    )
+
+    expected_hidden = fallback_hidden.clone()
+    expected_hidden[1] = prefill_hidden[1]
+    assert torch.equal(prompt_embed, fallback_embed)
+    assert torch.equal(prompt_hidden, expected_hidden)
+
+
+def test_qwen_talker_prefill_merges_cached_suffix_prompt_states() -> None:
+    """Prefix-cache hits should still apply captured prompt suffix hidden states."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._device = torch.device("cpu")
+    builder._dtype = torch.float32
+    builder._audio_token_id = 100
+    builder._image_token_id = None
+    builder._video_token_id = None
+    prompt_ids = torch.tensor([1, 2, 3, 100, 4], dtype=torch.long)
+    fallback_embed = torch.ones((5, 2), dtype=torch.float32)
+    fallback_hidden = torch.zeros((5, 2), dtype=torch.float32)
+    prefill_hidden = torch.tensor([[15.0, 16.0], [17.0, 18.0]], dtype=torch.float32)
+    chunks = [
+        SimpleNamespace(
+            metadata={
+                "prefill_layer_hidden": prefill_hidden,
+                "prefill_offset": 3,
+            }
+        )
+    ]
+
+    prompt_embed, prompt_hidden = builder.apply_captured_prefill_prompt_states(
+        chunks,
+        prompt_ids=prompt_ids,
+        prompt_len=5,
+        prompt_embed=fallback_embed,
+        prompt_hidden=fallback_hidden,
+    )
+
+    expected_embed = fallback_embed.clone()
+    expected_hidden = fallback_hidden.clone()
+    expected_hidden[3] = prefill_hidden[0]
+    assert torch.equal(prompt_embed, expected_embed)
+    assert torch.equal(prompt_hidden, expected_hidden)
 
 
 def test_qwen_talker_prefill_ignores_late_text_after_thinker_done() -> None:

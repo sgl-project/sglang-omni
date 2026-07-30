@@ -101,11 +101,16 @@ def merge_prompt_modality(
     if not mask.any():
         return
 
-    prompt_embed[mask] = feature_tensor.to(
+    prompt_feature_tensor = feature_tensor.to(
         device=prompt_embed.device,
         dtype=prompt_embed.dtype,
     )
-    prompt_hidden[mask] = 0.0
+    prompt_embed[mask] = prompt_feature_tensor
+    # Talker hidden_projection consumes prompt_hidden for multimodal rows.
+    prompt_hidden[mask] = feature_tensor.to(
+        device=prompt_hidden.device,
+        dtype=prompt_hidden.dtype,
+    )
 
 
 def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> int:
@@ -191,6 +196,13 @@ class TalkerPrefillBuilder:
         state = Qwen3OmniPipelineState.from_dict(payload.data)
         prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
             self._reconstruct_prompt_states(state)
+        )
+        prompt_embed, prompt_hidden = self.apply_captured_prefill_prompt_states(
+            thinker_chunks,
+            prompt_ids=prompt_ids,
+            prompt_len=int(prompt_ids.shape[0]),
+            prompt_embed=prompt_embed,
+            prompt_hidden=prompt_hidden,
         )
 
         assistant_token_ids = self.extract_chunk_token_ids(thinker_chunks)
@@ -372,6 +384,71 @@ class TalkerPrefillBuilder:
         )
 
         return prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs
+
+    def apply_captured_prefill_prompt_states(
+        self,
+        thinker_chunks: list[Any],
+        *,
+        prompt_ids: torch.Tensor,
+        prompt_len: int,
+        prompt_embed: torch.Tensor,
+        prompt_hidden: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        metadata = self._first_prefill_metadata(thinker_chunks)
+        if metadata is None:
+            return prompt_embed, prompt_hidden
+
+        prefill_hidden = metadata.get("prefill_layer_hidden")
+        prefill_offset = int(metadata.get("prefill_offset") or 0)
+
+        captured_hidden = self._coerce_prefill_prompt_tensor(
+            prefill_hidden,
+            prompt_len=prompt_len,
+            offset=prefill_offset,
+            expected_width=int(prompt_hidden.shape[-1]),
+        )
+
+        if captured_hidden is not None:
+            end = prefill_offset + captured_hidden.shape[0]
+            multimodal_mask = self.build_multimodal_mask(prompt_ids)[prefill_offset:end]
+            if multimodal_mask.any():
+                prompt_hidden = prompt_hidden.clone()
+                prompt_hidden_slice = prompt_hidden[prefill_offset:end]
+                prompt_hidden_slice[multimodal_mask] = captured_hidden[multimodal_mask]
+                prompt_hidden[prefill_offset:end] = prompt_hidden_slice
+        return prompt_embed, prompt_hidden
+
+    def _first_prefill_metadata(
+        self,
+        thinker_chunks: list[Any],
+    ) -> dict[str, Any] | None:
+        for chunk in thinker_chunks:
+            metadata = getattr(chunk, "metadata", None) or {}
+            if isinstance(metadata.get("prefill_embed"), torch.Tensor) or isinstance(
+                metadata.get("prefill_layer_hidden"), torch.Tensor
+            ):
+                return metadata
+        return None
+
+    def _coerce_prefill_prompt_tensor(
+        self,
+        tensor: Any,
+        *,
+        prompt_len: int,
+        offset: int,
+        expected_width: int,
+    ) -> torch.Tensor | None:
+        if not isinstance(tensor, torch.Tensor) or tensor.ndim != 2:
+            return None
+        if offset < 0 or offset >= prompt_len or tensor.shape[-1] != expected_width:
+            return None
+        available = prompt_len - offset
+        if available <= 0:
+            return None
+        rows = min(int(tensor.shape[0]), available)
+        if rows <= 0:
+            return None
+        return tensor[:rows].to(device=self._device, dtype=self._dtype)
 
     def _load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
         token_ids = token_ids.to(dtype=torch.long).view(-1).cpu()
