@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sglang_omni.models.moss_tts_local.sampling_kernels import sample_seeded_full_vocab
+
 
 def sample_seeded_branchless(
     logits: torch.Tensor,
@@ -17,7 +19,37 @@ def sample_seeded_branchless(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor:
-    """Seeded temperature/top-k/top-p sampling without host control flow."""
+    """Use fused seeded sampling when supported, otherwise the eager reference."""
+    fused = sample_seeded_full_vocab(
+        logits,
+        temperature,
+        top_p,
+        top_k,
+        seeds,
+        positions,
+    )
+    if fused is not None:
+        return fused
+    return _sample_seeded_branchless_eager(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        positions=positions,
+    )
+
+
+def _sample_seeded_branchless_eager(
+    logits: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_p: torch.Tensor,
+    top_k: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """PyTorch reference for seeded temperature/top-k/top-p sampling."""
     from sglang.srt.layers.sampler import multinomial_with_seed
 
     vocab = logits.shape[-1]
