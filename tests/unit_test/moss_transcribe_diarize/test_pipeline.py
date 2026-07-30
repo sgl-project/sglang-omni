@@ -212,6 +212,54 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert calls["init_device_graphs"] == 1
 
 
+def test_factory_context_length_override_reaches_server_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize import stages
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_generation_batch_overrides,
+    )
+
+    _stub_factory_env(monkeypatch, want_cuda_graph=False)
+    # The shared stub swallows server_args_overrides, but this regression
+    # needs the real merge so a context_length key retained in overrides
+    # would collide with the explicit keyword and raise TypeError.
+    monkeypatch.setattr(
+        stages,
+        "build_generation_batch_overrides",
+        build_generation_batch_overrides,
+    )
+
+    server_args_kwargs: dict[str, object] = {}
+    adapter_kwargs: dict[str, object] = {}
+
+    def capture_server_args(model_path, **kwargs):
+        del model_path
+        server_args_kwargs.update(kwargs)
+        return SimpleNamespace(context_length=kwargs["context_length"])
+
+    def capture_adapters(**kwargs):
+        adapter_kwargs.update(kwargs)
+        return (object(), object())
+
+    monkeypatch.setattr(stages, "build_sglang_server_args", capture_server_args)
+    monkeypatch.setattr(
+        stages,
+        "make_moss_transcribe_diarize_scheduler_adapters",
+        capture_adapters,
+    )
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        server_args_overrides={"context_length": 8192},
+    )
+
+    assert server_args_kwargs["context_length"] == 8192
+    assert adapter_kwargs["context_length"] == 8192
+
+
 def _repo_not_found(url: str) -> RepositoryNotFoundError:
     response = httpx.Response(404, request=httpx.Request("GET", url))
     return RepositoryNotFoundError(f"missing: {url}", response=response)
