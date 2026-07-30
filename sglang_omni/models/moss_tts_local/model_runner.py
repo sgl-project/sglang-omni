@@ -9,10 +9,10 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.utils.radix_hash import gpu_radix_row_hash
 
 
 class MossTTSLocalModelRunner(ModelRunner):

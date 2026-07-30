@@ -20,6 +20,7 @@ torch ops, so it stays on-device and is graph-capturable.
 See ``docs/design/gpu_radix_hash.md`` for the capture-safety argument, the
 collision analysis, and the two-layer verification rubric.
 """
+"""Capture-safe GPU radix-key hash for generated multi-channel rows."""
 
 from __future__ import annotations
 

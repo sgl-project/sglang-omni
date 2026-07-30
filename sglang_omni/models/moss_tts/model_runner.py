@@ -12,6 +12,7 @@ from sglang.srt.layers.utils.hash import murmur_hash32
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.utils.radix_hash import gpu_radix_row_hash
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
@@ -103,7 +104,19 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             req_len = int(req.extend_input_len)
             prefix_len = len(req.prefix_indices)
+            output_rows = data.output_rows
+            if output_rows:
+                generated = torch.stack(output_rows, dim=0)
+                rows = torch.cat([rows.to(generated.device), generated], dim=0)
+                self._clear_pending_feedback_queue(data)
             current_rows = rows[prefix_len : prefix_len + req_len]
+            if int(current_rows.shape[0]) != req_len:
+                raise RuntimeError(
+                    f"MOSS-TTS prefill row mismatch for {req.rid}: have "
+                    f"{int(current_rows.shape[0])} rows, need {req_len} "
+                    f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
+                    f"generated={len(output_rows or [])})"
+                )
             embeds = self.model._prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
@@ -118,6 +131,13 @@ class MossTTSModelRunner(ModelRunner):
             device=forward_batch.input_ids.device,
             dtype=self.model.dtype,
         )
+
+    @staticmethod
+    def _clear_pending_feedback_queue(data: Any) -> None:
+        queue = data.pending_feedback_queue
+        if queue is None:
+            return
+        queue.clear()
 
     def _write_decode_input_embedding(
         self,
@@ -186,7 +206,10 @@ class MossTTSModelRunner(ModelRunner):
             is_audio=is_audio,
         )
 
-        next_token_ids = rows[:, 0].contiguous()
+        next_text = rows[:, 0]
+        next_token_ids = self._row_radix_token_ids(
+            rows, next_text, int(self.model.config.im_end_token_id)
+        )
         result.next_token_ids = next_token_ids
         schedule_batch.output_ids = next_token_ids
         embeds = self.model._prepare_multi_modal_inputs(
@@ -443,6 +466,15 @@ class MossTTSModelRunner(ModelRunner):
         rows[:, 0] = next_text
         rows[:, 1:] = next_audio
         return rows
+
+    @staticmethod
+    def _row_radix_token_ids(
+        rows: torch.Tensor,
+        next_text: torch.Tensor,
+        end_id: int,
+    ) -> torch.Tensor:
+        """Radix-cache token ids for generated MOSS multi-channel rows."""
+        return gpu_radix_row_hash(rows, next_text, end_id)
 
     @staticmethod
     def _as_row_tensor(

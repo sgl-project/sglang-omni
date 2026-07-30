@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from sglang_omni.models.moss_tts_local.radix_hash import (
+from sglang_omni.utils.radix_hash import (
     _BASE,
     _MOD,
     RADIX_HASH_SPACE,
