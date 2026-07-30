@@ -252,10 +252,13 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         fingerprint = audio_fingerprint(audio)
         prompt = _prompt_from_payload(payload, processor)
 
-        # note (db-ol): cap the processor at the model context rather than a
-        # hardcoded 131072, so over-limit prompts surface as client errors
-        # instead of truncating into misaligned audio features.
-        max_length = int(params.get("max_length") or context_length)
+        # note (db-ol): cap the processor limit at the model context. The
+        # processor rejects sequences past max_length rather than truncating,
+        # and a request max_length above the context would skip that early
+        # rejection and defer the failure to scheduler admission.
+        max_length = min(
+            int(params.get("max_length") or context_length), context_length
+        )
         encoded = processor(
             text=prompt,
             audio=audio,
@@ -308,9 +311,21 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         # silently cuts transcripts past about 20 minutes. Scale the default
         # budget with duration unless the operator configured a fixed one.
         requested_max_new_tokens = params.get("max_new_tokens")
-        if requested_max_new_tokens:
+        if requested_max_new_tokens is not None:
             request_max_new_tokens = int(requested_max_new_tokens)
+            # note (db-ol): the API layer enforces ge=1 but internal callers
+            # bypass it, and a zero here would otherwise silently fall
+            # through to the duration scaled default.
+            if request_max_new_tokens < 1:
+                raise ValueError("max_new_tokens must be at least 1")
         elif duration_scaled_default:
+            if audio_duration_s <= 0.0:
+                logger.warning(
+                    "Request %s decoded to empty audio, the output budget "
+                    "falls back to the fixed default %d",
+                    payload.request_id,
+                    max_new_tokens,
+                )
             request_max_new_tokens = max(
                 max_new_tokens,
                 math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),

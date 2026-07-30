@@ -168,6 +168,22 @@ def test_request_builder_respects_explicit_max_length_param() -> None:
     assert processor.max_length_arg == 2048
 
 
+def test_request_builder_caps_explicit_max_length_at_context() -> None:
+    processor = FakeProcessor()
+    request_builder = _request_builder(processor)
+
+    request_builder(_payload(params={"max_length": TEST_CONTEXT_LENGTH + 4096}))
+
+    assert processor.max_length_arg == TEST_CONTEXT_LENGTH
+
+
+def test_request_builder_rejects_non_positive_max_new_tokens() -> None:
+    request_builder = _request_builder()
+
+    with pytest.raises(ValueError, match="max_new_tokens must be at least 1"):
+        request_builder(_payload(params={"max_new_tokens": 0}))
+
+
 def test_request_builder_scales_default_output_budget_with_duration() -> None:
     request_builder = _request_builder()
 
