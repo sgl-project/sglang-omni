@@ -94,6 +94,9 @@ tests/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
     │   ├── test_pipeline.py
+    │   └── test_request_builders.py
+    ├── arkasr/
+    │   └── test_pipeline.py
     │   ├── test_request_builders.py
     │   ├── test_stream_output_builder.py
     │   └── test_streaming_client.py

@@ -34,6 +34,11 @@ def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     assert config.terminal_stages == ["decode"]
     stages = {stage.name: stage for stage in config.stages}
     assert stages["thinker"].stream_to == ["decode"]
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
+    )
     assert stages["decode"].can_accept_stream_before_payload is True
     assert all(
         stage.factory.startswith("sglang_omni.models.ming_omni.stages.create_")
@@ -80,10 +85,115 @@ def test_ming_speech_config_routes_decode_and_talker() -> None:
     )
     assert stages["thinker"].next == ["decode", "talker"]
     assert stages["thinker"].stream_to == ["decode"]
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
+    )
+    assert (
+        stages["thinker"]
+        .project_payload["talker"]
+        .endswith("project_thinker_to_talker")
+    )
     assert stages["decode"].terminal is True
     assert stages["decode"].can_accept_stream_before_payload is True
     assert stages["talker"].terminal is True
     assert config.terminal_stages == ["decode", "talker"]
+
+
+def test_ming_streaming_speech_config_projects_thinker_payloads() -> None:
+    from sglang_omni.models.ming_omni.config import (
+        MingOmniStreamingSpeechPipelineConfig,
+    )
+
+    config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
+    stages = {stage.name: stage for stage in config.stages}
+
+    assert (
+        stages["thinker"]
+        .project_payload["decode"]
+        .endswith("project_thinker_to_decode")
+    )
+    assert (
+        stages["thinker"]
+        .project_payload["segmenter"]
+        .endswith("project_thinker_to_segmenter")
+    )
+
+
+def test_ming_thinker_projection_reduces_relay_payload_bytes() -> None:
+    import asyncio
+
+    import torch
+
+    from sglang_omni.comm import stage_io
+    from sglang_omni.comm.data_ref import TransportKind
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
+    from sglang_omni.models.ming_omni.stages import (
+        project_thinker_to_decode,
+        project_thinker_to_segmenter,
+        project_thinker_to_talker,
+    )
+    from sglang_omni.proto import OmniRequest, StagePayload
+    from tests.unit_test.fixtures.pipeline_fakes import FakeRelay
+
+    thinker_out = {
+        "output_ids": list(range(8192)),
+        "step": 8192,
+        "is_final": True,
+        "finish_reason": "stop",
+        "extra_model_outputs": {"hidden_states": torch.ones(128)},
+    }
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs={}),
+        data=MingOmniPipelineState(
+            prompt={"input_ids": list(range(256)), "prompt_text": "ignored"},
+            thinker_inputs={"inputs_embeds": torch.ones(64, 8)},
+            thinker_out=thinker_out,
+            engine_outputs={THINKER_STAGE: thinker_out},
+            stream_state={"emitted_ids": list(range(64))},
+        ).to_dict(),
+    )
+    projected = {
+        "decode": project_thinker_to_decode(payload),
+        "talker": project_thinker_to_talker(payload),
+        "segmenter": project_thinker_to_segmenter(payload),
+    }
+
+    async def serialized_sizes(candidate: StagePayload) -> tuple[int, int]:
+        data_ref, op = await stage_io.write_payload(
+            FakeRelay(),
+            candidate.request_id,
+            candidate,
+            transport=TransportKind.SHM,
+        )
+        await op.wait_for_completion()
+        relay_payload_bytes = data_ref.buffer.length
+        payload_pickle_b64_bytes = len(data_ref.header or "")
+        return relay_payload_bytes, payload_pickle_b64_bytes
+
+    async def compare_sizes() -> tuple[tuple[int, int], dict[str, tuple[int, int]]]:
+        original_sizes = await serialized_sizes(payload)
+        projected_sizes = {
+            stage: await serialized_sizes(candidate)
+            for stage, candidate in projected.items()
+        }
+        return original_sizes, projected_sizes
+
+    original_sizes, projected_sizes = asyncio.run(compare_sizes())
+
+    for stage, sizes in projected_sizes.items():
+        assert sizes[0] < original_sizes[0], stage
+        assert sizes[1] < original_sizes[1], stage
+    assert {stage: sizes[0] for stage, sizes in projected_sizes.items()} == {
+        "decode": 1,
+        "talker": 1,
+        "segmenter": 1,
+    }
+    assert "engine_outputs" not in projected["decode"].data
+    assert "engine_outputs" not in projected["talker"].data
 
 
 def test_ming_speech_launcher_exposes_tp_size_arg(monkeypatch) -> None:
@@ -846,6 +956,57 @@ def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     # looks up media_cache_keys.get("video") separately and without this
     # entry video patch tokens would alias in the radix prefix cache.
     assert result["media_cache_keys"]["video"] == "video:img:abc|vid:def"
+
+
+def test_ming_merge_clears_encoder_outputs_after_building_thinker_inputs() -> None:
+    import torch
+
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+    from sglang_omni.models.ming_omni.pipeline.merge import merge_for_thinker
+    from sglang_omni.models.ming_omni.pipeline.next_stage import (
+        AUDIO_STAGE,
+        IMAGE_STAGE,
+        PREPROCESSING_STAGE,
+    )
+    from sglang_omni.proto import OmniRequest, StagePayload
+
+    request = OmniRequest(inputs={})
+
+    def payload(stage_state: MingOmniPipelineState) -> StagePayload:
+        return StagePayload(
+            request_id="req-1",
+            request=request,
+            data=stage_state.to_dict(),
+        )
+
+    merged = merge_for_thinker(
+        {
+            PREPROCESSING_STAGE: payload(
+                MingOmniPipelineState(
+                    prompt={"input_ids": [1, 2, 3]},
+                    encoder_inputs={
+                        AUDIO_STAGE: {"cache_key": "audio-cache"},
+                        IMAGE_STAGE: {"cache_key": "image-cache"},
+                    },
+                )
+            ),
+            AUDIO_STAGE: payload(
+                MingOmniPipelineState(
+                    encoder_outs={AUDIO_STAGE: {"audio_embeds": torch.ones(1, 4, 8)}}
+                )
+            ),
+            IMAGE_STAGE: payload(
+                MingOmniPipelineState(
+                    encoder_outs={IMAGE_STAGE: {"image_embeds": torch.ones(1, 2, 8)}}
+                )
+            ),
+        }
+    )
+
+    state = MingOmniPipelineState.from_dict(merged.data)
+    assert state.thinker_inputs
+    assert state.encoder_outs == {}
+    assert state.encoder_inputs == {}
 
 
 def test_compute_video_cache_key_changes_with_decode_params() -> None:
