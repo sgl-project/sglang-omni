@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.compile_plan import create_qwen3_tts_compile_plan
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -15,6 +16,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
     context_length = 8192
     model_arch_override = "Qwen3TTSTalker"
+    compile_plan_factory = create_qwen3_tts_compile_plan
 
     def __init__(self, *, attn_implementation: str | None = None) -> None:
         self.attn_implementation = attn_implementation
@@ -52,6 +54,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "trust_remote_code": True,
         }
 
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if overrides.get("enable_torch_compile"):
+            overrides["torch_compile_max_bs"] = max(
+                overrides["torch_compile_max_bs"],
+                overrides["max_running_requests"],
+            )
+
     def setup_model(
         self,
         *,
@@ -88,11 +97,6 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             model=model,
             wrapper=self.wrapper,
         )
-
-    def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(getattr(server_args, "enable_torch_compile", False)):
-            qwen3_stages._compile_qwen3_tts_backbone(model)
-            server_args.enable_torch_compile = False
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

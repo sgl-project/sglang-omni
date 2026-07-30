@@ -4,8 +4,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Callable
+from typing import Any, ClassVar
 
+from sglang_omni.compilation import (
+    CompilePhase,
+    CompilePlan,
+    StageCompileManager,
+    configure_sglang_torch_compile,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
@@ -19,6 +26,7 @@ class TtsEngineBuilder(ABC):
     model_name: str
     context_length: int
     model_arch_override: str | None = None
+    compile_plan_factory: ClassVar[Callable[[Any], CompilePlan] | None] = None
 
     def build(
         self,
@@ -89,10 +97,14 @@ class TtsEngineBuilder(ABC):
         )
 
         self.compile_model(model, server_args)
-
-        if want_cuda_graph:
-            model_worker.model_runner.init_device_graphs()
-            self.post_cuda_graph_setup(model, server_args)
+        compile_plan = self._create_compile_plan(model, server_args)
+        compile_manager = self._initialize_graphs_and_compile(
+            model_worker=model_worker,
+            model=model,
+            server_args=server_args,
+            want_cuda_graph=want_cuda_graph,
+            compile_plan=compile_plan,
+        )
 
         output_proc = sglang_backend.SGLangOutputProcessor(
             capture_hidden=False,
@@ -115,6 +127,8 @@ class TtsEngineBuilder(ABC):
             request_builder=request_builder,
             result_adapter=result_adapter,
         )
+        if compile_manager is not None:
+            scheduler._stage_compile_manager = compile_manager
         self.post_scheduler_setup(scheduler, model_runner)
         return scheduler
 
@@ -159,6 +173,53 @@ class TtsEngineBuilder(ABC):
 
     def compile_model(self, model: Any, server_args: Any) -> None:
         del model, server_args
+
+    def _create_compile_plan(self, model: Any, server_args: Any) -> CompilePlan | None:
+        factory = type(self).compile_plan_factory
+        if factory is None or not bool(
+            getattr(server_args, "enable_torch_compile", False)
+        ):
+            return None
+
+        plan = factory(model)
+        # The plan owns these callables, so the upstream full-model compiler must
+        # not try to compile the same model a second time.
+        server_args.enable_torch_compile = False
+        return plan
+
+    def _initialize_graphs_and_compile(
+        self,
+        *,
+        model_worker: Any,
+        model: Any,
+        server_args: Any,
+        want_cuda_graph: bool,
+        compile_plan: CompilePlan | None,
+    ) -> StageCompileManager | None:
+        compile_manager = (
+            StageCompileManager(
+                compile_plan,
+                configure_fn=configure_sglang_torch_compile,
+            )
+            if compile_plan is not None
+            else None
+        )
+        # Compile phases intentionally straddle primary and model-specific CUDA
+        # Graph setup because targets can require any one of these boundaries.
+        if compile_manager is not None:
+            compile_manager.apply(CompilePhase.BEFORE_PRIMARY_CUDA_GRAPH)
+
+        if want_cuda_graph:
+            model_worker.model_runner.init_device_graphs()
+        if compile_manager is not None:
+            compile_manager.apply(CompilePhase.AFTER_PRIMARY_CUDA_GRAPH)
+        if want_cuda_graph:
+            self.post_cuda_graph_setup(model, server_args)
+
+        if compile_manager is not None:
+            compile_manager.apply(CompilePhase.BEFORE_STAGE_READY)
+            compile_manager.finish_startup()
+        return compile_manager
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del model, server_args

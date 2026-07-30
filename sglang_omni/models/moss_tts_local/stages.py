@@ -55,6 +55,7 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 _MAX_REFERENCE_SECONDS = 100.0
+_MOSS_TTS_LOCAL_MODEL_CONFIG_CACHE: dict[str, Any] = {}
 
 # NOTE: preprocessing and vocoder stages each load their own codec instance:
 # `model.streaming()` flips codec state, so a decode on a shared instance would
@@ -186,7 +187,31 @@ def _load_moss_tts_local_processor(model_path: str) -> Any:
         raise RuntimeError(_MOSS_TTS_LOCAL_INSTALL_HINT) from exc
 
     _normalize_processor_config(processor)
+    _MOSS_TTS_LOCAL_MODEL_CONFIG_CACHE[str(checkpoint_dir)] = processor.model_config
     return processor
+
+
+def _load_moss_tts_local_model_config(model_path: str) -> Any:
+    checkpoint_dir = resolve_moss_checkpoint(model_path)
+    cached = _MOSS_TTS_LOCAL_MODEL_CONFIG_CACHE.get(str(checkpoint_dir))
+    if cached is not None:
+        return cached
+    try:
+        from transformers import AutoConfig
+
+        with moss_transformers_processor_compat():
+            model_config = AutoConfig.from_pretrained(
+                checkpoint_dir,
+                trust_remote_code=True,
+            )
+    except Exception as exc:
+        raise RuntimeError(_MOSS_TTS_LOCAL_INSTALL_HINT) from exc
+
+    audio_vocab_size = int(getattr(model_config, "audio_vocab_size", 1024) or 1024)
+    for attr, default in moss_tts_local_special_token_defaults(audio_vocab_size):
+        if getattr(model_config, attr, None) is None:
+            setattr(model_config, attr, default)
+    return model_config
 
 
 def _resolve_audio_tokenizer_model_path(
@@ -548,6 +573,7 @@ def create_sglang_tts_engine_executor(
     async_decode_min_batch_size: int = 2,
     total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
+    compile_frame_sampler: bool = True,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
@@ -558,6 +584,7 @@ def create_sglang_tts_engine_executor(
         async_decode_min_batch_size=async_decode_min_batch_size,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         codec_mem_reserve=codec_mem_reserve,
+        compile_frame_sampler=compile_frame_sampler,
     ).build(
         model_path,
         device=device,
@@ -587,14 +614,21 @@ def create_vocoder_executor(
     cuda_graph_min_free_gb: float = 3.0,
 ) -> MossTTSLocalStreamingVocoderScheduler:
     device = _resolve_codec_device(device, gpu_id)
-    processor = _load_moss_tts_local_processor(model_path)
+    model_config = _load_moss_tts_local_model_config(model_path)
     audio_tokenizer = load_moss_tts_local_audio_tokenizer(
-        _resolve_audio_tokenizer_model_path(processor, codec_model_path),
+        str(
+            codec_model_path
+            or getattr(
+                model_config,
+                "audio_tokenizer_name_or_path",
+                DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+            )
+        ),
         device=device,
     )
     scheduler = MossTTSLocalStreamingVocoderScheduler(
         audio_tokenizer.model,
-        n_vq=int(processor.model_config.n_vq),
+        n_vq=int(model_config.n_vq),
         sample_rate=audio_tokenizer.sample_rate,
         stream_slots=stream_slots,
         stream_chunk_frames=stream_chunk_frames,

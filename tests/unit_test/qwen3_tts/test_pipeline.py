@@ -1925,50 +1925,57 @@ def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
         )
 
 
-def test_qwen3_tts_compile_backbone_requires_text_layers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
+def test_qwen3_tts_compile_backbone_requires_text_layers() -> None:
+    from sglang_omni.models.qwen3_tts.compile_plan import create_qwen3_tts_compile_plan
 
-    with pytest.raises(AttributeError):
-        _compile_qwen3_tts_backbone(SimpleNamespace())
+    with pytest.raises(ValueError, match="has no callables"):
+        create_qwen3_tts_compile_plan(SimpleNamespace(model=SimpleNamespace(layers=[])))
 
 
-def test_qwen3_tts_compile_backbone_compiles_every_layer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
+def test_qwen3_tts_compile_backbone_compiles_every_layer() -> None:
+    from sglang_omni.compilation import CompilePhase, StageCompileManager
+    from sglang_omni.models.qwen3_tts.compile_plan import create_qwen3_tts_compile_plan
 
     set_config_calls = []
     compiled = []
-    cuda_graph_runner = types.ModuleType("sglang.srt.model_executor.cuda_graph_runner")
-    cuda_graph_runner.set_torch_compile_config = lambda: set_config_calls.append(True)
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.model_executor.cuda_graph_runner",
-        cuda_graph_runner,
-    )
 
     def fake_compile(layer, *, mode):
         compiled.append((layer, mode))
-        return f"compiled-{len(compiled)}"
+        return lambda value: value
 
-    monkeypatch.setattr(torch, "compile", fake_compile)
     layers = [object(), object(), object()]
     text_model = SimpleNamespace(layers=layers)
-    model = SimpleNamespace(model=text_model)
+    plan = create_qwen3_tts_compile_plan(SimpleNamespace(model=text_model))
+    manager = StageCompileManager(
+        plan,
+        compile_fn=fake_compile,
+        configure_fn=lambda: set_config_calls.append(True),
+    )
 
-    _compile_qwen3_tts_backbone(model)
+    manager.apply(CompilePhase.BEFORE_PRIMARY_CUDA_GRAPH)
 
     assert set_config_calls == [True]
     assert compiled == [(layer, "max-autotune-no-cudagraphs") for layer in layers]
-    assert text_model._compiled_decode_layers == [
-        "compiled-1",
-        "compiled-2",
-        "compiled-3",
-    ]
+    assert len(text_model._compiled_decode_layers) == len(layers)
+    assert all(callable(layer) for layer in text_model._compiled_decode_layers)
+
+    bucket_fn = plan.targets[0].bucket_fn
+    assert bucket_fn is not None
+    assert bucket_fn(torch.zeros(4, 1, 8)) == 4
+
+
+def test_qwen3_tts_compile_limit_covers_requested_concurrency() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    overrides = {
+        "enable_torch_compile": True,
+        "max_running_requests": 64,
+        "torch_compile_max_bs": 32,
+    }
+
+    Qwen3TtsEngineBuilder().adjust_overrides(overrides)
+
+    assert overrides["torch_compile_max_bs"] == 64
 
 
 def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
@@ -2003,9 +2010,13 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     build_kwargs: dict = {}
     infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
-    compile_calls: list[bool] = []
+    compile_calls: list[tuple[object, str]] = []
+    compile_config_calls: list[bool] = []
 
     class FakeModel:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(layers=[object(), object()])
+
         def load_speech_tokenizer(self, tokenizer) -> None:
             self.speech_tokenizer = tokenizer
 
@@ -2054,10 +2065,16 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
         lambda **kwargs: (lambda payload: payload, lambda data: data),
     )
     monkeypatch.setattr(
-        stages,
-        "_compile_qwen3_tts_backbone",
-        lambda model: compile_calls.append(model),
+        engine_factory,
+        "configure_sglang_torch_compile",
+        lambda: compile_config_calls.append(True),
     )
+
+    def fake_compile(layer, *, mode):
+        compile_calls.append((layer, mode))
+        return layer
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
@@ -2156,13 +2173,16 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     )
 
     assert infrastructure_saw_graph_disabled == [True]
-    assert len(compile_calls) == 1
+    assert compile_config_calls == [True]
+    assert len(compile_calls) == 2
+    assert all(mode == "max-autotune-no-cudagraphs" for _, mode in compile_calls)
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == [1, 2, 4, 8, 12, 16, 24, 32]
     assert scheduler.server_args.cuda_graph_max_bs == 32
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False
     assert scheduler.server_args.torch_compile_max_bs == 32
+    assert scheduler._stage_compile_manager.stats().target_count == 2
     clear_qwen3_tts_preprocessing_context()
 
 

@@ -55,35 +55,6 @@ def _configure_preprocessing_threads(worker_count: int) -> int:
     return intraop_threads
 
 
-def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
-    """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
-    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
-
-    if max_batch_size < 1:
-        raise ValueError("max_batch_size must be >= 1")
-
-    set_torch_compile_config()
-    compile_mode = os.environ.get(
-        "SGLANG_TORCH_COMPILE_MODE",
-        "max-autotune-no-cudagraphs",
-    )
-    audio_decoder = model._audio_decoder
-    compiled_forward_kvcached_layers = [
-        torch.compile(layer.forward_kvcached, mode=compile_mode)
-        for layer in audio_decoder.layers
-    ]
-    audio_decoder.set_compiled_forward_kvcached_layers(
-        compiled_forward_kvcached_layers,
-        max_batch_size=max_batch_size,
-    )
-    logger.info(
-        "Compiled %d Fast AR decoder layers (mode=%s, max_batch_size=%d)",
-        len(compiled_forward_kvcached_layers),
-        compile_mode,
-        max_batch_size,
-    )
-
-
 def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
     return min(
         int(model.vq_decode_max_batch_size),

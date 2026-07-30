@@ -8,6 +8,9 @@ from typing import Any
 
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
+from sglang_omni.models.moss_tts_local.compile_plan import (
+    create_moss_tts_local_compile_plan,
+)
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -15,6 +18,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS Local"
     context_length = 8192
     model_arch_override = "MossTTSLocalSGLangModel"
+    compile_plan_factory = create_moss_tts_local_compile_plan
 
     def __init__(
         self,
@@ -23,11 +27,13 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         async_decode_min_batch_size: int,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
+        compile_frame_sampler: bool = True,
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
+        self.compile_frame_sampler = bool(compile_frame_sampler)
         self.memory_budget = moss_local_stages._ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
@@ -45,7 +51,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": False,
+            "enable_torch_compile": self.compile_frame_sampler,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
             "trust_remote_code": True,

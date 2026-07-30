@@ -49,7 +49,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="audio_encoder",
             process="pipeline",
             factory=f"{_PKG}.stages.create_audio_encoder_executor",
-            factory_args={"device": "cuda"},
+            factory_args={"device": "cuda", "compile_encoder": True},
             gpu=0,
             runtime=StageRuntimeConfig(
                 resources=StageResourceConfig(total_gpu_memory_fraction=0.03)

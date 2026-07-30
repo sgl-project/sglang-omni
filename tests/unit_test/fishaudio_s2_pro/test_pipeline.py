@@ -528,16 +528,13 @@ def test_s2pro_cli_talker_torch_compile_max_bs_rejects_non_positive() -> None:
         )
 
 
-def test_s2pro_compile_helper_targets_forward_kvcached(
+def test_s2pro_compile_plan_targets_forward_kvcached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HOME", "/tmp")
-    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
-
-    fake_runner = ModuleType("sglang.srt.model_executor.cuda_graph_runner")
-    fake_runner.set_torch_compile_config = lambda: None
-    monkeypatch.setitem(
-        sys.modules, "sglang.srt.model_executor.cuda_graph_runner", fake_runner
+    from sglang_omni.compilation import CompilePhase, StageCompileManager
+    from sglang_omni.models.fishaudio_s2_pro.compile_plan import (
+        create_fish_s2pro_compile_plan,
     )
 
     compile_calls: list[tuple[object, str | None, dict[str, object]]] = []
@@ -546,7 +543,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
         target: object, *, mode: str | None = None, **kwargs: object
     ) -> object:
         compile_calls.append((target, mode, kwargs))
-        return f"compiled-{len(compile_calls)}"
+        return lambda *args: f"compiled-{len(compile_calls)}"
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     monkeypatch.setenv("SGLANG_TORCH_COMPILE_MODE", "reduce-overhead")
@@ -561,6 +558,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     class _AudioDecoder:
         def __init__(self) -> None:
             self.layers = [_Layer()]
+            self.kv_cache_max_batch_size = 2
 
         def set_compiled_forward_kvcached_layers(
             self,
@@ -574,7 +572,11 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     audio_decoder = _AudioDecoder()
     model = SimpleNamespace(_audio_decoder=audio_decoder)
 
-    stages._compile_s2pro_codebook_decoder(model, max_batch_size=2)
+    manager = StageCompileManager(
+        create_fish_s2pro_compile_plan(model),
+        configure_fn=lambda: None,
+    )
+    manager.apply(CompilePhase.BEFORE_PRIMARY_CUDA_GRAPH)
 
     assert len(compile_calls) == 1
     target, mode, kwargs = compile_calls[0]
@@ -582,7 +584,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert getattr(target, "__name__", "") == "forward_kvcached"
     assert mode == "reduce-overhead"
     assert kwargs == {}
-    assert audio_decoder._compiled_forward_kvcached_layers == ["compiled-1"]
+    assert (
+        audio_decoder._compiled_forward_kvcached_layers[0](
+            torch.zeros(2, 1, 4), torch.zeros(1), torch.zeros(2)
+        )
+        == "compiled-1"
+    )
     assert audio_decoder._compiled_forward_kvcached_max_bs == 2
 
 
@@ -603,7 +610,7 @@ def _run_s2pro_engine_with_fake_buffers(
 
     build_kwargs: dict[str, object] = {}
     infrastructure_saw_graph_disabled: list[bool] = []
-    compile_calls: list[tuple[object, int]] = []
+    compile_calls: list[tuple[object, str | None]] = []
     init_graph_calls: list[bool] = []
 
     class _FakeSGLangRunner:
@@ -622,11 +629,30 @@ def _run_s2pro_engine_with_fake_buffers(
 
     monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
     monkeypatch.setattr(fish_bootstrap, "truncate_rope_to_bf16", lambda model: None)
+
+    class _Layer:
+        def forward_kvcached(self, *args: object) -> object:
+            return args[0]
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.layers = [_Layer()]
+            self.kv_cache_max_batch_size = -1
+
+        def set_compiled_forward_kvcached_layers(
+            self,
+            layers: list[object],
+            *,
+            max_batch_size: int,
+        ) -> None:
+            self.compiled_layers = layers
+            self.compiled_max_batch_size = max_batch_size
+
     monkeypatch.setattr(
         fish_bootstrap,
         "load_audio_decoder",
         lambda checkpoint_dir, device: (
-            SimpleNamespace(kv_cache_max_batch_size=-1),
+            _AudioDecoder(),
             10,
             4096,
             FakeFishTokenizer(),
@@ -737,10 +763,13 @@ def _run_s2pro_engine_with_fake_buffers(
         fake_model_runner,
     )
 
-    def fake_compile(model: object, *, max_batch_size: int) -> None:
-        compile_calls.append((model, max_batch_size))
+    monkeypatch.setattr(engine_factory, "configure_sglang_torch_compile", lambda: None)
 
-    monkeypatch.setattr(stages, "_compile_s2pro_codebook_decoder", fake_compile)
+    def fake_compile(target: object, *, mode: str | None = None) -> object:
+        compile_calls.append((target, mode))
+        return target
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
 
     scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
     return SimpleNamespace(
@@ -781,9 +810,9 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     ]
     assert build_kwargs["torch_compile_max_bs"] == 64
     assert result.infrastructure_saw_graph_disabled == [True]
-    assert result.compile_calls == [
-        (scheduler.model_runner.args[0].model_runner.model, 64)
-    ]
+    assert len(result.compile_calls) == 1
+    assert result.compile_calls[0][1] == "max-autotune-no-cudagraphs"
+    assert scheduler._stage_compile_manager.stats().target_count == 1
     assert result.init_graph_calls == [True]
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False

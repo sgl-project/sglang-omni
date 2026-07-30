@@ -9,12 +9,16 @@ from typing import Any
 
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
+from sglang_omni.models.fishaudio_s2_pro.compile_plan import (
+    create_fish_s2pro_compile_plan,
+)
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
 class FishS2ProEngineBuilder(TtsEngineBuilder):
     model_name = "FishAudio S2-Pro"
     context_length = 4096
+    compile_plan_factory = create_fish_s2pro_compile_plan
 
     def __init__(
         self,
@@ -91,14 +95,6 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
-
-    def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(getattr(server_args, "enable_torch_compile", False)):
-            fish_stages._compile_s2pro_codebook_decoder(
-                model,
-                max_batch_size=server_args.torch_compile_max_bs,
-            )
-            server_args.enable_torch_compile = False
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

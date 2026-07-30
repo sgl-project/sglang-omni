@@ -71,7 +71,7 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
     )
 
     monkeypatch.setattr(
-        "sglang_omni.models.moss_transcribe_diarize.sglang_model.set_torch_compile_config",
+        "sglang_omni.models.moss_transcribe_diarize.sglang_model.configure_sglang_torch_compile",
         lambda: None,
     )
     warmups: list[tuple[int, ...]] = []
@@ -82,15 +82,13 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
     model = SimpleNamespace(
         whisper_encoder=encoder,
         _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [2, 1, 1], input_feature_len=6)
 
-    assert model._compiled_encoder is runner
-    assert model._compiled_chunk_buckets == frozenset({1, 2})
-    assert model._compiled_input_feature_len == 6
+    assert callable(model._compiled_encoder)
+    assert model._encoder_compile_manager.stats().warmup_failures == 0
     assert len(warmups) == 6
     assert {shape[0] for shape in warmups} == {1, 2}
     assert all(shape[1:] == (4, 6) for shape in warmups)
@@ -106,7 +104,7 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
     )
 
     monkeypatch.setattr(
-        "sglang_omni.models.moss_transcribe_diarize.sglang_model.set_torch_compile_config",
+        "sglang_omni.models.moss_transcribe_diarize.sglang_model.configure_sglang_torch_compile",
         lambda: None,
     )
 
@@ -119,14 +117,12 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
     model = SimpleNamespace(
         whisper_encoder=torch.nn.Linear(4, 4),
         _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
-        _compiled_input_feature_len=0,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [1, 2], input_feature_len=6)
 
-    assert model._compiled_chunk_buckets == frozenset({1})
+    assert model._encoder_compile_manager.stats().warmup_failures == 1
 
 
 def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):

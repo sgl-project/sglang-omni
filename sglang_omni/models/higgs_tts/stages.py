@@ -33,6 +33,11 @@ import torchaudio.functional as F_audio
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
+from sglang_omni.compilation import CompilePhase, StageCompileManager
+from sglang_omni.models.higgs_tts.compile_plan import (
+    create_higgs_audio_encoder_compile_plan,
+    create_higgs_vocoder_compile_plan,
+)
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.text_tokenizer import HiggsTokenizerAdapter
 from sglang_omni.models.higgs_tts.utils import (
@@ -355,6 +360,7 @@ def create_audio_encoder_executor(
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
+    compile_encoder: bool = True,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -368,12 +374,13 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    codec.model.acoustic_encoder = torch.compile(
-        codec.model.acoustic_encoder, mode="default", dynamic=True
-    )
-    codec.encode_reference(
-        torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
-    )
+    if compile_encoder:
+        compile_manager = StageCompileManager(
+            create_higgs_audio_encoder_compile_plan(codec)
+        )
+        compile_manager.apply(CompilePhase.BEFORE_PRIMARY_CUDA_GRAPH)
+        compile_manager.finish_startup()
+        codec._audio_encoder_compile_manager = compile_manager
     reference_service = ReferenceEncodeService(
         _HiggsReferenceEncodeHook(
             codec,
@@ -491,30 +498,15 @@ def create_vocoder_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if compile_decode:
-        eager_decode = codec.model.decode
-        try:
-            codec.model.decode = torch.compile(eager_decode, dynamic=True)
-            warm_codes_TN = torch.zeros(
-                (
-                    max(_VOCODER_COMPILE_WARMUP_FRAME_COUNTS),
-                    int(codec.model.config.num_quantizers),
-                ),
-                dtype=torch.long,
-                device="cpu",
+        compile_manager = StageCompileManager(
+            create_higgs_vocoder_compile_plan(
+                codec,
+                warmup_frame_counts=_VOCODER_COMPILE_WARMUP_FRAME_COUNTS,
             )
-            # Note: (stephenkgli) match serving's contiguous [T, N] layout and
-            # warm the zero-one-specialized batch and frame-count classes.
-            for frame_count in _VOCODER_COMPILE_WARMUP_FRAME_COUNTS:
-                frame_codes_TN = warm_codes_TN[:frame_count]
-                codec.decode(frame_codes_TN)
-                codec.decode_batch([frame_codes_TN, frame_codes_TN])
-        except Exception:
-            logger.warning(
-                "torch.compile of the codec decode failed; falling back to the "
-                "eager vocoder decode",
-                exc_info=True,
-            )
-            codec.model.decode = eager_decode
+        )
+        compile_manager.apply(CompilePhase.BEFORE_PRIMARY_CUDA_GRAPH)
+        compile_manager.finish_startup()
+        codec._vocoder_decode_compile_manager = compile_manager
 
     return HiggsStreamingVocoderScheduler(
         codec,
