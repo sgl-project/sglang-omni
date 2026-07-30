@@ -38,11 +38,11 @@ Examples:
   python examples/run_omni.py qwen3-speech-server
 
   python examples/run_omni.py qwen3-speech-server \\
-      --gpu-thinker 0 --gpu-talker 1 --gpu-code2wav 1
+      --gpu-thinker 0 --gpu-talker 1 --gpu-code2wav 0
 
   python examples/run_omni.py qwen3-speech-server \\
       --thinker-tp-size 2 --gpu-thinker-tp 0,1 \\
-      --gpu-talker 2 --gpu-code2wav 2
+      --gpu-talker 2 --gpu-code2wav 0
 """
 
 _SPEECH_DESCRIPTION = """Run one Qwen3-Omni text-to-speech request.
