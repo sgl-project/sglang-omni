@@ -8,6 +8,7 @@ from sglang_omni.config import (
     build_stage_placement_plan,
     resolve_stage_factory_args,
 )
+from sglang_omni.models.qwen3_omni import config as qwen3_config
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
@@ -45,6 +46,33 @@ def _set_colocated_runtime(
         )
 
 
+def _stage_gpu(stages, name: str):
+    return next(stage.gpu for stage in stages if stage.name == name)
+
+
+def test_speech_default_puts_talker_alone_and_c2w_with_thinker() -> None:
+    stages = qwen3_config._speech_stages(
+        thinker_gpu=0,
+        talker_gpu=1,
+        process_by_stage=qwen3_config._SPEECH_DEFAULT_PROCESSES,
+        enable_partial_start=True,
+    )
+    assert _stage_gpu(stages, "talker_ar") == 1
+    assert _stage_gpu(stages, "code2wav") == 0
+    assert _stage_gpu(stages, "thinker") == 0
+
+
+def test_single_gpu_speech_variant_unchanged() -> None:
+    stages = qwen3_config._speech_stages(
+        thinker_gpu=0,
+        talker_gpu=0,
+        process_by_stage=qwen3_config._SPEECH_DEFAULT_PROCESSES,
+        enable_partial_start=True,
+    )
+    assert _stage_gpu(stages, "code2wav") == 0
+    assert _stage_gpu(stages, "talker_ar") == 0
+
+
 def test_default_speech_topology_stays_disaggregated() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     code2wav = _stage(config, "code2wav")
@@ -53,7 +81,7 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert len(config.stages) == 8
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
-    assert code2wav.gpu == 1
+    assert code2wav.gpu == 0
     assert code2wav_args["enable_cuda_graph"] is True
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
     assert "enable_batching" not in code2wav.factory_args
@@ -144,10 +172,10 @@ def test_default_speech_splits_thinker_from_talker_chain() -> None:
 
     plan = build_stage_placement_plan(config)
 
-    # Default: thinker on its own GPU, talker_ar -> code2wav colocated on another.
+    # Default: thinker and code2wav share a GPU, talker_ar runs alone on another.
     assert plan.stages["thinker"].gpu_ids == (0,)
     assert plan.stages["talker_ar"].gpu_ids == (1,)
-    assert plan.stages["code2wav"].gpu_ids == (1,)
+    assert plan.stages["code2wav"].gpu_ids == (0,)
 
 
 def test_colocated_config_rejects_conflicting_ar_mem_fraction() -> None:
