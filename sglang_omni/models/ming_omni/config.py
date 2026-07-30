@@ -104,6 +104,12 @@ def _aggregate_stage(*, process: str) -> StageConfig:
 
 
 def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
+    project_payload = {
+        DECODE_STAGE: f"{_PKG}.stages.project_thinker_to_decode",
+    }
+    if speech_enabled:
+        project_payload[TALKER_STAGE] = f"{_PKG}.stages.project_thinker_to_talker"
+
     return StageConfig(
         name=THINKER_STAGE,
         process=process,
@@ -112,6 +118,7 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
         stream_to=[DECODE_STAGE],
+        project_payload=project_payload,
     )
 
 
@@ -130,6 +137,10 @@ def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
         gpu=gpu,
         next=[DECODE_STAGE, SEGMENTER_STAGE],
         stream_to=[DECODE_STAGE, SEGMENTER_STAGE],
+        project_payload={
+            DECODE_STAGE: f"{_PKG}.stages.project_thinker_to_decode",
+            SEGMENTER_STAGE: f"{_PKG}.stages.project_thinker_to_segmenter",
+        },
     )
 
 

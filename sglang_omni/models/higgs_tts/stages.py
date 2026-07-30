@@ -43,6 +43,7 @@ from sglang_omni.models.higgs_tts.utils import (
     to_codes_TN,
 )
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
     HiggsStreamingVocoderScheduler,
@@ -442,6 +443,7 @@ def create_sglang_tts_engine_executor(
     async_decode_min_batch_size: int = 2,
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+    initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     total_gpu_memory_fraction: float | None = None,
@@ -457,6 +459,7 @@ def create_sglang_tts_engine_executor(
         async_decode_min_batch_size=async_decode_min_batch_size,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
+        initial_chunk_frames=initial_chunk_frames,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
@@ -476,6 +479,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+    initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     stream_overlap_tokens: int = 8,
     stream_holdback_tokens: int = 4,
     compile_decode: bool = False,
@@ -518,6 +522,7 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
+        initial_chunk_frames=initial_chunk_frames,
         stream_overlap_tokens=stream_overlap_tokens,
         stream_holdback_tokens=stream_holdback_tokens,
     )

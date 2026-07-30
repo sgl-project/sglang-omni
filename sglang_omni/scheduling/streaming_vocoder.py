@@ -57,18 +57,16 @@ def resolve_initial_codec_chunk_frames(
     params: Mapping[str, Any] | None,
     *,
     steady_chunk_frames: int,
+    default_frames: int = 0,
 ) -> int:
-    """Return the request-level first codec chunk size, clamped to steady size."""
+    """Resolve the model default or request override, clamped to steady size."""
     if steady_chunk_frames <= 0:
         raise ValueError(
             f"steady_chunk_frames must be positive, got {steady_chunk_frames}"
         )
-    if params is None:
-        return 0
-
-    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
+    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) if params is not None else None
     if value is None:
-        return 0
+        value = default_frames
 
     try:
         frames = int(value)

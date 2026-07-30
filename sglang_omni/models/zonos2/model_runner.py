@@ -18,6 +18,9 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2.radix_hash import EOS_SENTINEL, poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 
 
 class Zonos2ModelRunner(ModelRunner):
@@ -30,7 +33,9 @@ class Zonos2ModelRunner(ModelRunner):
         frame_graph: bool = False,
         async_decode: bool = False,
         stream_emit_chunk_frames: int = 1,
-        stream_emit_first_chunk_frames: int = 0,
+        stream_emit_first_chunk_frames: int = (
+            DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
+        ),
     ):
         super().__init__(tp_worker, output_processor)
         self._outbox: Any | None = None

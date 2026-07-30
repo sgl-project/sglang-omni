@@ -94,7 +94,11 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         vocoder_overrides = self.runtime_overrides.get("vocoder", {})
         tts_engine_overrides = self.runtime_overrides.get("tts_engine", {})
         missing = object()
-        for key in ("stream_stride", "stream_followup_stride"):
+        for key in (
+            "stream_stride",
+            "stream_followup_stride",
+            "initial_chunk_frames",
+        ):
             value = vocoder_overrides.get(key, vocoder.factory_args.get(key, missing))
             if value is missing:
                 if key in tts_engine.factory_args or key in tts_engine_overrides:

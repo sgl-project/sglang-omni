@@ -43,6 +43,38 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
+def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
+    return _project_thinker_output(payload, keep_stream_state=True)
+
+
+def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
+    return _project_thinker_output(payload, keep_stream_state=False)
+
+
+def project_thinker_to_segmenter(payload: StagePayload) -> StagePayload:
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data={},
+    )
+
+
+def _project_thinker_output(
+    payload: StagePayload,
+    *,
+    keep_stream_state: bool,
+) -> StagePayload:
+    state = MingOmniPipelineState.from_dict(payload.data)
+    projected = MingOmniPipelineState(
+        prompt=_project_prompt_for_usage(state.prompt),
+        thinker_out=_slim_thinker_out(state.thinker_out),
+        stream_state=(
+            _copy_mutable_containers(state.stream_state) if keep_stream_state else {}
+        ),
+    )
+    return _payload_with_state(payload, projected)
+
+
 def _project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
@@ -84,6 +116,42 @@ def _project_encoder_input_metadata(
         if metadata:
             projected[stage_name] = metadata
     return projected
+
+
+def _project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
+    if not isinstance(prompt, dict):
+        return None
+    input_ids = prompt.get("input_ids")
+    if input_ids is None:
+        return None
+    return {"input_ids": _copy_mutable_containers(input_ids)}
+
+
+def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
+    if not isinstance(thinker_out, dict):
+        return None
+
+    projected = {}
+    for key in ("output_ids", "step", "is_final", "finish_reason"):
+        if key in thinker_out:
+            projected[key] = _copy_mutable_containers(thinker_out[key])
+
+    projected["extra_model_outputs"] = {}
+    return projected
+
+
+def _copy_mutable_containers(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_mutable_containers(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_mutable_containers(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_mutable_containers(item) for item in value}
+    if isinstance(value, bytearray):
+        return bytearray(value)
+    return value
 
 
 def _single_encoder_stage_name(state: MingOmniPipelineState) -> str:

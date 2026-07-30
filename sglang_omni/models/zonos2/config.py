@@ -11,6 +11,9 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 
 _PKG = "sglang_omni.models.zonos2"
 
@@ -54,7 +57,9 @@ def _stages(*, auxiliary_gpu: int, auxiliary_process: str) -> list[StageConfig]:
                 "compile_sampler": True,
                 "async_decode": True,
                 "stream_emit_chunk_frames": 32,
-                "stream_emit_first_chunk_frames": 24,
+                "stream_emit_first_chunk_frames": (
+                    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
+                ),
             },
             gpu=0,
             next="vocoder",

@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import torch
 
+from sglang_omni.models.zonos2.streaming_contract import (
+    zonos2_producer_first_flush_rows,
+)
 from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 
 def write_zonos2_buffers(
@@ -102,7 +106,12 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
         # length). Adaptive: the FIRST chunk uses a smaller threshold so the
         # first audio is produced sooner (lower TTFC); steady chunks use `chunk`.
         first = runner._stream_emit_first_chunk_frames
-        threshold = first if (first > 0 and start == 0) else chunk
+        if start == 0 and INITIAL_CODEC_CHUNK_FRAMES_PARAM in stream_metadata:
+            threshold = zonos2_producer_first_flush_rows(
+                stream_metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM]
+            )
+        else:
+            threshold = first if (first > 0 and start == 0) else chunk
         if not done and n_new < threshold:
             continue
         rows = torch.stack(list(codes[start:]), dim=0)

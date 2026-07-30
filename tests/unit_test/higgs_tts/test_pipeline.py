@@ -22,6 +22,7 @@ from sglang_omni.models.higgs_tts.request_builders import build_higgs_stream_met
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.utils import EOC_ID, apply_delay_pattern
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
     HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA,
@@ -50,6 +51,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> Non
     vocoder["factory_args"].update(
         stream_stride=3,
         stream_followup_stride=2,
+        initial_chunk_frames=1,
     )
 
     config = HiggsTtsPipelineConfig.model_validate(raw_config)
@@ -57,6 +59,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> Non
 
     assert stages_by_name["tts_engine"].factory_args["stream_stride"] == 3
     assert stages_by_name["tts_engine"].factory_args["stream_followup_stride"] == 2
+    assert stages_by_name["tts_engine"].factory_args["initial_chunk_frames"] == 1
 
 
 def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> None:
@@ -66,6 +69,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> No
             "vocoder": {
                 "stream_stride": 16,
                 "stream_followup_stride": 7,
+                "initial_chunk_frames": 0,
             }
         },
     )
@@ -81,6 +85,11 @@ def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> No
         tts_engine_args["stream_followup_stride"]
         == vocoder_args["stream_followup_stride"]
         == 7
+    )
+    assert (
+        tts_engine_args["initial_chunk_frames"]
+        == vocoder_args["initial_chunk_frames"]
+        == 0
     )
 
 
@@ -219,6 +228,7 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
         "max_new_tokens_cap": 2048,
         "stream_stride": DEFAULT_HIGGS_STREAM_STRIDE,
         "stream_followup_stride": DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+        "initial_chunk_frames": DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     }
     assert (
         captured["stream_outbox"]
@@ -884,6 +894,74 @@ def test_higgs_stream_metadata_carries_initial_codec_chunk_frames() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("request_params", "expected"),
+    [
+        ({"stream": True}, DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES),
+        ({"stream": True, "initial_codec_chunk_frames": 0}, 0),
+    ],
+)
+def test_higgs_stream_metadata_resolves_model_default_and_explicit_zero(
+    request_params: dict[str, Any], expected: int
+) -> None:
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params=request_params),
+        data={},
+    )
+
+    metadata = build_higgs_stream_metadata(
+        payload,
+        SimpleNamespace(num_codebooks=8, codebook_size=1026),
+    )
+
+    assert metadata["initial_codec_chunk_frames"] == expected
+
+
+def test_higgs_producer_flushes_default_initial_chunk_at_row_27() -> None:
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner._outbox = queue.Queue()
+    runner._vocoder_target = "vocoder"
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params={"stream": True}),
+        data={},
+    )
+    metadata = build_higgs_stream_metadata(
+        payload,
+        SimpleNamespace(num_codebooks=8, codebook_size=1026),
+    )
+    data = SimpleNamespace(
+        stream_metadata=metadata,
+        num_codebooks=8,
+        output_codes=[],
+        max_new_tokens=99,
+        generation_done=False,
+        stream_code_buffer=[],
+        stream_code_first_flush_done=False,
+        stream_code_seen_rows=0,
+        stream_code_next_flush_rows=0,
+    )
+    sched_req = SimpleNamespace(request_id="req", data=data)
+
+    for row in range(26):
+        runner._queue_or_emit_code_chunk(
+            sched_req,
+            torch.full((8,), row, dtype=torch.long),
+        )
+    with pytest.raises(queue.Empty):
+        runner._outbox.get_nowait()
+
+    runner._queue_or_emit_code_chunk(
+        sched_req,
+        torch.full((8,), 26, dtype=torch.long),
+    )
+    message = runner._outbox.get_nowait()
+
+    assert message.data.shape == (27, 8)
+    assert message.metadata["initial_codec_chunk_frames"] == 20
+
+
 def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
@@ -1129,6 +1207,7 @@ def test_higgs_tts_vocoder_batches_decode_requests(
     scheduler = stages.create_vocoder_executor(
         "fake-model", vocoder_decode_batch_size=4, max_batch_wait_ms=2
     )
+    assert scheduler._default_initial_chunk_frames == DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES
 
     p1 = _make_payload(
         "r1",
