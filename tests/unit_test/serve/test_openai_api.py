@@ -268,6 +268,21 @@ class SuccessfulTranscriptionClient:
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
 
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        del request_id
+        self.requests.append(request)
+        yield GenerateChunk(request_id="transcription-1", text="hello ")
+        yield GenerateChunk(request_id="transcription-1", text="world")
+        yield GenerateChunk(
+            request_id="transcription-1",
+            text="hello world",
+            finish_reason="stop",
+        )
+
 
 class FailingTranscriptionClient:
     def __init__(self, message: str, exc_type: type[Exception] | None = None) -> None:
@@ -288,6 +303,17 @@ class FailingTranscriptionClient:
 
         del request, request_id, audio_format
         raise (self.exc_type or ClientError)(self.message)
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        from sglang_omni.client import ClientError
+
+        del request, request_id
+        raise (self.exc_type or ClientError)(self.message)
+        yield  # unreachable, makes this an async generator
 
 
 class AdminClient:
@@ -1184,6 +1210,86 @@ def test_transcription_endpoint_keeps_500_for_server_errors() -> None:
     response = client.post(
         "/v1/audio/transcriptions",
         data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
+
+
+def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    first_delta = body.index('"transcript.text.delta"')
+    done_index = body.index('"transcript.text.done"')
+    sentinel_index = body.index("data: [DONE]")
+    assert first_delta < done_index < sentinel_index
+    assert '"delta":"hello "' in body
+    assert '"delta":"world"' in body
+    assert '"text":"hello world"' in body
+
+
+def test_transcription_stream_maps_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens).",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_stream_keeps_500_for_server_errors() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "scheduler worker crashed",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
     )
 

@@ -51,6 +51,7 @@ from sglang_omni.client import (
     Client,
     ClientError,
     CompletionResult,
+    GenerateChunk,
     GenerateRequest,
     Message,
     SamplingParams,
@@ -1601,10 +1602,34 @@ def _register_transcriptions(app: FastAPI) -> None:
             )
             adapter = resolve_adapter(getattr(app.state, "architectures", None))
             duration_s = _probe_audio_duration(audio_bytes)
+            chunk_stream = client.generate(gen_req, request_id=request_id)
+            # note (db-ol): pull the first chunk before sending response
+            # headers. Admission rejections such as audio past the context
+            # limit arrive as the first stream event, and once headers go out
+            # the response is locked to 200 and errors can only degrade into
+            # SSE payloads.
+            try:
+                first_chunk = await anext(chunk_stream)
+            except StopAsyncIteration:
+                first_chunk = None
+            except ClientError as exc:
+                await _close_async_iterator_if_supported(chunk_stream)
+                if _is_bad_request_error(exc):
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            except Exception as exc:
+                await _close_async_iterator_if_supported(chunk_stream)
+                if _is_bad_request_error(exc):
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                logger.exception(
+                    "Error starting transcription stream for request %s",
+                    request_id,
+                )
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
             return StreamingResponse(
                 _transcription_stream(
-                    client,
-                    gen_req,
+                    chunk_stream,
+                    first_chunk=first_chunk,
                     request_id=request_id,
                     adapter=adapter,
                     duration_s=duration_s,
@@ -1672,9 +1697,9 @@ def _register_transcriptions(app: FastAPI) -> None:
 
 
 async def _transcription_stream(
-    client: Client,
-    gen_req: GenerateRequest,
+    chunk_stream: AsyncIterator[GenerateChunk],
     *,
+    first_chunk: GenerateChunk | None,
     request_id: str,
     adapter: Any,
     duration_s: float,
@@ -1683,11 +1708,20 @@ async def _transcription_stream(
 
     Emits OpenAI-style transcript.text.delta events for each partial text
     chunk, then a terminal transcript.text.done event carrying the full
-    post-processed transcript.
+    post-processed transcript. The caller already pulled first_chunk from
+    chunk_stream so admission failures map to HTTP statuses before response
+    headers go out.
     """
+
+    async def _chunks() -> AsyncIterator[GenerateChunk]:
+        if first_chunk is not None:
+            yield first_chunk
+        async for chunk in chunk_stream:
+            yield chunk
+
     final_text: str | None = None
     try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
+        async for chunk in _chunks():
             if chunk.finish_reason is not None:
                 if isinstance(chunk.text, str) and chunk.text:
                     final_text = chunk.text
