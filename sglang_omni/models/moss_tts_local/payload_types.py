@@ -45,3 +45,6 @@ class MossTTSLocalState(DeclarativeStateBase):
     token_count: int | None = wire(None, codec="opt_int")
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     audio_codes: Any | None = wire(None, codec="tensor_cpu")
+    # Frame-graph load-gate decision of the last live decode step (vocode
+    # dispatch reads it; fail-closed default).
+    above_load_gate: bool = wire(False, emit="truthy", codec="bool")

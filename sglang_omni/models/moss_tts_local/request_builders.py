@@ -62,6 +62,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
+    # Frame-graph load-gate decision of the request's last live decode step.
+    above_load_gate: bool = False
 
 
 @dataclass
@@ -421,6 +423,7 @@ def apply_sglang_moss_tts_local_result(
     state.prompt_tokens = len(data.input_ids) if data.input_ids is not None else 0
     state.completion_tokens = len(data.output_rows)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
+    state.above_load_gate = bool(getattr(data, "above_load_gate", False))
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,

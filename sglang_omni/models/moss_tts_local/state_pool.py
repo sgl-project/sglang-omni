@@ -306,7 +306,11 @@ class MossTTSLocalDecodeJournal:
         rids: list[str],
         pool_rows: list[int],
         rows: torch.Tensor,
+        above_load_gate: bool = False,
     ) -> None:
         self.rids = rids
         self.pool_rows = pool_rows
         self.rows = rows
+        # This step's frame-graph load-gate decision; rides to the request
+        # data so the vocode dispatch needs no global temporal state.
+        self.above_load_gate = above_load_gate

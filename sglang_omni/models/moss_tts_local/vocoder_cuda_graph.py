@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 from types import MethodType
 from typing import NamedTuple
@@ -13,6 +14,45 @@ import torch
 logger = logging.getLogger(__name__)
 
 _ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache"
+
+MOSSL_FRAME_GRAPH_ENV = "SGLANG_OMNI_MOSSL_FRAME_GRAPH"
+_NONSTREAM_MAX_CAPTURE_FAILURES = 8
+# Note: (Jiaxin Deng) one shared load threshold for the AR emit fast path and
+# the nonstream vocoder graphs: they must engage together. The fast path lets
+# the launch queue run deep, which the EAGER vocoder's ~13 per-utterance host
+# syncs each drain (measured stage-latency explosion); the graphed vocoder
+# syncs once. Below the threshold both stay off = the env-off code path.
+MOSSL_FRAME_GRAPH_MIN_AR_BATCH = 12
+
+
+def mossl_frame_graph_enabled() -> bool:
+    value = os.environ.get(MOSSL_FRAME_GRAPH_ENV, "1").strip().lower()
+    return value not in ("0", "false", "off")
+
+
+class _ArDecodeLoadBeacon:
+    """Latest AR decode batch size, published by the model runner every step.
+
+    The colocated vocoder thread reads it as the in-flight load signal for the
+    nonstream-graph gate. Note: (Jiaxin Deng) a split-process vocoder reads 0,
+    so its nonstream decode stays eager (safe, just ungraphed).
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        self.value = 0
+
+
+_ar_decode_load = _ArDecodeLoadBeacon()
+
+
+def publish_ar_decode_batch(batch_size: int) -> None:
+    _ar_decode_load.value = int(batch_size)
+
+
+def last_ar_decode_batch() -> int:
+    return _ar_decode_load.value
 
 
 class _CapturedVocoderGraph(NamedTuple):
@@ -264,3 +304,286 @@ class MossVocoderCudaGraphRunner:
         entry.static_codes.copy_(codes_step)
         entry.graph.replay()
         return entry.static_audio, entry.static_audio_lengths
+
+
+class _CapturedNonstreamGraph(NamedTuple):
+    graph: torch.cuda.CUDAGraph
+    static_codes: torch.Tensor
+    static_audio: torch.Tensor
+    samples_per_frame: int
+
+
+class MossNonstreamVocoderGraphRunner:
+    """(B, T)-bucketed CUDA graphs over the packed non-streaming codec decode.
+
+    Captured at warmup with every sequence pinned to the bucket's dense length
+    (``assume_full_lengths``). Replay is bit-identical to the same-geometry
+    eager decode (gated in tests). Note: (Jiaxin Deng) the eager ragged decode
+    is itself batch-composition-dependent at the bit level (varlen flash
+    geometry; measured max|delta| ~2e-2 between batch layouts of the same
+    utterance), so bucket padding stays within the pre-existing numerical
+    family rather than adding a new error mode. Replay copies padded codes
+    into the static buffer and slices per-utterance audio by ``frames *
+    samples_per_frame`` (the length map is exactly linear; validated at
+    capture).
+    """
+
+    def __init__(
+        self,
+        codec,
+        nonstream_decoder,
+        *,
+        n_vq: int,
+        batch_buckets: Iterable[int],
+        frame_buckets: Iterable[int],
+        warmup_iters: int = 2,
+        min_free_gb: float = 3.0,
+    ) -> None:
+        self._codec = codec
+        self._nonstream_decoder = nonstream_decoder
+        self._n_vq = int(n_vq)
+        self._device = next(codec.parameters()).device
+        self._batch_buckets = sorted({int(b) for b in batch_buckets if int(b) >= 1})
+        self._frame_buckets = sorted({int(t) for t in frame_buckets if int(t) >= 1})
+        self._warmup_iters = int(warmup_iters)
+        self._min_free_bytes = int(float(min_free_gb) * (1024**3))
+        self._graphs: dict[tuple[int, int], _CapturedNonstreamGraph] = {}
+        # Note: (Jiaxin Deng) one shared mempool per batch bucket, captured
+        # largest-T first: growing a shared pool after a capture invalidates
+        # earlier graphs' addresses (streaming-runner lesson).
+        self._pools: dict[int, object] = {}
+        self._capture_failures = 0
+        self._disabled = False
+        self._sealed = False
+        self._graph_steps = 0
+        self._eager_misses = 0
+
+    def _enough_free_vram(self) -> tuple[bool, int]:
+        free, _ = torch.cuda.mem_get_info(self._device)
+        return free >= self._min_free_bytes, free
+
+    @torch.no_grad()
+    def _capture(self, batch_bucket: int, frame_bucket: int) -> None:
+        device = self._device
+        static_codes = torch.zeros(
+            self._n_vq, batch_bucket, frame_bucket, dtype=torch.long, device=device
+        )
+        static_lengths = torch.full(
+            (batch_bucket,), frame_bucket, dtype=torch.long, device=device
+        )
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        warmup_result = None
+        with torch.cuda.stream(stream):
+            for _ in range(self._warmup_iters):
+                warmup_result = self._codec._decode_frame(static_codes, static_lengths)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+
+        # Validate the linear frame->sample map on the executed warmup result
+        # (capture only records, so the static outputs hold no values yet).
+        assert warmup_result is not None
+        warmup_lengths = warmup_result.audio_lengths
+        audio_len_max = int(warmup_lengths.max().item())
+        audio_len_min = int(warmup_lengths.min().item())
+        if (
+            audio_len_max != audio_len_min
+            or audio_len_max <= 0
+            or audio_len_max % frame_bucket != 0
+        ):
+            raise RuntimeError(
+                "MOSS nonstream vocoder length map is not uniformly linear: "
+                f"T={frame_bucket} -> audio_lengths in "
+                f"[{audio_len_min}, {audio_len_max}]"
+            )
+        samples_per_frame = audio_len_max // frame_bucket
+
+        pool = self._pools.get(batch_bucket)
+        if pool is None:
+            pool = torch.cuda.graph_pool_handle()
+            self._pools[batch_bucket] = pool
+        graph = torch.cuda.CUDAGraph()
+        try:
+            with torch.cuda.graph(graph, pool=pool, capture_error_mode="thread_local"):
+                result = self._codec._decode_frame(static_codes, static_lengths)
+                static_audio = result.audio
+        except Exception:
+            try:
+                graph.reset()
+            except Exception:
+                pass
+            raise
+        self._graphs[(batch_bucket, frame_bucket)] = _CapturedNonstreamGraph(
+            graph=graph,
+            static_codes=static_codes,
+            static_audio=static_audio,
+            samples_per_frame=samples_per_frame,
+        )
+        logger.info(
+            "Captured MOSS nonstream vocoder CUDA graph B=%d T=%d -> audio %s "
+            "(%d cached)",
+            batch_bucket,
+            frame_bucket,
+            tuple(static_audio.shape),
+            len(self._graphs),
+        )
+
+    @torch.no_grad()
+    def warmup(self) -> None:
+        """Capture all (B, T) buckets once, then seal; failed/skipped keys fall
+        back to eager. Must run while the GPU is otherwise quiescent."""
+        if self._sealed:
+            logger.warning(
+                "MossNonstreamVocoderGraphRunner.warmup called after seal; ignoring"
+            )
+            return
+        original_decoder = self._codec.decoder
+        self._codec.decoder = self._nonstream_decoder
+        try:
+            with torch.cuda.device(self._device):
+                with self._nonstream_decoder.assume_full_lengths():
+                    # B ascending: a VRAM-budget stop keeps the small-B keys,
+                    # which carry ~all production hits. T stays largest-first
+                    # within each per-B shared pool (pool-growth rule).
+                    for batch_bucket in sorted(self._batch_buckets):
+                        for frame_bucket in sorted(self._frame_buckets, reverse=True):
+                            if self._disabled:
+                                break
+                            enough, free = self._enough_free_vram()
+                            if not enough:
+                                logger.warning(
+                                    "MOSS nonstream vocoder CG: free VRAM %.1fGB < "
+                                    "%.1fGB headroom; skipping remaining captures",
+                                    free / 1024**3,
+                                    self._min_free_bytes / 1024**3,
+                                )
+                                self._sealed = True
+                                return
+                            try:
+                                self._capture(batch_bucket, frame_bucket)
+                            except Exception:
+                                self._capture_failures += 1
+                                self._log_capture_failure(batch_bucket, frame_bucket)
+                                if (
+                                    self._capture_failures
+                                    >= _NONSTREAM_MAX_CAPTURE_FAILURES
+                                ):
+                                    self._disabled = True
+                                    logger.warning(
+                                        "Disabling MOSS nonstream vocoder CUDA "
+                                        "graphs after %d capture failures",
+                                        self._capture_failures,
+                                    )
+                                continue
+                            # Re-check AFTER the capture: one near the boundary
+                            # can eat into the promised eager headroom.
+                            enough_after, free_after = self._enough_free_vram()
+                            if not enough_after:
+                                entry = self._graphs.pop(
+                                    (batch_bucket, frame_bucket), None
+                                )
+                                if entry is not None:
+                                    try:
+                                        entry.graph.reset()
+                                    except Exception:
+                                        pass
+                                logger.warning(
+                                    "MOSS nonstream vocoder CG: capture B=%d T=%d "
+                                    "left free VRAM %.1fGB below the %.1fGB "
+                                    "reserve; rolled back, stopping captures",
+                                    batch_bucket,
+                                    frame_bucket,
+                                    free_after / 1024**3,
+                                    self._min_free_bytes / 1024**3,
+                                )
+                                return
+                        if self._disabled:
+                            break
+        finally:
+            self._codec.decoder = original_decoder
+            self._sealed = True
+        logger.info(
+            "MOSS nonstream vocoder CUDA graphs sealed: %d keys %s",
+            len(self._graphs),
+            sorted(self._graphs.keys()),
+        )
+
+    def _log_capture_failure(self, batch_bucket: int, frame_bucket: int) -> None:
+        logger.warning(
+            "MOSS nonstream vocoder CG capture failed for "
+            "B=%d T=%d (failure %d/%d); eager for this key",
+            batch_bucket,
+            frame_bucket,
+            self._capture_failures,
+            _NONSTREAM_MAX_CAPTURE_FAILURES,
+            exc_info=True,
+        )
+
+    def captured_keys(self) -> list[tuple[int, int]]:
+        return sorted(self._graphs.keys())
+
+    def bucket_for(self, live_batch: int, live_frames: int) -> tuple[int, int] | None:
+        """Smallest captured (batch, frames) bucket covering the live shape."""
+        for batch_bucket in self._batch_buckets:
+            if batch_bucket < live_batch:
+                continue
+            for frame_bucket in self._frame_buckets:
+                if frame_bucket < live_frames:
+                    continue
+                if (batch_bucket, frame_bucket) in self._graphs:
+                    return (batch_bucket, frame_bucket)
+        return None
+
+    def _find_entry(
+        self, live_batch: int, live_frames: int
+    ) -> _CapturedNonstreamGraph | None:
+        key = self.bucket_for(live_batch, live_frames)
+        return self._graphs[key] if key is not None else None
+
+    @torch.no_grad()
+    def decode_padded(
+        self,
+        padded_codes: torch.Tensor,
+        codes_lengths: list[int],
+    ) -> tuple[torch.Tensor, list[int]] | None:
+        """Replay a bucketed graph for ``[n_vq, B, T]`` zero-padded codes with
+        host-side per-utterance frame counts; ``None`` -> caller decodes eager.
+        Returns (static audio buffer sliced to live rows, per-utterance sample
+        counts); the caller must consume the audio before the next replay.
+        """
+        if self._disabled or not self._graphs:
+            return None
+        if not padded_codes.is_cuda:
+            return None
+        n_vq, live_batch, live_frames = padded_codes.shape
+        if n_vq != self._n_vq or live_batch == 0 or live_frames == 0:
+            return None
+        if len(codes_lengths) != live_batch:
+            return None
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        entry = self._find_entry(live_batch, live_frames)
+        if entry is None:
+            self._eager_misses += 1
+            if self._eager_misses <= 5:
+                logger.info(
+                    "MOSS nonstream vocoder CG miss: B=%d T=%d",
+                    live_batch,
+                    live_frames,
+                )
+            return None
+        with torch.cuda.device(self._device):
+            entry.static_codes.zero_()
+            entry.static_codes[:, :live_batch, :live_frames].copy_(padded_codes)
+            entry.graph.replay()
+        self._graph_steps += 1
+        if self._graph_steps % 25 == 0:
+            logger.info(
+                "MOSS nonstream vocoder CG: %d graphed decodes, %d eager misses",
+                self._graph_steps,
+                self._eager_misses,
+            )
+        audio_lengths = [
+            int(frames) * entry.samples_per_frame for frames in codes_lengths
+        ]
+        return entry.static_audio[:live_batch], audio_lengths

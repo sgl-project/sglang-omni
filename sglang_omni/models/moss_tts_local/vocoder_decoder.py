@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import math
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -561,6 +562,58 @@ class MossTTSLocalProjectedTransformer(nn.Module):
         self.output_proj = source.output_proj
         self.transformer = MossTTSLocalTransformer(source.transformer)
         self._position_ids_cache = _PositionIdsCache()
+        self._uniform_full_lengths = False
+        self._uniform_pack_cache: dict[tuple, tuple] = {}
+
+    def _uniform_pack_meta(
+        self, batch_size: int, max_seqlen: int, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor, _LocalCausalFlashPlan | None]:
+        key = (batch_size, max_seqlen, device.type, device.index)
+        meta = self._uniform_pack_cache.get(key)
+        if meta is None:
+            # Note: (Jiaxin Deng) built outside capture only: a cache miss during
+            # CUDA-graph capture host-syncs and aborts the capture -> eager.
+            positions = torch.arange(max_seqlen, device=device, dtype=torch.long)
+            position_ids = positions.repeat(batch_size)
+            cu_seqlens = torch.arange(
+                0,
+                (batch_size + 1) * max_seqlen,
+                max_seqlen,
+                device=device,
+                dtype=torch.int32,
+            )
+            first_attention = self.transformer.layers[0].self_attn
+            plan = None
+            if first_attention.causal and first_attention.context is not None:
+                plan = _build_local_causal_flash_plan(
+                    cu_seqlens,
+                    context=int(first_attention.context),
+                )
+            meta = (cu_seqlens, position_ids, plan)
+            self._uniform_pack_cache[key] = meta
+        return meta
+
+    def _forward_uniform_flash(
+        self,
+        x: torch.Tensor,
+        input_lengths: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        batch_size, max_seqlen, _ = x.shape
+        cu_seqlens, position_ids, local_flash_plan = self._uniform_pack_meta(
+            batch_size, max_seqlen, x.device
+        )
+        packed_x = x.reshape(batch_size * max_seqlen, x.shape[-1])
+        packed_x = self.transformer(
+            packed_x,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            position_ids=position_ids,
+            input_lengths=input_lengths,
+            local_flash_plan=local_flash_plan,
+            **kwargs,
+        )
+        return packed_x.reshape(batch_size, max_seqlen, packed_x.shape[-1])
 
     def forward(
         self,
@@ -570,6 +623,11 @@ class MossTTSLocalProjectedTransformer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.input_proj(x.transpose(1, 2))
         backend = self.transformer.resolve_attention_implementation(x)
+        if backend == "flash_attention_2" and self._uniform_full_lengths and x.shape[1]:
+            # Every sequence is pinned to the dense length: no host reads, so
+            # the stack is CUDA-graph capturable.
+            x = self._forward_uniform_flash(x, input_lengths, **kwargs)
+            return self.output_proj(x).transpose(1, 2), input_lengths
         if backend == "flash_attention_2":
             batch_size, max_seqlen, _ = x.shape
             max_valid_seqlen = int(input_lengths.max().item()) if max_seqlen else 0
@@ -640,6 +698,24 @@ class MossTTSLocalVocoderDecoder(nn.Module):
             f"unsupported MOSS vocoder decoder stage {stage.__class__.__name__} "
             f"with module_type={module_type!r}"
         )
+
+    @contextmanager
+    def assume_full_lengths(self):
+        """Pin every sequence to its dense length across all transformer stages
+        (valid only when all input_lengths equal the padded time dimension)."""
+        transformer_stages = [
+            stage
+            for stage in self.stages
+            if isinstance(stage, MossTTSLocalProjectedTransformer)
+        ]
+        saved = [stage._uniform_full_lengths for stage in transformer_stages]
+        for stage in transformer_stages:
+            stage._uniform_full_lengths = True
+        try:
+            yield
+        finally:
+            for stage, value in zip(transformer_stages, saved):
+                stage._uniform_full_lengths = value
 
     def __iter__(self) -> Iterator[nn.Module]:
         return iter(self.stages)
