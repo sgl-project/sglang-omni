@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.vendor.sglang.server_args import override_server_args
+
 
 def create_thinker_scheduler(
     server_args: Any,
@@ -16,6 +18,9 @@ def create_thinker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
+    prefill_coalesce_when_idle: bool = False,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -35,8 +40,12 @@ def create_thinker_scheduler(
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
     if defer_cuda_graph_capture:
-        server_args.enable_return_hidden_states = True
-        server_args.disable_cuda_graph = True
+        override_server_args(
+            server_args,
+            "sglang_omni.qwen3_omni.defer_cuda_graph_capture",
+            enable_return_hidden_states=True,
+            disable_cuda_graph=True,
+        )
 
     (
         model_worker,
@@ -54,11 +63,16 @@ def create_thinker_scheduler(
         model_arch_override="Qwen3OmniThinkerForCausalLM",
         capture_hidden_layers=capture_hidden_layers,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        defer_cuda_graph_capture=defer_cuda_graph_capture,
     )
 
     if defer_cuda_graph_capture:
-        server_args.disable_cuda_graph = False
-        model_worker.model_runner.init_device_graphs()
+        override_server_args(
+            server_args,
+            "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
+            disable_cuda_graph=False,
+        )
+        model_worker.model_runner.init_cuda_graphs()
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
@@ -103,6 +117,9 @@ def create_thinker_scheduler(
         stream_output_builder=stream_output_builder,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
     )
 
 
@@ -155,20 +172,24 @@ def create_talker_scheduler(
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        defer_cuda_graph_capture=want_cuda_graph,
     )
     # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
     # the repetition-penalty orchestrator from model_config.vocab_size (the
     # thinker text vocab), which mismatches the talker's codec-vocab logits.
     _codec_vocab_size = model_config.hf_config.talker_config.text_config.vocab_size
     model_config.vocab_size = _codec_vocab_size
-    _runner_cfg = getattr(model_worker.model_runner, "model_config", None)
-    if _runner_cfg is not None and _runner_cfg is not model_config:
+    _runner_cfg = model_worker.model_runner.model_config
+    if _runner_cfg is not model_config:
         _runner_cfg.vocab_size = _codec_vocab_size
-    if hasattr(model_worker.model_runner, "sampler"):
-        model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
+    model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
-        server_args.disable_cuda_graph = False
-        model_worker.model_runner.init_device_graphs()
+        override_server_args(
+            server_args,
+            "sglang_omni.qwen3_omni.talker_restore_cuda_graph_capture",
+            disable_cuda_graph=False,
+        )
+        model_worker.model_runner.init_cuda_graphs()
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
@@ -234,10 +255,11 @@ def create_talker_scheduler(
         im_end_token_id=root_config.im_end_token_id,
     )
 
-    scheduler._model_runner = QwenTalkerModelRunner(
+    model_runner = QwenTalkerModelRunner(
         model_worker,
         output_proc,
         scheduler.outbox,
         feedback_enabled=feedback_enabled,
     )
+    scheduler.bind_model_runner(model_runner)
     return scheduler

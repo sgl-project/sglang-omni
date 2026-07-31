@@ -100,7 +100,7 @@ class Zonos2ModelRunner(ModelRunner):
             data = sr.data
             req = data.req
             prefix_len = len(req.prefix_indices)
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
             rows = data.prompt_rows[prefix_len : prefix_len + req_len].to(model.device)
             emb = model.embed_frames(rows)
             if data.speaker_emb is not None:
@@ -274,8 +274,6 @@ class Zonos2ModelRunner(ModelRunner):
         pool.generation_step[row_t] = gstep + 1
         next_ids = torch.where(finished, torch.full_like(keys, EOS_SENTINEL), keys)
         result.next_token_ids = next_ids
-        if schedule_batch is not None:  # async launch publishes output_ids itself
-            schedule_batch.output_ids = next_ids
 
         # launch_buf snapshots what the (lagged) resolve reads. Pack codes +
         # per-row EOS metadata into one fresh int64 tensor (advanced indexing

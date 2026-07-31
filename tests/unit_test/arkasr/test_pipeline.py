@@ -2,10 +2,13 @@
 """Unit tests for the ARK-ASR-3B adapter (CPU-only, no checkpoint download)."""
 
 import inspect
+from types import SimpleNamespace
 
+import pytest
 import torch
 from transformers import WhisperConfig
 
+from sglang_omni.models.arkasr import stages
 from sglang_omni.models.arkasr.audio_lengths import (
     arkasr_audio_token_lengths,
     arkasr_num_audio_tokens,
@@ -57,6 +60,66 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["max_running_requests"].default == 32
     assert signature.parameters["request_build_max_workers"].default == 2
     assert signature.parameters["request_build_max_pending"].default == 16
+
+
+@pytest.mark.parametrize("want_cuda_graph", [True, False])
+def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
+    monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
+) -> None:
+    """The factory defers capture, then calls the runner's init_cuda_graphs
+    exactly when the deferred-capture probe asked for graphs. The fake runner
+    exposes only the 0.5.16 method name, so a stale call site fails loudly."""
+    calls = {"init_cuda_graphs": 0}
+
+    def _bump_init_cuda_graphs() -> None:
+        calls["init_cuda_graphs"] += 1
+
+    model_runner = SimpleNamespace(
+        model=object(), init_cuda_graphs=_bump_init_cuda_graphs
+    )
+    model_worker = SimpleNamespace(model_runner=model_runner)
+    infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+
+    monkeypatch.setattr(
+        stages,
+        "AutoTokenizer",
+        SimpleNamespace(from_pretrained=lambda *a, **k: object()),
+    )
+    monkeypatch.setattr(
+        stages,
+        "WhisperFeatureExtractor",
+        SimpleNamespace(
+            from_pretrained=lambda *a, **k: SimpleNamespace(nb_max_frames=3000)
+        ),
+    )
+    monkeypatch.setattr(
+        stages,
+        "AutoConfig",
+        SimpleNamespace(
+            from_pretrained=lambda *a, **k: SimpleNamespace(
+                merge_factor=4, audio_token_id=151663
+            )
+        ),
+    )
+    monkeypatch.setattr(stages, "build_generation_batch_overrides", lambda **k: {})
+    monkeypatch.setattr(stages, "build_sglang_server_args", lambda *a, **k: object())
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **k: None)
+    monkeypatch.setattr(
+        stages, "create_sglang_infrastructure_defer_cuda_graph", lambda *a, **k: infra
+    )
+    monkeypatch.setattr(stages, "init_mm_embedding_cache", lambda n: None)
+    monkeypatch.setattr(stages, "SGLangOutputProcessor", lambda **k: object())
+    monkeypatch.setattr(
+        stages, "make_arkasr_scheduler_adapters", lambda **k: (object(), object())
+    )
+    monkeypatch.setattr(stages, "ModelRunner", lambda *a, **k: object())
+    monkeypatch.setattr(stages, "OmniScheduler", lambda **k: SimpleNamespace())
+
+    create_sglang_arkasr_executor(
+        "AutoArk-AI/ARK-ASR-3B", mm_attention_backend="triton_attn"
+    )
+
+    assert calls["init_cuda_graphs"] == (1 if want_cuda_graph else 0)
 
 
 def test_arkasr_audio_token_count():

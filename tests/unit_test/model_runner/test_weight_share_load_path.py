@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Role plumbing tests for SGLANG_OMNI_WEIGHT_SHARE in SGLModelRunner.
 
-Runs the real SGLModelRunner.load_model / init_device_graphs overrides with the
+Runs the real SGLModelRunner.load_model / init_cuda_graphs overrides with the
 upstream ModelRunner methods mocked out, on CPU tensors. Verifies role dispatch,
 the dummy load-format toggle (set for the super() call, restored after),
 attach-before-capture ordering, and the weight-update guards.
@@ -18,6 +18,8 @@ from unittest import mock
 import pytest
 import torch
 from torch import nn
+
+from tests.unit_test.fakes import FakeServerArgs
 
 sglang_model_runner = pytest.importorskip(
     "sglang_omni.model_runner.sglang_model_runner",
@@ -41,13 +43,14 @@ class SmallModel(nn.Module):
 
 def _bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
-    runner.server_args = SimpleNamespace(
+    runner.server_args = FakeServerArgs(
         load_format=load_format,
         max_total_tokens=1000,
         tp_size=1,
         pp_size=1,
         model_path="m",
         revision="r",
+        enable_torch_compile=False,
     )
     # Note (Jiaxin Deng): role-plumbing tests use a stand-in model; the gate
     # itself is covered in test_ipc_weights.py.
@@ -143,7 +146,9 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
     runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
     with (
         mock.patch.object(
-            ModelRunner, "init_device_graphs", lambda self: calls.append("capture")
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
         ),
         mock.patch.object(
             ipc_weights,
@@ -151,8 +156,24 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
             side_effect=lambda *a, **k: calls.append("verify"),
         ),
     ):
-        runner.init_device_graphs()
+        runner.init_cuda_graphs()
     assert calls == ["verify", "capture"]  # attach guard precedes capture
+
+
+def test_graph_capture_finalizes_post_capture_kv_pool():
+    runner = _bare_runner()
+    runner.token_to_kv_pool = SimpleNamespace(post_capture_active=True)
+    calls = []
+    runner.post_capture_resize_kv_pool = lambda: calls.append("resize")
+
+    with mock.patch.object(
+        ModelRunner,
+        "init_cuda_graphs",
+        lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+    ):
+        runner.init_cuda_graphs()
+
+    assert calls == ["capture", "resize"]
 
 
 def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):

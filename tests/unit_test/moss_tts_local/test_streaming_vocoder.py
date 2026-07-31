@@ -1316,6 +1316,18 @@ def test_stream_chunk_requires_metadata_contract(monkeypatch) -> None:
     assert scheduler._stream_states == {}
 
 
+def test_stream_chunk_accepts_batched_ar_rows(monkeypatch) -> None:
+    scheduler = _make_scheduler(monkeypatch, FakeProcessor())
+    state = scheduler.create_stream_state("req")
+    rows = _rows(3, seed=81)
+
+    codes = scheduler.validate_chunk("req", state, rows)
+    scheduler.ingest("req", state, codes)
+
+    assert len(state.pending) == 3
+    assert torch.equal(torch.stack(state.pending), rows[:, 1:])
+
+
 # --- CUDA-graph config + recapture / factory-capture / anti-storm lifecycle (CPU fakes) ---
 
 
@@ -1410,6 +1422,36 @@ def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
+
+
+def test_create_vocoder_executor_validates_process_memory_after_warmup(
+    monkeypatch,
+) -> None:
+    processor = FakeProcessor()
+    codec = FakeCodec()
+    _patch_vocoder_factory_loaders(monkeypatch, processor, codec)
+    validations: list[dict] = []
+    monkeypatch.setattr(
+        stages,
+        "_validate_loaded_process_memory_budget",
+        lambda **kwargs: validations.append(kwargs),
+    )
+
+    stages.create_vocoder_executor(
+        "fake-model",
+        device="cpu",
+        gpu_id=3,
+        total_gpu_memory_fraction=0.18,
+        process_total_gpu_memory_fraction=0.95,
+    )
+
+    assert validations == [
+        {
+            "stage_name": "MOSS-TTS Local vocoder",
+            "gpu_id": 3,
+            "total_gpu_memory_fraction": 0.95,
+        }
+    ]
 
 
 def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> None:

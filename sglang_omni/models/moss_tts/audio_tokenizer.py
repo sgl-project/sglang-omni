@@ -10,10 +10,7 @@ import torch
 import torchaudio
 from transformers import AutoModel
 
-from sglang_omni.models.moss_tts.hf_loading import (
-    moss_transformers_processor_compat,
-    resolve_moss_checkpoint,
-)
+from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +180,11 @@ def load_moss_tts_audio_tokenizer(
     device: str = "cpu",
     dtype: str | torch.dtype = "float32",
 ) -> MossTTSAudioTokenizer:
-    checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info(f"Loading MOSS-TTS audio tokenizer from {checkpoint_dir} on {device}")
+    logger.info(f"Loading MOSS-TTS audio tokenizer from {model_path} on {device}")
     try:
         with moss_transformers_processor_compat():
             model = AutoModel.from_pretrained(
-                checkpoint_dir,
+                model_path,
                 trust_remote_code=True,
             )
     except Exception as exc:

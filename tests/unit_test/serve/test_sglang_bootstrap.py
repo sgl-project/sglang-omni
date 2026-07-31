@@ -5,11 +5,78 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sglang_omni.scheduling import bootstrap
+from sglang_omni.model_runner import model_worker as model_worker_module
+from sglang_omni.scheduling import bootstrap, sglang_backend
+from tests.unit_test.fakes import FakeServerArgs
+
+
+def test_create_sglang_infrastructure_runs_0515_initialization_phases(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+
+    class FakeRunner:
+        model = object()
+
+        def alloc_memory_pool(self) -> None:
+            events.append("alloc_memory_pool")
+
+        def init_attention_backends(self) -> None:
+            events.append("init_attention_backends")
+
+        def init_cuda_graphs(self) -> None:
+            events.append("init_cuda_graphs")
+
+    class FakeWorker:
+        model_config = object()
+
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.model_runner = FakeRunner()
+
+        def get_memory_pool(self):
+            events.append("get_memory_pool")
+            return "req_pool", "kv_pool"
+
+    class FakePrefillManager:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def add_one_request(self, req) -> None:
+            del req
+
+    class FakeDecodeManager:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    monkeypatch.setattr(sglang_backend, "PrefillManager", FakePrefillManager)
+    monkeypatch.setattr(sglang_backend, "DecodeManager", FakeDecodeManager)
+    monkeypatch.setattr(
+        sglang_backend,
+        "create_tree_cache",
+        lambda *args: ("tree_cache", args),
+    )
+
+    server_args = SimpleNamespace(
+        page_size=1,
+        disable_overlap_schedule=False,
+        chunked_prefill_size=8,
+        max_prefill_tokens=16,
+    )
+    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
+
+    assert events == [
+        "alloc_memory_pool",
+        "init_attention_backends",
+        "init_cuda_graphs",
+        "get_memory_pool",
+    ]
+    assert infrastructure[0].model_runner.model is FakeRunner.model
 
 
 def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
-    server_args = SimpleNamespace(disable_cuda_graph=False)
+    server_args = FakeServerArgs(disable_cuda_graph=False)
     seen: list[bool] = []
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
@@ -33,11 +100,18 @@ def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
     assert want_cuda_graph is True
     assert seen == [True]
     assert server_args.disable_cuda_graph is False
-    assert infrastructure == ("infra", 3, {"model_arch_override": "TestModel"})
+    assert infrastructure == (
+        "infra",
+        3,
+        {
+            "defer_cuda_graph_capture": True,
+            "model_arch_override": "TestModel",
+        },
+    )
 
 
 def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) -> None:
-    server_args = SimpleNamespace(disable_cuda_graph=True)
+    server_args = FakeServerArgs(disable_cuda_graph=True)
     seen: list[bool] = []
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):

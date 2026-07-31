@@ -29,17 +29,21 @@ def _fake_runner(
     disable_cuda_graph=False,
     capture_bs=None,
     request_slots=64,
-    has_graph_runner=True,
+    has_decode_cuda_graph_runner=True,
 ):
-    graph_runner = SimpleNamespace(capture_bs=capture_bs) if has_graph_runner else None
+    decode_cuda_graph_runner = (
+        SimpleNamespace(capture_bs=capture_bs) if has_decode_cuda_graph_runner else None
+    )
     return SimpleNamespace(
         server_args=SimpleNamespace(
             max_running_requests=max_running_requests,
-            cuda_graph_max_bs=cuda_graph_max_bs,
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(max_bs=cuda_graph_max_bs)
+            ),
             disable_cuda_graph=disable_cuda_graph,
         ),
         req_to_token_pool=SimpleNamespace(size=request_slots),
-        graph_runner=graph_runner,
+        decode_cuda_graph_runner=decode_cuda_graph_runner,
         model=model,
     )
 
@@ -151,12 +155,12 @@ def test_read_captured_bs_sorts_and_ints():
 
 
 def test_read_captured_bs_missing_capture_returns_none():
-    runner = _fake_runner(has_graph_runner=True, capture_bs=None)
+    runner = _fake_runner(has_decode_cuda_graph_runner=True, capture_bs=None)
     assert read_captured_bs(runner) is None
 
 
 def test_read_captured_bs_no_graph_runner_returns_none():
-    runner = _fake_runner(has_graph_runner=False)
+    runner = _fake_runner(has_decode_cuda_graph_runner=False)
     assert read_captured_bs(runner) is None
 
 
@@ -293,7 +297,7 @@ def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
         model=model,
         disable_cuda_graph=True,
         capture_bs=None,
-        has_graph_runner=False,
+        has_decode_cuda_graph_runner=False,
     )
     report = validate_stage("tts_engine", runner)
     assert report.is_valid

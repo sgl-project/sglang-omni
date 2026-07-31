@@ -53,7 +53,12 @@ class ModelRunnerOutput:
     req_ids: list[str] = field(default_factory=list)
     req_id_to_index: dict[str, int] = field(default_factory=dict)
     can_run_cuda_graph: bool = False
-    host_token_ids: torch.Tensor | None = None
+    # Reporting tokens for this completed step. These are deliberately separate
+    # from the GPU FutureMap relay used as the next forward's input.
+    next_token_ids: "torch.Tensor | None" = None
+    # Optional pinned-host copy used for CPU-side result processing without a
+    # pageable device-to-host synchronization.
+    host_token_ids: "torch.Tensor | None" = None
 
 
 @dataclass

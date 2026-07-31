@@ -50,6 +50,63 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("runtime_overrides", "expected_workers"),
+    [
+        ({}, 8),
+        ({"asr": {"request_build_max_workers": 4}}, 4),
+    ],
+)
+def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_overrides: dict[str, dict[str, int]],
+    expected_workers: int,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize import config as config_module
+
+    calls: list[tuple[int, int]] = []
+
+    def _bounded_threads(*, worker_count: int, max_threads: int) -> int:
+        calls.append((worker_count, max_threads))
+        return 3
+
+    monkeypatch.setattr(
+        config_module,
+        "bounded_intraop_threads",
+        _bounded_threads,
+    )
+
+    config = config_module.MossTranscribeDiarizePipelineConfig(
+        model_path="dummy",
+        runtime_overrides=runtime_overrides,
+    )
+
+    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+    assert calls == [(expected_workers, 8)]
+
+
+def test_moss_transcribe_diarize_preserves_explicit_omp_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize import config as config_module
+
+    def _unexpected_call(**_kwargs) -> int:
+        raise AssertionError("explicit OMP_NUM_THREADS must bypass auto sizing")
+
+    monkeypatch.setattr(
+        config_module,
+        "bounded_intraop_threads",
+        _unexpected_call,
+    )
+
+    config = config_module.MossTranscribeDiarizePipelineConfig(
+        model_path="dummy",
+        env_defaults={"OMP_NUM_THREADS": "3"},
+    )
+
+    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+
+
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
 
@@ -137,7 +194,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     from sglang_omni.models.moss_transcribe_diarize import stages
 
     calls = {
-        "init_device_graphs": 0,
+        "init_cuda_graphs": 0,
         "compile_encoder": [],
         "init_encoder_graphs": [],
         "encoder_services": [],
@@ -152,12 +209,10 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         init_encoder_cache=lambda n: None,
     )
 
-    def _bump_init_device_graphs() -> None:
-        calls["init_device_graphs"] += 1
+    def _bump_init_cuda_graphs() -> None:
+        calls["init_cuda_graphs"] += 1
 
-    model_runner = SimpleNamespace(
-        model=model, init_device_graphs=_bump_init_device_graphs
-    )
+    model_runner = SimpleNamespace(model=model, init_cuda_graphs=_bump_init_cuda_graphs)
     model_worker = SimpleNamespace(model_runner=model_runner)
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
@@ -217,7 +272,7 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
 
     assert len(calls["compile_encoder"]) == 1
     assert calls["init_encoder_graphs"] == []
-    assert calls["init_device_graphs"] == 1
+    assert calls["init_cuda_graphs"] == 1
     assert len(calls["encoder_services"]) == 1
     assert calls["encoder_services"][0][1] == 2
 

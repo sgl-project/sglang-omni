@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from array import array
 from typing import Any
 
 import torch
@@ -120,7 +121,7 @@ def build_dllm_thinker_request(
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
 
-    input_ids_list = input_ids.to(dtype=torch.long).flatten().tolist()
+    input_ids_array = array("q", input_ids.to(dtype=torch.long).flatten().tolist())
 
     sampling_params = SamplingParams(
         max_new_tokens=params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS),
@@ -143,7 +144,7 @@ def build_dllm_thinker_request(
     req = Req(
         rid=rid,
         origin_input_text="",
-        origin_input_ids=input_ids_list,
+        origin_input_ids=input_ids_array,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
         eos_token_ids=eos_token_ids,

@@ -175,7 +175,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     )
 
     if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
+        model_worker.model_runner.init_cuda_graphs()
 
     buckets = (
         encoder_chunk_buckets

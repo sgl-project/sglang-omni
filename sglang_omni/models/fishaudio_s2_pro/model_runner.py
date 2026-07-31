@@ -30,7 +30,7 @@ def collect_s2pro_step_outputs(
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
-        if data.req.is_chunked > 0:
+        if data.req.inflight_middle_chunks > 0:
             continue
 
         semantic_token = semantic_tokens[row_idx]
@@ -172,7 +172,7 @@ class FishS2ProModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
 
             if (
                 data.vq_mask_tokens is None

@@ -9,6 +9,28 @@ import torch
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
+from tests.unit_test.fakes import FakeServerArgs
+
+
+class _StrictServerArgsDouble:
+    """Minimal ServerArgs double that rejects every bare post-resolution write."""
+
+    def __init__(self, **fields: Any) -> None:
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "override_calls", [])
+        for name, value in fields.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self._locked and not name.startswith("_"):
+            raise AttributeError(f"bare mutation of {name}")
+        object.__setattr__(self, name, value)
+
+    def override(self, source: str, **fields: Any) -> None:
+        self.override_calls.append((source, dict(fields)))
+        for name, value in fields.items():
+            object.__setattr__(self, name, value)
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -83,12 +105,12 @@ def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> N
         calls.append((model_path, load_format, recapture_cuda_graph))
         return True, "ok"
 
-    worker_args = SimpleNamespace(
+    worker_args = FakeServerArgs(
         model_path="/tmp/old-model",
         load_format="auto",
         weight_version="old",
     )
-    runner_args = SimpleNamespace(
+    runner_args = FakeServerArgs(
         model_path="/tmp/old-model",
         load_format="auto",
         weight_version="old",
@@ -122,6 +144,72 @@ def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> N
     assert runner_args.load_format == "safetensors"
     assert runner_args.weight_version == "v2"
     assert runner.model_config.model_path == "/tmp/new-model"
+
+
+def test_model_worker_update_weights_from_disk_uses_server_args_override() -> None:
+    server_args = _StrictServerArgsDouble(
+        model_path="/tmp/old-model",
+        load_format="auto",
+        weight_version="old",
+    )
+    runner = SimpleNamespace(
+        server_args=server_args,
+        model_config=SimpleNamespace(model_path="/tmp/old-model"),
+        update_weights_from_disk=lambda *args, **kwargs: (True, "ok"),
+    )
+    worker = object.__new__(ModelWorker)
+    worker.server_args = server_args
+    worker.model_runner = runner
+
+    success, message = ModelWorker.update_weights_from_disk(
+        worker,
+        {
+            "model_path": "/tmp/new-model",
+            "load_format": "safetensors",
+            "weight_version": "v2",
+        },
+    )
+
+    assert (success, message) == (True, "ok")
+    assert server_args.override_calls == [
+        (
+            "sglang-omni-weight-update-disk",
+            {
+                "model_path": "/tmp/new-model",
+                "load_format": "safetensors",
+                "weight_version": "v2",
+            },
+        )
+    ]
+    assert server_args.model_path == "/tmp/new-model"
+    assert server_args.load_format == "safetensors"
+    assert server_args.weight_version == "v2"
+
+
+def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
+    worker = object.__new__(ModelWorker)
+    worker.server_args = SimpleNamespace(
+        context_length=4096,
+        max_prefill_tokens=1024,
+        max_running_requests=8,
+        max_queued_requests=32,
+    )
+    worker.model_runner = SimpleNamespace(
+        max_total_num_tokens=2048,
+        effective_max_total_num_tokens=512,
+        max_running_requests=3,
+        req_to_token_pool=SimpleNamespace(size=8, max_context_len=4096),
+        token_to_kv_pool_allocator=SimpleNamespace(size=2048),
+    )
+    worker.random_seed = 7
+    worker.device = "cuda"
+
+    worker_info = ModelWorker.get_worker_info(worker)
+
+    assert worker_info[0] == 2048
+    assert worker_info[2] == 3
+    assert worker_info[4] == 511
+    assert worker_info[5] == 510
 
 
 def test_model_worker_init_weights_update_group_passes_positional_args() -> None:
@@ -218,13 +306,13 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
         calls.append((names, dtypes, shapes, group_name, load_format))
         return True, "ok"
 
-    runner_args = SimpleNamespace(weight_version="old")
+    runner_args = FakeServerArgs(weight_version="old")
     runner = SimpleNamespace(
         server_args=runner_args,
         update_weights_from_distributed=update_weights_from_distributed,
     )
     worker = object.__new__(ModelWorker)
-    worker.server_args = SimpleNamespace(weight_version="old")
+    worker.server_args = FakeServerArgs(weight_version="old")
     worker.model_runner = runner
 
     success, message = ModelWorker.update_weights_from_distributed(
@@ -245,6 +333,36 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
     ]
     assert worker.server_args.weight_version == "v2"
     assert runner_args.weight_version == "v2"
+
+
+def test_model_worker_distributed_update_uses_server_args_override() -> None:
+    server_args = _StrictServerArgsDouble(weight_version="old")
+    runner = SimpleNamespace(
+        server_args=server_args,
+        update_weights_from_distributed=lambda *args, **kwargs: (True, "ok"),
+    )
+    worker = object.__new__(ModelWorker)
+    worker.server_args = server_args
+    worker.model_runner = runner
+
+    success, message = ModelWorker.update_weights_from_distributed(
+        worker,
+        {
+            "names": ["model.embed.weight"],
+            "dtypes": ["bfloat16"],
+            "shapes": [[4, 8]],
+            "weight_version": "v2",
+        },
+    )
+
+    assert (success, message) == (True, "ok")
+    assert server_args.override_calls == [
+        (
+            "sglang-omni-weight-update-distributed",
+            {"weight_version": "v2"},
+        )
+    ]
+    assert server_args.weight_version == "v2"
 
 
 def test_model_worker_update_weights_from_distributed_requires_names() -> None:

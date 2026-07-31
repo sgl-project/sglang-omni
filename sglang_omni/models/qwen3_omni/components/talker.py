@@ -132,7 +132,7 @@ class _PredictorDecodeGraph:
         if self.result_codes is None or self.summed_embeddings is None:
             raise RuntimeError("Qwen3-Omni predictor CUDA graph captured no outputs")
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def replay(
         self,
         layer0_codes: torch.Tensor,
@@ -1372,6 +1372,13 @@ class Qwen3OmniTalker(nn.Module):
             # Keep sampler control flow static during graph capture while
             # preserving SGLang's actual sampling kernel semantics.
             is_all_greedy=False,
+            # Added by 0.5.16 as a required field. Only the dspark speculative
+            # verify path reads it (the regular sampler branches on
+            # is_all_greedy alone), and this scheduler refuses speculative
+            # decoding, so False is inert here -- it also matches what upstream
+            # itself passes for the equivalent static, capture-time info in
+            # eagle_draft_cuda_graph_runner.
+            is_any_greedy=False,
             need_top_p_sampling=True,
             need_top_k_sampling=True,
             need_min_p_sampling=False,
@@ -1400,19 +1407,10 @@ class Qwen3OmniTalker(nn.Module):
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
 
-        if (
-            forward_batch.padded_static_len is not None
-            and forward_batch.padded_static_len >= 0
-        ):
-            idx = torch.arange(
-                len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype
-            )
-            return (
-                idx * forward_batch.padded_static_len
-                + extend_seq_lens.to(device=device)
-                - 1
-            )
-
+        # The static-padded variant that used ForwardBatch.padded_static_len is
+        # gone: only the EAGLE draft-extend graph runners ever set that field,
+        # and the talker refuses speculative decoding, so it was always -1 here.
+        # sglang 0.5.16 removed the field and the matching upstream branch.
         seq_lens = extend_seq_lens.to(device=device)
         return torch.cumsum(seq_lens, dim=0) - 1
 
@@ -1482,7 +1480,11 @@ class Qwen3OmniTalker(nn.Module):
         *,
         max_batch_size: int,
     ) -> tuple[int, ...]:
-        raw_batch_sizes = getattr(server_args, "cuda_graph_bs", None)
+        from sglang_omni.scheduling.generation_batch_policy import (
+            get_decode_cuda_graph_bs,
+        )
+
+        raw_batch_sizes = get_decode_cuda_graph_bs(server_args)
         if raw_batch_sizes is None:
             raw_batch_sizes = (max_batch_size,)
 

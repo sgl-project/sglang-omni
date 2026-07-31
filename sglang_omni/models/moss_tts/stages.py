@@ -20,7 +20,6 @@ from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 from sglang_omni.models.moss_tts.hf_loading import (
     load_moss_processor_class,
     moss_transformers_processor_compat,
-    resolve_moss_checkpoint,
 )
 from sglang_omni.models.moss_tts.payload_types import (
     MossTTSState,
@@ -82,17 +81,16 @@ def _audio_tokenizer_model_path_from_processor_dict(
 def _load_moss_processor(
     model_path: str,
 ) -> Any:
-    checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info(f"Loading MOSS-TTS processor from {checkpoint_dir} without codec")
+    logger.info(f"Loading MOSS-TTS processor from {model_path} without codec")
     try:
         with moss_transformers_processor_compat():
-            processor_cls = load_moss_processor_class(checkpoint_dir)
-            processor_dict, _ = processor_cls.get_processor_dict(checkpoint_dir)
+            processor_cls = load_moss_processor_class(model_path)
+            processor_dict, _ = processor_cls.get_processor_dict(model_path)
             audio_tokenizer_model_path = (
                 _audio_tokenizer_model_path_from_processor_dict(processor_dict)
             )
             model_config = AutoConfig.from_pretrained(
-                checkpoint_dir,
+                model_path,
                 trust_remote_code=True,
             )
             if audio_tokenizer_model_path:
@@ -101,7 +99,7 @@ def _load_moss_processor(
                 # constructing the processor without a codec instance.
                 model_config.audio_tokenizer_name_or_path = audio_tokenizer_model_path
             tokenizer = AutoTokenizer.from_pretrained(
-                checkpoint_dir,
+                model_path,
                 trust_remote_code=True,
             )
             processor = processor_cls(

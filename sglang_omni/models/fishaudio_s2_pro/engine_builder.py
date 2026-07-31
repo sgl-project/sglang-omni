@@ -10,6 +10,7 @@ from typing import Any
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
 class FishS2ProEngineBuilder(TtsEngineBuilder):
@@ -50,9 +51,14 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         }
 
     def customize_server_args(self, server_args: Any) -> None:
-        server_args.disable_overlap_schedule = True
-        if getattr(server_args, "attention_backend", None) is None:
-            server_args.attention_backend = "fa3"
+        updates: dict[str, Any] = {"disable_overlap_schedule": True}
+        if server_args.attention_backend is None:
+            updates["attention_backend"] = "fa3"
+        override_server_args(
+            server_args,
+            "sglang_omni.fishaudio_s2_pro.runtime_defaults",
+            **updates,
+        )
 
     def setup_model(
         self,
@@ -93,12 +99,16 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(getattr(server_args, "enable_torch_compile", False)):
+        if bool(server_args.enable_torch_compile):
             fish_stages._compile_s2pro_codebook_decoder(
                 model,
                 max_batch_size=server_args.torch_compile_max_bs,
             )
-            server_args.enable_torch_compile = False
+            override_server_args(
+                server_args,
+                "sglang_omni.fishaudio_s2_pro.compile_complete",
+                enable_torch_compile=False,
+            )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

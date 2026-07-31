@@ -11,6 +11,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.ming_tts.sglang_model import MingTTSTailInputs
 
 
@@ -78,9 +79,8 @@ class MingTTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        server_args = getattr(tp_worker, "server_args", None)
-        self._tp_rank = int(getattr(tp_worker, "tp_rank", 0) or 0)
-        self._tp_size = int(getattr(server_args, "tp_size", 1) or 1)
+        self._tp_rank = int(tp_worker.tp_rank)
+        self._tp_size = int(tp_worker.server_args.tp_size)
         self._request_states: dict[str, _MingTTSRequestState] = {}
 
     def reset_request(self, request_id: str) -> None:
@@ -203,7 +203,7 @@ class MingTTSModelRunner(ModelRunner):
             request_state = self._request_states[sched_req.request_id]
             req = data.req
             prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_input_len)
+            extend_len = int(req.extend_range.length)
             end = prefix_len + extend_len
             prompt_ids = data.input_ids
             prompt_len = int(prompt_ids.shape[0])
@@ -252,12 +252,13 @@ class MingTTSModelRunner(ModelRunner):
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
-        logits_output = self.model(
-            input_ids=forward_batch.input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-        )
+        with attn_forward_context(model_runner.attn_backend):
+            logits_output = self.model(
+                input_ids=forward_batch.input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+            )
         return GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=False,
@@ -358,7 +359,6 @@ class MingTTSModelRunner(ModelRunner):
 
         next_token_ids = step_update.next_token_ids
         result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
 
     def _run_entry_tail_step(
         self,
