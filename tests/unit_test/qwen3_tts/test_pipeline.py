@@ -1845,17 +1845,21 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
 
     sampler_calls = []
 
-    def fake_multinomial_with_seed(inputs, seed, positions):
-        assert torch.all(inputs >= 0)
-        assert torch.allclose(inputs.sum(dim=1), torch.ones(inputs.shape[0]))
+    def fake_multinomial_with_seed(logprobs, seed, positions):
+        assert torch.all(logprobs <= 0)
+        assert torch.allclose(
+            logprobs.exp().sum(dim=1), torch.ones(logprobs.shape[0])
+        )
         sampler_calls.append(
             {
-                "inputs": inputs.detach().clone(),
+                "logprobs": logprobs.detach().clone(),
                 "seed": seed.detach().clone(),
                 "positions": positions.detach().clone(),
             }
         )
-        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
+        return torch.zeros(
+            (logprobs.shape[0], 1), device=logprobs.device, dtype=torch.long
+        )
 
     monkeypatch.setattr(
         sglang_model, "multinomial_with_seed", fake_multinomial_with_seed
