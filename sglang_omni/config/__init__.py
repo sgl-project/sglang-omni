@@ -8,6 +8,10 @@ from sglang_omni.config.placement import (
     resolve_gpu_stage_names,
     resolve_stage_gpu_ids,
 )
+from sglang_omni.config.process_overrides import (
+    apply_stage_process_overrides,
+    parse_stage_process_assignment,
+)
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import (
     CommConfig,
@@ -38,6 +42,8 @@ __all__ = [
     "build_stage_placement_plan",
     "resolve_gpu_stage_names",
     "resolve_stage_gpu_ids",
+    "apply_stage_process_overrides",
+    "parse_stage_process_assignment",
     "resolve_stage_factory_args",
     "ProcessGroupPlacement",
     "ProcessTopologyPlan",

@@ -32,6 +32,9 @@ uv pip install --no-deps qwen-tts==0.1.1
 
 ## Launch the Server
 
+See [TTS Process Topology](tts_process_topology.md) for model defaults,
+`--isolate-stage`, and same-GPU memory requirements.
+
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.
 Omit those flags when your requests use only text, uploaded voices, local/file
@@ -217,9 +220,9 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
 in response headers. It does not include in-band JSON events, final usage, or a
 terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
-streaming requests default to a 1-frame first vocoder chunk for lower
-first-audio latency. Set `initial_codec_chunk_frames` to `0` to use the model's
-steady chunk size from the start.
+the model selects a continuity-safe first vocoder chunk. Set the field explicitly
+to override that default, or set it to `0` to use the model's steady chunk size
+from the start.
 
 ### Batch Speech
 
@@ -486,7 +489,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first. Raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
+| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. When omitted, each model applies its own default: Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |

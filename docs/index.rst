@@ -94,6 +94,7 @@ Supported Models
 
    basic_usage/qwen3_omni.md
    basic_usage/tts.md
+   basic_usage/tts_process_topology.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
 

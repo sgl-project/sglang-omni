@@ -216,6 +216,24 @@ def test_resolve_initial_codec_chunk_frames() -> None:
     assert resolve_initial_codec_chunk_frames(None, steady_chunk_frames=10) == 0
     assert resolve_initial_codec_chunk_frames({}, steady_chunk_frames=10) == 0
     assert (
+        resolve_initial_codec_chunk_frames({}, steady_chunk_frames=10, default_frames=4)
+        == 4
+    )
+    assert (
+        resolve_initial_codec_chunk_frames(
+            {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 0},
+            steady_chunk_frames=10,
+            default_frames=4,
+        )
+        == 0
+    )
+    assert (
+        resolve_initial_codec_chunk_frames(
+            {}, steady_chunk_frames=10, default_frames=99
+        )
+        == 10
+    )
+    assert (
         resolve_initial_codec_chunk_frames(
             {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 3}, steady_chunk_frames=10
         )

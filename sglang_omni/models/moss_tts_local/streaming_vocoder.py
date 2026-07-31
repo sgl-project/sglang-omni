@@ -21,7 +21,6 @@ from sglang_omni.models.moss_tts_local.vocoder_decoder import MossTTSLocalVocode
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
-    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
 )
@@ -708,18 +707,11 @@ class MossTTSLocalStreamingVocoderScheduler(
         state: _LocalStreamState,
         params: Mapping[str, Any] | None,
     ) -> None:
-        explicit = (
-            isinstance(params, Mapping)
-            and params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None
+        state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+            params,
+            steady_chunk_frames=self._stream_chunk_frames,
+            default_frames=self._default_initial_chunk_frames,
         )
-        if explicit:
-            # Explicit 0 opts out of a smaller first chunk.
-            state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
-                params,
-                steady_chunk_frames=self._stream_chunk_frames,
-            )
-        else:
-            state.initial_chunk_frames = self._default_initial_chunk_frames
         if state.initial_chunk_frames > 0 and not self._stream_has_emitted(request_id):
             state.threshold = state.initial_chunk_frames
         else:

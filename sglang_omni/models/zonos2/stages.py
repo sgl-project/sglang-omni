@@ -24,6 +24,9 @@ from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     ref_audio_to_encoder_input,
 )
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage, store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -231,7 +234,7 @@ def create_sglang_omni_tts_engine_executor(
     compile_sampler: bool = False,
     async_decode: bool = False,
     stream_emit_chunk_frames: int = 1,
-    stream_emit_first_chunk_frames: int = 0,
+    stream_emit_first_chunk_frames: int = DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
     max_running_requests: int = 16,
     cuda_graph_max_bs: int = 16,
     server_args_overrides: dict | None = None,

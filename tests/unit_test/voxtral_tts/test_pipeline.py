@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
@@ -31,7 +32,17 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
-    assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+    ]
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    ] == [None, None]
+    build_process_topology_plan(config, build_stage_placement_plan(config))
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig

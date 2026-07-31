@@ -580,9 +580,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_slots: int = 15,
     stream_chunk_frames: int = 25,
-    # Note(Jiaxin): serve-aligned streaming defaults. The first chunk is small (1) for low TTFC,
-    # while coalesce_floor_frames (5) is the separate steady-state coalescing join floor.
-    initial_chunk_frames: int = 1,
+    initial_chunk_frames: int = 5,
     coalesce_floor_frames: int = 5,
     cuda_graph: bool = True,
     cuda_graph_frames: list[int] | None = None,

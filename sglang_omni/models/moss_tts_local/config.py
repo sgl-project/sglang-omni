@@ -20,6 +20,7 @@ _PKG = "sglang_omni.models.moss_tts_local"
 # codec memory is included by process-scoped SGLang accounting
 # the reserve is for the later vocoder codec instance and runtime headroom
 _COLOCATED_TOTAL_GPU_MEMORY_FRACTION = 0.90
+_COLOCATED_CODEC_GPU_MEMORY_FRACTION = 0.05
 _COLOCATED_CODEC_MEM_RESERVE = 0.15
 _AR_MEM_FRACTION_STATIC = 0.85
 _REF_AUDIO_CACHE_MAX_ITEMS = 8192
@@ -119,6 +120,26 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
 
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
+        # preprocessing publishes prepared requests into a module-level
+        # PreparedRequestQueue that the AR stage pops in-process; the vocoder only
+        # reads codes carried in the payload.
+        return frozenset({("tts_engine", "vocoder")})
+
+    @classmethod
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {
+            ("tts_engine", "vocoder"): {
+                "preprocessing": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
+                "tts_engine": _COLOCATED_TOTAL_GPU_MEMORY_FRACTION,
+                "vocoder": _COLOCATED_CODEC_GPU_MEMORY_FRACTION,
+            }
+        }
+
     model_path: str
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
@@ -193,6 +214,19 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
 
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
+
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): split mode declares gpu=0 for placement while running the
+        # codec on cuda:1, so the colocated fractions do not describe this topology.
+        # Splitting stays unsupported here until the split variant declares its own.
+        return frozenset()
+
+    @classmethod
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {}
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)

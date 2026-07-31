@@ -12,6 +12,7 @@ import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.config.topology import build_process_topology_plan
 from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
@@ -397,6 +398,7 @@ def test_pipeline_stage_wiring():
     assert stages["preprocessing"].factory_args["device"] == "cuda:0"
     assert stages["preprocessing"].factory_args["ref_audio_cache"] is True
     assert stages["preprocessing"].factory_args["ref_audio_cache_max_items"] == 8192
+    assert stages["preprocessing"].runtime.resources.total_gpu_memory_fraction is None
     assert config.supports_uploaded_voice_references() is True
     assert stages["tts_engine"].process == "pipeline"
     assert stages["tts_engine"].gpu == 0
@@ -407,6 +409,7 @@ def test_pipeline_stage_wiring():
     assert stages["vocoder"].process == "pipeline"
     assert stages["vocoder"].gpu == 0
     assert stages["vocoder"].factory_args["device"] == "cuda:0"
+    assert stages["vocoder"].runtime.resources.total_gpu_memory_fraction is None
 
     placement = build_stage_placement_plan(config)
     assert placement.stages["tts_engine"].gpu_ids == (0,)
@@ -431,7 +434,21 @@ def test_pipeline_stage_wiring():
     split_runtime = split_stages["tts_engine"].runtime
     assert split_runtime.resources.total_gpu_memory_fraction is None
     assert split_runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)
+    assert (
+        split_stages["preprocessing"].runtime.resources.total_gpu_memory_fraction
+        is None
+    )
+    assert split_stages["vocoder"].runtime.resources.total_gpu_memory_fraction is None
     assert split_stages["vocoder"].factory_args["device"] == "cuda:1"
+    # The split variant carries no per-stage GPU budgets, so its vocoder stays in
+    # the shared pipeline process; its declared topology must still validate.
+    assert split_stages["vocoder"].process == "pipeline"
+    split_topology = build_process_topology_plan(
+        split, build_stage_placement_plan(split)
+    )
+    assert [(group.name, group.stage_names) for group in split_topology.groups] == [
+        ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
+    ]
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():

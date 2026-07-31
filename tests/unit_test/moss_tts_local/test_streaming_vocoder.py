@@ -396,15 +396,11 @@ def test_default_session_preserves_batch_width_for_streaming_lanes(monkeypatch) 
 
 
 def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
-    """Factory default first chunk is 1 (aligned with the serve-layer streaming default),
-    while the coalescing join floor stays 5; the two are independent knobs.
-    """
+    """The model first-chunk default and coalescing join floor are independent."""
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor, stream_chunk_frames=10)
-    assert scheduler._default_initial_chunk_frames == 1
+    assert scheduler._default_initial_chunk_frames == 5
     assert scheduler._coalesce_floor_frames == 5
-    # Note(Jiaxin): no per-request override, so the first chunk falls back to the serve-aligned
-    # default (1), not the old 5, and the decode still concatenates to the offline reference.
     rows = _rows(12, seed=99)
     messages = _run_stream(scheduler, rows)
     sizes = [
@@ -412,7 +408,7 @@ def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> N
         for m in messages
         if m.type == "stream"
     ]
-    assert sizes[0] == 1
+    assert sizes[0] == 5
     np.testing.assert_array_equal(
         _concat_stream_audio(messages, "req"),
         reference_waveform(rows[:, 1:]).numpy(),

@@ -22,6 +22,7 @@ from sglang_omni.models.higgs_tts.request_builders import build_higgs_stream_met
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.utils import EOC_ID, apply_delay_pattern
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
     HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA,
@@ -50,6 +51,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> Non
     vocoder["factory_args"].update(
         stream_stride=3,
         stream_followup_stride=2,
+        initial_chunk_frames=1,
     )
 
     config = HiggsTtsPipelineConfig.model_validate(raw_config)
@@ -57,6 +59,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> Non
 
     assert stages_by_name["tts_engine"].factory_args["stream_stride"] == 3
     assert stages_by_name["tts_engine"].factory_args["stream_followup_stride"] == 2
+    assert stages_by_name["tts_engine"].factory_args["initial_chunk_frames"] == 1
 
 
 def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> None:
@@ -66,6 +69,7 @@ def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> No
             "vocoder": {
                 "stream_stride": 16,
                 "stream_followup_stride": 7,
+                "initial_chunk_frames": 0,
             }
         },
     )
@@ -81,6 +85,11 @@ def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> No
         tts_engine_args["stream_followup_stride"]
         == vocoder_args["stream_followup_stride"]
         == 7
+    )
+    assert (
+        tts_engine_args["initial_chunk_frames"]
+        == vocoder_args["initial_chunk_frames"]
+        == 0
     )
 
 
@@ -219,6 +228,7 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
         "max_new_tokens_cap": 2048,
         "stream_stride": DEFAULT_HIGGS_STREAM_STRIDE,
         "stream_followup_stride": DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+        "initial_chunk_frames": DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     }
     assert (
         captured["stream_outbox"]
@@ -370,6 +380,99 @@ def test_higgs_reference_source_key_ignores_media_type() -> None:
     assert key_wav == key_mp3
     # Raw bytes and equivalent base64 resolve to the same content key.
     assert stages._reference_audio_cache_key({"bytes": raw}) == key_wav
+
+
+def test_higgs_preprocessing_prunes_preencoded_reference_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+
+    class FakeAdapter:
+        def __init__(self, _tokenizer) -> None:
+            pass
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [len(text), num_ref_tokens, len(reference_text or "")]
+
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2)._fn
+    payload = StagePayload(
+        request_id="preencoded",
+        request=OmniRequest(
+            inputs={
+                "text": "hello",
+                "reference_text": "speaker",
+                "reference_codes": [[11, 12], [21, 22]],
+                "unrelated": {"keep": True},
+            },
+            params={},
+        ),
+        data={},
+    )
+
+    result = preprocess(payload)
+    state = HiggsTtsState.from_dict(result.data)
+
+    assert result.request.inputs == {
+        "text": "hello",
+        "reference_text": "speaker",
+        "unrelated": {"keep": True},
+    }
+    assert state.reference_codes_delayed is not None
+    assert state.prompt_token_ids == [5, 3, 7]
+    assert state.reference_waveform is None
+
+
+def test_higgs_preprocessing_prunes_raw_reference_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", lambda _tokenizer: object())
+    monkeypatch.setattr(
+        stages,
+        "load_audio_to_24k",
+        lambda _reference_audio: (np.zeros(16, dtype=np.float32), 24000),
+    )
+
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2)._fn
+    payload = StagePayload(
+        request_id="raw-audio",
+        request=OmniRequest(
+            inputs={
+                "text": "hello",
+                "reference_text": "speaker",
+                "reference_audio": {"bytes": b"fake wav"},
+                "references": [{"audio_path": "unused.wav", "text": "speaker"}],
+                "unrelated": 7,
+            },
+            params={},
+        ),
+        data={},
+    )
+
+    result = preprocess(payload)
+    state = HiggsTtsState.from_dict(result.data)
+
+    assert result.request.inputs == {
+        "text": "hello",
+        "reference_text": "speaker",
+        "unrelated": 7,
+    }
+    assert state.target_text == "hello"
+    assert state.reference_text == "speaker"
+    assert state.reference_waveform is not None
+    assert tuple(state.reference_waveform.shape) == (1, 1, 16)
+    assert state.reference_code_cache_key is not None
 
 
 def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
@@ -884,6 +987,74 @@ def test_higgs_stream_metadata_carries_initial_codec_chunk_frames() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("request_params", "expected"),
+    [
+        ({"stream": True}, DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES),
+        ({"stream": True, "initial_codec_chunk_frames": 0}, 0),
+    ],
+)
+def test_higgs_stream_metadata_resolves_model_default_and_explicit_zero(
+    request_params: dict[str, Any], expected: int
+) -> None:
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params=request_params),
+        data={},
+    )
+
+    metadata = build_higgs_stream_metadata(
+        payload,
+        SimpleNamespace(num_codebooks=8, codebook_size=1026),
+    )
+
+    assert metadata["initial_codec_chunk_frames"] == expected
+
+
+def test_higgs_producer_flushes_default_initial_chunk_at_row_27() -> None:
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner._outbox = queue.Queue()
+    runner._vocoder_target = "vocoder"
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params={"stream": True}),
+        data={},
+    )
+    metadata = build_higgs_stream_metadata(
+        payload,
+        SimpleNamespace(num_codebooks=8, codebook_size=1026),
+    )
+    data = SimpleNamespace(
+        stream_metadata=metadata,
+        num_codebooks=8,
+        output_codes=[],
+        max_new_tokens=99,
+        generation_done=False,
+        stream_code_buffer=[],
+        stream_code_first_flush_done=False,
+        stream_code_seen_rows=0,
+        stream_code_next_flush_rows=0,
+    )
+    sched_req = SimpleNamespace(request_id="req", data=data)
+
+    for row in range(26):
+        runner._queue_or_emit_code_chunk(
+            sched_req,
+            torch.full((8,), row, dtype=torch.long),
+        )
+    with pytest.raises(queue.Empty):
+        runner._outbox.get_nowait()
+
+    runner._queue_or_emit_code_chunk(
+        sched_req,
+        torch.full((8,), 26, dtype=torch.long),
+    )
+    message = runner._outbox.get_nowait()
+
+    assert message.data.shape == (27, 8)
+    assert message.metadata["initial_codec_chunk_frames"] == 20
+
+
 def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = None
@@ -1129,6 +1300,7 @@ def test_higgs_tts_vocoder_batches_decode_requests(
     scheduler = stages.create_vocoder_executor(
         "fake-model", vocoder_decode_batch_size=4, max_batch_wait_ms=2
     )
+    assert scheduler._default_initial_chunk_frames == DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES
 
     p1 = _make_payload(
         "r1",
