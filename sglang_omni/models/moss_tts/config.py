@@ -48,6 +48,7 @@ class MossTTSPipelineConfig(PipelineConfig):
     ) -> dict[tuple[str, str], dict[str, float]]:
         return {
             ("tts_engine", "vocoder"): {
+                "preprocessing": 0.05,
                 "tts_engine": 0.85,
                 "vocoder": 0.10,
             }

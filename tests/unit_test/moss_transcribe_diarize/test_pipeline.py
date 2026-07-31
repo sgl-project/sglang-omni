@@ -33,6 +33,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 16
+    assert config.stages[0].factory_args["encoder_max_batch_size"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
@@ -56,6 +57,7 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["encoder_max_batch_size"].default == 2
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
     assert signature.parameters["encoder_chunk_buckets"].default is None
     assert signature.parameters["encoder_torch_compile"].default is False
@@ -138,6 +140,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "init_device_graphs": 0,
         "compile_encoder": [],
         "init_encoder_graphs": [],
+        "encoder_services": [],
     }
     model = SimpleNamespace(
         compile_encoder=lambda buckets, feat_len: calls["compile_encoder"].append(
@@ -181,7 +184,12 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         stages, "create_sglang_infrastructure_defer_cuda_graph", lambda *a, **k: infra
     )
     monkeypatch.setattr(stages, "init_mm_embedding_cache", lambda n: None)
-    monkeypatch.setattr(stages, "BatchedAudioEncoderService", lambda model: object())
+
+    def _make_encoder_service(model, *, max_batch_size):
+        calls["encoder_services"].append((model, max_batch_size))
+        return object()
+
+    monkeypatch.setattr(stages, "BatchedAudioEncoderService", _make_encoder_service)
     monkeypatch.setattr(
         stages,
         "make_moss_transcribe_diarize_scheduler_adapters",
@@ -210,6 +218,8 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert len(calls["compile_encoder"]) == 1
     assert calls["init_encoder_graphs"] == []
     assert calls["init_device_graphs"] == 1
+    assert len(calls["encoder_services"]) == 1
+    assert calls["encoder_services"][0][1] == 2
 
 
 def test_factory_context_length_override_reaches_server_args(

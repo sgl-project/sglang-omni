@@ -106,6 +106,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     async_decode_min_batch_size: int = 2,
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
+    encoder_max_batch_size: int = 2,
     # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
@@ -195,7 +196,10 @@ def create_sglang_moss_transcribe_diarize_executor(
         capture_hidden_layers=None,
         model=model_worker.model_runner.model,
     )
-    audio_encoder_service = BatchedAudioEncoderService(model_worker.model_runner.model)
+    audio_encoder_service = BatchedAudioEncoderService(
+        model_worker.model_runner.model,
+        max_batch_size=encoder_max_batch_size,
+    )
 
     request_builder, result_adapter = make_moss_transcribe_diarize_scheduler_adapters(
         processor=processor,

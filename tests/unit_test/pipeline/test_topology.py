@@ -553,14 +553,15 @@ def test_moss_split_rejects_vocoder_isolation_as_not_process_safe() -> None:
 
 
 @pytest.mark.parametrize(
-    "config_path",
+    ("config_path", "expected_memory_fraction"),
     [
-        "sglang_omni.models.qwen3_tts.config.Qwen3TTSPipelineConfig",
-        "sglang_omni.models.moss_tts.config.MossTTSPipelineConfig",
+        ("sglang_omni.models.qwen3_tts.config.Qwen3TTSPipelineConfig", 0.95),
+        ("sglang_omni.models.moss_tts.config.MossTTSPipelineConfig", 1.0),
     ],
 )
 def test_ar_to_vocoder_boundary_isolates_with_declared_contract(
     config_path: str,
+    expected_memory_fraction: float,
 ) -> None:
     """Preprocessing is process-local for these models but the vocoder is not."""
     from sglang_omni.utils.imports import import_string
@@ -578,7 +579,7 @@ def test_ar_to_vocoder_boundary_isolates_with_declared_contract(
     ]
     assert build_stage_placement_plan(isolated).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(0.95)
+    ].total_gpu_memory_fraction == pytest.approx(expected_memory_fraction)
 
 
 def test_stage_process_singleton_matches_isolate_stage_resources() -> None:

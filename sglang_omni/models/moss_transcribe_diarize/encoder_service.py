@@ -26,8 +26,11 @@ _CACHE_MAX_BYTES = 2 * 1024**3
 class BatchedAudioEncoderService:
     ENCODE_TIMEOUT_S = 300.0
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, *, max_batch_size: int = 2) -> None:
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be >= 1")
         self._model = model
+        self._max_batch_size = int(max_batch_size)
         self._device = next(model.whisper_encoder.parameters()).device
         self._stream = torch.cuda.Stream(device=self._device)
         self._cache = StageOutputCache(
@@ -60,7 +63,7 @@ class BatchedAudioEncoderService:
     def _drain_batch(self) -> list[tuple[Any, concurrent.futures.Future]]:
         # note (yichi): never wait — a window costs 8~16ms at low concurrency, buys <=5ms at high.
         batch = [self._queue.get()]
-        while True:
+        for _ in range(self._max_batch_size - 1):
             try:
                 batch.append(self._queue.get_nowait())
             except queue.Empty:
