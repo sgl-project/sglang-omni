@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from sglang_omni.client import Client, GenerateChunk
+from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -144,6 +144,33 @@ class SuccessfulSpeechClient:
             mime_type=f"audio/{response_format}",
             format=response_format,
         )
+
+
+class OverloadedClient:
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        del request, request_id, audio_format
+        raise ClientError("Admission rejected: scheduler waiting queue is full")
+
+    async def speech(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        allow_format_fallback: bool = True,
+    ):
+        del request, request_id, response_format, speed, allow_format_fallback
+        raise ClientError("Admission rejected: scheduler waiting queue is full")
 
 
 class EmptyStreamingSpeechClient:
@@ -476,6 +503,34 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert speech_resp.status_code == 500
     assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
+
+
+def test_non_streaming_admission_rejection_returns_429() -> None:
+    client = TestClient(create_app(OverloadedClient(), model_name="qwen3-omni"))
+
+    chat_resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+        },
+    )
+    assert chat_resp.status_code == 429
+    assert "Admission rejected" in chat_resp.json()["detail"]
+
+    speech_resp = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "qwen3-omni",
+            "input": "hello",
+            "stream": False,
+            "response_format": "wav",
+        },
+    )
+    assert speech_resp.status_code == 429
+    assert speech_resp.json()["error"]["type"] == "rate_limit_error"
+    assert "Admission rejected" in speech_resp.json()["error"]["message"]
 
 
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:

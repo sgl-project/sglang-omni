@@ -283,6 +283,35 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     assert batch.input_ids.tolist() == [11, 12]
 
 
+def test_omni_scheduler_custom_runner_skips_hot_path_telemetry() -> None:
+    next_token_ids = torch.tensor([11], dtype=torch.int32)
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = next_token_ids
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+    telemetry_calls: list[tuple] = []
+
+    def record_telemetry(*args, **kwargs):
+        telemetry_calls.append(args)
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+    scheduler._emit_scheduler_telemetry = record_telemetry
+
+    batch = SimpleNamespace(
+        reqs=[SimpleNamespace(rid="req-1", _omni_data=SimpleNamespace())],
+        output_ids=None,
+    )
+
+    scheduler._run_batch(batch)
+
+    assert telemetry_calls == []
+
+
 def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
@@ -810,7 +839,232 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     )
 
     assert scheduler.max_queued_requests == 7
+    assert scheduler._admission_max_waiting == 7
     assert scheduler._abort_on_queued_limit(object()) is False
+
+
+def test_omni_scheduler_admission_rejects_full_waiting_queue() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler.waiting_queue = [SimpleNamespace(rid="queued")]
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = set()
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler.is_entry_rank = True
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.tree_cache = None
+    scheduler.max_req_len = 16
+    scheduler.max_req_input_len = 15
+    scheduler.server_args = SimpleNamespace(mem_fraction_static=None)
+    scheduler._admission_max_waiting = 1
+    scheduler._admission_min_free_gpu_memory_bytes = None
+    scheduler._admission_token_headroom = 1.0
+
+    req = SimpleNamespace(
+        rid="req-new",
+        origin_input_ids=[1],
+        sampling_params=SimpleNamespace(max_new_tokens=1),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda _payload: SimpleNamespace(req=req)
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-new")])
+
+    output = scheduler.outbox.get_nowait()
+    assert output.request_id == "req-new"
+    assert output.type == "error"
+    assert isinstance(output.data, RuntimeError)
+    assert "Admission rejected: scheduler waiting queue is full" in str(output.data)
+    assert [item.rid for item in scheduler.waiting_queue] == ["queued"]
+    assert scheduler._aborted_request_ids == {"req-new"}
+
+
+def test_omni_scheduler_admission_max_waiting_uses_tp_group_max(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = []
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+    scheduler._admission_max_waiting = 1
+    scheduler._admission_min_free_gpu_memory_bytes = 4 * 1024 * 1024
+    calls: list[tuple[object, object]] = []
+
+    def fake_all_reduce(values, *, op, group):
+        calls.append((op, group))
+        assert op == torch.distributed.ReduceOp.MAX
+        values[0] = 1
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    reason = scheduler._admission_rejection_reason()
+
+    assert reason is not None
+    assert "scheduler waiting queue is full" in reason
+    assert "waiting=1" in reason
+    assert calls == [(torch.distributed.ReduceOp.MAX, scheduler.tp_cpu_group)]
+
+
+def test_omni_scheduler_admission_waiting_collective_error_propagates(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = []
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+
+    def fake_all_reduce(values, *, op, group):
+        raise RuntimeError("collective failed")
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    with pytest.raises(RuntimeError, match="collective failed"):
+        scheduler._admission_waiting_queue_depth()
+
+
+def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = []
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+    scheduler._admission_max_waiting = None
+    scheduler._admission_min_free_gpu_memory_bytes = 4 * 1024 * 1024
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "cuda_memory_snapshot",
+        lambda gpu_id: {"cuda_free_bytes": 5 * 1024 * 1024},
+    )
+
+    def fake_all_reduce(values, *, op, group):
+        calls.append((op, group))
+        values[1] = 3 * 1024 * 1024
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    reason = scheduler._admission_rejection_reason()
+
+    assert reason is not None
+    assert "free CUDA memory is below" in reason
+    assert calls == [(torch.distributed.ReduceOp.MIN, scheduler.tp_cpu_group)]
+
+
+def test_omni_scheduler_admission_free_collective_error_propagates(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+    scheduler.gpu_id = 0
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "cuda_memory_snapshot",
+        lambda gpu_id: {"cuda_free_bytes": 5 * 1024 * 1024},
+    )
+
+    def fake_all_reduce(values, *, op, group):
+        raise RuntimeError("collective failed")
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    with pytest.raises(RuntimeError, match="collective failed"):
+        scheduler._admission_cuda_free_bytes()
+
+
+def test_omni_scheduler_telemetry_snapshot_reports_queue_and_kv(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.inbox = Queue()
+    scheduler.outbox = Queue()
+    scheduler.inbox.put(object())
+    scheduler.waiting_queue = [SimpleNamespace(rid="waiting")]
+    scheduler.running_batch = SimpleNamespace(reqs=[SimpleNamespace(rid="running")])
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._deferred_request_payloads = {"deferred": object()}
+    scheduler._pending_stream_chunks = {"streaming": [object()]}
+    scheduler._pending_stream_done = {"done"}
+    scheduler.max_running_requests = 8
+    scheduler.max_queued_requests = 16
+    scheduler.max_total_num_tokens = 128
+    scheduler.max_req_len = 64
+    scheduler.max_prefill_tokens = 32
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 96)
+    scheduler._admission_max_waiting = 16
+    scheduler._admission_min_free_gpu_memory_bytes = 1024
+    scheduler.gpu_id = 0
+
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_get_event_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "cuda_memory_snapshot",
+        lambda gpu_id: {
+            "gpu_id": gpu_id,
+            "cuda_allocated_bytes": 10,
+            "cuda_reserved_bytes": 20,
+            "cuda_max_allocated_bytes": 30,
+            "cuda_free_bytes": 40,
+            "cuda_total_bytes": 50,
+        },
+    )
+    events: list[dict] = []
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    scheduler._emit_scheduler_telemetry(
+        "scheduler_probe",
+        request_id="req-probe",
+        extra={"phase": "test"},
+    )
+
+    assert events == [
+        {
+            "request_id": "req-probe",
+            "stage": None,
+            "event_name": "scheduler_probe",
+            "metadata": {
+                "inbox_qsize": 1,
+                "outbox_qsize": 0,
+                "waiting_queue": 1,
+                "running_batch": 1,
+                "current_batch": 0,
+                "last_batch": 0,
+                "deferred_requests": 1,
+                "pending_stream_chunks": 1,
+                "pending_stream_done": 1,
+                "max_running_requests": 8,
+                "max_queued_requests": 16,
+                "max_total_num_tokens": 128,
+                "max_req_len": 64,
+                "max_prefill_tokens": 32,
+                "kv_available_tokens": 96,
+                "kv_used_tokens": 32,
+                "admission_max_waiting": 16,
+                "admission_min_free_gpu_memory_bytes": 1024,
+                "gpu_id": 0,
+                "cuda_allocated_bytes": 10,
+                "cuda_reserved_bytes": 20,
+                "cuda_max_allocated_bytes": 30,
+                "cuda_free_bytes": 40,
+                "cuda_total_bytes": 50,
+                "phase": "test",
+            },
+        }
+    ]
 
 
 def test_stage_output_cache_eviction_uses_lru_order() -> None:

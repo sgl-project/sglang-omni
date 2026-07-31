@@ -107,6 +107,7 @@ from sglang_omni.serve.speech_errors import (
     bad_request,
     internal_error,
     openai_error_payload,
+    rate_limit_error,
     speech_error_response,
 )
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -130,6 +131,7 @@ _BAD_REQUEST_MARKERS = (
     "max_new_tokens must be",
     "multimodal_train_inputs",
 )
+_OVERLOAD_MARKERS = ("Admission rejected:",)
 
 
 def _is_bad_request_error(exc: Exception) -> bool:
@@ -201,6 +203,11 @@ class VoiceUploadBodyLimitMiddleware:
             await self.app(scope, limited_receive, send)
         except _RequestBodyTooLarge:
             await _send_voice_upload_too_large(send, self.max_bytes)
+
+
+def _is_overload_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(marker in message for marker in _OVERLOAD_MARKERS)
 
 
 def create_app(
@@ -720,8 +727,13 @@ async def _chat_non_stream(
     except ClientError as exc:
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _is_overload_error(exc):
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
+        if _is_overload_error(exc):
+            logger.warning("Admission rejected request %s: %s", request_id, exc)
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         logger.exception("Error generating response for request %s", request_id)
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1252,8 +1264,13 @@ def _register_speech(app: FastAPI) -> None:
                     speed=req.speed,
                 )
             except ClientError as exc:
+                if _is_overload_error(exc):
+                    return speech_error_response(rate_limit_error(str(exc)))
                 return speech_error_response(internal_error(str(exc)))
             except Exception as exc:
+                if _is_overload_error(exc):
+                    logger.warning("Admission rejected request %s: %s", request_id, exc)
+                    return speech_error_response(rate_limit_error(str(exc)))
                 logger.exception(
                     "Error preparing raw PCM speech stream for request %s",
                     request_id,
@@ -1270,8 +1287,13 @@ def _register_speech(app: FastAPI) -> None:
                 speed=req.speed,
             )
         except ClientError as exc:
+            if _is_overload_error(exc):
+                return speech_error_response(rate_limit_error(str(exc)))
             return speech_error_response(internal_error(str(exc)))
         except Exception as exc:
+            if _is_overload_error(exc):
+                logger.warning("Admission rejected request %s: %s", request_id, exc)
+                return speech_error_response(rate_limit_error(str(exc)))
             logger.exception("Error generating speech for request %s", request_id)
             return speech_error_response(internal_error(str(exc)))
 

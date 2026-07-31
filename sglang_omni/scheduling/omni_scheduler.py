@@ -33,6 +33,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -44,7 +45,14 @@ from sglang_omni.proto.admin import (
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
     ADMIN_WEIGHTS_CHECKER,
 )
+from sglang_omni.scheduling.env import env_float, env_int
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.observability import (
+    allocator_available_tokens,
+    batch_size,
+    cuda_memory_snapshot,
+    safe_qsize,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +406,42 @@ class OmniScheduler:
         self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
+        # note (luojiaxuan): Opt-in overload guards are evaluated at queue
+        # time. The default max_waiting mirrors the
+        # existing upstream max_queued_requests limit and
+        # surfaces a controlled rejection before an
+        # uncontrolled overload.
+        self._admission_max_waiting = self._resolve_admission_max_waiting()
+        self._admission_min_free_gpu_memory_bytes = (
+            self._resolve_admission_min_free_gpu_memory_bytes()
+        )
+        self._admission_token_headroom = max(
+            min(
+                env_float("SGLANG_OMNI_ADMISSION_TOKEN_HEADROOM", default=1.0),
+                1.0,
+            ),
+            0.0,
+        )
+
+    def _resolve_admission_max_waiting(self) -> int | None:
+        override = env_int("SGLANG_OMNI_ADMISSION_MAX_WAITING")
+        if override is not None:
+            return max(override, 0)
+        value = getattr(self, "max_queued_requests", None)
+        if value is None:
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _resolve_admission_min_free_gpu_memory_bytes() -> int | None:
+        value = env_int("SGLANG_OMNI_ADMISSION_MIN_FREE_GPU_MEMORY_MB")
+        if value is None or value <= 0:
+            return None
+        return value * 1024 * 1024
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(server_args.enable_hisparse)
@@ -728,6 +772,21 @@ class OmniScheduler:
             self._emit_request_error(req_id, ValueError(kv_error))
             self.abort(req_id)
             return
+        admission_error = self._admission_rejection_reason()
+        if admission_error is not None:
+            logger.warning(
+                "Rejecting request %s before queueing: %s",
+                req_id,
+                admission_error,
+            )
+            self._emit_scheduler_telemetry(
+                "scheduler_admission_reject",
+                request_id=req_id,
+                extra={"reason": admission_error},
+            )
+            self._emit_request_error(req_id, RuntimeError(admission_error))
+            self.abort(req_id)
+            return
         self._initialize_request_stream_state(req_data, payload)
         for chunk in self._pending_stream_chunks.pop(req_id, []) or []:
             self._append_stream_chunk(req_data, chunk)
@@ -746,6 +805,11 @@ class OmniScheduler:
             if not hasattr(req, "_coalesce_enqueue_t"):
                 req._coalesce_enqueue_t = time.perf_counter()
             self.waiting_queue.append(req)
+            self._emit_scheduler_telemetry(
+                "scheduler_admission_queue",
+                request_id=req_id,
+                extra={"queued_request_id": req_id},
+            )
 
         if request_admission_lock_held:
             enqueue_if_live()
@@ -803,7 +867,8 @@ class OmniScheduler:
         input_len = len(req.origin_input_ids)
         max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
         required_tokens = input_len + max_new_tokens
-        kv_capacity = int(self.max_req_len)
+        token_headroom = getattr(self, "_admission_token_headroom", 1.0)
+        kv_capacity = int(self.max_req_len * token_headroom)
         if required_tokens <= kv_capacity:
             return None
 
@@ -821,6 +886,138 @@ class OmniScheduler:
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
             f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
             f"{mem_hint}"
+        )
+
+    def _admission_rejection_reason(self) -> str | None:
+        max_waiting = getattr(self, "_admission_max_waiting", None)
+        if max_waiting is not None:
+            waiting = self._admission_waiting_queue_depth()
+            if waiting >= max_waiting:
+                return (
+                    "Admission rejected: scheduler waiting queue is full "
+                    f"(waiting={waiting}, limit={max_waiting}). "
+                    "Retry later or raise SGLANG_OMNI_ADMISSION_MAX_WAITING."
+                )
+
+        min_free = getattr(self, "_admission_min_free_gpu_memory_bytes", None)
+        if min_free is not None:
+            # note (luojiaxuan): TP ranks can have different local free
+            # memory. Reduce to a group-wide minimum before
+            # deciding so every rank appends or rejects the
+            # same payload and keeps waiting_queue in
+            # lockstep.
+            free_bytes = self._admission_cuda_free_bytes()
+            if free_bytes is not None and free_bytes < min_free:
+                return (
+                    "Admission rejected: free CUDA memory is below the configured "
+                    "guard threshold "
+                    f"(free_bytes={free_bytes}, threshold_bytes={min_free}). "
+                    "Retry later or lower SGLANG_OMNI_ADMISSION_MIN_FREE_GPU_MEMORY_MB."
+                )
+
+        return None
+
+    def _admission_waiting_queue_depth(self) -> int:
+        """Return a TP-consistent queue depth for max-waiting admission."""
+        local_waiting = len(self.waiting_queue)
+        if getattr(self, "tp_size", 1) <= 1:
+            return local_waiting
+        cpu_group = getattr(self, "tp_cpu_group", None)
+        if cpu_group is None:
+            return local_waiting
+
+        value = torch.tensor([local_waiting], dtype=torch.int64)
+        torch.distributed.all_reduce(
+            value,
+            op=torch.distributed.ReduceOp.MAX,
+            group=cpu_group,
+        )
+        return int(value.item())
+
+    def _admission_cuda_free_bytes(self) -> int | None:
+        """Return a TP-consistent free-memory value for admission decisions."""
+        snapshot = cuda_memory_snapshot(getattr(self, "gpu_id", None))
+        free_bytes = snapshot.get("cuda_free_bytes")
+        local_free = int(free_bytes) if free_bytes is not None else None
+        if getattr(self, "tp_size", 1) <= 1:
+            return local_free
+        cpu_group = getattr(self, "tp_cpu_group", None)
+        if cpu_group is None:
+            return None
+
+        values = torch.tensor(
+            [
+                1 if local_free is not None else 0,
+                int(local_free) if local_free is not None else 0,
+            ],
+            dtype=torch.int64,
+        )
+        torch.distributed.all_reduce(
+            values,
+            op=torch.distributed.ReduceOp.MIN,
+            group=cpu_group,
+        )
+        if int(values[0].item()) <= 0:
+            return None
+        return int(values[1].item())
+
+    def _scheduler_telemetry_snapshot(self) -> dict[str, Any]:
+        available_tokens = allocator_available_tokens(
+            getattr(self, "token_to_kv_pool_allocator", None)
+        )
+        max_total_tokens = getattr(self, "max_total_num_tokens", None)
+        used_tokens = (
+            None
+            if available_tokens is None or max_total_tokens is None
+            else max(int(max_total_tokens) - available_tokens, 0)
+        )
+        return {
+            "inbox_qsize": safe_qsize(getattr(self, "inbox", None)),
+            "outbox_qsize": safe_qsize(getattr(self, "outbox", None)),
+            "waiting_queue": len(getattr(self, "waiting_queue", []) or []),
+            "running_batch": batch_size(getattr(self, "running_batch", None)),
+            "current_batch": batch_size(getattr(self, "cur_batch", None)),
+            "last_batch": batch_size(getattr(self, "last_batch", None)),
+            "deferred_requests": len(
+                getattr(self, "_deferred_request_payloads", {}) or {}
+            ),
+            "pending_stream_chunks": len(
+                getattr(self, "_pending_stream_chunks", {}) or {}
+            ),
+            "pending_stream_done": len(getattr(self, "_pending_stream_done", set())),
+            "max_running_requests": getattr(self, "max_running_requests", None),
+            "max_queued_requests": getattr(self, "max_queued_requests", None),
+            "max_total_num_tokens": max_total_tokens,
+            "max_req_len": getattr(self, "max_req_len", None),
+            "max_prefill_tokens": getattr(self, "max_prefill_tokens", None),
+            "kv_available_tokens": available_tokens,
+            "kv_used_tokens": used_tokens,
+            "admission_max_waiting": getattr(self, "_admission_max_waiting", None),
+            "admission_min_free_gpu_memory_bytes": getattr(
+                self,
+                "_admission_min_free_gpu_memory_bytes",
+                None,
+            ),
+            **cuda_memory_snapshot(getattr(self, "gpu_id", None)),
+        }
+
+    def _emit_scheduler_telemetry(
+        self,
+        event_name: str,
+        *,
+        request_id: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        if not _get_event_recorder().is_active():
+            return
+        metadata = self._scheduler_telemetry_snapshot()
+        if extra:
+            metadata.update(extra)
+        _emit_event(
+            request_id=request_id or "__scheduler__",
+            stage=None,
+            event_name=event_name,
+            metadata=metadata,
         )
 
     def _emit_request_error(self, request_id: str, error: Exception) -> None:
@@ -881,7 +1078,8 @@ class OmniScheduler:
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
             self._emit_stream_output(sched_output, mr_output)
-            return self._make_batch_result(batch, mr_output)
+            result = self._make_batch_result(batch, mr_output)
+            return result
         # Fallback: call upstream's run_batch (uses tp_worker directly)
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
 
@@ -996,6 +1194,15 @@ class OmniScheduler:
         reqs = list(batch.reqs)
         request_ids = [req.rid for req in reqs]
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
+        self._emit_scheduler_telemetry(
+            "scheduler_batch_error",
+            extra={
+                "batch_size": len(reqs),
+                "request_ids": request_ids,
+                "error": str(error),
+                "error_type": type(error).__name__,
+            },
+        )
         for req in reqs:
             self._emit_request_error(req.rid, error)
             self.abort(req.rid, defer_running_cleanup=False)

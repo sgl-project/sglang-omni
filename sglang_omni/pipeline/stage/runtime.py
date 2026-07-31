@@ -47,6 +47,7 @@ from sglang_omni.proto import (
 )
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.observability import cuda_memory_snapshot, safe_qsize
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +375,7 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": "coordinator", "kind": "submit"},
         )
+        self._emit_stage_telemetry("stage_queue_snapshot", request_id=request_id)
 
         payload = msg.data  # StagePayload from coordinator
         await self._execute(payload)
@@ -501,6 +503,7 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
+        self._emit_stage_telemetry("stage_queue_snapshot", request_id=request_id)
         merged = self.input_handler.receive(request_id, from_stage, payload)
         if merged is not None:
             _emit_event(
@@ -803,6 +806,7 @@ class Stage:
             stage=self.name,
             event_name="stage_dispatch",
         )
+        self._emit_stage_telemetry("stage_dispatch_snapshot", request_id=request_id)
         if (
             self.role == "leader"
             and self._tp_fanout is not None
@@ -812,6 +816,7 @@ class Stage:
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )
+        self._emit_stage_telemetry("stage_inbox_snapshot", request_id=request_id)
 
     async def _on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
@@ -1511,6 +1516,37 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
+        self._emit_stage_telemetry("stage_request_cleared", request_id=request_id)
+
+    def _emit_stage_telemetry(self, event_name: str, *, request_id: str) -> None:
+        if not _get_recorder().is_active():
+            return
+        stream_queues = None
+        stream_pending_items = None
+        if self._stream_queue is not None:
+            queues = getattr(self._stream_queue, "_queues", {})
+            stream_queues = len(queues)
+            pending_sizes = [safe_qsize(queue) for queue in queues.values()]
+            stream_pending_items = sum(
+                qsize for qsize in pending_sizes if qsize is not None
+            )
+        metadata = {
+            "active_requests": len(self._active_requests),
+            "aborted_requests_tracked": len(self._aborted),
+            "scheduler_inbox_qsize": safe_qsize(getattr(self.scheduler, "inbox", None)),
+            "scheduler_outbox_qsize": safe_qsize(
+                getattr(self.scheduler, "outbox", None)
+            ),
+            "stream_queues": stream_queues,
+            "stream_pending_items": stream_pending_items,
+            **cuda_memory_snapshot(self.gpu_id),
+        }
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name=event_name,
+            metadata=metadata,
+        )
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:

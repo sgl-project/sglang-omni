@@ -93,6 +93,16 @@ def internal_error(message: str, *, param: str | None = None) -> SpeechAPIError:
     )
 
 
+def rate_limit_error(message: str, *, param: str | None = None) -> SpeechAPIError:
+    return SpeechAPIError(
+        message=message,
+        status_code=429,
+        error_type="rate_limit_error",
+        param=param,
+        code=None,
+    )
+
+
 def service_unavailable(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,
