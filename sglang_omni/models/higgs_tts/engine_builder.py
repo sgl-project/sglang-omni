@@ -15,6 +15,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_STREAM_STRIDE,
 )
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,18 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def customize_server_args(self, server_args: Any) -> None:
-        server_args.disable_overlap_schedule = True
+        prefill_backend = server_args.cuda_graph_config.prefill.backend
+        if prefill_backend != "disabled":
+            raise RuntimeError(
+                "Higgs prefill CUDA graphs are disabled because padded prefill "
+                "changes model outputs; keep cuda_graph_config.prefill.backend="
+                f"'disabled', got {prefill_backend!r}"
+            )
+        override_server_args(
+            server_args,
+            "sglang_omni.higgs_tts.disable_overlap_schedule",
+            disable_overlap_schedule=True,
+        )
 
     def setup_model(
         self,
@@ -124,8 +136,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.HiggsTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
+        del model
         return request_builders.make_higgs_scheduler_adapters(
-            model,
             max_new_tokens_cap=self.max_new_tokens,
             stream_stride=self.stream_stride,
             stream_followup_stride=self.stream_followup_stride,
@@ -133,6 +145,10 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_abort_callback(self) -> Any | None:
+        assert self.model is not None
+        return self.model.reset_request
+
+    def make_request_finished_callback(self) -> Any | None:
         assert self.model is not None
         return self.model.reset_request
 

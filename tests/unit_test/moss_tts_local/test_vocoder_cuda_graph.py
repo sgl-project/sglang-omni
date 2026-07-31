@@ -12,10 +12,7 @@ import torch
 
 pytestmark = pytest.mark.gpu
 
-CODEC_GLOB = (
-    "/root/.cache/huggingface/hub/"
-    "models--OpenMOSS-Team--MOSS-Audio-Tokenizer-v2/snapshots/*/"
-)
+CODEC_MODEL_ID = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 N_VQ = 12  # MOSS-TTS-Local v1.5 uses the first 12 RVQ codebooks
 STREAM_SLOTS = 8
 OFFLINE_SLOTS = 8
@@ -40,17 +37,24 @@ def _codebook_size(codec) -> int:
 def session_bundle():
     # Load the codec DIRECTLY (the sglang processor pulls librosa/soxr audio deps absent in this
     # serving container; the codec modeling file is self-contained). streaming_vocoder imports clean.
-    import glob
-
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
     from transformers import AutoModel
 
     from sglang_omni.models.moss_tts_local.streaming_vocoder import _CodecStreamSession
 
-    snaps = glob.glob(CODEC_GLOB)
-    if not snaps:
+    try:
+        snapshot_download(CODEC_MODEL_ID, local_files_only=True)
+    except LocalEntryNotFoundError:
         pytest.skip("MOSS-Audio-Tokenizer-v2 codec snapshot not found")
     codec = (
-        AutoModel.from_pretrained(snaps[0], trust_remote_code=True).to("cuda").eval()
+        AutoModel.from_pretrained(
+            CODEC_MODEL_ID,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+        .to("cuda")
+        .eval()
     )
     n_vq = N_VQ
     vocab = _codebook_size(codec)

@@ -104,7 +104,7 @@ def build_sglang_tts_request(
     im_end_token_id = int(adapter.eos_token_ids[0])
     # note (Gaokai): the semantic tokens live in the added vocab
     # (151678..155773 > tokenizer.vocab_size); Req must carry the full width or
-    # upstream check_finished's vocab-boundary guard kills every request on its
+    # upstream update_finish_state's vocab-boundary guard kills every request on its
     # first sampled code.
     vocab_size = len(tokenizer)
 

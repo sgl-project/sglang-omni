@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The thinker stage defaults to async decode, and --decode-mode overrides it.
 
-Async decode is on by default (parity with Higgs); --decode-mode sync must route
-the override to the thinker stage (resolved by factory) and turn it off.
+Async decode is on by default; --decode-mode sync must route the override to
+the thinker stage and turn it off.
 """
 from __future__ import annotations
 

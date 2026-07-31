@@ -6,8 +6,8 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.layers.utils.hash import murmur_hash32
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
@@ -76,7 +76,7 @@ class MossTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        if bool(getattr(schedule_batch, "is_prefill_only", False)):
+        if schedule_batch.is_prefill_only:
             return
         self._collect_moss_step(result, forward_batch, schedule_batch, requests)
 
@@ -101,7 +101,7 @@ class MossTTSModelRunner(ModelRunner):
             rows = data.prompt_rows
             if rows is None:
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
             current_rows = rows[prefix_len : prefix_len + req_len]
             embeds = self.model._prepare_multi_modal_inputs(
@@ -188,7 +188,6 @@ class MossTTSModelRunner(ModelRunner):
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
         embeds = self.model._prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
         )
@@ -203,7 +202,7 @@ class MossTTSModelRunner(ModelRunner):
         is_audio: bool = False,
     ) -> list[torch.Tensor]:
         logits_output = result.logits_output
-        customized = getattr(logits_output, "customized_info", None)
+        customized = logits_output.customized_info
         if isinstance(customized, dict):
             values = customized.get("moss_tts_channel_logits")
             if isinstance(values, list) and values:
@@ -213,7 +212,7 @@ class MossTTSModelRunner(ModelRunner):
                     )
                     return [values[0].index_select(-1, token_ids), *values[1:]]
                 return values
-        hidden_states = getattr(logits_output, "hidden_states", None)
+        hidden_states = logits_output.hidden_states
         if isinstance(hidden_states, torch.Tensor):
             if hidden_states.ndim == 3:
                 hidden_states = hidden_states[:, -1, :]

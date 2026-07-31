@@ -384,7 +384,7 @@ def make_moss_transcribe_diarize_stream_output_builder(
         req = req_data.req
         # note (guozhihao): while chunked prefill is still consuming prompt tokens, suppress
         # emission — prompt-side states would masquerade as output text.
-        if req.is_chunked > 0:
+        if req.inflight_middle_chunks > 0:
             return []
 
         if req_data.stage_payload is None:

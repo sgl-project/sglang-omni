@@ -526,18 +526,16 @@ def test_capture_uses_thread_local_error_mode():
 
 def test_normalize_predictor_graph_batch_sizes():
     normalize = Qwen3TTSTalker._normalize_predictor_graph_batch_sizes
-    assert normalize(SimpleNamespace(cuda_graph_bs=None), max_batch_size=16) == (
-        1,
-        2,
-        4,
-        8,
-        12,
-        16,
-    )
-    assert normalize(
-        SimpleNamespace(cuda_graph_bs=[4, 2, 2, 64]), max_batch_size=16
-    ) == (2, 4, 16)
-    assert normalize(SimpleNamespace(), max_batch_size=2) == (1, 2)
+
+    def _args(bs):
+        return SimpleNamespace(
+            cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=bs))
+        )
+
+    assert normalize(_args(None), max_batch_size=16) == (1, 2, 4, 8, 12, 16)
+    assert normalize(_args([4, 2, 2, 64]), max_batch_size=16) == (2, 4, 16)
+    assert normalize(_args([1, 3, 7]), max_batch_size=8) == (1, 3, 7, 8)
+    assert normalize(_args(None), max_batch_size=2) == (1, 2)
 
 
 def test_quantize_predictor_top_k_ladder():

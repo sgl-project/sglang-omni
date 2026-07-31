@@ -15,7 +15,7 @@ from sglang_omni.comm.engine import CommEngine
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.pipeline.stage.runtime import Stage
-from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.messages import OutgoingMessage
@@ -282,6 +282,23 @@ def test_s2pro_config_declares_topology_without_transport_policy() -> None:
     assert "stream_transport" not in StageConfig.model_fields
 
 
+def test_stream_queue_drops_chunk_after_request_cleanup() -> None:
+    stream_queue = StreamQueue()
+    stream_queue.open("req")
+    stream_queue.close("req")
+
+    stream_queue.put(
+        "req",
+        StreamItem(
+            chunk_id=0,
+            data=torch.tensor([1]),
+            from_stage="thinker",
+        ),
+    )
+
+    assert not stream_queue.has("req")
+
+
 def test_stage_fails_pre_payload_stream_chunk_by_default() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
@@ -528,6 +545,44 @@ def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:
         assert control_plane.completions[0].error == "stream failed"
         assert not stage._stream_queue.has("req")
         assert "req" in stage._aborted
+
+    asyncio.run(_run())
+
+
+def test_terminal_request_can_be_readmitted_after_cleanup() -> None:
+    async def _run() -> None:
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage._stream_queue.open("req")
+        stage._active_requests.add("req")
+
+        stage._clear_request_state("req")
+        await stage.receive_local_payload(
+            "req",
+            "tts_engine",
+            SimpleNamespace(request_id="req"),
+        )
+        incoming = scheduler.inbox.get_nowait()
+        assert incoming.request_id == "req"
+        assert incoming.type == "new_request"
+        assert "req" in stage._active_requests
+        assert stage._stream_queue.has("req")
+        assert stage.control_plane.completions == []
 
     asyncio.run(_run())
 

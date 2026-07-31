@@ -122,14 +122,14 @@ class PrefillManager:
             assert self.chunked_req is None
             self.chunked_req = adder.new_chunked_req
             logger.info(
-                "Chunked prefill scheduled: rid=%s projected=%s extend_input_len=%s",
+                "Chunked prefill scheduled: rid=%s projected=%s extend_len=%s",
                 self.chunked_req.rid,
                 bool(self.chunked_req._input_embeds_are_projected),
-                self.chunked_req.extend_input_len,
+                self.chunked_req.extend_range.length,
             )
 
         if self.chunked_req is not None:
-            self.chunked_req.is_chunked += 1
+            self.chunked_req.inflight_middle_chunks += 1
 
         # Batch dataclass of req for return
         new_batch = ScheduleBatch.init_new(

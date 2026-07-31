@@ -117,6 +117,23 @@ def reject_gpu_id_in_factory_args(
     )
 
 
+def reject_process_total_gpu_memory_fraction(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    if (
+        "process_total_gpu_memory_fraction" not in factory_args
+        and "process_total_gpu_memory_fraction" not in runtime_overrides
+    ):
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets process_total_gpu_memory_fraction through "
+        "factory_args/runtime_overrides; this value is derived from process "
+        "construction order and stage resource budgets"
+    )
+
+
 def _validate_runtime_sources(
     stage_cfg: StageConfig,
     factory_args: dict[str, Any],
@@ -142,6 +159,11 @@ def _validate_runtime_sources(
     )
 
     reject_gpu_id_in_factory_args(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
+    reject_process_total_gpu_memory_fraction(
         stage_cfg.name,
         factory_args,
         runtime_overrides,

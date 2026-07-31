@@ -10,6 +10,7 @@ import pytest
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
@@ -26,6 +27,8 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
     assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
     assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
+    assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
+    assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 4
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
@@ -170,7 +173,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
-        return SimpleNamespace(**overrides)
+        server_args = FakeServerArgs(**overrides)
+        server_args.mm_attention_backend = None
+        return server_args
 
     model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
     infrastructure = (

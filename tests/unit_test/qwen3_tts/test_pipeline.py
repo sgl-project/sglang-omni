@@ -37,6 +37,7 @@ from sglang_omni.scheduling.speaker_cache import (
     get_speaker_artifact_cache,
 )
 from sglang_omni.scheduling.types import RequestOutput
+from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -70,7 +71,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.output_ids = []
             self.prefix_indices = []
-            self.extend_input_len = len(origin_input_ids)
+            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -1384,8 +1385,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         )
         scheduler._aborted_request_ids = set()
         scheduler._aborted_request_id_order = deque()
-        scheduler._pending_stream_chunks = {}
-        scheduler._pending_stream_done = set()
+        scheduler._pending_stream_ingress = {}
         scheduler._deferred_request_payloads = {}
         scheduler._dirty_deferred_request_ids = set()
         scheduler._first_emit_done = set()
@@ -1400,6 +1400,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
         scheduler.cur_batch = None
         scheduler.last_batch = None
+        scheduler._async_pending = None
         scheduler.inbox = Queue()
 
         scheduler.abort(request_id)
@@ -1451,7 +1452,14 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
         _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long)
     )
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
-    forward_batch = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=None))
+    forward_batch = SimpleNamespace(
+        sampling_info=SimpleNamespace(
+            sampling_seed=None,
+            need_min_p_sampling=False,
+            need_top_p_sampling=False,
+            need_top_k_sampling=False,
+        )
+    )
     logits_output = SimpleNamespace(next_token_logits=torch.zeros((2, 4)))
     requests = [
         SimpleNamespace(
@@ -1524,7 +1532,6 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
 
     runner._collect_codes(result, forward_batch, schedule_batch, requests)
 
-    assert schedule_batch.output_ids.tolist() == [7, 42]
     assert requests[0].data.output_codes == []
     assert requests[1].data.output_codes == []
 
@@ -1564,7 +1571,9 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     monkeypatch.setattr(
         forward_batch_info.ForwardBatch,
         "init_new",
-        staticmethod(lambda model_worker_batch, model_runner: fake_forward_batch),
+        staticmethod(
+            lambda model_worker_batch, model_runner, *, capture_hidden_mode=None, return_hidden_states_before_norm: fake_forward_batch
+        ),
     )
     monkeypatch.setattr(
         QwenTalkerModelRunner,
@@ -1626,6 +1635,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     runner.output_processor = FakeOutputProcessor()
     runner.device = torch.device("cpu")
     runner.model = runner.tp_worker.model_runner.model
+    runner.bind_execution_bridge(FakeExecutionBridge())
 
     data = SimpleNamespace(
         req=SimpleNamespace(sampling_params=SimpleNamespace(repetition_penalty=1.0)),
@@ -1638,8 +1648,6 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     schedule_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_extend=lambda: False),
         is_prefill_only=False,
-        output_ids=None,
-        get_model_worker_batch=lambda: SimpleNamespace(),
     )
 
     output = runner.execute(
@@ -1647,7 +1655,6 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     )
 
     assert output.can_run_cuda_graph is True
-    assert schedule_batch.output_ids.tolist() == [7]
     assert runner.model.prepare_calls == 1
     assert fake_forward_batch.input_ids.tolist() == [0]
 
@@ -1985,11 +1992,13 @@ def test_qwen3_tts_compile_backbone_compiles_every_layer(
 
     set_config_calls = []
     compiled = []
-    cuda_graph_runner = types.ModuleType("sglang.srt.model_executor.cuda_graph_runner")
+    cuda_graph_runner = types.ModuleType(
+        "sglang.srt.compilation.torch_compile_decoration"
+    )
     cuda_graph_runner.set_torch_compile_config = lambda: set_config_calls.append(True)
     monkeypatch.setitem(
         sys.modules,
-        "sglang.srt.model_executor.cuda_graph_runner",
+        "sglang.srt.compilation.torch_compile_decoration",
         cuda_graph_runner,
     )
 
@@ -2056,7 +2065,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
             self.server_args = server_args
             self.model = FakeModel()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
             assert self.server_args.torch_compile_max_bs == 32
             init_graph_calls.append(True)
@@ -2104,9 +2113,15 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=kwargs["disable_overlap_schedule"],
             enable_torch_compile=kwargs["enable_torch_compile"],
@@ -2297,3 +2312,38 @@ def test_qwen3_tts_cli_rejects_unsupported_thinker_mem_fraction() -> None:
             thinker_mem_fraction_static=0.5,
             talker_mem_fraction_static=None,
         )
+
+
+def test_qwen3_tts_prefill_publishes_sglang_forward_context() -> None:
+    from sglang.srt.model_executor.forward_context import (
+        get_forward_context,
+        has_forward_context,
+    )
+
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(attn_backend=attn_backend)
+    )
+
+    seen = []
+
+    def model(**kwargs):
+        seen.append(get_forward_context().attn_backend)
+        return "logits"
+
+    model.parameters = lambda: iter([torch.zeros(1, dtype=torch.float32)])
+    runner.model = model
+    forward_batch = SimpleNamespace(
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+        input_ids=torch.tensor([1]),
+    )
+
+    assert not has_forward_context()
+    result = runner._forward_with_input_embeds(forward_batch, torch.ones(1, 2))
+
+    assert seen == [attn_backend]
+    assert result.logits_output == "logits"

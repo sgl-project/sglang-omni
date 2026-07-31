@@ -111,7 +111,7 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     text_model = model.model
     layers = text_model.layers
 
-    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     set_torch_compile_config()
     compile_mode = os.environ.get(

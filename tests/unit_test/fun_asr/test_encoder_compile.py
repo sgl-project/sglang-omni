@@ -41,9 +41,11 @@ def _tiny_model() -> SimpleNamespace:
 def _stub_torch_compile_config(monkeypatch) -> None:
     # The helper calls sglang's set_torch_compile_config, which mutates global
     # dynamo/inductor config; keep unit tests side-effect free.
-    import sglang.srt.model_executor.cuda_graph_runner as cuda_graph_runner
+    import sglang.srt.compilation.torch_compile_decoration as torch_compile_decoration
 
-    monkeypatch.setattr(cuda_graph_runner, "set_torch_compile_config", lambda: None)
+    monkeypatch.setattr(
+        torch_compile_decoration, "set_torch_compile_config", lambda: None
+    )
 
 
 def test_compile_fun_asr_audio_encoder_compiles_forwards_with_dynamic_shapes(

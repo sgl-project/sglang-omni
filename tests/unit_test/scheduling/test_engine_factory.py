@@ -7,6 +7,8 @@ import inspect
 from types import SimpleNamespace
 from typing import Any
 
+from tests.unit_test.fakes import FakeServerArgs
+
 TEST_MAX_TOTAL_TOKENS = 82000
 
 
@@ -83,7 +85,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             self.server_args = server_args
             self.model = FakeModel()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             events.append("init_graphs")
             init_graph_calls.append(True)
 
@@ -99,11 +101,17 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> Any:
         events.append("build_server_args")
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             max_running_requests=kwargs["max_running_requests"],
@@ -118,7 +126,10 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
         assert gpu_id == 2
-        assert kwargs == {"model_arch_override": "TestArch"}
+        assert kwargs == {
+            "defer_cuda_graph_capture": True,
+            "model_arch_override": "TestArch",
+        }
         infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),

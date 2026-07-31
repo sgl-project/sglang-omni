@@ -11,7 +11,7 @@ hf download fishaudio/s2-pro
 ```
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains in place:
+so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
 
 ```bash
 uv pip install --upgrade sox einops

@@ -116,7 +116,6 @@ def test_finalize_populates_host_token_ids_when_staged():
         batch_result,
         forward_batch=None,
         schedule_batch=schedule_batch,
-        model_worker_batch=None,
         scheduler_output=_finalize_scheduler_output(3),
     )
 
@@ -136,7 +135,6 @@ def test_finalize_host_token_ids_none_without_stage():
         batch_result,
         forward_batch=None,
         schedule_batch=schedule_batch,
-        model_worker_batch=None,
         scheduler_output=_finalize_scheduler_output(3),
     )
 

@@ -8,16 +8,18 @@ import types
 
 import torch
 import torch.nn as nn
-from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.qwen3_omni.components.vision_compat import (
+    Qwen3OmniMoeVisionEncoderCompat,
+)
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.utils import instantiate_module
 
 logger = logging.getLogger(__name__)
 
 VISUAL_PREFIX = ("thinker.visual.", "visual.")
-VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder
+VISUAL_CLASS = Qwen3OmniMoeVisionEncoderCompat
 
 
 def _patch_embed_forward(self: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:

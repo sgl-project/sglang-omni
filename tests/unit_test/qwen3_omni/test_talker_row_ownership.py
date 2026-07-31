@@ -235,30 +235,21 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
             assert len(pending_feedback) == 1
             assert torch.equal(pending_feedback[0], expected_feedback)
 
-        device_chain_tokens = tokens + 1000
-        schedule_batch.output_ids = device_chain_tokens
         model_runner_output = ModelRunnerOutput(
             outputs={},
             can_run_cuda_graph=False,
             host_token_ids=runner._resolve_host_token_ids(result),
         )
-        batch_result = OmniScheduler._make_batch_result(
-            schedule_batch, model_runner_output
-        )
-        assert schedule_batch.input_ids.tolist() == device_chain_tokens.tolist()
+        batch_result = OmniScheduler._make_batch_result(model_runner_output)
         assert batch_result.next_token_ids is model_runner_output.host_token_ids
         assert batch_result.next_token_ids.tolist() == tokens.tolist()
 
 
 def test_make_batch_result_requires_declared_host_token_ids() -> None:
-    batch = SimpleNamespace(
-        output_ids=torch.tensor([7], dtype=torch.long),
-        input_ids=None,
-    )
-    malformed_output = SimpleNamespace(can_run_cuda_graph=False)
+    malformed_output = SimpleNamespace(next_token_ids=None, can_run_cuda_graph=False)
 
     with pytest.raises(AttributeError, match="host_token_ids"):
-        OmniScheduler._make_batch_result(batch, malformed_output)
+        OmniScheduler._make_batch_result(malformed_output)
 
 
 class _FakeReq:

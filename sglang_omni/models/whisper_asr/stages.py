@@ -79,7 +79,7 @@ def create_sglang_whisper_asr_executor(
     )
 
     if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
+        model_worker.model_runner.init_cuda_graphs()
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,

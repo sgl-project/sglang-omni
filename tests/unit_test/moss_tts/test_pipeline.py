@@ -36,6 +36,7 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
+from tests.unit_test.fakes import FakeServerArgs
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,7 +63,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.output_ids = []
             self.prefix_indices = []
-            self.extend_input_len = len(origin_input_ids)
+            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -163,12 +164,18 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         captured["model_path"] = model_path
         captured["context_length"] = context_length
         captured["build_kwargs"].append(dict(kwargs))
-        return SimpleNamespace(
+        return FakeServerArgs(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=False,
             max_running_requests=kwargs["max_running_requests"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             cuda_graph_bs=kwargs["cuda_graph_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs.get("torch_compile_max_bs"),
         )
@@ -178,13 +185,15 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         gpu_id,
         *,
         model_arch_override=None,
+        defer_cuda_graph_capture=False,
     ):
         captured["gpu_id"] = gpu_id
         captured["model_arch_override"] = model_arch_override
+        captured["defer_cuda_graph_capture"] = defer_cuda_graph_capture
         model = object()
         model_runner = SimpleNamespace(
             model=model,
-            init_device_graphs=lambda: captured.setdefault("graph_inits", 0) or None,
+            init_cuda_graphs=lambda: captured.setdefault("graph_inits", 0) or None,
         )
         model_worker = SimpleNamespace(model_runner=model_runner)
         return (
@@ -527,7 +536,7 @@ def test_moss_tts_processor_load_preserves_codec_metadata(
     class FakeProcessor:
         @classmethod
         def get_processor_dict(cls, checkpoint_dir):
-            assert checkpoint_dir == "checkpoint"
+            assert checkpoint_dir == "model"
             return (
                 {
                     "audio_tokenizer_name_or_path": "codec-from-processor-config",
@@ -540,7 +549,6 @@ def test_moss_tts_processor_load_preserves_codec_metadata(
             self.audio_tokenizer = audio_tokenizer
             self.model_config = model_config
 
-    monkeypatch.setattr(stages, "resolve_moss_checkpoint", lambda _: "checkpoint")
     monkeypatch.setattr(stages, "load_moss_processor_class", lambda _: FakeProcessor)
     monkeypatch.setattr(stages, "moss_transformers_processor_compat", nullcontext)
     monkeypatch.setattr(
@@ -1231,7 +1239,9 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     )
     sched_req = SimpleNamespace(
         data=SimpleNamespace(
-            req=SimpleNamespace(extend_input_len=2, prefix_indices=[0]),
+            req=SimpleNamespace(
+                extend_range=SimpleNamespace(length=2), prefix_indices=[0]
+            ),
             prompt_rows=prompt_rows,
         )
     )
