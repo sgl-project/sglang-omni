@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 from sglang_omni.models.moss_tts import request_builders
@@ -43,11 +42,12 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        model_runner_mod = importlib.import_module(
-            "sglang_omni.models.moss_tts.model_runner"
+        return self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.moss_tts.model_runner",
+            class_name="MossTTSModelRunner",
         )
-
-        return model_runner_mod.MossTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         return request_builders.make_moss_tts_scheduler_adapters(model=model)

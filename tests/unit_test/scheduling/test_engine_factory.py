@@ -361,3 +361,156 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     assert captured_kwargs["tp_worker"] == "worker"
     assert captured_kwargs["request_builder"] == "request_builder"
     assert captured_kwargs["result_adapter"] == "result_adapter"
+
+
+class _Mod:
+    """Fake ModelRunner installed on the test module so it is importable."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.kwargs = kwargs
+
+
+class _ModWithOutbox:
+    """Fake ModelRunner exposing set_stream_outbox for bind test."""
+
+    def __init__(self) -> None:
+        self.outbox: object = None
+
+    def set_stream_outbox(self, outbox: object) -> None:
+        self.outbox = outbox
+
+
+def test_make_model_runner_from_path_instantiates_two_arg_runner() -> None:
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    class PathBuilder(TtsEngineBuilder):
+        model_name = "Test TTS"
+
+        def resolve_checkpoint(self, model_path: str) -> str:
+            return model_path
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            del dtype
+            return {}
+
+        def setup_model(
+            self,
+            *,
+            model_worker: Any,
+            checkpoint_dir: str,
+            device: str,
+            gpu_id: int,
+            server_args: Any,
+        ) -> None:
+            del model_worker, checkpoint_dir, device, gpu_id, server_args
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            return self.make_model_runner_from_path(
+                model_worker,
+                output_proc,
+                module_path="tests.unit_test.scheduling.test_engine_factory",
+                class_name="_Mod",
+            )
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            del model
+            return object(), object()
+
+    builder = PathBuilder()
+    runner = builder.make_model_runner("worker", "proc")
+    assert isinstance(runner, _Mod)
+    assert runner.args == ("worker", "proc")
+    assert runner.kwargs == {}
+
+
+def test_model_reset_request_abort_callback_contract() -> None:
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    reset_calls: list[str] = []
+
+    class WithModel:
+        def reset_request(self, request_id: str) -> None:
+            reset_calls.append(request_id)
+
+    class ResetBuilder(TtsEngineBuilder):
+        model_name = "Test TTS"
+
+        def resolve_checkpoint(self, model_path: str) -> str:
+            return model_path
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            del dtype
+            return {}
+
+        def setup_model(
+            self,
+            *,
+            model_worker: Any,
+            checkpoint_dir: str,
+            device: str,
+            gpu_id: int,
+            server_args: Any,
+        ) -> None:
+            del model_worker, checkpoint_dir, device, gpu_id, server_args
+            self.model = WithModel()
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            del model_worker, output_proc
+            return object()
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            del model
+            return object(), object()
+
+    builder = ResetBuilder()
+    builder.setup_model(
+        model_worker=None,
+        checkpoint_dir="",
+        device="",
+        gpu_id=0,
+        server_args=None,
+    )
+    cb = builder.model_reset_request_abort_callback()
+    assert callable(cb)
+    cb("r1")  # type: ignore[operator]
+    assert reset_calls == ["r1"]
+
+
+def test_bind_stream_outbox_sets_scheduler_outbox() -> None:
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    class BindBuilder(TtsEngineBuilder):
+        model_name = "Test TTS"
+
+        def resolve_checkpoint(self, model_path: str) -> str:
+            return model_path
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            del dtype
+            return {}
+
+        def setup_model(
+            self,
+            *,
+            model_worker: Any,
+            checkpoint_dir: str,
+            device: str,
+            gpu_id: int,
+            server_args: Any,
+        ) -> None:
+            del model_worker, checkpoint_dir, device, gpu_id, server_args
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            del model_worker, output_proc
+            return object()
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            del model
+            return object(), object()
+
+    scheduler = SimpleNamespace(outbox="the-outbox")
+    model_runner = _ModWithOutbox()
+    BindBuilder().bind_stream_outbox(scheduler, model_runner)
+    assert model_runner.outbox == "the-outbox"
+

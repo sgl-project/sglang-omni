@@ -95,11 +95,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             server_args.enable_torch_compile = False
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        model_runner_mod = importlib.import_module(
-            "sglang_omni.models.qwen3_tts.model_runner"
+        return self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.qwen3_tts.model_runner",
+            class_name="Qwen3TTSModelRunner",
         )
-
-        return model_runner_mod.Qwen3TTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         return request_builders.make_qwen3_tts_scheduler_adapters(

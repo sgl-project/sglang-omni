@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 from sglang_omni.models.voxtral_tts import request_builders
@@ -62,11 +61,12 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        model_runner_mod = importlib.import_module(
-            "sglang_omni.models.voxtral_tts.model_runner"
+        return self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.voxtral_tts.model_runner",
+            class_name="VoxtralTTSModelRunner",
         )
-
-        return model_runner_mod.VoxtralTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         return request_builders.make_voxtral_scheduler_adapters(

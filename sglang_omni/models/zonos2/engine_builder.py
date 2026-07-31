@@ -227,10 +227,10 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
 
     def make_abort_callback(self) -> Any | None:
         assert self.model is not None
-        return self.model.reset_request
+        return self.model_reset_request_abort_callback()
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {"enable_async_decode": self.async_decode}
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
-        model_runner.set_stream_outbox(scheduler.outbox)
+        self.bind_stream_outbox(scheduler, model_runner)
