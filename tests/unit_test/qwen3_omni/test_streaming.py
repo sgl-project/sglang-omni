@@ -195,6 +195,8 @@ def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():
 def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
+        capture_hidden_layers=[0, 24],
+        capture_hidden_width=2,
         should_emit_hidden=lambda request: should_generate_audio_output(
             request.data.stage_payload
         ),
@@ -211,11 +213,13 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
         request_id="default",
         data=SGLangARRequestData(stage_payload=_thinker_stage_payload(None)),
     )
+    embed = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     model_output = SimpleNamespace(
         next_token_ids=torch.tensor([11, 22, 33]),
         logits_output=SimpleNamespace(
-            hidden_states=torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+            hidden_states=torch.cat([embed, embed + 10.0], dim=-1)
         ),
+        _captured_aux_hidden_states=None,
     )
     scheduler_output = SchedulerOutput(
         requests=[text_request, audio_request, default_request],
@@ -232,26 +236,22 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
 
     assert outputs["text"].extra is None
     assert torch.equal(
-        outputs["audio"].extra["hidden_states"],
+        outputs["audio"].extra["hidden_states"]["embed"],
         torch.tensor([3.0, 4.0]),
     )
     assert torch.equal(
-        outputs["default"].extra["hidden_states"],
+        outputs["default"].extra["hidden_states"]["embed"],
         torch.tensor([5.0, 6.0]),
     )
 
 
 def test_qwen_aux_hidden_states_clone_only_audio_request_slice():
-    model = SimpleNamespace(
-        _captured_aux_hidden_states=[
-            torch.arange(6, dtype=torch.float32).reshape(3, 2),
-            torch.arange(30, 36, dtype=torch.float32).reshape(3, 2),
-        ]
-    )
+    aux_embed = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    aux_layer = torch.arange(30, 36, dtype=torch.float32).reshape(3, 2)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
         capture_hidden_layers=[0, 24],
-        model=model,
+        capture_hidden_width=2,
         should_emit_hidden=lambda request: request.request_id == "audio",
     )
     scheduler_output = SchedulerOutput(
@@ -271,45 +271,30 @@ def test_qwen_aux_hidden_states_clone_only_audio_request_slice():
     model_output = SimpleNamespace(
         next_token_ids=torch.tensor([11, 22, 33]),
         logits_output=SimpleNamespace(
-            hidden_states=torch.arange(100, 106, dtype=torch.float32).reshape(3, 2)
+            hidden_states=torch.cat([aux_embed, aux_layer], dim=-1)
         ),
+        _captured_aux_hidden_states=None,
     )
 
     outputs = output_processor.process(model_output, scheduler_output)
 
     assert outputs["text-1"].extra is None
     assert outputs["text-2"].extra is None
-    assert model._captured_aux_hidden_states is None
 
     audio_hidden = outputs["audio"].extra["hidden_states"]
     assert torch.equal(audio_hidden["embed"], torch.tensor([2.0, 3.0]))
     assert torch.equal(audio_hidden[24], torch.tensor([32.0, 33.0]))
-    assert torch.equal(
-        outputs["audio"].extra["stream_hidden_states"],
-        torch.tensor([102.0, 103.0]),
-    )
-    stream_hidden = outputs["audio"].extra["stream_hidden_states"]
     assert (
         audio_hidden["embed"].untyped_storage().nbytes()
         == audio_hidden["embed"].numel() * audio_hidden["embed"].element_size()
     )
-    assert (
-        stream_hidden.untyped_storage().nbytes()
-        == stream_hidden.numel() * stream_hidden.element_size()
-    )
 
 
-def test_qwen_aux_hidden_states_clear_when_no_request_emits_hidden():
-    model = SimpleNamespace(
-        _captured_aux_hidden_states=[
-            torch.arange(6, dtype=torch.float32).reshape(3, 2),
-            torch.arange(30, 36, dtype=torch.float32).reshape(3, 2),
-        ]
-    )
+def test_qwen_aux_hidden_states_skipped_when_no_request_emits_hidden():
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
         capture_hidden_layers=[0, 24],
-        model=model,
+        capture_hidden_width=2,
         should_emit_hidden=lambda request: False,
     )
     scheduler_output = SchedulerOutput(
@@ -329,14 +314,14 @@ def test_qwen_aux_hidden_states_clear_when_no_request_emits_hidden():
     model_output = SimpleNamespace(
         next_token_ids=torch.tensor([11, 22, 33]),
         logits_output=SimpleNamespace(
-            hidden_states=torch.arange(100, 106, dtype=torch.float32).reshape(3, 2)
+            hidden_states=torch.arange(12, dtype=torch.float32).reshape(3, 4)
         ),
+        _captured_aux_hidden_states=None,
     )
 
     outputs = output_processor.process(model_output, scheduler_output)
 
     assert all(output.extra is None for output in outputs.values())
-    assert model._captured_aux_hidden_states is None
 
 
 def test_utf8_multibyte_hold_then_emit():

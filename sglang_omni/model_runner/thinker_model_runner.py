@@ -4,6 +4,7 @@
 Handles image/video/audio token → embedding replacement and deepstack
 visual embeddings for Qwen3-Omni's thinker stage.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -14,6 +15,7 @@ from typing import Any
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
+from sglang_omni.model_runner._hidden_capture import unpack_packed_hidden_capture
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
@@ -29,9 +31,18 @@ class ThinkerModelRunner(ModelRunner):
         output_processor: Any,
         *,
         should_capture_hidden: Callable[[Any], bool] | None = None,
+        capture_hidden_layers: list[int] | None = None,
+        capture_hidden_width: int | None = None,
     ):
         super().__init__(tp_worker, output_processor)
         self._should_capture_hidden = should_capture_hidden
+        # Capture configuration is frozen at construction. A text-only
+        # deployment installs no capture layers, so every batch there must stay
+        # on the NULL capture path no matter what per-request metadata says.
+        self._capture_hidden_layers = (
+            list(capture_hidden_layers) if capture_hidden_layers else None
+        )
+        self._capture_hidden_width = capture_hidden_width
 
         model = self.model
         self._outer_model = model.thinker
@@ -39,6 +50,8 @@ class ThinkerModelRunner(ModelRunner):
         self._embed_tokens = self._text_model.embed_tokens
         self._th_host_bufs = None
         self._th_slot = 0
+        self._th_hidden_bufs: list[list[torch.Tensor]] | None = None
+        self._th_hidden_slot = 0
 
         thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
         self._image_token_id = thinker_cfg.image_token_id
@@ -49,6 +62,8 @@ class ThinkerModelRunner(ModelRunner):
     def _text_only_capture_guard(self, requests: list[Any]):
         # note (jiaxin deng): drop hidden-capture for an all-text batch, shared by
         # sync execute() and async execute_launch so both take the same path.
+        # These thinker layers feed Qwen3-Omni's talker. This toggle affects eager
+        # forwards only; graph replay still runs the layer capture recorded at graph build.
         capture_layers = self._text_model.layers_to_capture
         if not (capture_layers and not self._batch_should_capture_hidden(requests)):
             yield
@@ -69,6 +84,8 @@ class ThinkerModelRunner(ModelRunner):
             return super().execute_launch(scheduler_output)
 
     def _batch_should_capture_hidden(self, requests: list[Any]) -> bool:
+        if self._capture_hidden_layers is None:
+            return False
         if self._should_capture_hidden is None:
             return True
         for request in requests:
@@ -100,22 +117,26 @@ class ThinkerModelRunner(ModelRunner):
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
     ):
-        del schedule_batch, requests
+        del schedule_batch
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
-        # Hidden capture for thinker streaming comes from our local forward hooks,
-        # not from SGLang's logits-output hidden-state path. Requesting LAST here
-        # causes CUDA-graph mode mismatches and can silently disable replay.
-        return CaptureHiddenMode.NULL
+        return (
+            CaptureHiddenMode.LAST
+            if self._batch_should_capture_hidden(requests)
+            else CaptureHiddenMode.NULL
+        )
 
     def requested_capture_hidden_mode_decode(self, schedule_batch: Any, requests: list):
-        del schedule_batch, requests
+        del schedule_batch
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
-        # Hidden capture for thinker streaming comes from our local forward hooks,
-        # not from SGLang's logits-output hidden-state path. Requesting LAST here
-        # causes CUDA-graph mode mismatches and can silently disable replay.
-        return CaptureHiddenMode.NULL
+        # Speech CUDA graphs are captured with CaptureHiddenMode.FULL.
+        # Decode must use the same mode; LAST would prevent graph replay.
+        return (
+            CaptureHiddenMode.FULL
+            if self._batch_should_capture_hidden(requests)
+            else CaptureHiddenMode.NULL
+        )
 
     # ------------------------------------------------------------------
     # Multimodal embedding injection (~160 lines, from SGLangModelRunner)
@@ -323,11 +344,10 @@ class ThinkerModelRunner(ModelRunner):
                 input_deepstack_embeds=ds_input,
             )
 
-            logits_output = outer.logits_processor(
-                forward_batch.input_ids,
-                hidden_states,
-                outer.lm_head,
-                forward_batch,
+            logits_output = outer.process_hidden_states(
+                input_ids=forward_batch.input_ids,
+                hidden_states=hidden_states,
+                forward_batch=forward_batch,
             )
 
         return GenerationBatchResult(
@@ -335,33 +355,17 @@ class ThinkerModelRunner(ModelRunner):
         )
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        """Route to sync where the one-step lag would diverge from sync. A request
-        that emits audio captures hidden states for the talker; the per-forward
-        _captured_aux_hidden_states side channel would be overwritten by a lookahead
-        launch(N) before resolve(N-1) collects it, so those requests route to sync
-        per batch. Sampling that reads the lagged output history (repetition /
-        presence / frequency penalty, min_new_tokens), a fixed seed, or
-        return_logprob (the lookahead sampler skips the base logprob path) also
-        diverges; logit_bias / custom_params are routed conservatively.
-        """
-        from sglang_omni.models.qwen3_omni.request_builders import (
-            should_generate_audio_output,
-        )
+        """Route to sync where the one-step lag would diverge from sync.
 
+        Speech hidden states are snapshotted into ping-pong buffers at launch, so
+        audio-output requests are safe here. Sampling that reads the lagged output
+        history (repetition / presence / frequency penalty, min_new_tokens), a
+        fixed seed, or return_logprob (the lookahead sampler skips the base
+        logprob path) still diverges; logit_bias / custom_params are routed
+        conservatively.
+        """
         for req in batch.reqs:
-            # note (jiaxin deng): fail closed if the request data is missing or None
-            # so a hidden-capture batch can never slip onto the async path.
-            try:
-                data = req._omni_data
-            except AttributeError:
-                data = None
-            if data is None or should_generate_audio_output(data.stage_payload):
-                return False
-            try:
-                needs_logprob = data.return_logprob
-            except AttributeError:
-                needs_logprob = False
-            if needs_logprob:
+            if req._omni_data.return_logprob:
                 return False
             sp = req.sampling_params
             if (
@@ -389,6 +393,66 @@ class ThinkerModelRunner(ModelRunner):
         self._th_slot ^= 1
         return buf
 
+    @staticmethod
+    def _hidden_buf_fits(buf: torch.Tensor, source: torch.Tensor) -> bool:
+        return (
+            buf.dtype == source.dtype
+            and buf.device == source.device
+            and buf.shape[0] >= source.shape[0]
+            and buf.shape[1:] == source.shape[1:]
+        )
+
+    def _async_hidden_bufs(
+        self, sources: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, ...]:
+        """Copy one step's captured hidden tensors into a private launch slot.
+
+        CUDA-graph replay reuses its output storage every step. Two device-side
+        slots let launch(N+1) publish new hidden states while resolve(N) still
+        owns the previous step. Smaller batches reuse a leading slice; growth
+        or a layout change replaces both slots (a resolve still holding the old
+        buffers keeps them alive through its own reference).
+        """
+        need_alloc = (
+            self._th_hidden_bufs is None
+            or len(self._th_hidden_bufs[0]) != len(sources)
+            or any(
+                not self._hidden_buf_fits(buf, source)
+                for buf, source in zip(self._th_hidden_bufs[0], sources)
+            )
+        )
+        if need_alloc:
+            self._th_hidden_bufs = [
+                [torch.empty_like(source) for source in sources] for _ in range(2)
+            ]
+            self._th_hidden_slot = 0
+
+        assert self._th_hidden_bufs is not None
+        slot_bufs = self._th_hidden_bufs[self._th_hidden_slot]
+        self._th_hidden_slot ^= 1
+        snapshots: list[torch.Tensor] = []
+        for buf, source in zip(slot_bufs, sources):
+            view = buf[: source.shape[0]]
+            view.copy_(source, non_blocking=True)
+            snapshots.append(view)
+        return tuple(snapshots)
+
+    def _stage_async_hidden_capture(self, result: Any) -> None:
+        """Snapshot graph-owned hidden output into this lookahead launch."""
+        logits_output = result.logits_output
+        packed_hidden = logits_output.hidden_states
+        if packed_hidden is None:
+            raise RuntimeError(
+                "Speech lookahead requested hidden capture, but the model "
+                "produced no hidden states"
+            )
+        captured_aux = unpack_packed_hidden_capture(
+            packed_hidden,
+            capture_layer_count=len(self._capture_hidden_layers),
+            hidden_size=self._capture_hidden_width,
+        )
+        result._captured_aux_hidden_states = self._async_hidden_bufs(list(captured_aux))
+
     def _sample_lookahead(self, logits_output, forward_batch, requests):
         # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
         # those batches to sync); only static suppress tokens are lag-safe.
@@ -408,6 +472,8 @@ class ThinkerModelRunner(ModelRunner):
         nt = result.next_token_ids
         host_buf = self._async_host_buf(nt, n)
         host_buf[:n].copy_(nt[:n], non_blocking=True)
+        if self._batch_should_capture_hidden(requests):
+            self._stage_async_hidden_capture(result)
         return host_buf
 
     def post_decode_resolve(

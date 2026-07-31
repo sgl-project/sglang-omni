@@ -41,6 +41,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -1200,7 +1201,11 @@ class OmniScheduler:
             SchedulerRequest(request_id=req.rid, data=req._omni_data)
             for req in batch.reqs
         ]
-        return SchedulerOutput(requests=sched_reqs, batch_data=batch)
+        return SchedulerOutput(
+            requests=sched_reqs,
+            batch_data=batch,
+            step_id=self.forward_ct,
+        )
 
     def _emit_stream_output(self, sched_output, mr_output, skip_rids=()) -> None:
         """Emit per-request stream chunks from a ModelRunnerOutput. Shared by
@@ -1274,6 +1279,13 @@ class OmniScheduler:
         batch.forward_iter = self.forward_ct
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
+        if self.is_entry_rank and _get_event_recorder().is_active():
+            _emit_event(
+                request_id=sched_output.requests[0].request_id,
+                stage=None,
+                event_name="scheduler_lookahead_launch",
+                metadata={"step_id": sched_output.step_id},
+            )
         return sched_output, pending_step
 
     def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
@@ -1290,6 +1302,13 @@ class OmniScheduler:
         mr_output = self._model_runner.execute_resolve(pending_step)
         if mr_output is None:
             return _FAILED_BATCH_RESULT
+        if self.is_entry_rank and _get_event_recorder().is_active():
+            _emit_event(
+                request_id=sched_output.requests[0].request_id,
+                stage=None,
+                event_name="scheduler_lookahead_resolve",
+                metadata={"step_id": sched_output.step_id},
+            )
         self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
         return GenerationBatchResult(
             logits_output=None,

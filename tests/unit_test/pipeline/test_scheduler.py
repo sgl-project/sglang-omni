@@ -418,12 +418,24 @@ def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     assert aborts == [("req-follower", False)]
 
 
-def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
+def test_omni_scheduler_custom_runner_profiles_lookahead_and_advances(
+    monkeypatch,
+) -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
     gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
     sync run_batch and per async launch; resolve does no forward.
     """
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        omni_scheduler_module, "_emit_event", lambda **event: events.append(event)
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_get_event_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
 
     class FakeModelRunner:
         def execute(self, sched_output):
@@ -434,20 +446,29 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
             )
 
         def execute_launch(self, sched_output):
-            return SimpleNamespace()
+            return SimpleNamespace(
+                batch_result=SimpleNamespace(next_token_ids=torch.tensor([1, 2]))
+            )
+
+        def execute_resolve(self, pending_step):
+            return ModelRunnerOutput(outputs={}, can_run_cuda_graph=True)
 
     scheduler = object.__new__(OmniScheduler)
     scheduler._model_runner = FakeModelRunner()
     scheduler._stream_output_builder = None
-    scheduler._prefill_start_done = set()
     scheduler.forward_ct = 0
+    scheduler.is_entry_rank = True
+    scheduler._prefill_start_done = {"r", "r2"}
 
-    def _batch():
+    def _batch(*request_ids):
         return SimpleNamespace(
             reqs=[
                 SimpleNamespace(
-                    rid="r", _omni_data=SimpleNamespace(), inflight_middle_chunks=0
+                    rid=rid,
+                    _omni_data=SimpleNamespace(),
+                    inflight_middle_chunks=0,
                 )
+                for rid in (request_ids or ("r",))
             ],
             is_prefill_only=False,
             is_extend_in_batch=False,
@@ -456,8 +477,32 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     scheduler._run_batch(_batch())
     assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
 
-    scheduler._run_batch_launch(_batch())
+    async_batch = _batch("r", "r2")
+    sched_output, pending_step = scheduler._run_batch_launch(async_batch)
     assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
+    scheduler._run_batch_resolve(async_batch, sched_output, pending_step)
+    assert scheduler.forward_ct == 2, "async resolve must not advance forward_ct"
+    assert [
+        (event["event_name"], event["request_id"], event["metadata"]["step_id"])
+        for event in events
+    ] == [
+        ("scheduler_lookahead_launch", "r", 2),
+        ("scheduler_lookahead_resolve", "r", 2),
+    ]
+
+    events.clear()
+    scheduler.is_entry_rank = False
+    sched_output, pending_step = scheduler._run_batch_launch(async_batch)
+    scheduler._run_batch_resolve(async_batch, sched_output, pending_step)
+    scheduler.is_entry_rank = True
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_get_event_recorder",
+        lambda: SimpleNamespace(is_active=lambda: False),
+    )
+    sched_output, pending_step = scheduler._run_batch_launch(async_batch)
+    scheduler._run_batch_resolve(async_batch, sched_output, pending_step)
+    assert events == []
 
 
 def test_omni_scheduler_resolve_drops_retracted_req() -> None:
