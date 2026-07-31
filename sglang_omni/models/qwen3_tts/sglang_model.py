@@ -1501,7 +1501,9 @@ class Qwen3TTSTalker(nn.Module):
         if self._sub_sampled_has_top_p:
             active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
             cdf = torch.cumsum(sorted_probs, dim=-1)
-            remove = (cdf > top_ps.unsqueeze(1)) & active_top_p.unsqueeze(1)
+            remove = (
+                cdf - sorted_probs >= top_ps.unsqueeze(1)
+            ) & active_top_p.unsqueeze(1)
             remove[:, 0] = False
             sorted_probs = sorted_probs.masked_fill(remove, -float("inf"))
         sorted_probs = sorted_probs.masked_fill(~keep_top_k, -float("inf"))
