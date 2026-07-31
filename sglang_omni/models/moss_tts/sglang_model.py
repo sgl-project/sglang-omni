@@ -30,6 +30,15 @@ from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
+from sglang_omni.models.moss_tts.sampler import (
+    DelayGraphBatch,
+    DelaySamplingOutput,
+    MossTTSDelayAudioGraphSampler,
+    matches_graph_profile,
+)
+from sglang_omni.models.moss_tts.sampling_cuda_graph import (
+    MossTTSDelaySamplingCudaGraphRunner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +83,8 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         self.config = self._normalize_config(config)
         self.quant_config = quant_config
         self.hidden_size = int(self.config.hidden_size)
+        self.delay_graph_sampler = MossTTSDelayAudioGraphSampler(self.config)
+        self._sampling_graph_runner: MossTTSDelaySamplingCudaGraphRunner | None = None
 
         self.embedding_list = torch.nn.ModuleList()
         if self.pp_group.is_first_rank or (
@@ -369,6 +380,108 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
     @property
     def text_control_token_ids(self) -> torch.Tensor:
         return self._text_control_token_ids
+
+    @staticmethod
+    def is_sampling_cuda_graph_compatible(data: Any) -> bool:
+        """Return whether one request uses the captured sampling profile."""
+
+        return matches_graph_profile(data)
+
+    def _sampling_graph_support_reason(self) -> str | None:
+        if self.device.type != "cuda" or not torch.cuda.is_available():
+            return "CUDA is unavailable"
+        if int(self.config.channels) != int(self.config.n_vq) + 1:
+            return (
+                "sampling CUDA graph requires channels == n_vq + 1 "
+                f"(got n_vq={self.config.n_vq}, channels={self.config.channels})"
+            )
+        audio_vocabs = {int(size) for size in self.config.vocab_size_list[1:]}
+        if len(audio_vocabs) != 1:
+            return "all audio codebooks must use the same vocabulary size"
+        if int(self.config.audio_pad_code) < 0:
+            return "audio_pad_code must be non-negative"
+        if not bool(self.pp_group.is_first_rank and self.pp_group.is_last_rank):
+            return "pipeline parallelism is not supported"
+        return None
+
+    @torch.no_grad()
+    def sample_delay_fixed_shape(
+        self,
+        control_logits: torch.Tensor,
+        audio_logits: torch.Tensor,
+        batch: DelayGraphBatch,
+        *,
+        audio_sample_output: torch.Tensor | None = None,
+    ) -> DelaySamplingOutput:
+        """Run one fixed-shape all-audio sampling/FSM step."""
+
+        return self.delay_graph_sampler(
+            control_logits,
+            audio_logits,
+            batch,
+            audio_sample_output=audio_sample_output,
+        )
+
+    @torch.no_grad()
+    def init_sampling_graphs(
+        self,
+        batch_sizes: list[int],
+        *,
+        disable_padding: bool = False,
+    ) -> None:
+        """Capture sampling/FSM graphs in the backbone batch envelope."""
+
+        buckets = tuple(sorted({int(batch_size) for batch_size in batch_sizes}))
+        if not buckets:
+            return
+        if any(batch_size < 1 for batch_size in buckets):
+            raise ValueError("MOSS-TTS Delay sampling CUDA graph bs must be >= 1")
+        reason = self._sampling_graph_support_reason()
+        if reason is not None:
+            logger.warning(
+                "MOSS-TTS Delay sampling CUDA graph disabled: %s. "
+                "Falling back to eager sampling.",
+                reason,
+            )
+            return
+        runner = MossTTSDelaySamplingCudaGraphRunner.capture(
+            model=self,
+            capture_bs=buckets,
+            disable_padding=disable_padding,
+        )
+        if not runner.graphs:
+            logger.warning(
+                "MOSS-TTS Delay sampling CUDA graph captured no buckets; "
+                "using eager sampling"
+            )
+            self._sampling_graph_runner = None
+            return
+        self._sampling_graph_runner = runner
+
+    def sampling_graph_available(
+        self,
+        batch_size: int,
+    ) -> bool:
+        runner = self._sampling_graph_runner
+        return runner is not None and runner.can_replay(batch_size)
+
+    @torch.no_grad()
+    def sample_delay_graphed(
+        self,
+        control_logits: torch.Tensor,
+        audio_logits: torch.Tensor,
+        batch: DelayGraphBatch,
+    ) -> DelaySamplingOutput:
+        """Replay one fixed-shape sampling/FSM CUDA graph."""
+
+        runner = self._sampling_graph_runner
+        if runner is None:
+            raise RuntimeError("MOSS-TTS Delay sampling CUDA graph is not configured")
+        return runner.replay(
+            control_logits,
+            audio_logits,
+            batch,
+        )
 
     @staticmethod
     def _select_sample_hidden_states(
