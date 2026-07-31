@@ -12,11 +12,17 @@ def create_dllm_thinker_scheduler(
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    max_concurrent_prefill: int = 1,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
     Returns a ``DllmScheduler`` with ``dllm_config`` set, ready to be
     driven by a ``Stage``.
+
+    ``max_concurrent_prefill`` controls the PrefillAdder concurrency cap
+    (default 1, preserving existing behavior). Raising it batches multiple
+    diffusion requests in one scheduling step for higher throughput once the
+    model runner is known to emit one token-id list per request.
     """
     from sglang.srt.dllm.config import DllmConfig
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -67,4 +73,5 @@ def create_dllm_thinker_scheduler(
         dllm_config=dllm_config,
         request_builder=request_builder,
         result_adapter=result_adapter,
+        max_concurrent_prefill=max_concurrent_prefill,
     )

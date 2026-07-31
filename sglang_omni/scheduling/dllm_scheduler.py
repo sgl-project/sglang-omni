@@ -19,6 +19,7 @@ from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
+from sglang_omni.scheduling.dllm_token_utils import split_token_ids_for_batch
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class DllmScheduler:
         *,
         request_builder: Callable,
         result_adapter: Callable,
+        max_concurrent_prefill: int = 1,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -60,6 +62,10 @@ class DllmScheduler:
         self._chunked_prefill_size = (
             getattr(dllm_config, "block_size", None) or server_args.chunked_prefill_size
         )
+        # Concurrent prefill cap for the PrefillAdder. Kept at 1 by default so
+        # behavior is unchanged; raising it enables batching multiple diffusion
+        # requests in one scheduling step (see _apply_results + split_token_ids_for_batch).
+        self._max_concurrent_prefill = max(1, int(max_concurrent_prefill))
 
         self._running = False
         self._abort_lock = threading.Lock()
@@ -153,7 +159,7 @@ class DllmScheduler:
             0.5,  # new_token_ratio
             self.server_args.max_prefill_tokens,
             self._chunked_prefill_size,
-            prefill_max_requests=1,
+            prefill_max_requests=self._max_concurrent_prefill,
         )
 
         # Re-submit existing staging (chunked) requests.
@@ -215,17 +221,12 @@ class DllmScheduler:
             if hasattr(next_token_ids, "tolist")
             else next_token_ids
         )
-        # This stage runs one request at a time (PrefillAdder is built with
-        # prefill_max_requests=1 in _schedule_next_batch), so the model may
-        # return a flat list of token ids for the single request rather than a
-        # list-per-request. Normalize that flat list into the per-request shape.
-        # NOTE: if prefill_max_requests is ever raised above 1, this flat-list
-        # branch must be revisited together with the scheduling cap, otherwise
-        # the zip() below would pair each Req with a single int.
-        if len(batch.reqs) == 1 and (not token_ids or isinstance(token_ids[0], int)):
-            token_ids_per_req = [token_ids]
-        else:
-            token_ids_per_req = token_ids
+        # Normalize the model output into a per-request list-of-lists. When the
+        # batch was scheduled with prefill_max_requests > 1 the model is expected
+        # to emit one inner list per request; the shared helper also keeps the
+        # classic single-request flat-list shape working and refuses to silently
+        # mis-pair requests when an unexpected flat shape appears under concurrency.
+        token_ids_per_req = split_token_ids_for_batch(batch.reqs, token_ids)
 
         for req, req_token_ids in zip(batch.reqs, token_ids_per_req):
             for token_id in req_token_ids:
