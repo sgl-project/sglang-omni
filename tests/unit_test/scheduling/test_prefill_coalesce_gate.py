@@ -19,6 +19,8 @@ import pytest
 
 pytest.importorskip("sglang")
 
+from sglang.srt.managers.schedule_batch import NextBatchPlan  # noqa: E402
+
 from sglang_omni.scheduling import omni_scheduler  # noqa: E402
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler  # noqa: E402
 
@@ -34,15 +36,25 @@ def _req(enqueue_t: float | None):
 class _StubScheduler:
     """The attribute surface get_new_batch_prefill touches."""
 
-    def __init__(self, *, coalesce_requests: int, wait_ms: float = 60.0) -> None:
+    def __init__(
+        self,
+        *,
+        coalesce_requests: int,
+        wait_ms: float = 60.0,
+        coalesce_when_idle: bool = False,
+    ) -> None:
         self.prefill_coalesce_requests = coalesce_requests
         self.prefill_coalesce_wait_s = wait_ms / 1e3
+        self.prefill_coalesce_when_idle = coalesce_when_idle
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
 
     def get_new_batch_prefill(self):
-        return OmniScheduler.get_new_batch_prefill(self)
+        # sglang 0.5.16 takes running_batch in and hands back a NextBatchPlan;
+        # unwrap it so the assertions below stay about the gate decision.
+        plan = OmniScheduler.get_new_batch_prefill(self, self.running_batch)
+        return plan.batch_to_run
 
 
 @pytest.fixture()
@@ -50,7 +62,7 @@ def upstream():
     with mock.patch.object(
         omni_scheduler._Upstream,
         "get_new_batch_prefill",
-        return_value=_UPSTREAM_BATCH,
+        return_value=NextBatchPlan(batch_to_run=_UPSTREAM_BATCH, running_batch=None),
     ) as patched:
         yield patched
 
@@ -137,12 +149,28 @@ def test_idle_loop_bypasses_gate(upstream):
     assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
 
 
+def test_idle_loop_can_coalesce_when_explicitly_enabled(upstream, clock):
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=10.0,
+        coalesce_when_idle=True,
+    )
+    sched.running_batch = None
+    sched.waiting_queue = [_req(100.0)]
+
+    clock.return_value = 100.005
+    assert sched.get_new_batch_prefill() is None
+
+    clock.return_value = 100.011
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
 def test_real_partial_admission_cycle_releases_leftovers_immediately(clock):
     # Note: (Jiaxin Deng) real admit cycle: upstream pops only the head of an
     # expired wave; the leftover keeps its stamp and releases on the next pass.
-    def _admit_head(self):
+    def _admit_head(self, running_batch):
         self.waiting_queue.pop(0)
-        return _UPSTREAM_BATCH
+        return NextBatchPlan(batch_to_run=_UPSTREAM_BATCH, running_batch=running_batch)
 
     sched = _StubScheduler(coalesce_requests=8, wait_ms=60.0)
     clock.return_value = 100.07

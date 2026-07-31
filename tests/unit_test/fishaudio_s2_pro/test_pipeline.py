@@ -15,6 +15,7 @@ import torch
 import typer
 
 from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
+from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -33,6 +34,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -65,6 +67,12 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "pipeline",
         "pipeline",
     ]
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    ] == [None, None]
+    build_process_topology_plan(config, build_stage_placement_plan(config))
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -534,10 +542,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     monkeypatch.setenv("HOME", "/tmp")
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
 
-    fake_runner = ModuleType("sglang.srt.model_executor.cuda_graph_runner")
+    fake_runner = ModuleType("sglang.srt.compilation.torch_compile_decoration")
     fake_runner.set_torch_compile_config = lambda: None
     monkeypatch.setitem(
-        sys.modules, "sglang.srt.model_executor.cuda_graph_runner", fake_runner
+        sys.modules,
+        "sglang.srt.compilation.torch_compile_decoration",
+        fake_runner,
     )
 
     compile_calls: list[tuple[object, str | None, dict[str, object]]] = []
@@ -611,7 +621,7 @@ def _run_s2pro_engine_with_fake_buffers(
             self.server_args = server_args
             self.model = SimpleNamespace()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
             assert self.server_args.torch_compile_max_bs == 64
             init_graph_calls.append(True)
@@ -650,13 +660,19 @@ def _run_s2pro_engine_with_fake_buffers(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> SimpleNamespace:
+    ) -> FakeServerArgs:
         del model_path
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],

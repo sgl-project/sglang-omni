@@ -291,7 +291,7 @@ All schedulers share the same interface: `inbox`, `outbox`, `start()`, `stop()`,
 
 ### OmniScheduler — Composition with SGLang
 
-For AR stages. Subset of SGLang Scheduler — reuses `get_next_batch_to_run()`, `run_batch()`, `process_batch_result()`, `event_loop_normal()`, overlap scheduling.
+For AR stages. Subset of SGLang Scheduler — reuses `get_next_batch_to_run()`, `run_batch()`, `process_batch_result()`, `event_loop_normal()`. (Overlap scheduling ended up unsupported: the `Req.inflight_middle_chunks` decrement lags one iteration on that loop, so `_event_loop_overlap` refuses to run.)
 
 - **Reused from SGLang:** `get_next_batch_to_run()`, `process_batch_result()`, `self_check_during_idle()` — KV cache management, prefill/decode scheduling, tree cache, dLLM support
 - **Overridden:** `init` (skip ZMQ/tokenizer/metrics), `recv_requests()` (drain inbox, route stream chunks to per-request state), `process_input_requests()` (`request_builder` conversion), `run_batch()` (delegate to ModelRunner), `send_to_tokenizer()` (no-op)

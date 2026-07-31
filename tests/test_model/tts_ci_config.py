@@ -116,6 +116,10 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "higgs": TtsCiPreset(
         model=TtsCiModelPreset(
             model_path="bosonai/higgs-tts-3-4b",
+            # On H100, SGLang 0.5.16 cold startup can spend about a minute
+            # capturing the largest decode CUDA graph after loading all TTS
+            # stages. Two managed workers can therefore exceed 180 seconds.
+            startup_timeout=300,
         ),
         thresholds=TtsCiThresholdPreset(
             non_stream_speed=HIGGS_VC_NON_STREAM_THRESHOLDS,

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.vendor.sglang.server_args import override_server_args
+
 
 def create_dllm_thinker_scheduler(
     server_args: Any,
@@ -29,9 +31,13 @@ def create_dllm_thinker_scheduler(
 
     dllm_config = DllmConfig.from_server_args(server_args)
 
-    # Explicitly disable radix cache until the sglang we depend on
-    # supports radix cache for DLLM.
-    server_args.disable_radix_cache = True
+    # sglang 0.5.16 supports radix cache with dLLM, but Omni's dLLM staging
+    # path has only been validated without it; keep it disabled deliberately.
+    override_server_args(
+        server_args,
+        "sglang_omni.llada2_uni.disable_radix_cache",
+        disable_radix_cache=True,
+    )
 
     (
         model_worker,

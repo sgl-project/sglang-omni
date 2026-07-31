@@ -10,6 +10,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from tests.unit_test.fakes import FakeServerArgs
+
 _PROJECT_PREFIX = "sglang_omni."
 
 
@@ -493,7 +495,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     )
 
     bootstrap = importlib.import_module("sglang_omni.models.ming_omni.bootstrap")
-    server_args = SimpleNamespace(tp_size=1)
+    server_args = FakeServerArgs(tp_size=1)
 
     scheduler = bootstrap.create_thinker_scheduler(
         server_args,

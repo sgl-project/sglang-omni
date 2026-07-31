@@ -51,6 +51,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.imports import import_string
+from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -621,6 +622,30 @@ def test_qwen_builder_omits_mem_fraction_static_by_default() -> None:
     assert server_args.context_length == 8192
     assert server_args.tp_size == 2
     assert server_args.random_seed == 777
+    assert server_args.cuda_graph_backend_prefill == "disabled"
+
+
+def test_qwen_builder_maps_legacy_cuda_graph_knobs_to_decode() -> None:
+    server_args = build_sglang_server_args(
+        "dummy",
+        context_length=8192,
+        cuda_graph_max_bs=16,
+        cuda_graph_bs=[1, 2, 4, 8, 12, 16],
+    )
+
+    assert server_args.cuda_graph_max_bs_decode == 16
+    assert server_args.cuda_graph_bs_decode == [1, 2, 4, 8, 12, 16]
+    assert server_args.cuda_graph_backend_prefill == "disabled"
+
+
+def test_qwen_builder_rejects_conflicting_decode_cuda_graph_knobs() -> None:
+    with pytest.raises(ValueError, match="Conflicting cuda_graph_max_bs"):
+        build_sglang_server_args(
+            "dummy",
+            context_length=8192,
+            cuda_graph_max_bs=16,
+            cuda_graph_max_bs_decode=32,
+        )
 
 
 def test_qwen_builder_forwards_explicit_mem_fraction_static() -> None:
@@ -636,7 +661,7 @@ def test_qwen_builder_forwards_explicit_mem_fraction_static() -> None:
 
 
 def test_qwen_encoder_mem_reserve_applies_only_to_valid_auto_values() -> None:
-    server_args = SimpleNamespace(mem_fraction_static=0.929)
+    server_args = FakeServerArgs(mem_fraction_static=0.929)
 
     apply_encoder_mem_reserve(server_args, 0.05)
 
@@ -776,7 +801,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
 
-    server_args = SimpleNamespace(
+    server_args = FakeServerArgs(
         disable_cuda_graph=False, enable_return_hidden_states=False
     )
     infrastructure_saw_graph_disabled: list[bool] = []
@@ -786,7 +811,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     class FakeModelRunner:
         model = object()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             nonlocal init_graph_calls
             init_graph_calls += 1
             assert server_args.disable_cuda_graph is False
@@ -1180,7 +1205,7 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
 
 
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
-    server_args = SimpleNamespace(mem_fraction_static=0.929)
+    server_args = FakeServerArgs(mem_fraction_static=0.929)
 
     applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
         server_args,

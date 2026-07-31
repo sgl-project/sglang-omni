@@ -863,7 +863,7 @@ def make_thinker_stream_output_builder():
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
         req = getattr(req_data, "req", None)
-        if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
+        if req is not None and req.inflight_middle_chunks > 0:
             # While chunked prefill is still consuming prompt tokens, suppress
             # hidden-state streaming to the talker.
             # Emitting chunks this early lets prompt-side states masquerade as the

@@ -11,7 +11,7 @@ hf download fishaudio/s2-pro
 ```
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains in place:
+so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
 
 ```bash
 uv pip install --upgrade sox einops
@@ -31,6 +31,9 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 
 ## Launch the Server
+
+See [TTS Process Topology](tts_process_topology.md) for model defaults,
+`--isolate-stage`, and same-GPU memory requirements.
 
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.

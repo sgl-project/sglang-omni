@@ -22,7 +22,8 @@ from sglang_omni.models.higgs_tts.model_runner import (
     HiggsTTSModelRunner,
     _syncfree_launch_enabled,
 )
-from sglang_omni.models.higgs_tts.sampler import K_MAX, NO_SEED
+from sglang_omni.models.higgs_tts.sampler import K_MAX
+from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, new_random_sampling_seed
 
 POOL = 8  # pool size incl. the reserved padding row
 N_CB = 4
@@ -35,7 +36,8 @@ def _make_pool():
         eoc_countdown=torch.full((POOL,), -1, dtype=torch.int32),
         generation_done=torch.zeros(POOL, dtype=torch.bool),
         last_codes=torch.zeros(POOL, N_CB, dtype=torch.long),
-        seeds=torch.full((POOL,), NO_SEED, dtype=torch.long),
+        # Pool rows always hold concrete non-negative seeds on this branch.
+        seeds=torch.randint(0, SAMPLING_SEED_MASK + 1, (POOL,), dtype=torch.long),
         step_count=torch.zeros(POOL, dtype=torch.long),
     )
 
@@ -44,7 +46,7 @@ def _make_pool():
         pool.eoc_countdown[row] = -1
         pool.generation_done[row] = False
         pool.last_codes[row].zero_()
-        pool.seeds[row] = NO_SEED
+        pool.seeds[row] = new_random_sampling_seed()
         pool.step_count[row] = 0
 
     pool.reset_row = reset_row
@@ -67,7 +69,7 @@ class _FakeModel:
         self._cg_active_eoc_countdown = torch.full((POOL,), -1, dtype=torch.int32)
         self._cg_active_generation_done = torch.zeros(POOL, dtype=torch.bool)
         self._cg_active_last_codes = torch.zeros(POOL, N_CB, dtype=torch.long)
-        self._cg_active_seeds = torch.full((POOL,), NO_SEED, dtype=torch.long)
+        self._cg_active_seeds = torch.zeros(POOL, dtype=torch.long)
         self._cg_active_step_count = torch.zeros(POOL, dtype=torch.long)
 
     def acquire_row(self, rid: str) -> int:
@@ -94,27 +96,35 @@ def _make_runner(model, *, enabled=True, async_enabled=False):
     calls = {"extract": 0}
     orig = HiggsTTSModelRunner._extract_decode_sampling_params
 
-    def counting_extract(forward_batch, n_real):
+    def counting_extract(requests):
         calls["extract"] += 1
-        return orig(forward_batch, n_real)
+        return orig(requests)
 
     runner._extract_decode_sampling_params = counting_extract
     return runner, calls
 
 
-def _reqs(*rids):
-    return [SimpleNamespace(request_id=r) for r in rids]
+def _reqs(rids, temps=None, top_ps=None, top_ks=None):
+    # The 0.5.15 adaptation reads sampling params host-side from the request
+    # objects, not from forward_batch.sampling_info.
+    reqs = []
+    for i, rid in enumerate(rids):
+        params = SimpleNamespace(
+            temperature=temps[i] if temps else 1.0,
+            top_p=top_ps[i] if top_ps else 1.0,
+            top_k=top_ks[i] if top_ks else None,
+        )
+        reqs.append(
+            SimpleNamespace(
+                request_id=rid,
+                data=SimpleNamespace(req=SimpleNamespace(sampling_params=params)),
+            )
+        )
+    return reqs
 
 
-def _fb(bs, temps, top_ps, top_ks):
-    return SimpleNamespace(
-        batch_size=bs,
-        sampling_info=SimpleNamespace(
-            temperatures=torch.tensor(temps, dtype=torch.float32),
-            top_ps=torch.tensor(top_ps, dtype=torch.float32),
-            top_ks=torch.tensor(top_ks, dtype=torch.long),
-        ),
-    )
+def _fb(bs):
+    return SimpleNamespace(batch_size=bs)
 
 
 AB_FB = ([0.7, 0.9], [0.95, 0.8], [50, 0])  # top_k=0 -> None -> K_MAX
@@ -123,8 +133,8 @@ AB_FB = ([0.7, 0.9], [0.95, 0.8], [50, 0])  # top_k=0 -> None -> K_MAX
 def test_hit_skips_extract_and_keeps_buffers():
     model = _FakeModel()
     runner, calls = _make_runner(model)
-    fb = _fb(2, *AB_FB)
-    reqs = _reqs("a", "b")
+    fb = _fb(2)
+    reqs = _reqs(["a", "b"], *AB_FB)
 
     runner._populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 1
@@ -150,8 +160,8 @@ def test_hit_skips_extract_and_keeps_buffers():
 def test_pool_gathers_still_run_on_hit():
     model = _FakeModel()
     runner, _ = _make_runner(model)
-    fb = _fb(2, *AB_FB)
-    reqs = _reqs("a", "b")
+    fb = _fb(2)
+    reqs = _reqs(["a", "b"], *AB_FB)
     runner._populate_cg_buffers(fb, reqs)
     row_a = model._rid_to_row["a"]
     # Note (Yueying Li): simulate the previous step's scatter mutating pool state.
@@ -166,32 +176,34 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     model = _FakeModel()
     runner, calls = _make_runner(model)
 
-    fb_a = _fb(1, [0.7], [0.95], [50])
-    runner._populate_cg_buffers(fb_a, _reqs("a"))
+    fb_a = _fb(1)
+    runner._populate_cg_buffers(fb_a, _reqs(["a"], [0.7], [0.95], [50]))
     assert calls["extract"] == 1
 
     # Admission: [a] -> [a, b]
-    fb_ab = _fb(2, *AB_FB)
-    runner._populate_cg_buffers(fb_ab, _reqs("a", "b"))
+    fb_ab = _fb(2)
+    runner._populate_cg_buffers(fb_ab, _reqs(["a", "b"], *AB_FB))
     assert calls["extract"] == 2
     assert model._cg_temperature[:2].tolist() == pytest.approx([0.7, 0.9])
 
     # Reorder: [a, b] -> [b, a] (order-sensitive key)
-    fb_ba = _fb(2, [0.9, 0.7], [0.8, 0.95], [0, 50])
-    runner._populate_cg_buffers(fb_ba, _reqs("b", "a"))
+    fb_ba = _fb(2)
+    runner._populate_cg_buffers(
+        fb_ba, _reqs(["b", "a"], [0.9, 0.7], [0.8, 0.95], [0, 50])
+    )
     assert calls["extract"] == 3
     assert model._cg_temperature[:2].tolist() == pytest.approx([0.9, 0.7])
     assert model._cg_top_k_buf[:2].tolist() == [K_MAX, 50]
 
     # Finish/removal: [b, a] -> [b]
-    fb_b = _fb(1, [0.9], [0.8], [0])
-    runner._populate_cg_buffers(fb_b, _reqs("b"))
+    fb_b = _fb(1)
+    runner._populate_cg_buffers(fb_b, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 4
     assert model._cg_row_indices[0] == model._rid_to_row["b"]
 
     # Padded-bs change with same composition: bs 1 -> 3
-    fb_b_pad = _fb(3, [0.9], [0.8], [0])
-    runner._populate_cg_buffers(fb_b_pad, _reqs("b"))
+    fb_b_pad = _fb(3)
+    runner._populate_cg_buffers(fb_b_pad, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 5
     assert model._cg_row_indices[1:3].tolist() == [PAD_ROW, PAD_ROW]
     assert model._cg_temperature[1:3].tolist() == [1.0, 1.0]
@@ -202,7 +214,9 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     old_row = model._rid_to_row["b"]
     model.release_row("b")
     assert model.acquire_row("z") == old_row  # steals b's row
-    runner._populate_cg_buffers(fb_b_pad, _reqs("b"))  # same rids, same bs
+    runner._populate_cg_buffers(
+        fb_b_pad, _reqs(["b"], [0.9], [0.8], [0])
+    )  # same rids, same bs
     assert calls["extract"] == 6  # row change -> miss
     assert model._cg_row_indices[0] == model._rid_to_row["b"]
     assert model._rid_to_row["b"] != old_row
@@ -211,8 +225,8 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
 def test_flag_off_always_rebuilds():
     model = _FakeModel()
     runner, calls = _make_runner(model, enabled=False)
-    fb = _fb(2, *AB_FB)
-    reqs = _reqs("a", "b")
+    fb = _fb(2)
+    reqs = _reqs(["a", "b"], *AB_FB)
     for _ in range(3):
         runner._populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 3
@@ -222,8 +236,8 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
     def run_steps(enabled):
         model = _FakeModel()
         runner, calls = _make_runner(model, enabled=enabled, async_enabled=True)
-        fb = _fb(2, *AB_FB)
-        reqs = _reqs("a", "b")
+        fb = _fb(2)
+        reqs = _reqs(["a", "b"], *AB_FB)
         rows_per_step = []
         runner._populate_cg_buffers(fb, reqs, is_lookahead=True)
         rows_per_step.append(model._cg_row_indices[:2].tolist())
@@ -235,8 +249,10 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
             rows_per_step.append(model._cg_row_indices[:2].tolist())
         # Host drops "b": composition changes -> rebuild.
         model.release_row("b")
-        fb_a = _fb(1, [0.7], [0.95], [50])
-        runner._populate_cg_buffers(fb_a, _reqs("a"), is_lookahead=True)
+        fb_a = _fb(1)
+        runner._populate_cg_buffers(
+            fb_a, _reqs(["a"], [0.7], [0.95], [50]), is_lookahead=True
+        )
         rows_per_step.append(model._cg_row_indices[:1].tolist())
         return rows_per_step, model._rid_to_row["a"], calls["extract"]
 
@@ -252,28 +268,35 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
 
 
 def test_rid_reuse_on_same_row_misses():
-    # Note (Yueying Li): client-supplied rids may be reused after a request finishes; LIFO row
-    # recycling then reproduces the exact (rid, row, bs) key of the finished
-    # request. A fresh acquisition must force a rebuild or the new request
-    # inherits the old params and a stale padding-row redirect.
+    # Defensive model-level contract: a direct caller can recycle a rid after
+    # release even though the Coordinator reserves recently terminal IDs.
+    # LIFO row recycling then reproduces the exact (rid, row, bs) key of the
+    # finished request. A fresh acquisition must force a rebuild or the new
+    # request inherits the old params and a stale padding-row redirect.
     model = _FakeModel()
     runner, calls = _make_runner(model, async_enabled=True)
-    fb_old = _fb(1, [0.3], [0.5], [10])
-    runner._populate_cg_buffers(fb_old, _reqs("x"), is_lookahead=True)
+    fb_old = _fb(1)
+    runner._populate_cg_buffers(
+        fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
+    )
     assert calls["extract"] == 1
     row = model._rid_to_row["x"]
 
     # "x" EOC-finishes on-GPU; overrun step redirects its slot to padding.
     model._sampler_pool.generation_done[row] = True
-    runner._populate_cg_buffers(fb_old, _reqs("x"), is_lookahead=True)
+    runner._populate_cg_buffers(
+        fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
+    )
     assert calls["extract"] == 1  # hit, as in baseline
     assert int(model._cg_row_indices[0]) == PAD_ROW
 
     # Host drops "x"; LIFO hands the same row to the reincarnated rid "x".
     model.release_row("x")
     model._sampler_pool.generation_done[row] = False
-    fb_new = _fb(1, [0.9], [0.8], [50])
-    runner._populate_cg_buffers(fb_new, _reqs("x"), is_lookahead=True)
+    fb_new = _fb(1)
+    runner._populate_cg_buffers(
+        fb_new, _reqs(["x"], [0.9], [0.8], [50]), is_lookahead=True
+    )
     assert model._rid_to_row["x"] == row  # same row: key would collide
     assert calls["extract"] == 2  # fresh acquisition -> MISS
     assert int(model._cg_row_indices[0]) == row  # redirect cleared

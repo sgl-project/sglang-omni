@@ -104,7 +104,7 @@ def test_vendored_sglang_layers_do_not_import_removed_sampling_symbol() -> None:
     assert "top_k_top_p_sampling_from_probs" not in source
 
 
-def test_ming_vision_block_kwargs_pass_head_size_only_when_supported(
+def test_ming_vision_block_kwargs_include_head_size(
     monkeypatch,
 ) -> None:
     weight_loader_module = ModuleType("sglang_omni.models.weight_loader")
@@ -119,15 +119,18 @@ def test_ming_vision_block_kwargs_pass_head_size_only_when_supported(
         _build_qwen3_vision_block_kwargs,
     )
 
-    class LegacyVisionBlock:
-        def __init__(self, dim, num_heads, intermediate_dim, prefix=""):
-            pass
+    kwargs = _build_qwen3_vision_block_kwargs(
+        dim=1152,
+        num_heads=16,
+        head_size=72,
+        intermediate_dim=4304,
+        hidden_act="gelu_pytorch_tanh",
+        norm_layer=None,
+        quant_config=None,
+        prefix="visual.blocks.0",
+    )
 
-    class NewVisionBlock:
-        def __init__(self, dim, num_heads, head_size, intermediate_dim, prefix=""):
-            pass
-
-    common = {
+    assert kwargs == {
         "dim": 1152,
         "num_heads": 16,
         "head_size": 72,
@@ -137,15 +140,6 @@ def test_ming_vision_block_kwargs_pass_head_size_only_when_supported(
         "quant_config": None,
         "prefix": "visual.blocks.0",
     }
-
-    legacy_kwargs = _build_qwen3_vision_block_kwargs(
-        LegacyVisionBlock,
-        **common,
-    )
-    new_kwargs = _build_qwen3_vision_block_kwargs(NewVisionBlock, **common)
-
-    assert "head_size" not in legacy_kwargs
-    assert new_kwargs["head_size"] == 72
 
 
 def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=None):
@@ -352,12 +346,12 @@ def _fake_batch(torch_module, input_ids, req):
     return forward_batch, schedule_batch
 
 
-def _fake_req(model_inputs, *, is_chunked=0, rid="req-1"):
+def _fake_req(model_inputs, *, inflight_middle_chunks=0, rid="req-1"):
     return SimpleNamespace(
         rid=rid,
         omni_model_inputs=model_inputs,
         _omni_consumed=None,
-        is_chunked=is_chunked,
+        inflight_middle_chunks=inflight_middle_chunks,
     )
 
 
@@ -416,7 +410,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     runner = _fake_runner(torch, runner_cls, image=3)
     image_embeds = torch.tensor([[20.0, 21.0], [22.0, 23.0]])
     model_inputs = {"image_embeds": image_embeds}
-    req = _fake_req(model_inputs, is_chunked=1, rid="chunked-image")
+    req = _fake_req(model_inputs, inflight_middle_chunks=1, rid="chunked-image")
     forward_batch, schedule_batch = _fake_batch(torch, [3, 1], req)
 
     input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
@@ -425,7 +419,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     assert req.omni_model_inputs is model_inputs
     assert req._omni_consumed == {"image": 1}
 
-    req.is_chunked = 0
+    req.inflight_middle_chunks = 0
     forward_batch, schedule_batch = _fake_batch(torch, [3, 2], req)
 
     input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
@@ -434,3 +428,50 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     assert req.omni_model_inputs is None
     assert req._omni_consumed is None
     assert model_inputs == {"image_embeds": image_embeds}
+
+
+def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
+    import torch
+    from sglang.srt.model_executor.forward_context import (
+        get_forward_context,
+        has_forward_context,
+    )
+
+    from sglang_omni.model_runner.ming_thinker_model_runner import (
+        MingThinkerModelRunner,
+    )
+
+    runner = MingThinkerModelRunner.__new__(MingThinkerModelRunner)
+    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(attn_backend=attn_backend)
+    )
+
+    seen = []
+
+    def model(**kwargs):
+        seen.append(get_forward_context().attn_backend)
+        return torch.ones(1, 2)
+
+    def logits_processor(input_ids, hidden_states, lm_head, forward_batch):
+        seen.append(get_forward_context().attn_backend)
+        assert input_ids is forward_batch.input_ids
+        assert lm_head == "lm_head"
+        return "logits"
+
+    runner._outer_model = SimpleNamespace(
+        model=model,
+        logits_processor=logits_processor,
+        lm_head="lm_head",
+    )
+    forward_batch = SimpleNamespace(
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+        input_ids=torch.tensor([1]),
+    )
+
+    assert not has_forward_context()
+    result = runner._forward_with_omni_embeds(forward_batch, torch.ones(1, 2))
+
+    assert seen == [attn_backend, attn_backend]
+    assert result.logits_output == "logits"

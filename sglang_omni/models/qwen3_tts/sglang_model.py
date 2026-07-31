@@ -1129,7 +1129,11 @@ class Qwen3TTSTalker(nn.Module):
         *,
         max_batch_size: int,
     ) -> tuple[int, ...]:
-        raw_batch_sizes = getattr(server_args, "cuda_graph_bs", None)
+        from sglang_omni.scheduling.generation_batch_policy import (
+            get_decode_cuda_graph_bs,
+        )
+
+        raw_batch_sizes = get_decode_cuda_graph_bs(server_args)
         if raw_batch_sizes is None:
             # Note: (Jiaxin Deng) mirrors the backbone's default capture list
             # ([1, 2, 4, 8, 12, 16] at max_running_requests=16).
@@ -1237,7 +1241,7 @@ class Qwen3TTSTalker(nn.Module):
             return False
         # Note: (Jiaxin Deng) capture under TP would record collectives; the
         # graphed chain is only validated single-rank, so TP stays eager.
-        return int(getattr(server_args, "tp_size", 1) or 1) == 1
+        return int(server_args.tp_size) == 1
 
     def _predictor_forward_graphed(
         self,

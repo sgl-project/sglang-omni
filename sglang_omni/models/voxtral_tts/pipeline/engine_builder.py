@@ -43,7 +43,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         }
 
     def customize_server_args(self, server_args: Any) -> None:
-        if getattr(server_args, "enable_torch_compile", False):
+        if server_args.enable_torch_compile:
             voxtral_stages._enable_inductor_gemm_autotune()
 
     def setup_model(

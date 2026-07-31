@@ -4,19 +4,9 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-
-
-def resolve_moss_checkpoint(checkpoint: str) -> str:
-    """Return a local checkpoint directory for a local path or HF repo id."""
-    if os.path.isdir(checkpoint):
-        return checkpoint
-    from huggingface_hub import snapshot_download
-
-    return snapshot_download(checkpoint)
 
 
 @contextmanager
@@ -70,10 +60,13 @@ def moss_transformers_processor_compat() -> Iterator[None]:
                 obj[key] = old
 
 
-def load_moss_processor_class(checkpoint_dir: str) -> type:
+def load_moss_processor_class(checkpoint: str) -> type:
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
+    from transformers.utils.hub import cached_file
 
-    processor_config_path = os.path.join(checkpoint_dir, "processor_config.json")
+    processor_config_path = cached_file(checkpoint, "processor_config.json")
+    if processor_config_path is None:
+        raise RuntimeError("MOSS-TTS checkpoint lacks processor_config.json")
     with open(processor_config_path, encoding="utf-8") as f:
         processor_config = json.load(f)
 
@@ -81,7 +74,11 @@ def load_moss_processor_class(checkpoint_dir: str) -> type:
     if not class_ref:
         raise RuntimeError("MOSS-TTS processor_config.json lacks AutoProcessor map")
 
-    processor_cls = get_class_from_dynamic_module(class_ref, checkpoint_dir)
+    # Keep Hub repo IDs as repo IDs. Turning one into snapshot_download's
+    # symlink-based cache directory makes recent Transformers releases treat
+    # the blob targets as a local source tree. Relative imports are then
+    # resolved beside ``blobs/<hash>`` instead of beside the snapshot module.
+    processor_cls = get_class_from_dynamic_module(class_ref, checkpoint)
     if list(getattr(processor_cls, "attributes", [])) == [
         "feature_extractor",
         "tokenizer",

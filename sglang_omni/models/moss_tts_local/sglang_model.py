@@ -363,7 +363,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def _ensure_frame_compile_config(self) -> None:
         if self._frame_compile_configured:
             return
-        from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+        from sglang.srt.compilation.torch_compile_decoration import (
+            set_torch_compile_config,
+        )
 
         set_torch_compile_config()
         self._frame_compile_configured = True

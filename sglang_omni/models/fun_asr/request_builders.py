@@ -386,7 +386,7 @@ def make_fun_asr_stream_output_builder(
         token_data = req_output.data
         if req is None:
             return []
-        if req.is_chunked > 0:
+        if req.inflight_middle_chunks > 0:
             return []
 
         stage_payload = req_data.stage_payload

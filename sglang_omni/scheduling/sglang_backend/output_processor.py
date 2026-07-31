@@ -202,7 +202,7 @@ class SGLangOutputProcessor:
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
 
-        lengths = [req.extend_input_len for req in reqs]
+        lengths = [req.extend_range.length for req in reqs]
         total_tokens = sum(lengths)
         if tensor.shape[0] == total_tokens:
             start = sum(lengths[:request_index])
