@@ -82,3 +82,25 @@ python examples/run_omni.py ming-speech-server \
 ```
 
 Use a different `--port` if you run more than one server at the same time.
+
+## Single-GPU Example Configs
+
+`examples/configs/*.yaml` are declarative launcher configs for `sgl-omni serve
+--config <file>`. Each pins a `config_cls` and the official `model_path`; the
+server auto-detects the pipeline topology. The following are tuned for a **single
+GPU** (validated on a single A100-40G / H100) and are convenient when multi-GPU
+hardware is not available.
+
+| Config | Workload | Endpoint | Notes |
+| --- | --- | --- | --- |
+| `examples/configs/higgs_tts.yaml` | Higgs Audio v3 TTS (~4B) | `/v1/audio/speech` | Zero-shot + voice cloning; see `docs/cookbook/higgs_tts.md` |
+| `examples/configs/zonos2.yaml` | ZONOS2 (MoE TTS) | `/v1/audio/speech` | Single-process colocated pipeline; see `docs/cookbook/zonos2.md` |
+| `examples/configs/fun_asr.yaml` | Fun-ASR-Nano (ASR) | `/v1/audio/transcriptions`, `/v1/audio/translations` | Small ASR model; see `docs/cookbook/fun_asr.md` |
+
+Launch any of them with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --config examples/configs/higgs_tts.yaml \
+  --port 8000
+```
