@@ -73,9 +73,7 @@ if triton is not None:
         u = tl.maximum(u, 2.2250738585072014e-308)
         gumbel = -tl.log(-tl.log(u))
         weights = tl.load(
-            logprobs
-            + row * logprobs_stride_b
-            + offsets * logprobs_stride_k,
+            logprobs + row * logprobs_stride_b + offsets * logprobs_stride_k,
             mask=mask,
             other=-float("inf"),
         ).to(tl.float64)

@@ -1847,9 +1847,7 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
 
     def fake_multinomial_with_seed(logprobs, seed, positions):
         assert torch.all(logprobs <= 0)
-        assert torch.allclose(
-            logprobs.exp().sum(dim=1), torch.ones(logprobs.shape[0])
-        )
+        assert torch.allclose(logprobs.exp().sum(dim=1), torch.ones(logprobs.shape[0]))
         sampler_calls.append(
             {
                 "logprobs": logprobs.detach().clone(),
