@@ -16,6 +16,20 @@ import sys
 from sglang_omni.profiler.views import build_report, format_table
 
 
+def _global_peak(gpu_global: dict, key: str) -> float | None:
+    block = gpu_global.get(key) or {}
+    return block.get("peak_mb")
+
+
+def _global_mean(gpu_global: dict, key: str) -> float | None:
+    block = gpu_global.get(key) or {}
+    return block.get("mean_mb")
+
+
+def _fmt_mb(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "n/a"
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m sglang_omni.profiler",
@@ -42,6 +56,25 @@ def _main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         text = json.dumps(report, indent=2)
     else:
+        gpu = report.get("gpu_breakdown") or {}
+        gpu_rows = gpu.get("per_request", [])
+        gpu_global = gpu.get("global", {})
+        gpu_section = (
+            "\n## GPU & memory\n"
+            + format_table(
+                gpu_rows,
+                [
+                    "request_id",
+                    "gpu_mem_allocated_peak_mb",
+                    "gpu_mem_reserved_peak_mb",
+                ],
+            )
+            + "\nGlobal GPU memory (allocated / reserved):\n"
+            + f"  peak_mb : {_fmt_mb(_global_peak(gpu_global, 'gpu_mem_allocated'))} / "
+            f"{_fmt_mb(_global_peak(gpu_global, 'gpu_mem_reserved'))}\n"
+            + f"  mean_mb : {_fmt_mb(_global_mean(gpu_global, 'gpu_mem_allocated'))} / "
+            f"{_fmt_mb(_global_mean(gpu_global, 'gpu_mem_reserved'))}\n"
+        )
         text = (
             f"# Requests: {report['request_count']}\n\n"
             "## Stage breakdown\n"
@@ -54,6 +87,7 @@ def _main(argv: list[str] | None = None) -> int:
                 report["hop_breakdown"],
                 ["src", "dst", "kind", "count", "total_ms", "avg_ms", "p95_ms"],
             )
+            + (gpu_section if gpu_rows else "")
         )
 
     if args.out == "-":
