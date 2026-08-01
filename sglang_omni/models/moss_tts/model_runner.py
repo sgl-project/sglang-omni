@@ -19,6 +19,57 @@ _UINT64_MASK = (1 << 64) - 1
 _INT64_SEED_MASK = (1 << 63) - 1
 
 
+class _MossComponentProfile:
+    def __init__(self, component: str, request_id: str | None, batch_size: int) -> None:
+        self.component = component
+        self.request_id = request_id
+        self.metadata = {"component": component, "batch_size": batch_size}
+        self._range = None
+
+    def __enter__(self) -> None:
+        self._range = torch.profiler.record_function(f"moss_tts.{self.component}")
+        self._range.__enter__()
+        self._emit("moss_component_start")
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self._emit("moss_component_end")
+        if self._range is not None:
+            self._range.__exit__(exc_type, exc, tb)
+
+    def _emit(self, event_name: str) -> None:
+        if self.request_id is None:
+            return
+        try:
+            from sglang_omni.profiler.event_recorder import get_recorder
+
+            recorder = get_recorder()
+            if recorder.is_active():
+                recorder.emit(
+                    request_id=self.request_id,
+                    stage=None,
+                    event_name=event_name,
+                    metadata=self.metadata,
+                )
+        except Exception:
+            return
+
+
+def _moss_request_id(requests: list) -> str | None:
+    if not requests:
+        return None
+    req = requests[0]
+    rid = getattr(req, "request_id", None)
+    if rid is None:
+        rid = getattr(getattr(req, "data", None), "request_id", None)
+    if rid is None:
+        rid = getattr(getattr(getattr(req, "data", None), "req", None), "rid", None)
+    return None if rid is None else str(rid)
+
+
+def _moss_component_profile(component: str, requests: list) -> _MossComponentProfile:
+    return _MossComponentProfile(component, _moss_request_id(requests), len(requests))
+
+
 @torch.compile(dynamic=True)
 def _multinomial_with_seed_and_token_ids(
     logprobs: torch.Tensor,
@@ -168,30 +219,33 @@ class MossTTSModelRunner(ModelRunner):
     ) -> None:
         datas = [sched_req.data for sched_req in requests]
         is_audio = bool(datas) and all(data.is_audio for data in datas)
-        channel_logits = self._channel_logits_from_result(
-            result,
-            forward_batch,
-            is_audio=is_audio,
-        )
+        with _moss_component_profile("channel_logits", requests):
+            channel_logits = self._channel_logits_from_result(
+                result,
+                forward_batch,
+                is_audio=is_audio,
+            )
         n_vq = len(channel_logits) - 1
         if n_vq <= 0:
             raise RuntimeError("MOSS-TTS requires at least one audio codebook head")
         if not requests:
             return
 
-        rows = self._sample_rows(
-            channel_logits,
-            datas,
-            n_vq=n_vq,
-            is_audio=is_audio,
-        )
+        with _moss_component_profile("delay_sampling", requests):
+            rows = self._sample_rows(
+                channel_logits,
+                datas,
+                n_vq=n_vq,
+                is_audio=is_audio,
+            )
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
         schedule_batch.output_ids = next_token_ids
-        embeds = self.model._prepare_multi_modal_inputs(
-            rows.to(device=self.model.device)
-        )
+        with _moss_component_profile("feedback_embedding", requests):
+            embeds = self.model._prepare_multi_modal_inputs(
+                rows.to(device=self.model.device)
+            )
         self._pending_rows = rows
         self._pending_embeds = embeds.detach()
 
@@ -703,18 +757,20 @@ class MossTTSModelRunner(ModelRunner):
         eos_id = int(self.model.config.im_end_token_id)
         audio_start_id = int(self.model.config.audio_start_token_id)
         audio_end_id = int(self.model.config.audio_end_token_id)
-        for row_idx, sched_req in enumerate(scheduler_output.requests):
-            req_output = outputs[sched_req.request_id]
-            if req_output.data is None:
-                continue
-            text_token_id = int(req_output.data)
-            if text_token_id == audio_start_id:
-                sched_req.data.is_audio = True
-            elif text_token_id == audio_end_id:
-                sched_req.data.is_audio = False
-            if text_token_id == eos_id:
-                continue
-            sched_req.data.output_rows.append(rows[row_idx].detach().clone())
-            sched_req.data.pending_feedback_queue.append(
-                embeds[row_idx].detach().clone()
-            )
+        requests = scheduler_output.requests
+        with _moss_component_profile("post_process_feedback", requests):
+            for row_idx, sched_req in enumerate(requests):
+                req_output = outputs[sched_req.request_id]
+                if req_output.data is None:
+                    continue
+                text_token_id = int(req_output.data)
+                if text_token_id == audio_start_id:
+                    sched_req.data.is_audio = True
+                elif text_token_id == audio_end_id:
+                    sched_req.data.is_audio = False
+                if text_token_id == eos_id:
+                    continue
+                sched_req.data.output_rows.append(rows[row_idx].detach().clone())
+                sched_req.data.pending_feedback_queue.append(
+                    embeds[row_idx].detach().clone()
+                )
