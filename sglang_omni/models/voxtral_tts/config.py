@@ -23,6 +23,21 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_generation"}
 
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        return frozenset({(GENERATION_STAGE, VOCODER_STAGE)})
+
+    @classmethod
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {
+            (GENERATION_STAGE, VOCODER_STAGE): {
+                GENERATION_STAGE: 0.85,
+                VOCODER_STAGE: 0.10,
+            }
+        }
+
     model_path: str
     entry_stage: str = "preprocessing"
     stages: list[StageConfig] = [

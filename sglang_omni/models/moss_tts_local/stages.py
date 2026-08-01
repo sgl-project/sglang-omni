@@ -18,7 +18,6 @@ import torch
 from sglang_omni.models.moss_tts.hf_loading import (
     load_moss_processor_class,
     moss_transformers_processor_compat,
-    resolve_moss_checkpoint,
 )
 from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
 from sglang_omni.models.moss_tts_local.audio_tokenizer import (
@@ -46,6 +45,7 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.cpu import bounded_intraop_threads
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ _MOSS_TTS_LOCAL_INSTALL_HINT = (
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2."
 )
 _MAX_REFERENCE_SECONDS = 100.0
+_MAX_PIPELINE_INTRAOP_THREADS = 8
 
 # NOTE: preprocessing and vocoder stages each load their own codec instance:
 # `model.streaming()` flips codec state, so a decode on a shared instance would
@@ -79,6 +80,22 @@ class _WaveformReferenceJob:
 
 
 _ReferenceEncodeJob: TypeAlias = _PathReferenceJob | _WaveformReferenceJob
+
+
+def _configure_pipeline_threads(worker_count: int) -> int:
+    """Bound the shared Torch CPU pool used by the colocated pipeline process."""
+    override = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if override.isdigit() and int(override) >= 1:
+        requested = int(override)
+        torch.set_num_threads(requested)
+        return requested
+
+    intraop_threads = bounded_intraop_threads(
+        worker_count=max(int(worker_count), 1),
+        max_threads=_MAX_PIPELINE_INTRAOP_THREADS,
+    )
+    torch.set_num_threads(intraop_threads)
+    return intraop_threads
 
 
 def _apply_colocated_ar_memory_budget(
@@ -135,6 +152,46 @@ def _apply_colocated_ar_memory_budget(
     )
 
 
+def _validate_loaded_process_memory_budget(
+    *,
+    stage_name: str,
+    gpu_id: int,
+    total_gpu_memory_fraction: float | None,
+) -> None:
+    if total_gpu_memory_fraction is None:
+        return
+
+    from sglang_omni.utils.gpu_memory import (
+        format_bytes_gib,
+        get_gpu_device_info,
+        get_process_gpu_memory_bytes,
+    )
+
+    process_bytes = get_process_gpu_memory_bytes(gpu_id)
+    total_bytes = get_gpu_device_info(gpu_id).total_memory_bytes
+    if process_bytes is None or total_bytes is None:
+        logger.warning(
+            f"{stage_name} GPU memory budget cannot be verified: "
+            f"gpu_id={gpu_id} fraction={total_gpu_memory_fraction:.3f}"
+        )
+        return
+
+    budget_bytes = int(total_bytes * total_gpu_memory_fraction)
+    if process_bytes > budget_bytes:
+        raise RuntimeError(
+            f"{stage_name} process GPU memory exceeds its configured budget: "
+            f"used={format_bytes_gib(process_bytes)}, "
+            f"budget={format_bytes_gib(budget_bytes)}, "
+            f"fraction={total_gpu_memory_fraction:.3f}"
+        )
+    logger.info(
+        f"{stage_name} process GPU memory: "
+        f"used={format_bytes_gib(process_bytes)} "
+        f"budget={format_bytes_gib(budget_bytes)} "
+        f"fraction={total_gpu_memory_fraction:.3f}"
+    )
+
+
 def _normalize_processor_config(processor: Any) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
@@ -162,19 +219,18 @@ def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
 
 
 def _load_moss_tts_local_processor(model_path: str) -> Any:
-    checkpoint_dir = resolve_moss_checkpoint(model_path)
-    logger.info(f"Loading MOSS-TTS Local processor from {checkpoint_dir} without codec")
+    logger.info(f"Loading MOSS-TTS Local processor from {model_path} without codec")
     try:
         from transformers import AutoConfig, AutoTokenizer
 
         with moss_transformers_processor_compat():
-            processor_cls = load_moss_processor_class(checkpoint_dir)
+            processor_cls = load_moss_processor_class(model_path)
             model_config = AutoConfig.from_pretrained(
-                checkpoint_dir,
+                model_path,
                 trust_remote_code=True,
             )
             tokenizer = AutoTokenizer.from_pretrained(
-                checkpoint_dir,
+                model_path,
                 trust_remote_code=True,
             )
             processor = processor_cls(
@@ -494,6 +550,12 @@ def create_preprocessing_executor(
     ref_audio_cache_max_items: int = 8192,
     ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
 ) -> SimpleScheduler:
+    worker_count = max(int(max_concurrency), 1)
+    intraop_threads = _configure_pipeline_threads(worker_count)
+    logger.info(
+        f"MOSS-TTS Local pipeline uses {worker_count} preprocessing workers, "
+        f"{intraop_threads} shared intra-op threads"
+    )
     # MOSS_REF_AUDIO_CACHE=0 disables the cache at startup (ops kill switch / A-B
     # toggle) without a config edit; unset => kwarg/config default.
     env_toggle = os.environ.get("MOSS_REF_AUDIO_CACHE")
@@ -547,6 +609,7 @@ def create_sglang_tts_engine_executor(
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
     total_gpu_memory_fraction: float | None = None,
+    process_total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
 ) -> Any:
     from sglang_omni.models.moss_tts_local.engine_builder import (
@@ -557,6 +620,7 @@ def create_sglang_tts_engine_executor(
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        process_total_gpu_memory_fraction=process_total_gpu_memory_fraction,
         codec_mem_reserve=codec_mem_reserve,
     ).build(
         model_path,
@@ -575,14 +639,14 @@ def create_vocoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
+    process_total_gpu_memory_fraction: float | None = None,
     codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 15,
     stream_chunk_frames: int = 25,
-    # Note(Jiaxin): serve-aligned streaming defaults. The first chunk is small (1) for low TTFC,
-    # while coalesce_floor_frames (5) is the separate steady-state coalescing join floor.
-    initial_chunk_frames: int = 1,
+    initial_chunk_frames: int = 5,
     coalesce_floor_frames: int = 5,
     cuda_graph: bool = True,
     cuda_graph_frames: list[int] | None = None,
@@ -611,4 +675,19 @@ def create_vocoder_executor(
     # Capture graphs in the factory: it runs before the process is marked ready, so serving never
     # races a half-captured graph. Same-process guarantee (each colocate/split stage warms its own).
     scheduler.warmup_now()
+    device_index = torch.device(device).index
+    # Direct factory calls have no process aggregate; preserve their standalone stage budget.
+    _validate_loaded_process_memory_budget(
+        stage_name="MOSS-TTS Local vocoder",
+        gpu_id=(
+            int(device_index)
+            if device_index is not None
+            else (0 if gpu_id is None else int(gpu_id))
+        ),
+        total_gpu_memory_fraction=(
+            process_total_gpu_memory_fraction
+            if process_total_gpu_memory_fraction is not None
+            else total_gpu_memory_fraction
+        ),
+    )
     return scheduler

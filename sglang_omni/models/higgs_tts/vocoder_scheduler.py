@@ -24,6 +24,7 @@ HIGGS_STREAM_STRIDE_METADATA = "stream_stride"
 HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA = "stream_followup_stride"
 DEFAULT_HIGGS_STREAM_STRIDE = 75
 DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE = 75
+DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES = 20
 
 
 @dataclass
@@ -45,6 +46,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         *,
         stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
         stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+        initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
         stream_overlap_tokens: int = 8,
         stream_holdback_tokens: int = 4,
         max_batch_size: int = 4,
@@ -60,6 +62,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         self._codec = codec
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
+        self._default_initial_chunk_frames = max(0, int(initial_chunk_frames))
         self._stream_overlap_tokens = int(stream_overlap_tokens)
         self._stream_holdback_tokens = int(stream_holdback_tokens)
         self._samples_per_frame = self._resolve_samples_per_frame(codec)
@@ -324,6 +327,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
             params,
             steady_chunk_frames=steady_codec_frames,
+            default_frames=self._default_initial_chunk_frames,
         )
 
     @staticmethod

@@ -268,7 +268,7 @@ class TalkerPrefillBuilder:
         }
 
     def append_text_chunk(self, req_data: Any, chunk: Any) -> None:
-        if getattr(req_data, "thinker_chunks_done", False):
+        if req_data.thinker_chunks_done:
             return
 
         metadata = chunk.metadata or {}

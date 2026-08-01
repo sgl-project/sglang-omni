@@ -492,9 +492,6 @@ class Stage:
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
-        if request_id in self._aborted:
-            return
-
         _emit_event(
             request_id=request_id,
             stage=self.name,

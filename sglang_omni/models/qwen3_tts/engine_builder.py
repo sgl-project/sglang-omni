@@ -9,6 +9,7 @@ from typing import Any
 from sglang_omni.models.qwen3_tts import request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
@@ -90,9 +91,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(getattr(server_args, "enable_torch_compile", False)):
+        if bool(server_args.enable_torch_compile):
             qwen3_stages._compile_qwen3_tts_backbone(model)
-            server_args.enable_torch_compile = False
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_tts.compile_complete",
+                enable_torch_compile=False,
+            )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

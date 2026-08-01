@@ -92,7 +92,7 @@ def test_rollout_logprobs_raises_when_sampler_omits_token_ids() -> None:
 
 
 def test_enable_sampler_logprobs_initializes_missing_forward_batch_fields() -> None:
-    forward_batch = SimpleNamespace()
+    forward_batch = SimpleNamespace(top_logprobs_nums=None, token_ids_logprobs=None)
 
     ModelRunner._enable_sampler_logprobs(forward_batch, batch_size=2)
 
@@ -147,7 +147,9 @@ def test_sample_next_token_ids_requires_sampler_logprobs_when_requested() -> Non
     data = SimpleNamespace(return_logprob=True, output_token_logprobs=[], req=req)
     request = SimpleNamespace(data=data)
     forward_batch = SimpleNamespace(
-        sampling_info=SimpleNamespace(device="cpu", sampling_seed=None)
+        sampling_info=SimpleNamespace(device="cpu", sampling_seed=None),
+        top_logprobs_nums=None,
+        token_ids_logprobs=None,
     )
     logits_output = SimpleNamespace()
 

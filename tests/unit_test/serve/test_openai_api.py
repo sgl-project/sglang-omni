@@ -1160,7 +1160,7 @@ def test_speech_request_carries_initial_codec_chunk_frames() -> None:
     assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
 
 
-def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
+def test_raw_pcm_speech_request_defers_initial_chunk_to_model() -> None:
     req = CreateSpeechRequest(
         input="hello",
         stream=True,
@@ -1171,7 +1171,7 @@ def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
         default_model="higgs-audio-v2"
     ).build_generate_request(req)
 
-    assert gen_req.extra_params["initial_codec_chunk_frames"] == 1
+    assert "initial_codec_chunk_frames" not in gen_req.extra_params
 
 
 def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:

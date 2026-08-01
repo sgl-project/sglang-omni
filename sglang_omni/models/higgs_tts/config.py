@@ -11,19 +11,19 @@ from sglang_omni.config import (
     StageResourceConfig,
     StageRuntimeConfig,
 )
+from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.higgs_tts"
+_PREPROCESS_MAX_WORKERS = 2
 
 
 class HiggsTtsPipelineConfig(PipelineConfig):
     """4-stage TTS pipeline: preprocessing → audio_encoder → tts_engine → vocoder.
 
-    Mirrors the V0 layout: preprocessing tokenises text + delay-pattern-encodes
-    the reference audio codes; audio_encoder runs the fused multi-codebook
-    embedding once on the delayed ref codes (CPU- or GPU-side); tts_engine
-    drives the AR loop on the sglang backbone with the precomputed embed
-    pasted at ``-100`` placeholder positions; vocoder reverses the delay
-    pattern and decodes to waveform via the higgs-audio-v2-tokenizer codec.
+    Preprocessing normalizes text/reference inputs; audio_encoder codec-encodes
+    raw reference audio and builds the prompt; tts_engine composes the delayed
+    reference-code embeddings at ``-100`` placeholder positions and drives the
+    SGLang AR loop; vocoder reverses the delay pattern and decodes the waveform.
     """
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
@@ -37,17 +37,31 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): every handoff travels as HiggsTtsState in the payload and
+        # the stages only share process-local caches, which re-fill on a miss. No
+        # resource contract is needed because all three GPU stages declare fractions.
+        return frozenset(
+            {
+                ("preprocessing", "audio_encoder"),
+                ("audio_encoder", "tts_engine"),
+                ("tts_engine", "vocoder"),
+            }
+        )
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_args={"max_concurrency": _PREPROCESS_MAX_WORKERS},
             next="audio_encoder",
         ),
         StageConfig(
             name="audio_encoder",
-            process="pipeline",
+            process="tts_frontend",
             factory=f"{_PKG}.stages.create_audio_encoder_executor",
             factory_args={"device": "cuda"},
             gpu=0,
@@ -74,12 +88,23 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
-            process="vocoder",
+            # Keep the LM and vocoder in one CUDA context by default.  Splitting
+            # them into same-GPU processes time-slices the H100 at ordinary
+            # serving concurrency and prevents decode/vocoder overlap.
+            process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"device": "cuda", "compile_decode": True},
+            factory_args={
+                "device": "cuda",
+                "compile_decode": False,
+                # Before the steady cursor is established, a decode window is
+                # bounded by the default 75-row stride plus its 75-row
+                # follow-up. Capture that complete finite domain so terminal
+                # flushes cannot silently fall back to eager execution.
+                "decode_cuda_graph_frame_counts": tuple(range(1, 151)),
+            },
             gpu=0,
             runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(total_gpu_memory_fraction=0.10)
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.10),
             ),
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -89,12 +114,27 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
         stages = {stage.name: stage for stage in self.stages}
+        preprocessing = stages["preprocessing"]
+        if "OMP_NUM_THREADS" not in self.env_defaults:
+            preprocessing.env.setdefault(
+                "OMP_NUM_THREADS",
+                str(
+                    bounded_intraop_threads(
+                        worker_count=_PREPROCESS_MAX_WORKERS,
+                        max_threads=8,
+                    )
+                ),
+            )
         vocoder = stages["vocoder"]
         tts_engine = stages["tts_engine"]
         vocoder_overrides = self.runtime_overrides.get("vocoder", {})
         tts_engine_overrides = self.runtime_overrides.get("tts_engine", {})
         missing = object()
-        for key in ("stream_stride", "stream_followup_stride"):
+        for key in (
+            "stream_stride",
+            "stream_followup_stride",
+            "initial_chunk_frames",
+        ):
             value = vocoder_overrides.get(key, vocoder.factory_args.get(key, missing))
             if value is missing:
                 if key in tts_engine.factory_args or key in tts_engine_overrides:

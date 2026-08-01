@@ -199,7 +199,8 @@ them, and returns raw audio bytes to the HTTP layer.
 For `stream=true`, the route emits `audio/pcm` bytes directly. The HTTP response
 headers are derived from the first audio chunk and subsequent chunks must keep
 the same sample rate. TTS chunk-timing knobs such as
-`initial_codec_chunk_frames` are forwarded as request params so model schedulers
-can consume them without changing Stage, Coordinator, or Relay. Streaming
-speech defaults `initial_codec_chunk_frames` to `1` when the client does not
-provide a value.
+`initial_codec_chunk_frames` are forwarded as request params only when the
+client provides them, including an explicit `0`, so model schedulers can consume
+them without changing Stage, Coordinator, or Relay. When the field is omitted,
+the speech route leaves it unset and each model applies its own streaming
+default.

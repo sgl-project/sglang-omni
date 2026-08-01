@@ -61,9 +61,9 @@ class StreamQueue:
     def put(self, request_id: str, item: StreamItem) -> None:
         queue = self._queues.get(request_id)
         if queue is None:
-            if request_id in self._closed:
-                return  # silently drop — queue was closed (abort)
-            raise KeyError(f"No queue for {request_id}")
+            # The queue can disappear between an ingress guard and delivery
+            # when request cleanup races an in-flight stream chunk.
+            return
         queue.put_nowait(item)
 
     def put_done(self, request_id: str, from_stage: str | None = None) -> None:

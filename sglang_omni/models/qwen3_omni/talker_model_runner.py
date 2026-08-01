@@ -9,6 +9,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.scheduling.messages import OutgoingMessage
 
 
@@ -84,7 +85,6 @@ class QwenTalkerModelRunner(ModelRunner):
         if isinstance(talker_hidden, torch.Tensor) and talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
         self.model.code_predictor_forward(layer0_codes, talker_hidden)
-        schedule_batch.output_ids = result.next_token_ids
         self._stage_token_ids(result, result.next_token_ids)
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
@@ -103,7 +103,6 @@ class QwenTalkerModelRunner(ModelRunner):
 
         batch_size = len(requests)
         result.next_token_ids = self.model._sampled_token_ids[:batch_size].clone()
-        schedule_batch.output_ids = result.next_token_ids
         self._stage_token_ids(result, result.next_token_ids)
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
@@ -193,7 +192,7 @@ class QwenTalkerModelRunner(ModelRunner):
             for sched_req in requests:
                 req = sched_req.data.req
                 prefix_len = len(req.prefix_indices)
-                extend_len = int(req.extend_input_len)
+                extend_len = int(req.extend_range.length)
                 part = self._projected_prefill_slice(
                     sched_req=sched_req,
                     prefix_len=prefix_len,
@@ -389,7 +388,7 @@ class QwenTalkerModelRunner(ModelRunner):
         if pending_text_queue:
             return True
         return bool(
-            getattr(data, "thinker_chunks_done", False)
+            data.thinker_chunks_done
             and getattr(data, "tts_pad_embed", None) is not None
         )
 
@@ -526,15 +525,16 @@ class QwenTalkerModelRunner(ModelRunner):
                 dtype=model_dtype,
             )
 
-        logits_output = self.model(
-            input_ids=forward_batch.input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            input_deepstack_embeds=input_deepstack_embeds,
-            input_deepstack_mask=input_deepstack_mask,
-            input_embeds_are_projected=input_embeds_are_projected,
-        )
+        with attn_forward_context(model_runner.attn_backend):
+            logits_output = self.model(
+                input_ids=forward_batch.input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                input_deepstack_embeds=input_deepstack_embeds,
+                input_deepstack_mask=input_deepstack_mask,
+                input_embeds_are_projected=input_embeds_are_projected,
+            )
         return GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=False,

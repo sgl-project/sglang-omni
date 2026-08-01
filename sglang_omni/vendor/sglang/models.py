@@ -35,7 +35,7 @@ def apply_qk_norm(
     alt_stream: Optional[torch.cuda.Stream] = None,
     allow_inplace: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if getattr(q_norm, "cast_x_before_out_mul", False):
+    if q_norm.cast_x_before_out_mul:
         allow_inplace = False
     return _orig_apply_qk_norm(
         q,

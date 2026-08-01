@@ -25,6 +25,12 @@ from sglang_omni.models.zonos2.payload_types import (
     ZONOS2_SAMPLE_RATE,
     Zonos2State,
 )
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_STREAM_INITIAL_CHUNK_FRAMES,
+    DEFAULT_ZONOS2_STREAM_OVERLAP_FRAMES,
+    DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES,
+    ZONOS2_STREAM_LOOKAHEAD_FRAMES,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
@@ -38,18 +44,16 @@ _vocoder_cache: tuple[str, Zonos2DACVocoder] | None = None
 
 # New streaming-chunk constants (not changes to existing values). At 86.1328125
 # fps (44100/512) one frame = DAC_HOP_LENGTH=512 PCM samples.
-_STREAM_STEADY_CHUNK_FRAMES = (
-    40  # ~0.46 s steady chunk (fewer vocoder forwards/chunk -> lower streaming RTF)
-)
-_STREAM_INITIAL_CHUNK_FRAMES = 5  # ~0.06 s first chunk for low TTFB
-_STREAM_OLA_OVERLAP_FRAMES = 2  # note (Yue Yin): cross-fade width; TODO calibrate
+_STREAM_STEADY_CHUNK_FRAMES = DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES
+_STREAM_INITIAL_CHUNK_FRAMES = DEFAULT_ZONOS2_STREAM_INITIAL_CHUNK_FRAMES
+_STREAM_OLA_OVERLAP_FRAMES = DEFAULT_ZONOS2_STREAM_OVERLAP_FRAMES
 # shear_up needs the trailing N_CODEBOOKS-1 future rows to de-shear a frame.
 _STREAM_WITHHOLD_TAIL = N_CODEBOOKS - 1
 # note (Yue Yin): the AR engine appends n+1 post-EOS countdown rows that the
 # one-shot path trims via eos_frame. eos_frame is unknown mid-stream, so steady
 # pulls hold this region back; the eos_frame-capped flush at stream_done emits
 # the true tail, keeping streamed length == one-shot length.
-_STREAM_EOS_GUARD_FRAMES = N_CODEBOOKS + 1
+_STREAM_EOS_GUARD_FRAMES = ZONOS2_STREAM_LOOKAHEAD_FRAMES - _STREAM_WITHHOLD_TAIL
 
 
 def _get_vocoder(device: str) -> Zonos2DACVocoder:
@@ -257,11 +261,10 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         n_vq = params.get("n_codebooks")
         if n_vq is not None:
             state.n_codebooks = int(n_vq)
-        state.initial_chunk_frames = (
-            resolve_initial_codec_chunk_frames(
-                params, steady_chunk_frames=self._steady_chunk_frames
-            )
-            or self._default_initial_chunk_frames
+        state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+            params,
+            steady_chunk_frames=self._steady_chunk_frames,
+            default_frames=self._default_initial_chunk_frames,
         )
         state.latched = True
 

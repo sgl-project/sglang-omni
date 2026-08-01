@@ -3,16 +3,17 @@
 
 from __future__ import annotations
 
-import base64
 import collections
 import hashlib
-import io
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
@@ -109,6 +110,7 @@ class MossTTSPreparedRequest:
 @dataclass
 class MossTTSPreprocessingContext:
     processor: Any
+    reference_encoder: Any = None
 
 
 _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest] = (
@@ -116,10 +118,17 @@ _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest
 )
 
 
-def set_moss_tts_preprocessing_context(*, processor: Any) -> None:
+def set_moss_tts_preprocessing_context(
+    *, processor: Any, reference_encoder: Any = None
+) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
-    _QUEUE.set_context(MossTTSPreprocessingContext(processor=processor))
+    _QUEUE.set_context(
+        MossTTSPreprocessingContext(
+            processor=processor,
+            reference_encoder=reference_encoder,
+        )
+    )
 
 
 def clear_moss_tts_preprocessing_context() -> None:
@@ -381,31 +390,32 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
     return key_ids
 
 
-def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any] | None:
+def _reference_for_processor(
+    processor: Any,
+    ref_audio: Any | None,
+    reference_encoder: Any = None,
+) -> list[Any] | None:
     if ref_audio is None:
         return None
+    if isinstance(ref_audio, os.PathLike):
+        ref_audio = os.fsdecode(ref_audio)
     if not isinstance(ref_audio, str):
         return [ref_audio]
-    match = _DATA_URI_RE.match(ref_audio)
-    if match is None:
-        return [ref_audio]
-
-    try:
-        import soundfile as sf
-    except ImportError as exc:
-        raise RuntimeError(
-            "MOSS-TTS base64 reference audio requires soundfile to decode the data URI"
-        ) from exc
-
-    raw = base64.b64decode(match.group("data"))
-    audio, sample_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
-    wav = torch.from_numpy(audio.T)
-    codes = processor.encode_audios_from_wav([wav], int(sample_rate))[0]
-    return [codes]
+    if reference_encoder is not None:
+        return [reference_encoder.encode(ref_audio)]
+    return [ref_audio]
 
 
-def _build_processor_message(processor: Any, state: MossTTSState) -> dict[str, Any]:
-    reference = _reference_for_processor(processor, state.ref_audio)
+def _build_processor_message(
+    processor: Any,
+    state: MossTTSState,
+    reference_encoder: Any = None,
+) -> dict[str, Any]:
+    reference = _reference_for_processor(
+        processor,
+        state.ref_audio,
+        reference_encoder,
+    )
     return processor.build_user_message(
         text=state.text,
         reference=reference,
@@ -419,9 +429,10 @@ def _prepare_moss_tts_request(
     payload: StagePayload,
     *,
     processor: Any,
+    reference_encoder: Any = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
-    message = _build_processor_message(processor, state)
+    message = _build_processor_message(processor, state, reference_encoder)
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
@@ -451,7 +462,11 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
         )
 
     try:
-        prepared = _prepare_moss_tts_request(payload, processor=context.processor)
+        prepared = _prepare_moss_tts_request(
+            payload,
+            processor=context.processor,
+            reference_encoder=context.reference_encoder,
+        )
     except BaseException:
         _QUEUE.fail_inflight(rid)
         raise
@@ -541,9 +556,6 @@ def build_sglang_moss_tts_request(
     *,
     model: Any,
 ) -> MossTTSSGLangRequestData:
-    from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.sampling.sampling_params import SamplingParams
-
     prepared = pop_prepared_moss_tts_request(payload)
     if prepared is None:
         raise RuntimeError(

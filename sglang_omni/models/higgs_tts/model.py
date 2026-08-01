@@ -250,8 +250,11 @@ class HiggsTTSModel(nn.Module):
         return row
 
     def set_request_seed(self, req_id: str, seed: int | None) -> None:
-        """Pin ``req_id``'s sampler seed (``None`` -> unseeded/random). Constant
-        across the request's AR steps; consumed by ``multinomial_with_seed``."""
+        """Pin req_id's sampler seed (None -> unseeded torch.multinomial).
+
+        Constant across the request's AR steps; consumed by
+        multinomial_with_seed for seeded rows.
+        """
         row = self.acquire_row(req_id)
         self._sampler_pool.seeds[row] = (
             NO_SEED if seed is None else resolve_row_seed(seed)
@@ -434,6 +437,10 @@ class HiggsTTSModel(nn.Module):
                 input_ids, batch_size=input_ids.shape[0]
             )
         else:
+            if input_embeds is None:
+                raise RuntimeError(
+                    "Higgs prefill requires composed multi-codebook input embeddings"
+                )
             req_ids, gen_params = self._extract_batch_metadata(forward_batch)
 
         hidden_states = self.backbone.model(
@@ -497,12 +504,25 @@ class HiggsTTSModel(nn.Module):
     def _extract_batch_metadata(
         self, forward_batch
     ) -> tuple[list[str], list[HiggsGenParams]]:
-        req_ids_raw = getattr(forward_batch, "req_ids", None)
+        # ``rids`` is part of SGLang's ForwardBatch contract and survives the
+        # 0.5.15 EagerRunner static-buffer copy. ``req_ids`` was an Omni-added
+        # dynamic attribute; dataclasses.replace drops it, silently routing
+        # prefill sampling into fallback rows such as "req-0".
+        req_ids_raw = getattr(forward_batch, "rids", None)
+        if req_ids_raw is None:
+            req_ids_raw = getattr(forward_batch, "req_ids", None)
         batch_size = self._infer_batch_size(forward_batch)
         if req_ids_raw is None:
-            req_ids = [f"req-{i}" for i in range(batch_size)]
-        else:
-            req_ids = [str(r) for r in req_ids_raw]
+            # No fabricated fallback identities: sampler rows keyed on made-up
+            # ids silently decouple output routing and seeding from the real
+            # requests. Full-backend prefill capture never reaches this eager
+            # tail (it replays only the transformer body), so a batch without
+            # ``rids`` here means the runner contract changed — fail loudly.
+            raise RuntimeError(
+                "Higgs prefill batch carries neither ForwardBatch.rids nor "
+                "req_ids; refusing to fabricate request identities"
+            )
+        req_ids = [str(r) for r in req_ids_raw]
 
         sampling_info = getattr(forward_batch, "sampling_info", None)
         gen_params = self._gen_params_for_batch(sampling_info, batch_size)

@@ -63,6 +63,15 @@ class StagePayload:
     request_id: str
     request: OmniRequest
     data: Any
+    # Scheduler-local stream ingress state. These fields intentionally stay
+    # out of to_dict(); they are rebuilt by the receiving scheduler and never
+    # form part of the inter-stage wire contract.
+    prefetched_chunks: list[Any] = field(
+        default_factory=list, init=False, repr=False, compare=False
+    )
+    prefetched_stream_done: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {

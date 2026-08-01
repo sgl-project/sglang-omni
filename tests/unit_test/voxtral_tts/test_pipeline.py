@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
@@ -18,6 +19,7 @@ from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -31,7 +33,17 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
-    assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+    ]
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    ] == [None, None]
+    build_process_topology_plan(config, build_stage_placement_plan(config))
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig
@@ -253,7 +265,6 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
     runner._collect_audio_step(result, schedule_batch, requests)
 
     assert result.next_token_ids.tolist() == [11, eos_id]
-    assert schedule_batch.output_ids.tolist() == [11, eos_id]
     assert requests[0].data.output_codes == []
     assert requests[1].data.output_codes == []
 
@@ -339,7 +350,9 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     monkeypatch.setattr(
         forward_batch_info.ForwardBatch,
         "init_new",
-        staticmethod(lambda model_worker_batch, model_runner: fake_forward_batch),
+        staticmethod(
+            lambda model_worker_batch, model_runner, *, capture_hidden_mode=None, return_hidden_states_before_norm: fake_forward_batch
+        ),
     )
 
     class FakeVoxtralModel:
@@ -383,6 +396,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     runner.output_processor = FakeOutputProcessor()
     runner.device = torch.device("cpu")
     runner.model = runner.tp_worker.model_runner.model
+    runner.bind_execution_bridge(FakeExecutionBridge())
 
     data = SimpleNamespace(
         pending_feedback_queue=collections.deque([torch.tensor([1.0, 2.0, 3.0])]),
@@ -394,8 +408,6 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     schedule_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_extend=lambda: False),
         is_prefill_only=False,
-        output_ids=None,
-        get_model_worker_batch=lambda: SimpleNamespace(),
     )
 
     output = runner.execute(
@@ -403,7 +415,6 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     )
 
     assert output.can_run_cuda_graph is True
-    assert schedule_batch.output_ids.tolist() == [5]
     assert torch.equal(
         runner.model._decode_input_embed_buffer,
         torch.tensor([[1.0, 2.0, 3.0]]),
@@ -466,7 +477,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
             self.server_args = server_args
             self.model = FakeModel()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is True
             assert self.server_args.torch_compile_max_bs == 16
             init_graph_calls.append(True)
@@ -497,9 +508,15 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=kwargs["disable_overlap_schedule"],
             enable_torch_compile=kwargs["enable_torch_compile"],

@@ -6,7 +6,11 @@ from typing import Annotated, Literal, NoReturn
 import typer
 import yaml
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    apply_stage_process_overrides,
+)
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -924,6 +928,30 @@ def serve(
             help="Run Qwen speech with GPU stages colocated on one GPU.",
         ),
     ] = False,
+    isolate_stage: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--isolate-stage",
+            help=(
+                "Run this model-supported stage in a dedicated process. Repeat "
+                "the flag to isolate multiple stages. When omitted, preserve "
+                "the model's declared process topology. Shorthand for "
+                "--stage-process STAGE=STAGE."
+            ),
+        ),
+    ] = None,
+    stage_process: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--stage-process",
+            metavar="STAGE=PROCESS",
+            help=(
+                "Read left to right: place STAGE in PROCESS. Repeat the flag "
+                "with one process name to colocate several stages in it. Use "
+                "this instead of --isolate-stage for grouped topologies."
+            ),
+        ),
+    ] = None,
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -1276,6 +1304,11 @@ def serve(
         image_encoder_gpus=image_encoder_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
+    )
+    merged_config = apply_stage_process_overrides(
+        merged_config,
+        isolate_stages=isolate_stage,
+        stage_processes=stage_process,
     )
     merged_config = apply_cuda_graph_cli_overrides(
         merged_config,

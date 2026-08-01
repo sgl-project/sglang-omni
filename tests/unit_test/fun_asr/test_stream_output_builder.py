@@ -33,7 +33,7 @@ class _ByteTokenizer:
 
 
 def _make_req_data(
-    *, stream: bool = True, is_chunked: int = 0, finished: bool = False
+    *, stream: bool = True, inflight_middle_chunks: int = 0, finished: bool = False
 ) -> Any:
     stage_payload = StagePayload(
         request_id="r",
@@ -44,7 +44,9 @@ def _make_req_data(
         ),
         data={},
     )
-    req = SimpleNamespace(is_chunked=is_chunked, finished=lambda: finished)
+    req = SimpleNamespace(
+        inflight_middle_chunks=inflight_middle_chunks, finished=lambda: finished
+    )
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
@@ -84,11 +86,11 @@ def test_silent_when_not_streaming_and_does_not_create_state() -> None:
 
 def test_silent_during_chunked_prefill_then_emits_after_prefill() -> None:
     builder = _builder({1: b"A"})
-    rd = _make_req_data(stream=True, is_chunked=1)
+    rd = _make_req_data(stream=True, inflight_middle_chunks=1)
 
     assert builder("req-1", rd, _make_req_output(1)) == []
 
-    rd.req.is_chunked = 0
+    rd.req.inflight_middle_chunks = 0
     msgs = builder("req-1", rd, _make_req_output(1))
     assert [m.data["text"] for m in msgs] == ["A"]
 
