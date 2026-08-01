@@ -166,8 +166,14 @@ class TestReplicaTopology:
     def test_resolve_and_logical_name(self):
         topo = self._topo()
         assert topo.resolve("talker_ar", 1) == "talker_ar@r1"
+        assert topo.resolve_bound("talker_ar", {"talker_ar": 1}) == "talker_ar@r1"
+        assert topo.resolve_bound("thinker", None) == "thinker"
         assert topo.logical_name("talker_ar@r1") == "talker_ar"
         assert topo.logical_name("thinker") == "thinker"
+
+    def test_resolve_bound_requires_replica_binding(self):
+        with pytest.raises(ValueError, match="no replica binding"):
+            self._topo().resolve_bound("talker_ar", None)
 
     def test_resolve_out_of_range(self):
         with pytest.raises(ValueError, match="has 2 replicas"):
@@ -358,15 +364,15 @@ class TestSchemaValidation:
         with pytest.raises(ValueError, match="num_replicas >= 1"):
             _stage("s", num_replicas=0)
 
-    def test_entry_stage_cannot_be_replicated(self):
-        with pytest.raises(ValueError, match="cannot be replicated"):
-            PipelineConfig(
-                model_path="m",
-                stages=[
-                    _stage("entry", terminal=False, next="sink", num_replicas=2),
-                    _stage("sink"),
-                ],
-            )
+    def test_entry_stage_can_be_replicated(self):
+        config = PipelineConfig(
+            model_path="m",
+            stages=[
+                _stage("entry", terminal=False, next="sink", num_replicas=2),
+                _stage("sink"),
+            ],
+        )
+        assert config.resolved_entry_stage == "entry"
 
     def test_fused_group_cannot_include_replicated_stage(self):
         with pytest.raises(ValueError, match="cannot include replicated"):

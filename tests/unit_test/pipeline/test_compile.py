@@ -457,6 +457,43 @@ def test_runner_wires_same_process_targets_across_colocated_replicas() -> None:
     assert resolve("gen@r1") == {"wav@r1"}
 
 
+def test_prepare_runtime_expands_replicated_tp_entry_stage() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        entry_stage="entry",
+        stages=[
+            stage(
+                "entry",
+                next="sink",
+                gpu=[0, 1],
+                tp_size=2,
+                num_replicas=2,
+                replica_devices="0,1,2,3",
+            ),
+            stage("sink", terminal=True),
+        ],
+    )
+
+    prep = prepare_pipeline_runtime(config)
+    try:
+        assert prep.entry_stage == "entry"
+        assert prep.replica_topology.instances("entry") == (
+            "entry@r0",
+            "entry@r1",
+        )
+        assert [stage_cfg.name for stage_cfg in prep.stages_cfg] == [
+            "entry@r0",
+            "entry@r1",
+            "sink",
+        ]
+        assert prep.placement_plan.stages["entry@r0"].gpu_ids == (0, 1)
+        assert prep.placement_plan.stages["entry@r1"].gpu_ids == (2, 3)
+        assert "stage_entry@r0" in prep.endpoints
+        assert "stage_entry@r1" in prep.endpoints
+    finally:
+        prep.runtime_dir.close()
+
+
 def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
     with pytest.raises(ValueError, match="cannot include TP stage"):
         PipelineConfig(

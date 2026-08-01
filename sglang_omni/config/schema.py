@@ -446,10 +446,6 @@ class PipelineConfig(BaseModel):
                         f"Stage {s.name!r} project_payload references unknown stage {t!r}"
                     )
 
-        replicated = [s.name for s in self.stages if s.num_replicas > 1]
-        if replicated and entry in replicated:
-            raise ValueError(f"Entry stage {entry!r} cannot be replicated")
-
         for s in self.stages:
             if parse_replica_instance_name(s.name)[1] is not None:
                 raise ValueError(

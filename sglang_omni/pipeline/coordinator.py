@@ -392,18 +392,47 @@ class Coordinator:
         if self._request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
-        if self.entry_stage not in self._stages:
-            raise ValueError(f"Entry stage {self.entry_stage} not registered")
+        missing_entry_instances = [
+            instance
+            for instance in self._replica_topology.instances(self.entry_stage)
+            if instance not in self._stages
+        ]
+        if missing_entry_instances:
+            missing = ", ".join(repr(instance) for instance in missing_entry_instances)
+            raise ValueError(
+                f"Entry stage {self.entry_stage!r} has unregistered instance(s): "
+                f"{missing}"
+            )
 
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
+
+        terminal_stages = self._resolve_terminal_stages(request)
+        replica_bindings = assign_replica_bindings(
+            self._replica_topology, self._binding_policy, request_id
+        )
+        try:
+            entry_instance = self._replica_topology.resolve_bound(
+                self.entry_stage,
+                replica_bindings,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Failed to resolve entry stage {self.entry_stage!r}: {exc}"
+            ) from exc
+        entry_info = self._stages.get(entry_instance)
+        if entry_info is None:
+            raise ValueError(
+                f"Entry stage {self.entry_stage!r} resolved to unregistered "
+                f"instance {entry_instance!r}"
+            )
 
         # Track request
         self._requests[request_id] = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
-            terminal_stages=self._resolve_terminal_stages(request),
+            terminal_stages=terminal_stages,
         )
 
         # Create future for completion
@@ -423,17 +452,15 @@ class Coordinator:
             request_id=request_id,
             stage="coordinator",
             event_name="request_admission",
-            metadata={"entry_stage": self.entry_stage},
-        )
-
-        replica_bindings = assign_replica_bindings(
-            self._replica_topology, self._binding_policy, request_id
+            metadata={
+                "entry_stage": self.entry_stage,
+                "entry_instance": entry_instance,
+            },
         )
 
         # Submit to entry stage
-        entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
-            self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
             SubmitMessage(
                 request_id=request_id,
@@ -448,9 +475,10 @@ class Coordinator:
             info.state = RequestState.RUNNING
 
         logger.info(
-            "Coordinator submitted req=%s to %s at %s bindings=%s",
+            "Coordinator submitted req=%s to entry=%s instance=%s at %s bindings=%s",
             request_id,
             self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
             replica_bindings,
         )
@@ -846,6 +874,8 @@ async def run_coordinator(
     stages: dict[str, str],  # name -> endpoint
     terminal_stages: list[str] | None = None,
     terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
+    replica_topology: ReplicaTopology | None = None,
+    binding_policy: BindingPolicy | None = None,
 ) -> Coordinator:
     """Create and start a coordinator.
 
@@ -855,6 +885,8 @@ async def run_coordinator(
         entry_stage: Name of the entry stage
         stages: Dict of stage_name -> stage_endpoint
         terminal_stages: Optional list of terminal stage names for multi-terminal merge
+        replica_topology: Optional logical-to-instance replica mapping
+        binding_policy: Optional per-request replica selection policy
 
     Returns:
         Started Coordinator instance
@@ -865,6 +897,8 @@ async def run_coordinator(
         entry_stage=entry_stage,
         terminal_stages=terminal_stages,
         terminal_stages_resolver=terminal_stages_resolver,
+        replica_topology=replica_topology,
+        binding_policy=binding_policy,
     )
 
     # Register stages

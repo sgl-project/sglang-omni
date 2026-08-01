@@ -802,6 +802,87 @@ def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
         coordinator._resolve_admin_stages(["nope"])
 
 
+def test_coordinator_routes_requests_to_replicated_entry_instances() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["preprocess"],
+            replica_topology=ReplicaTopology(
+                replicas={"preprocess": ("preprocess@r0", "preprocess@r1")}
+            ),
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess@r0", "inproc://preprocess-r0")
+        coordinator.register_stage("preprocess@r1", "inproc://preprocess-r1")
+
+        await coordinator._submit_request("req-0", {"text": "first"})
+        await coordinator._submit_request("req-1", {"text": "second"})
+
+        assert [
+            (target, endpoint) for target, endpoint, _ in control_plane.submitted
+        ] == [
+            ("preprocess@r0", "inproc://preprocess-r0"),
+            ("preprocess@r1", "inproc://preprocess-r1"),
+        ]
+        assert [
+            message.replica_bindings for _, _, message in control_plane.submitted
+        ] == [{"preprocess": 0}, {"preprocess": 1}]
+        assert coordinator._requests["req-0"].current_stage == "preprocess"
+        assert coordinator._requests["req-1"].current_stage == "preprocess"
+
+        req0 = coordinator._completion_futures["req-0"]
+        req1 = coordinator._completion_futures["req-1"]
+        await coordinator._handle_completion(
+            CompleteMessage("req-0", "preprocess@r0", True, result={"id": 0})
+        )
+        await coordinator._handle_completion(
+            CompleteMessage("req-1", "preprocess@r1", True, result={"id": 1})
+        )
+        assert req0.result() == {"id": 0}
+        assert req1.result() == {"id": 1}
+
+    asyncio.run(_run())
+
+
+def test_replicated_entry_must_register_selected_instance_before_admission() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+            replica_topology=ReplicaTopology(
+                replicas={"preprocess": ("preprocess@r0", "preprocess@r1")}
+            ),
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess@r1", "inproc://preprocess-r1")
+
+        with pytest.raises(
+            ValueError,
+            match="unregistered instance.*'preprocess@r0'",
+        ):
+            await coordinator._submit_request("req-0", {"text": "hello"})
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        assert coordinator._stream_queues == {}
+        assert control_plane.submitted == []
+
+        coordinator.register_stage("preprocess@r0", "inproc://preprocess-r0")
+        await coordinator._submit_request("req-0", {"text": "hello"})
+        assert control_plane.submitted[0][:2] == (
+            "preprocess@r0",
+            "inproc://preprocess-r0",
+        )
+
+    asyncio.run(_run())
+
+
 def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
     async def _run() -> None:
         coordinator = Coordinator(

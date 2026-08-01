@@ -75,6 +75,20 @@ class ReplicaTopology:
             )
         return instances[replica_id]
 
+    def resolve_bound(
+        self,
+        logical_name: str,
+        bindings: dict[str, int] | None,
+    ) -> str:
+        if not self.is_replicated(logical_name):
+            return logical_name
+        replica_id = None if bindings is None else bindings.get(logical_name)
+        if replica_id is None:
+            raise ValueError(
+                f"no replica binding for replicated stage {logical_name!r}"
+            )
+        return self.resolve(logical_name, replica_id)
+
     def logical_name(self, name: str) -> str:
         logical, replica_id = parse_replica_instance_name(name)
         if replica_id is None:
