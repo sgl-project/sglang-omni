@@ -5,9 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.models.cosmos3.bootstrap import create_thinker_scheduler
 from sglang_omni.models.cosmos3.components.text_preprocessor import (
     Cosmos3TextPreprocessor,
 )
+from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
@@ -38,29 +40,14 @@ def create_sglang_text_executor_from_config(
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
 ):
-    """Create the naive single-rank Cosmos3 text AR stage."""
+    """Create the Cosmos3 thinker AR stage."""
 
-    if tp_size != 1 or tp_rank != 0:
-        raise ValueError("Cosmos3 text MVP supports only tp_size=1")
-
-    from sglang_omni.models.cosmos3.bootstrap import create_text_scheduler
-    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
-
-    overrides: dict[str, Any] = {
-        "tp_size": 1,
-        "enable_multimodal": False,
-        "language_only": True,
-        "sampling_backend": "pytorch",
-    }
-    overrides.update(server_args_overrides or {})
-    if overrides.get("tp_size") != 1:
-        raise ValueError("Cosmos3 text MVP does not support tensor parallelism")
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
-        **overrides,
+        **{**(server_args_overrides or {}), "tp_size": tp_size},
     )
-    return create_text_scheduler(
+    return create_thinker_scheduler(
         server_args,
         gpu_id,
         tp_rank=tp_rank,

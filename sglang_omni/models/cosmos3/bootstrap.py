@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def create_text_scheduler(
+def create_thinker_scheduler(
     server_args: Any,
     gpu_id: int = 0,
     *,
@@ -16,7 +16,7 @@ def create_text_scheduler(
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
 ):
-    """Create the SGLang-backed Cosmos3 text AR scheduler."""
+    """Create the SGLang-backed Cosmos3 thinker OmniScheduler."""
 
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
@@ -76,4 +76,4 @@ def create_text_scheduler(
     )
 
 
-__all__ = ["create_text_scheduler"]
+__all__ = ["create_thinker_scheduler"]

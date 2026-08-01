@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from sglang_omni.models.cosmos3 import stages
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -30,7 +28,7 @@ def test_preprocessing_factory_returns_simple_scheduler(monkeypatch) -> None:
     assert calls == [("nvidia/Cosmos3-Nano", 8192)]
 
 
-def test_text_factory_builds_single_rank_language_only_server_args(
+def test_text_factory_passes_through_tensor_parallelism(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -53,37 +51,25 @@ def test_text_factory_builds_single_rank_language_only_server_args(
         )
         return scheduler
 
-    monkeypatch.setattr(
-        "sglang_omni.scheduling.sglang_backend.build_sglang_server_args",
-        fake_build,
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.cosmos3.bootstrap.create_text_scheduler",
-        fake_create,
-    )
+    monkeypatch.setattr(stages, "build_sglang_server_args", fake_build)
+    monkeypatch.setattr(stages, "create_thinker_scheduler", fake_create)
 
     result = stages.create_sglang_text_executor_from_config(
         "nvidia/Cosmos3-Nano",
         thinker_max_seq_len=4096,
         gpu_id=2,
+        tp_rank=1,
+        tp_size=2,
+        server_args_overrides={"disable_cuda_graph": True},
     )
 
     assert result is scheduler
     assert captured["model_path"] == "nvidia/Cosmos3-Nano"
     assert captured["context_length"] == 4096
     assert captured["kwargs"] == {
-        "tp_size": 1,
-        "enable_multimodal": False,
-        "language_only": True,
-        "sampling_backend": "pytorch",
+        "disable_cuda_graph": True,
+        "tp_size": 2,
     }
     assert captured["server_args"] is server_args
     assert captured["gpu_id"] == 2
-
-
-def test_text_factory_rejects_parallelism() -> None:
-    with pytest.raises(ValueError, match="tp_size=1"):
-        stages.create_sglang_text_executor_from_config(
-            "nvidia/Cosmos3-Nano",
-            tp_size=2,
-        )
+    assert captured["scheduler_kwargs"]["tp_rank"] == 1
