@@ -9,6 +9,10 @@ from sglang_omni.models.cosmos3.bootstrap import create_thinker_scheduler
 from sglang_omni.models.cosmos3.components.text_preprocessor import (
     Cosmos3TextPreprocessor,
 )
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -42,10 +46,21 @@ def create_sglang_text_executor_from_config(
 ):
     """Create the Cosmos3 thinker AR stage."""
 
+    overrides = build_generation_batch_overrides(
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        sampling_backend="pytorch",
+    )
+    overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
-        **{**(server_args_overrides or {}), "tp_size": tp_size},
+        **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name="Cosmos3 thinker",
+        server_args=server_args,
     )
     return create_thinker_scheduler(
         server_args,

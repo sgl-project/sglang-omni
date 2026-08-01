@@ -51,8 +51,12 @@ def test_text_factory_passes_through_tensor_parallelism(
         )
         return scheduler
 
+    def fake_validate(**kwargs):
+        captured["validation_kwargs"] = kwargs
+
     monkeypatch.setattr(stages, "build_sglang_server_args", fake_build)
     monkeypatch.setattr(stages, "create_thinker_scheduler", fake_create)
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", fake_validate)
 
     result = stages.create_sglang_text_executor_from_config(
         "nvidia/Cosmos3-Nano",
@@ -60,15 +64,24 @@ def test_text_factory_passes_through_tensor_parallelism(
         gpu_id=2,
         tp_rank=1,
         tp_size=2,
-        server_args_overrides={"disable_cuda_graph": True},
+        server_args_overrides={"max_running_requests": 8},
     )
 
     assert result is scheduler
     assert captured["model_path"] == "nvidia/Cosmos3-Nano"
     assert captured["context_length"] == 4096
     assert captured["kwargs"] == {
-        "disable_cuda_graph": True,
+        "max_running_requests": 8,
+        "cuda_graph_max_bs": 8,
+        "torch_compile_max_bs": 8,
+        "cuda_graph_bs": [1, 2, 4, 8],
+        "disable_cuda_graph": False,
+        "sampling_backend": "pytorch",
         "tp_size": 2,
+    }
+    assert captured["validation_kwargs"] == {
+        "model_name": "Cosmos3 thinker",
+        "server_args": server_args,
     }
     assert captured["server_args"] is server_args
     assert captured["gpu_id"] == 2
