@@ -1,13 +1,16 @@
 ---
 name: tune-ci-thresholds
-description: Calibrate ASR, TTS, and Qwen3-Omni CI thresholds with complete repeated observations, strict sample-scope validation, GPU-group-isolated cleanup, environment provenance, metric statistics, and operational reliability reporting.
+description: Calibrate ASR, TTS, and Qwen3-Omni CI thresholds with complete repeated observations, rejection and replenishment of destructive rounds, strict sample-scope validation, GPU-group-isolated cleanup, environment provenance, metric statistics, and operational reliability reporting.
 ---
 
 # Tune CI thresholds
 
 Use this skill to observe CI correctness and performance in a CI-comparable H100
-environment. The default policy is five complete observations per selected stage
-and a strict worst-of-five baseline. It does not commit or push changes.
+environment. The policy is at least `--repeats` (default 5) **clean**
+observations per selected stage and a strict worst-of-N baseline over those
+observations. Rounds whose numbers came from a broken execution are rejected
+and replaced, so a stage may end up with more rounds than that. It does not
+commit or push changes.
 
 Read these files before running a calibration:
 
@@ -34,7 +37,9 @@ not a hand-maintained source of truth.
 3. Run `precheck` for every selected model.
 4. Start one **IDE-visible** progress Tab A and one dynamic server-log Tab B
    per GPU group (`nohup` to `/tmp` alone does not count — see `OPERATIONS.md`).
-5. Run all selected stages for five repeats.
+5. Run all selected stages for `--repeats` rounds. `run` then rejects
+   destructive rounds and replenishes automatically until every stage has
+   `--repeats` clean observations (see Destructive rounds).
 6. Poll `status`, `strict-audit`, the active pytest log, and GPU state at least
    every 120 seconds.
 7. Generate `report.md` only after the shared readiness gate passes.
@@ -58,8 +63,15 @@ python .claude/skills/tune-ci-thresholds/tune.py strict-audit --run-dir "$RUN"
 python .claude/skills/tune-ci-thresholds/tune.py report --run-dir "$RUN"
 ```
 
-Use `--resume` only to continue the same run directory on the same commit. A new
-user request always gets a new run directory.
+Use `--resume` only to continue the same run directory. A new user request
+always gets a new run directory.
+
+`HEAD` moving does not invalidate the observations already in that directory.
+`--resume` proves whether the commits are **measurement-equivalent** — nothing
+outside `.claude/skills/` changed except numeric constants — and continues when
+they are, blocking only on a change that could alter a measured number. See
+`CONTRACT.md`. Never conclude that existing data is worthless because a gate
+refused; check what actually changed first.
 
 ## GPU execution layouts
 
@@ -70,8 +82,9 @@ rules that make concurrency safe.
 
 ### Mode A — one group, one calibration (simplest)
 
-`TUNE_GPU_INCLUDE=0,1` runs every selected `stage × 5` sequentially. Each
-pytest invocation is cleaned up before the next invocation.
+`TUNE_GPU_INCLUDE=0,1` runs every selected stage sequentially until each has
+`--repeats` clean observations. Each pytest invocation is cleaned up before the
+next invocation.
 
 ### Mode C — N groups, N independent full calibrations (default for multi-GPU)
 
@@ -89,8 +102,8 @@ TUNE_GPU_INCLUDE=4,5 python tune.py --model omni run --stages ALL --repeats 5 \
 ```
 
 These are independent replications. Do **not** `merge-runs` them into one
-worst-of-five report; that silently changes N. Compare distributions, or
-explicitly analyze them as more than five observations when the user asks.
+report; that silently changes N. Compare distributions, or explicitly analyze
+them as a larger observation set when the user asks.
 
 ### Mode B — N groups share one calibration scope (optional speedup)
 
@@ -111,8 +124,9 @@ python tune.py merge-runs --run-dir "$RUN_A" --run-dir "$RUN_B" \
 ```
 
 `merge-runs` validates commit, model, repeat count, stage schema, environment
-identity, and disjoint stage ownership. Use Mode B only when the user wants one
-combined worst-of-five faster; it is not the default multi-GPU layout.
+identity, and disjoint stage ownership. Each partition must reach `--repeats`
+clean observations on its own before merging. Use Mode B only when the user
+wants one combined worst-of-N faster; it is not the default multi-GPU layout.
 
 Every concurrent process must set `TUNE_GPU_INCLUDE`. Cleanup is scoped to the
 physical GPU indices owned by that process. Global `pkill`, user-wide kills, and
@@ -134,17 +148,51 @@ cap. Current explicit scopes include MMMU=50 and MMSU=2000.
 
 Run must not proceed on a test/threshold SHA mismatch. Regenerate stages first.
 
+## Destructive rounds
+
+A round can finish with full sample scope and non-null metrics and still be
+worthless: host contention, a cold autotune cache, or a thrashing server
+produce numbers that describe the machine, not the model. Feeding one such
+round into strict worst-of-N sets the CI reference from the accident.
+
+A value is destructive only when it is both far from the robust centre
+(MAD z > 3.5) **and** separated from its nearest neighbour by a ≥20% gap. A
+round is destructive if **any** one of its metrics is — a round whose speed
+collapsed cannot be trusted for accuracy either — and it is then discarded for
+every stage in that pytest invocation.
+
+`run` handles this automatically: reject, run `2n` replacement rounds with new
+indices, re-detect (replacements can be destructive too), and stop once
+`--repeats` clean observations exist. Rejected `run{k}.json` files stay on disk
+as evidence. `strict-audit` renders them as `D` (`✓✓✓✓D✓✓`, effective N=6).
+
+If a stage's values split into two comparable populations, no round can be
+identified as the broken one — the block is discarded and re-run once. A stage
+still split after that is bistable by nature: every observation is kept, worst-of-N
+stays conservative, and the log says `STILL unstable after a restart`. Review
+those stages by hand before applying their thresholds.
+
+Budget roughly +35–40% wall clock on a contended host.
+`--no-destructive-rejection` turns the mechanism off, and `--repeats < 5`
+disables it automatically with a warning (too few points to identify an
+outlier). `CONTRACT.md` has the caps and the full policy.
+
+`test_destructive_rejection.py` covers this machinery end to end without GPUs
+— run it after touching any of it.
+
 ## Reports
 
-The report has two distinct views.
+The report has three views; the middle one appears only when a round was
+rejected.
 
 ### Metric calibration
 
 For every metric it contains all per-run values plus:
 
-- strict worst-of-N;
+- strict worst-of-N over the clean observations;
 - median, min, max, range, standard deviation, and coefficient of variation;
-- IQR-based outlier flags, without automatically deleting an observation;
+- IQR-based outlier flags — informational only; an IQR flag never removes an
+  observation, and ordinary outliers stay in the aggregation;
 - aggregate success count and 95% Wilson interval for accuracy where sample
   counts are available;
 - seed policy recorded for every run.
@@ -155,7 +203,16 @@ rounding never changes the raw worst value used by `apply-plan`.
 Pytest may exit non-zero because an **old** CI threshold assertion failed while
 metrics and full sample scope were still produced. That is a threshold failure,
 not a missing observation. Completeness is decided by `strict-audit` /
-`status` (`missing=[]`, N/N strict), not by pytest pass/fail. See `CONTRACT.md`.
+`status` (`missing=[]`, every stage at `--repeats` clean observations), not by
+pytest pass/fail. See `CONTRACT.md`.
+
+### Rejected destructive rounds
+
+Every rejected round with its raw values, the rest-median it was compared
+against, the gap, and the z that condemned it. Rejected rounds whose
+**correctness** metrics moved also appear under **Suspected real defects**:
+contention explains a slow round, not a wrong one, so those are leads to
+investigate rather than noise to discard.
 
 ### Operational reliability
 
@@ -191,7 +248,10 @@ mismatch is reported as non-comparable and must not drive threshold changes.
 ## Threshold application
 
 `report` and `apply-plan` call the same `validate_run_ready()` gate. Both refuse
-partial observations, wrong sample scope, missing metrics, or mixed commit SHA.
+partial observations, wrong sample scope, missing metrics, artifacts from a
+commit that is neither the calibration commit nor measurement-equivalent to it,
+or a stage left with fewer than `--repeats` clean observations after
+destructive rejection.
 
 `apply-plan` is read-only JSON: for each metric it emits `worst_raw`,
 `write_value`, `current_raw`, and `direction` (`tightens` / `loosens` /
@@ -216,11 +276,12 @@ Supported decisions after the report:
 - `full`: apply every non-equal worst-of-N `write_value`. Skip
   `direction=fixed`.
 
-Before applying speed changes, skim each speed stage’s five raw values. If the
-relative range is large (rough guide: ≳ 20–30% of the median for throughput or
-latency/RTF), flag the stage and ask before writing large loosens. Rejected or
-contaminated sessions need a fresh run directory — see Contaminated-run
-recovery in `OPERATIONS.md`.
+Destructive rejection removes single broken rounds; it does not certify a
+stage. Before applying speed changes, skim each speed stage’s clean raw values.
+If the relative range is still large (rough guide: ≳ 20–30% of the median for
+throughput or latency/RTF), the stage is genuinely noisy — flag it and ask
+before writing large loosens. A session the user rejects as contaminated needs
+a fresh run directory — see Contaminated-run recovery in `OPERATIONS.md`.
 
 After edits:
 

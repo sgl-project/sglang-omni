@@ -12,7 +12,7 @@ tests/
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   ├── test_tts_ci.py
 │   ├── test_asr_ci_multi_speaker.py
-│   └── test_asr_ci_fun_asr.py
+│   └── test_asr_ci_seedtts.py
 └── unit_test/
     ├── benchmarks/
     │   └── test_dataset_regressions.py
@@ -221,13 +221,15 @@ Relevant model CI ownership:
   `moss_transcribe_diarize_aishell4_long_results.json`, and
   `moss_transcribe_diarize_googletime_results.json`, and enforces calibrated
   accuracy/speed thresholds generated from `tune-ci-thresholds`.
-- `test_asr_ci_fun_asr.py`: Fun-ASR-Nano correctness + speed via SGLang Omni
-  router (`/v1/audio/transcriptions`). Gates the full 1088-sample English and
-  2020-sample Chinese SeedTTS splits. It writes `fun_asr_results.json` and
-  `fun_asr_zh_results.json` for threshold calibration (`asr` in
-  `tune-ci-thresholds`). Its stdout uses the same boxed summary style as the
-  other benchmark stages: `ASR WER Benchmark Result` followed by
-  `ASR Speed Benchmark Result`.
+- `test_asr_ci_seedtts.py`: SeedTTS ASR correctness + speed via SGLang Omni
+  router (`/v1/audio/transcriptions`) for the model preset selected through
+  `ASR_CI_MODEL` (or `--asr-ci-model`; presets and thresholds live in
+  `asr_ci_config.py`). Gates the full 1088-sample
+  English and 2020-sample Chinese SeedTTS splits. It writes
+  `asr_seedtts_en_results.json` and `asr_seedtts_zh_results.json` for
+  threshold calibration (`asr` in `tune-ci-thresholds`). Its stdout uses the
+  same boxed summary style as the other benchmark stages:
+  `ASR WER Benchmark Result` followed by `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
@@ -296,6 +298,12 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
   and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
   editing source.
+- CLI flag `--tts-ci-model {higgs,moss}`: select the TTS CI model preset for
+  `test_tts_ci.py` without editing source. Defaults to the `TTS_CI_MODEL`
+  environment variable, then `higgs`.
+- CLI flag `--asr-ci-model {fun,qwen3}`: select the ASR CI model preset for
+  `test_asr_ci_seedtts.py` without editing source. Defaults to the
+  `ASR_CI_MODEL` environment variable, then `fun`.
 
 ## `unit_test/`
 

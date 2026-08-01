@@ -33,6 +33,37 @@ _PYTEST_POLL_S = 30
 _MAX_RUN_ATTEMPTS = 4  # infra-failure retries (OOM/crash/GPU-not-clear) to obtain one clean repeat; calibration-specific, unrelated to CI's per-test failure retry
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
+
+# Destructive-observation rejection.
+#
+# A pytest round can complete with full sample scope and non-null metrics and
+# still be worthless: host contention, a cold autotune cache, or a thrashing
+# server produce numbers that describe the machine, not the model. Feeding one
+# such round into strict worst-of-N sets the CI reference from the accident —
+# observed inflation up to 4.53x on 2026-08-01.
+#
+# A value is destructive only when BOTH hold:
+#   * robust z (MAD) above _DESTRUCTIVE_Z — it is far from the centre; and
+#   * it is separated from its nearest neighbour by a real gap.
+# The gap test is what separates a broken round from the tail of a small
+# sample. At n=5, MAD alone flags ordinary tail points: on the 2026-08-01 data
+# it fired in every round of the 27-metric serving unit, which would make the
+# reject-and-replace loop non-terminating.
+#
+# Rejection is per ROUND, not per metric: a round whose speed collapsed cannot
+# be trusted for accuracy either, so any single destructive metric discards the
+# whole round for every stage in that pytest invocation.
+_DESTRUCTIVE_Z = 3.5
+_DESTRUCTIVE_GAP = 0.20
+_DESTRUCTIVE_MIN_OBS = 5      # need this many values before judging outliers
+_DESTRUCTIVE_FULL_RERUN_N = 3  # n>=this: the "others agree" premise is gone
+# Two comparable populations this far apart mean the robust centre has moved
+# into one of them and outlier identification has inverted. Deliberately much
+# larger than _DESTRUCTIVE_GAP: mild bimodality is a noisy stage (surfaced by
+# the speed-health check), not a detector failure.
+_DEGENERATE_SPLIT = 0.50
+_DESTRUCTIVE_MAX_RESTARTS = 1
+_DESTRUCTIVE_MAX_ROUNDS = 15
 _CI_HOME = Path("/github/home")
 _CRASH_SIGS = (
     "Fatal Python error",
@@ -515,6 +546,58 @@ def _plan_calibration_sha(plan: dict) -> str:
     return plan.get("calibration_git_sha") or plan.get("git_sha") or ""
 
 
+def _ast_without_numbers(source: str) -> str | None:
+    """AST dump with every numeric literal blanked, or None if unparseable."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant)
+                and isinstance(node.value, (int, float))
+                and not isinstance(node.value, bool)):
+            node.value = 0
+    return ast.dump(tree)
+
+
+def _git_show(sha: str, path: str) -> str | None:
+    r = subprocess.run(["git", "show", f"{sha}:{path}"], cwd=REPO_ROOT,
+                       capture_output=True, text=True, check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def measurement_equivalent_commits(a: str, b: str) -> tuple[bool, list[str]]:
+    """True when nothing between two commits can change a measured metric.
+
+    Threshold constants and this skill's own files do not affect what the
+    benchmarks measure — only whether an assertion passes. Refusing to reuse
+    observations across such a commit throws away hours of valid GPU time for
+    no integrity gain. Anything else (logic, non-Python files) is treated as
+    a real change and blocks reuse.
+    """
+    if a == b:
+        return True, []
+    r = subprocess.run(["git", "diff", "--name-only", f"{a}..{b}"],
+                       cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return False, ["git diff failed (unrelated histories?)"]
+    reasons = []
+    for path in [p for p in r.stdout.split() if p]:
+        if path.startswith(".claude/skills/"):
+            continue                      # calibration tooling, not measured code
+        if not path.endswith(".py"):
+            reasons.append(f"{path}: non-Python change")
+            continue
+        old, new = _git_show(a, path), _git_show(b, path)
+        if old is None or new is None:
+            reasons.append(f"{path}: added or removed")
+            continue
+        da, db = _ast_without_numbers(old), _ast_without_numbers(new)
+        if da is None or db is None or da != db:
+            reasons.append(f"{path}: logic changed")
+    return (not reasons), reasons
+
+
 def audit_git_provenance(run_dir: Path, plan=None) -> dict:
     """Every run{k}.json must record the same git_sha as plan calibration_git_sha."""
     plan = plan or json.loads((run_dir / "plan.json").read_text())
@@ -527,11 +610,15 @@ def audit_git_provenance(run_dir: Path, plan=None) -> dict:
             mismatches=[],
             reason="plan.json has no calibration_git_sha",
         )
+    # Rounds produced after a measurement-equivalent commit are still the same
+    # experiment; only threshold constants or tooling moved underneath them.
+    accepted = {cal_sha} | set(plan.get("equivalent_commits") or [])
     missing_sha = []
     mismatches = []
     repeats = plan["repeats"]
     for sk in plan["stages"]:
-        for k in range(1, repeats + 1):
+        # Replacement rounds extend past `repeats`; provenance covers them too.
+        for k in (_round_indices(run_dir, [sk]) or list(range(1, repeats + 1))):
             p = run_dir / sk / f"run{k}.json"
             if not p.exists():
                 continue
@@ -543,7 +630,7 @@ def audit_git_provenance(run_dir: Path, plan=None) -> dict:
             run_sha = data.get("git_sha")
             if not run_sha:
                 missing_sha.append(f"{sk}/run{k}")
-            elif run_sha != cal_sha:
+            elif run_sha not in accepted:
                 mismatches.append(
                     f"{sk}/run{k}: artifact {run_sha[:8]} != calibration {cal_sha[:8]}"
                 )
@@ -926,6 +1013,224 @@ def _purge_incomplete_run(out: Path, stage_keys, all_stages, k: int):
             p.unlink(missing_ok=True)
 
 
+def _round_indices(run_dir: Path, stage_keys) -> list[int]:
+    """Every round index that produced a result json for this unit."""
+    found = set()
+    for sk in stage_keys:
+        for p in (run_dir / sk).glob("run*.json"):
+            m = re.fullmatch(r"run(\d+)\.json", p.name)
+            if m:
+                found.add(int(m.group(1)))
+    return sorted(found)
+
+
+def _display_resolution(stage: dict, metric_key: str) -> float:
+    """Smallest raw difference the report would render as distinct.
+
+    Guards the gap test on near-zero metrics, where a relative gap explodes:
+    a WER moving 0.0085 -> 0.0106 is a 24% relative swing but only 0.2
+    percentage points, and must not count as destructive separation.
+    """
+    disp = ((stage.get("metrics") or {}).get(metric_key) or {}).get("display") or {}
+    digits = disp.get("digits")
+    scale = disp.get("scale") or 1
+    if digits is None:
+        return 0.0
+    try:
+        return (10.0 ** -int(digits)) / float(scale)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def _destructive_value_indices(values, floor: float = 0.0) -> dict[int, dict]:
+    """Positions in `values` that are destructive outliers, with evidence.
+
+    Both conditions must hold — see _DESTRUCTIVE_Z / _DESTRUCTIVE_GAP.
+    """
+    # A non-finite metric is a broken measurement, not a slow one. Condemn it
+    # outright and keep it out of the statistics, where it would poison the
+    # median and make every comparison return False.
+    flagged = {i: dict(value=v, z=None, rel_gap=None, abs_gap=None,
+                       rest_median=None, reason="non-finite value")
+               for i, v in enumerate(values) if not math.isfinite(v)}
+    finite = [(i, v) for i, v in enumerate(values) if math.isfinite(v)]
+    if len(finite) < _DESTRUCTIVE_MIN_OBS:
+        return flagged
+    values = [v for _, v in finite]
+    centre = statistics.median(values)
+    mad = statistics.median([abs(v - centre) for v in values])
+    for pos, (i, v) in enumerate(finite):
+        rest = [x for j, x in enumerate(values) if j != pos]
+        rest_centre = statistics.median(rest)
+        abs_gap = min(abs(v - x) for x in rest)
+        rel_gap = abs_gap / abs(rest_centre) if rest_centre else 0.0
+        if mad:
+            z = abs(v - centre) / (1.4826 * mad)
+        else:
+            z = math.inf if v != centre else 0.0
+        if z <= _DESTRUCTIVE_Z:
+            continue
+        if rel_gap < _DESTRUCTIVE_GAP or abs_gap <= floor:
+            continue
+        flagged[i] = dict(value=v, z=(None if z == math.inf else round(z, 2)),
+                          rel_gap=round(rel_gap, 4), abs_gap=abs_gap,
+                          rest_median=rest_centre)
+    return flagged
+
+
+def _degenerate_series(values, floor: float = 0.0) -> tuple[float, float] | None:
+    """Detect a sample that splits into two populations of comparable size.
+
+    Beyond roughly 40% contamination the median and MAD sit *inside* the bad
+    cluster, so outlier identification silently inverts and reports the good
+    rounds as the anomalies. When that happens nothing in the sample can be
+    trusted to say which side is real, so the caller must discard the whole
+    block rather than pick a side. Returns (gap, centre) when degenerate.
+    """
+    if len(values) < _DESTRUCTIVE_MIN_OBS:
+        return None
+    ordered = sorted(values)
+    gap, at = max((ordered[i + 1] - ordered[i], i)
+                  for i in range(len(ordered) - 1))
+    if min(at + 1, len(ordered) - at - 1) < 2:
+        return None          # a lone outlier is the normal, detectable case
+    centre = statistics.median(ordered)
+    if not centre or gap <= floor:
+        return None
+    return (gap, centre) if gap / abs(centre) >= _DEGENERATE_SPLIT else None
+
+
+def _unit_metric_series(run_dir: Path, stage_keys, all_stages, rounds):
+    """(stage_key, metric, [(round, value)…]) for every numeric metric."""
+    for sk in stage_keys:
+        stage = all_stages.get(sk) or {}
+        if not stage.get("metrics"):
+            continue
+        series = {}
+        for k in rounds:
+            p = run_dir / sk / f"run{k}.json"
+            if not _run_json_ok(p, stage):
+                continue
+            for mk, mv in (json.loads(p.read_text()).get("metrics") or {}).items():
+                if isinstance(mv, (int, float)) and not isinstance(mv, bool):
+                    series.setdefault(mk, []).append((k, float(mv)))
+        for mk, pairs in series.items():
+            yield sk, stage, mk, pairs
+
+
+def _detect_destructive_rounds(run_dir: Path, stage_keys, all_stages,
+                               candidate_rounds=None) -> dict[int, list[dict]]:
+    """Destructive round indices for one pytest unit, with per-metric evidence.
+
+    Only rounds not already condemned are judged, and only against each other.
+    An already-rejected round left in the sample would sit next to the next bad
+    round and cancel its gap, so two similar broken rounds would mask each
+    other and both survive.
+    """
+    rounds = [k for k in (candidate_rounds if candidate_rounds is not None
+                          else _round_indices(run_dir, stage_keys))
+              if not _round_rejected(run_dir, stage_keys, k)]
+    evidence: dict[int, list[dict]] = {}
+    for sk, stage, mk, pairs in _unit_metric_series(
+            run_dir, stage_keys, all_stages, rounds):
+        ks = [k for k, _ in pairs]
+        values = [v for _, v in pairs]
+        floor = _display_resolution(stage, mk)
+        for pos, ev in _destructive_value_indices(values, floor).items():
+            evidence.setdefault(ks[pos], []).append(
+                dict(stage_key=sk, metric=mk, **ev))
+    return evidence
+
+
+def _detect_degenerate_unit(run_dir: Path, stage_keys, all_stages,
+                            candidate_rounds=None) -> list[dict]:
+    """Metrics whose remaining rounds split into two comparable populations."""
+    rounds = [k for k in (candidate_rounds if candidate_rounds is not None
+                          else _round_indices(run_dir, stage_keys))
+              if not _round_rejected(run_dir, stage_keys, k)]
+    found = []
+    for sk, stage, mk, pairs in _unit_metric_series(
+            run_dir, stage_keys, all_stages, rounds):
+        split = _degenerate_series([v for _, v in pairs],
+                                   _display_resolution(stage, mk))
+        if split:
+            found.append(dict(stage_key=sk, metric=mk, gap=split[0],
+                              centre=split[1],
+                              values=[v for _, v in pairs]))
+    return found
+
+
+def _mark_destructive_rounds(run_dir: Path, stage_keys, evidence,
+                             block_discarded: bool = False) -> None:
+    """Stamp destructive rounds across every stage of the unit.
+
+    The json is kept, never deleted: the excluded values are evidence and the
+    report has to be able to show them. `block_discarded` marks rounds thrown
+    away wholesale by a restart, so a later resume can tell them apart from
+    individually condemned rounds.
+    """
+    for k, flags in evidence.items():
+        for sk in stage_keys:
+            p = run_dir / sk / f"run{k}.json"
+            if not p.exists():
+                continue
+            try:
+                data = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            data["destructive"] = True
+            data["destructive_evidence"] = flags
+            if block_discarded:
+                data["block_discarded"] = True
+            p.write_text(json.dumps(data, indent=2))
+
+
+def _run_json_block_discarded(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        return json.loads(path.read_text()).get("block_discarded") is True
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def _run_json_destructive(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        return json.loads(path.read_text()).get("destructive") is True
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def _round_rejected(run_dir: Path, stage_keys, k: int) -> bool:
+    """Is round k condemned for this unit?
+
+    Asks every stage, not one representative: rejection is stamped on all of
+    them, and if the stage we happened to probe is missing that round the
+    round would look clean and be re-condemned on every cycle.
+    """
+    return any(_run_json_destructive(run_dir / sk / f"run{k}.json")
+               for sk in stage_keys)
+
+
+def _round_block_discarded(run_dir: Path, stage_keys, k: int) -> bool:
+    return any(_run_json_block_discarded(run_dir / sk / f"run{k}.json")
+               for sk in stage_keys)
+
+
+def _clean_rounds(run_dir: Path, sk: str, stage: dict,
+                  rounds=None) -> list[int]:
+    """Round indices usable for worst-of-N: complete and not destructive."""
+    candidates = rounds if rounds is not None else _round_indices(run_dir, [sk])
+    out = []
+    for k in candidates:
+        p = run_dir / sk / f"run{k}.json"
+        if _run_json_ok(p, stage) and not _run_json_destructive(p):
+            out.append(k)
+    return sorted(out)
+
+
 def audit_completeness(run_dir: Path, all_stages=None, plan=None):
     plan = plan or json.loads((run_dir / "plan.json").read_text())
     if all_stages is None:
@@ -938,31 +1243,44 @@ def audit_completeness(run_dir: Path, all_stages=None, plan=None):
     missing = []
     for sk in plan["stages"]:
         stage = all_stages[sk]
-        for k in range(1, repeats + 1):
+        rounds = _round_indices(run_dir, [sk]) or list(range(1, repeats + 1))
+        clean = _clean_rounds(run_dir, sk, stage, rounds)
+        # Completeness is measured in *clean* observations, capped at the
+        # target: extra rounds earned by rejection do not inflate the count.
+        ok += min(len(clean), repeats)
+        for k in rounds:
             p = run_dir / sk / f"run{k}.json"
-            if _run_json_ok(p, stage):
-                ok += 1
-            else:
-                reason = "missing file"
-                if p.exists():
-                    try:
-                        d = json.loads(p.read_text())
-                        sc = d.get("sample_counts") or {}
-                        expected = stage.get("expected_samples")
-                        if (
-                            expected is not None
-                            and sc.get("total") is not None
-                            and sc.get("total") != expected
-                        ):
-                            reason = (
-                                f"sample scope mismatch "
-                                f"(total {sc.get('total')} != expected {expected})"
-                            )
-                        else:
-                            reason = d.get("reason") or d.get("status") or "incomplete metrics"
-                    except (json.JSONDecodeError, OSError):
-                        reason = "corrupt json"
-                missing.append({"stage_key": sk, "run": k, "reason": reason})
+            if k in clean:
+                continue
+            if _run_json_destructive(p):
+                continue  # rejected on purpose; a replacement round covers it
+            reason = "missing file"
+            if p.exists():
+                try:
+                    d = json.loads(p.read_text())
+                    sc = d.get("sample_counts") or {}
+                    expected = stage.get("expected_samples")
+                    if (
+                        expected is not None
+                        and sc.get("total") is not None
+                        and sc.get("total") != expected
+                    ):
+                        reason = (
+                            f"sample scope mismatch "
+                            f"(total {sc.get('total')} != expected {expected})"
+                        )
+                    else:
+                        reason = d.get("reason") or d.get("status") or "incomplete metrics"
+                except (json.JSONDecodeError, OSError):
+                    reason = "corrupt json"
+            missing.append({"stage_key": sk, "run": k, "reason": reason})
+        shortfall = repeats - len(clean)
+        if shortfall > 0:
+            missing.append({
+                "stage_key": sk, "run": None,
+                "reason": f"needs {shortfall} more clean observation(s) "
+                          f"({len(clean)}/{repeats} after destructive rejection)",
+            })
     return dict(
         complete=(ok == total),
         ok=ok,
@@ -975,13 +1293,17 @@ def audit_completeness(run_dir: Path, all_stages=None, plan=None):
 
 
 def strict_classify_cell(path: Path, stage: dict) -> str:
-    """Classify one stage-run for strict worst-of-N (✓ / △ / ✗ / —)."""
+    """Classify one stage-run for strict worst-of-N (✓ / △ / ✗ / D / —)."""
     if not path.exists():
         return "—"
     try:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return "✗"
+    if data.get("destructive") is True:
+        # Complete but rejected: excluded from aggregation, replaced by a
+        # fresh round rather than re-run in place.
+        return "D"
     sample_counts = data.get("sample_counts") or {}
     total = sample_counts.get("total")
     ok = sample_counts.get("ok")
@@ -1015,17 +1337,23 @@ def strict_audit(run_dir: Path, all_stages=None, plan=None) -> dict:
     ready = 0
     for sk in plan["stages"]:
         stage = all_stages[sk]
+        # Rounds are no longer 1..repeats: destructive rounds are replaced by
+        # additional ones, so effective N varies per stage.
+        rounds = _round_indices(run_dir, [sk]) or list(range(1, repeats + 1))
         cells = [
             strict_classify_cell(run_dir / sk / f"run{k}.json", stage)
-            for k in range(1, repeats + 1)
+            for k in rounds
         ]
         strict_ok = cells.count("✓")
-        if strict_ok == repeats:
+        if strict_ok >= repeats:
             ready += 1
         stage_rows.append(dict(
             stage_key=sk,
             cells=cells,
+            rounds=rounds,
             strict_ok=strict_ok,
+            effective_n=strict_ok,
+            destructive=[k for k, c in zip(rounds, cells) if c == "D"],
             expected_samples=stage.get("expected_samples"),
         ))
     return dict(
@@ -2378,14 +2706,25 @@ def _run_cmd_inner(args, cfg, py, src, out):
         plan_repeats = existing.get("repeats", args.repeats)
         cal_sha = _plan_calibration_sha(existing)
         if cal_sha and gi["sha"] != cal_sha:
+            equivalent, reasons = measurement_equivalent_commits(cal_sha, gi["sha"])
+            if not equivalent:
+                print(
+                    "error: HEAD moved since this run dir was started, and the "
+                    "change can affect what is measured.\n"
+                    f"  calibration_git_sha: {cal_sha}\n"
+                    f"  current HEAD:        {gi['sha']}\n"
+                    + "".join(f"  - {r}\n" for r in reasons[:10]) +
+                    "  Start a **new** --output-dir on the current commit."
+                )
+                return 2
             print(
-                "error: HEAD moved since this run dir was started.\n"
-                f"  calibration_git_sha: {cal_sha}\n"
-                f"  current HEAD:        {gi['sha']}\n"
-                "  Start a **new** --output-dir on the current commit; "
-                "do not --resume across commits."
+                f"note: HEAD moved {cal_sha[:8]} -> {gi['sha'][:8]}, but every "
+                f"change is a threshold constant or calibration-tooling file — "
+                f"no measured code differs, so existing observations stay valid."
             )
-            return 2
+            existing.setdefault("equivalent_commits", [])
+            if gi["sha"] not in existing["equivalent_commits"]:
+                existing["equivalent_commits"].append(gi["sha"])
         if set(sel) - set(plan_stages):
             print(
                 "error: --resume --stages must be a subset of the existing "
@@ -2419,6 +2758,11 @@ def _run_cmd_inner(args, cfg, py, src, out):
             stages_yaml=existing.get("stages_yaml", str(sy)),
             last_resume_at=now_iso(),
             last_resume_git_sha=gi["sha"],
+            # Commits proven not to change any measured code. Rounds recorded
+            # under them are part of the same experiment; provenance accepts
+            # them. Rebuilt field-by-field here, so this must be carried over
+            # explicitly or the proof is lost on the next resume.
+            equivalent_commits=existing.get("equivalent_commits") or [],
         ), indent=2))
         args.repeats = plan_repeats
     else:
@@ -2452,50 +2796,184 @@ def _run_cmd_inner(args, cfg, py, src, out):
         default=2,
     )
     host = cfg.get("_host")
-    for pass_num in range(1, max_passes + 1):
-        ran_any = False
-        for k in range(1, args.repeats + 1):
-            for (test_path, _env_key), stage_keys in by_test.items():
-                if all(_run_json_ok(out / sk / f"run{k}.json", all_stages[sk])
-                       for sk in stage_keys):
-                    if pass_num == 1 and args.resume:
-                        print(f"[{Path(test_path).stem}] run {k}/{args.repeats} "
-                              f"skipped (complete, {len(stage_keys)} stage(s))")
-                    continue
-                _purge_incomplete_run(out, stage_keys, all_stages, k)
-                needed = max(
-                    (_stage_gpus(all_stages[s], gpus_per_test) for s in stage_keys),
-                    default=2,
-                )
-                extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
-                    Path(test_path).name, []) or []
-                if pass_num > 1:
-                    print(f"=== calibration pass {pass_num}/{max_passes}: "
-                          f"retry {Path(test_path).stem} run {k} ===")
-                if _run_shared(test_path, stage_keys, all_stages, out, k, py,
-                               args.repeats, needed, extra_args, host=host):
-                    audit = audit_completeness(out, all_stages)
-                    print(f"completeness at HALT: "
-                          f"{audit['ok']}/{audit['total']} stage-runs complete")
-                    return 1
-                ran_any = True
-        audit = audit_completeness(out, all_stages)
-        print(f"completeness after pass {pass_num}: "
-              f"{audit['ok']}/{audit['total']} stage-runs complete")
-        if audit["complete"]:
-            break
-        if not ran_any:
-            break
-        if pass_num < max_passes:
-            print(f"{audit['missing_count']} incomplete — GPU cleanup before next pass")
-            pinned = included_gpu_indices(host)
-            if not _ensure_gpus_free(
-                max_gpus,
-                host=host,
-                target_gpus=sorted(pinned) if pinned is not None else None,
-            ):
-                print("error: GPU memory not cleared; stopping calibration passes")
+    # Rounds are allocated per unit and grow when a round is rejected, so a
+    # stage can end up with more than `repeats` observations.
+    # Seed from what is already on disk, not just the baseline: a resumed run
+    # must see the replacement rounds a previous process created, otherwise it
+    # re-plans from 1..repeats and never finishes replenishing.
+    unit_rounds = {
+        u: sorted(set(range(1, args.repeats + 1))
+                  | set(_round_indices(out, stage_keys)))
+        for u, stage_keys in by_test.items()
+    }
+    restarts = {u: 0 for u in by_test}
+
+    def _unit_label(u):
+        return Path(u[0]).stem
+
+    def _unit_clean_count(u) -> int:
+        return min((len(_clean_rounds(out, sk, all_stages[sk], unit_rounds[u]))
+                    for sk in by_test[u]), default=0)
+
+    def _fill_pending() -> int:
+        """Run every not-yet-complete (unit, round). 0 = ok, 1 = halt."""
+        for pass_num in range(1, max_passes + 1):
+            ran_any = pending = False
+            for u, stage_keys in by_test.items():
+                test_path = u[0]
+                for k in unit_rounds[u]:
+                    if all(_run_json_ok(out / sk / f"run{k}.json", all_stages[sk])
+                           for sk in stage_keys):
+                        if pass_num == 1 and args.resume:
+                            print(f"[{_unit_label(u)}] run {k} skipped "
+                                  f"(complete, {len(stage_keys)} stage(s))")
+                        continue
+                    pending = True
+                    _purge_incomplete_run(out, stage_keys, all_stages, k)
+                    needed = max(
+                        (_stage_gpus(all_stages[s], gpus_per_test) for s in stage_keys),
+                        default=2,
+                    )
+                    extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
+                        Path(test_path).name, []) or []
+                    if pass_num > 1:
+                        print(f"=== calibration pass {pass_num}/{max_passes}: "
+                              f"retry {_unit_label(u)} run {k} ===")
+                    if _run_shared(test_path, stage_keys, all_stages, out, k, py,
+                                   max(unit_rounds[u]), needed, extra_args,
+                                   host=host):
+                        return 1
+                    ran_any = True
+            audit = audit_completeness(out, all_stages)
+            print(f"completeness after pass {pass_num}: "
+                  f"{audit['ok']}/{audit['total']} stage-runs complete")
+            if not pending or not ran_any:
                 break
+            if pass_num < max_passes:
+                print(f"{audit['missing_count']} incomplete — GPU cleanup before next pass")
+                pinned = included_gpu_indices(host)
+                if not _ensure_gpus_free(
+                    max_gpus,
+                    host=host,
+                    target_gpus=sorted(pinned) if pinned is not None else None,
+                ):
+                    print("error: GPU memory not cleared; stopping calibration passes")
+                    break
+        return 0
+
+    reject = not getattr(args, "no_destructive_rejection", False)
+    if reject and args.repeats < _DESTRUCTIVE_MIN_OBS:
+        # MAD on fewer than this many points cannot separate a broken round
+        # from ordinary spread, so the detector declines to judge. Say so:
+        # silently running without the protection is the dangerous outcome.
+        print(f"warning: --repeats {args.repeats} < {_DESTRUCTIVE_MIN_OBS}; "
+              f"destructive-round rejection is INACTIVE (too few observations "
+              f"to identify an outlier). Worst-of-N will include broken rounds.")
+        reject = False
+    while True:
+        if _fill_pending():
+            audit = audit_completeness(out, all_stages)
+            print(f"completeness at HALT: "
+                  f"{audit['ok']}/{audit['total']} stage-runs complete")
+            return 1
+        if not reject:
+            break
+        grew = False
+        for u, stage_keys in by_test.items():
+            label = _unit_label(u)
+            already = {k for k in unit_rounds[u]
+                       if _round_rejected(out, stage_keys, k)}
+            # Rounds thrown away by an earlier restart must not count toward
+            # this block's n, or a resumed run re-triggers the restart and
+            # discards the good rounds of the current block with them.
+            already_block = {k for k in already
+                             if not _round_block_discarded(out, stage_keys, k)}
+            degenerate = _detect_degenerate_unit(out, stage_keys, all_stages,
+                                                 unit_rounds[u])
+            ev = _detect_destructive_rounds(out, stage_keys, all_stages,
+                                            unit_rounds[u])
+            fresh = sorted(set(ev) - already)
+            if degenerate:
+                # Majority contamination: the robust centre has moved into the
+                # bad cluster, so which side is "correct" is unknowable from
+                # this sample. Force the restart path.
+                d0 = degenerate[0]
+                print(f"[{label}] DEGENERATE sample: {d0['stage_key']}."
+                      f"{d0['metric']} splits into two populations "
+                      f"({' '.join(f'{v:.6g}' for v in sorted(d0['values']))}) "
+                      f"— cannot identify which rounds are broken")
+                n, fresh = _DESTRUCTIVE_FULL_RERUN_N, sorted(
+                    set(unit_rounds[u]) - already)
+            else:
+                n = len(already_block) + len(fresh)
+                # No *new* rejection is not the same as nothing to do: a run
+                # resumed after a teardown carries marks whose replacement
+                # rounds were never launched, and must still top up.
+                if not fresh and not already:
+                    continue
+            for k in fresh:
+                if not ev.get(k):
+                    continue          # condemned by the degenerate guard, no per-metric evidence
+                worst = max(ev[k], key=lambda f: f.get("rel_gap") or 0)
+                if worst.get("rel_gap") is None:
+                    why = worst.get("reason", "invalid value")
+                else:
+                    why = (f"vs rest median {_g(worst['rest_median'])} "
+                           f"(gap {worst['rel_gap']:.0%})")
+                print(f"[{label}] round {k} REJECTED as destructive "
+                      f"({len(ev[k])} metric(s)); e.g. {worst['stage_key']}."
+                      f"{worst['metric']}={_g(worst['value'])} {why}")
+            if n >= _DESTRUCTIVE_FULL_RERUN_N:
+                if restarts[u] >= _DESTRUCTIVE_MAX_RESTARTS:
+                    # One restart already failed. Rejecting this many rounds
+                    # would leave the stage short and block the report, which
+                    # is worse than keeping them: worst-of-N over everything is
+                    # the conservative bound. Keep the data, flag it loudly.
+                    print(f"[{label}] STILL unstable after a restart "
+                          f"(n={n}{' , degenerate sample' if degenerate else ''})"
+                          f" — this is a property of the test or the host, not "
+                          f"a single bad round. Keeping all observations; "
+                          f"worst-of-N stays conservative. REVIEW THIS STAGE "
+                          f"before applying its thresholds.")
+                    continue
+                print(f"[{label}] n={n} >= {_DESTRUCTIVE_FULL_RERUN_N}: the "
+                      f"'others agree' premise fails — discarding all "
+                      f"{len(unit_rounds[u])} round(s) and restarting")
+                _mark_destructive_rounds(out, stage_keys, {
+                    k: ev.get(k, [{"stage_key": stage_keys[0], "metric": "*",
+                                   "reason": f"unit restart (n={n})"}])
+                    for k in unit_rounds[u]}, block_discarded=True)
+                restarts[u] += 1
+                start = max(unit_rounds[u]) + 1
+                unit_rounds[u] = list(range(start, start + args.repeats))
+                grew = True
+                continue
+            _mark_destructive_rounds(out, stage_keys, {k: ev[k] for k in fresh})
+            if _unit_clean_count(u) >= args.repeats:
+                continue
+            # Declarative, not incremental: the block should hold
+            # repeats + 2n rounds for n rejections. Recomputing the target from
+            # the marks on disk makes this idempotent, so a resumed run tops up
+            # correctly even when it observes no *new* rejections.
+            n_total = len(already_block | set(fresh))
+            # Size against the CURRENT block: rounds thrown away by a restart
+            # are not part of it, so counting them would under-provision a
+            # resumed restart and leave the stage permanently short.
+            block_rounds = [k for k in unit_rounds[u]
+                            if not _round_block_discarded(out, stage_keys, k)]
+            start = max(unit_rounds[u]) + 1
+            extra = min(args.repeats + 2 * n_total - len(block_rounds),
+                        max(0, _DESTRUCTIVE_MAX_ROUNDS - (start - 1)))
+            if extra <= 0:
+                print(f"[{label}] round cap {_DESTRUCTIVE_MAX_ROUNDS} reached; "
+                      f"leaving it incomplete")
+                continue
+            print(f"[{label}] replenishing {extra} round(s) "
+                  f"({start}..{start + extra - 1}) for {n_total} rejected")
+            unit_rounds[u] += list(range(start, start + extra))
+            grew = True
+        if not grew:
+            break
     audit = audit_completeness(out, all_stages)
     if not audit["complete"]:
         print(f"error: calibration incomplete ({audit['ok']}/{audit['total']}). "
@@ -3258,6 +3736,73 @@ def _metric_statistics(values: list[float], worst_op: str) -> dict:
     )
 
 
+_CORRECTNESS_HINTS = ("accuracy", "wer", "cer", "similarity", "utmos",
+                      "n_above", "der", "corpus")
+
+
+def _g(v) -> str:
+    """Compact number for evidence tables (no float dust)."""
+    return "N/A" if v is None else f"{v:.6g}"
+
+
+def _is_correctness_metric(stage: dict, metric_key: str) -> bool:
+    key = metric_key.lower()
+    group = (stage.get("group") or "").lower()
+    return (any(h in key for h in _CORRECTNESS_HINTS)
+            or group in ("diarization", "wer", "similarity", "utmos", "accuracy"))
+
+
+def _destructive_report_sections(run_dir: Path, plan: dict, all_stages: dict) -> list:
+    """Rejected rounds, plus the ones that look like genuine defects.
+
+    Host contention explains a slow round; it does not explain a wrong one. A
+    rejected round whose *correctness* metrics moved is a lead worth chasing,
+    so it is surfaced separately instead of vanishing into the exclusion.
+    """
+    rows, suspects = [], []
+    for sk in plan["stages"]:
+        stage = all_stages.get(sk) or {}
+        for k in _round_indices(run_dir, [sk]):
+            p = run_dir / sk / f"run{k}.json"
+            if not _run_json_destructive(p):
+                continue
+            data = json.loads(p.read_text())
+            for ev in data.get("destructive_evidence") or []:
+                if ev.get("stage_key") != sk:
+                    continue
+                gap = ev.get("rel_gap")
+                val, med = _g(ev.get("value")), _g(ev.get("rest_median"))
+                z = ev.get("z")
+                rows.append(
+                    f"| {sk} | run{k} | `{ev.get('metric')}` | {val} | {med} | "
+                    f"{'—' if gap is None else f'{gap:.0%}'} | "
+                    f"{'∞' if z is None else _g(z)} |")
+                if _is_correctness_metric(stage, str(ev.get("metric"))):
+                    suspects.append(
+                        f"| {sk} | run{k} | `{ev.get('metric')}` | {val} | {med} |")
+    if not rows:
+        return []
+    out = ["## Rejected destructive rounds", "",
+           "These rounds completed with full sample scope but were excluded "
+           "from worst-of-N and replaced by additional rounds. Values are "
+           "retained here as evidence.", "",
+           "| Stage | Round | Metric | Rejected value | Rest median | Gap | z |",
+           "|---|---|---|---:|---:|---:|---:|"]
+    out += rows
+    out.append("")
+    if suspects:
+        out += ["### Suspected real defects — investigate, do not dismiss", "",
+                "Contention explains a slow round, not a wrong one. These "
+                "**correctness** metrics moved in a rejected round, which may "
+                "indicate a genuine intermittent defect rather than a noisy "
+                "measurement.", "",
+                "| Stage | Round | Metric | Rejected value | Rest median |",
+                "|---|---|---|---:|---:|"]
+        out += suspects
+        out.append("")
+    return out
+
+
 def _wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
     if total <= 0:
         return (0.0, 0.0)
@@ -3295,16 +3840,21 @@ def report(run_dir):
     for idx, sk in enumerate(plan["stages"], start=1):
         s = all_stages[sk]
         L += [f"## {idx}. {s['title']}", "", f"{{{{CONTEXT:{sk}}}}}", ""]
+        rounds = _round_indices(run_dir, [sk]) or list(range(1, N + 1))
         results = [json.loads((run_dir / sk / f"run{k}.json").read_text())
                    if (run_dir / sk / f"run{k}.json").exists() else None
-                   for k in range(1, N + 1)]
+                   for k in rounds]
+        rejected = {k for k, r in zip(rounds, results)
+                    if r is not None and r.get("destructive") is True}
+        eff_n = sum(1 for k, r in zip(rounds, results)
+                    if r is not None and k not in rejected)
         if not s["metrics"]:
             L += ["| Run | Result |", "|-----|--------|"]
             cells = ["PASS" if r and r["status"] == "ok" else "FAIL"
                      for r in results]
-            for i, c in enumerate(cells, start=1): L.append(f"| {i} | {c} |")
+            for i, c in zip(rounds, cells): L.append(f"| {i} | {c} |")
             worst = "FAIL" if any(c == "FAIL" for c in cells) else "PASS"
-            L += [f"| **Worst-of-{N}** | **{worst}** |", ""]
+            L += [f"| **Worst-of-{eff_n}** | **{worst}** |", ""]
             continue
         keys = list(s["metrics"].keys())
         disp = {k: s["metrics"][k]["display"] for k in keys}
@@ -3318,7 +3868,8 @@ def report(run_dir):
               "|-----|" + "|".join(["-" * 8] * (len(keys) + len(count_headers))) + "|"]
         vals = {k: [] for k in keys}
         cvals = {"total": [], "ok": []}
-        for i, r in enumerate(results, start=1):
+        for i, r in zip(rounds, results):
+            drop = i in rejected
             cells = []
             if has_counts:
                 if r is None:
@@ -3327,16 +3878,19 @@ def report(run_dir):
                     sc = r.get("sample_counts") or {}
                     tot, okc = sc.get("total"), sc.get("ok")
                     cells += [_fmt_count(tot), _fmt_count(okc)]
-                    if tot is not None: cvals["total"].append(tot)
-                    if okc is not None: cvals["ok"].append(okc)
+                    if not drop:
+                        if tot is not None: cvals["total"].append(tot)
+                        if okc is not None: cvals["ok"].append(okc)
             for k in keys:
                 if r is None: cells.append("MISSING")
                 elif k in nulls: cells.append("N/A")
                 else:
                     v = (r.get("metrics") or {}).get(k)
                     cells.append(_fmt(v, disp[k]))
-                    if v is not None: vals[k].append(v)
-            L.append(f"| {i} | " + " | ".join(cells) + " |")
+                    # Destructive rounds stay visible but never aggregate.
+                    if v is not None and not drop: vals[k].append(v)
+            label = f"{i} (rejected)" if drop else str(i)
+            L.append(f"| {label} | " + " | ".join(cells) + " |")
         wc = []
         if has_counts:
             # Samples run/ok are diagnostic counts, not quality metrics.
@@ -3350,7 +3904,15 @@ def report(run_dir):
             stage_stats[k] = _metric_statistics(vals[k], worst[k])
             v = stage_stats[k]["worst"]
             wc.append(f"**{_fmt(v, disp[k])}**")
-        L += [f"| **Worst-of-{N}** | " + " | ".join(wc) + " |", ""]
+        L += [f"| **Worst-of-{eff_n}** | " + " | ".join(wc) + " |", ""]
+        if rejected:
+            L += [
+                f"*Destructive rounds rejected: "
+                f"{', '.join('run' + str(k) for k in sorted(rejected))}. "
+                f"Worst-of-N uses the {eff_n} surviving observation(s); the "
+                f"rejected values are shown above but never aggregated.*",
+                "",
+            ]
         if stage_stats:
             L += ["### Metric calibration", "",
                   "| Metric | Worst | Median | Min | Max | Range | Std | CV | Outliers |",
@@ -3386,12 +3948,13 @@ def report(run_dir):
             L.append(f"> ⚠ {disp[k]['label']}: no `json_path` in stages.yaml "
                      "(config.yaml `metric_sources` missing this metric)")
         if nulls: L.append("")
+    L += _destructive_report_sections(run_dir, plan, all_stages)
     L += ["## Operational reliability", "",
           "| Stage | Runs | Attempts | Retry successes | Failed attempts | Startup | OOM | Timeout | Partial |",
           "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for sk in plan["stages"]:
         runs = [json.loads((run_dir / sk / f"run{k}.json").read_text())
-                for k in range(1, N + 1)]
+                for k in (_round_indices(run_dir, [sk]) or list(range(1, N + 1)))]
         histories = [r.get("attempt_history") or [] for r in runs]
         attempts = sum(len(h) or int(r.get("attempts", 1))
                        for h, r in zip(histories, runs))
@@ -3574,12 +4137,20 @@ def apply_plan(run_dir):
         threshold_path = REPO_ROOT / s.get("threshold_file", s["test"])
         threshold_text = threshold_path.read_text()
         conc = _read_concurrency(test_text) or _read_concurrency(threshold_text)
-        per_run = []
-        for k in range(1, N + 1):
+        rounds = _round_indices(run_dir, [sk]) or list(range(1, N + 1))
+        per_run, rejected_rounds = [], []
+        for k in rounds:
             p = run_dir / sk / f"run{k}.json"
-            per_run.append(json.loads(p.read_text()) if p.exists() else None)
+            data = json.loads(p.read_text()) if p.exists() else None
+            if data is not None and data.get("destructive") is True:
+                rejected_rounds.append(k)
+                continue          # never feeds worst-of-N
+            per_run.append(data)
         sg = {
             "stage_key": sk,
+            "rounds": rounds,
+            "rejected_rounds": rejected_rounds,
+            "effective_n": sum(1 for r in per_run if r is not None),
             "test": str(test_path),
             "threshold_file": str(threshold_path),
             "title": s["title"],
@@ -3685,6 +4256,9 @@ def main(argv=None):
     sc.add_argument("--stages-yaml")
     sc.add_argument("--max-passes", type=int, default=_DEFAULT_CALIBRATION_PASSES,
                     help="max retry passes until all stage-runs have complete metrics")
+    sc.add_argument("--no-destructive-rejection", action="store_true",
+                    help="keep destructive rounds in worst-of-N instead of "
+                         "rejecting and replenishing them (escape hatch)")
     sd = sub.add_parser("report"); sd.add_argument("--run-dir", required=True)
     se = sub.add_parser("apply-plan"); se.add_argument("--run-dir", required=True)
     sf = sub.add_parser("status"); sf.add_argument("--run-dir", required=True)

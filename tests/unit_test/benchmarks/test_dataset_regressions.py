@@ -209,16 +209,19 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
 
     assert config["test_globs"] == [
         "tests/test_model/test_asr_ci_multi_speaker.py",
-        "tests/test_model/test_asr_ci_fun_asr.py",
+        "tests/test_model/test_asr_ci_seedtts.py",
     ]
     assert "tests/test_model/test_asr_ci.py" not in config["test_globs"]
     assert config["gpus_per_test"] == {
         "test_asr_ci_multi_speaker.py": 2,
-        "test_asr_ci_fun_asr.py": 2,
+        "test_asr_ci_seedtts.py": 2,
     }
     assert config["hf_model_ids_by_test"] == {
         "test_asr_ci_multi_speaker.py": ["OpenMOSS-Team/MOSS-Transcribe-Diarize"],
-        "test_asr_ci_fun_asr.py": ["FunAudioLLM/Fun-ASR-Nano-2512-hf"],
+        "test_asr_ci_seedtts.py": [
+            "FunAudioLLM/Fun-ASR-Nano-2512-hf",
+            "Qwen/Qwen3-ASR-1.7B",
+        ],
     }
     assert {
         "zhaochenyang20/movies800time",
@@ -229,8 +232,18 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
 
     assert set(config["metric_sources"]) == {
         "test_asr_ci_multi_speaker.py",
-        "test_asr_ci_fun_asr.py",
+        "test_asr_ci_seedtts.py",
     }
+    assert (
+        config["metric_sources"]["test_asr_ci_seedtts.py"]["threshold_file"]
+        == "tests/test_model/asr_ci_config.py"
+    )
+    seedtts_presets = config["metric_sources"]["test_asr_ci_seedtts.py"][
+        "calibration_presets"
+    ]
+    assert set(seedtts_presets) == {"fun", "qwen3"}
+    assert seedtts_presets["fun"]["extra_env"] == {"ASR_CI_MODEL": "fun"}
+    assert seedtts_presets["qwen3"]["extra_env"] == {"ASR_CI_MODEL": "qwen3"}
     assert (
         config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
@@ -240,7 +253,7 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         == "diarization_metrics_percent.cer"
     )
     assert (
-        config["metric_sources"]["test_asr_ci_fun_asr.py"]["variants"]["en"]["paths"][
+        config["metric_sources"]["test_asr_ci_seedtts.py"]["variants"]["en"]["paths"][
             "corpus_wer"
         ]
         == "summary.corpus_wer"
@@ -255,9 +268,12 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "multi_speaker_speed",
         "multi_speaker_stream_diarization",
         "multi_speaker_stream_speed",
-        "fun_asr_en_wer",
-        "fun_asr_en_speed",
-        "fun_asr_zh_wer",
+        "seedtts_fun_en_wer",
+        "seedtts_fun_en_speed",
+        "seedtts_fun_zh_wer",
+        "seedtts_qwen3_en_wer",
+        "seedtts_qwen3_en_speed",
+        "seedtts_qwen3_zh_wer",
     }
     assert stages["multi_speaker_diarization"]["test"] == (
         "tests/test_model/test_asr_ci_multi_speaker.py"
@@ -310,14 +326,23 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         stages["multi_speaker_stream_speed"]["metrics"]["text_ttft_p95_s"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_stream_results.json"
     )
-    assert stages["fun_asr_en_wer"]["test"] == "tests/test_model/test_asr_ci_fun_asr.py"
-    assert stages["fun_asr_en_wer"]["expected_samples"] == 1088
-    assert stages["fun_asr_zh_wer"]["expected_samples"] == 2020
     assert (
-        stages["fun_asr_zh_wer"]["metrics"]["corpus_wer"]["json_file"]
-        == "fun_asr_zh_results.json"
+        stages["seedtts_fun_en_wer"]["test"]
+        == "tests/test_model/test_asr_ci_seedtts.py"
     )
-    assert "throughput_qps" in stages["fun_asr_en_speed"]["metrics"]
+    assert stages["seedtts_fun_en_wer"]["expected_samples"] == 1088
+    assert stages["seedtts_fun_zh_wer"]["expected_samples"] == 2020
+    assert (
+        stages["seedtts_fun_zh_wer"]["metrics"]["corpus_wer"]["json_file"]
+        == "asr_seedtts_zh_results.json"
+    )
+    assert "throughput_qps" in stages["seedtts_fun_en_speed"]["metrics"]
+    assert stages["seedtts_qwen3_en_wer"]["extra_env"] == {"ASR_CI_MODEL": "qwen3"}
+    assert (
+        stages["seedtts_qwen3_en_wer"]["metrics"]["corpus_wer"]["source"]
+        == "QWEN3_ASR_EN_CORPUS_WER_MAX"
+    )
+    assert stages["seedtts_qwen3_zh_wer"]["expected_samples"] == 2020
 
 
 def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:

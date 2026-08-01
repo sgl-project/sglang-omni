@@ -32,6 +32,7 @@ SELECTED_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
 TTS_STAGE_OPTION = "--tts-stage"
 SELECTED_TTS_CI_STAGE = pytest.StashKey[str]()
 TTS_CI_MODEL_OPTION = "--tts-ci-model"
+ASR_CI_MODEL_OPTION = "--asr-ci-model"
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Single source of truth for the model path used by Qwen3-Omni vision-encoder
 # benchmarks and the SGLang state they bring up. Honors
@@ -470,6 +471,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "If omitted, use TTS_CI_MODEL from the environment."
         ),
     )
+    parser.addoption(
+        ASR_CI_MODEL_OPTION,
+        action="store",
+        default="",
+        help=(
+            "Select the ASR CI model preset. "
+            "Use one of the presets in tests/test_model/asr_ci_config.py. "
+            "If omitted, use ASR_CI_MODEL from the environment."
+        ),
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -477,9 +488,12 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
     stage_value = config.getoption(TTS_STAGE_OPTION)
     config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
-    model_value = config.getoption(TTS_CI_MODEL_OPTION)
-    if model_value:
-        os.environ["TTS_CI_MODEL"] = _parse_tts_ci_model(model_value)
+    tts_model_value = config.getoption(TTS_CI_MODEL_OPTION)
+    if tts_model_value:
+        os.environ["TTS_CI_MODEL"] = _parse_tts_ci_model(tts_model_value)
+    asr_model_value = config.getoption(ASR_CI_MODEL_OPTION)
+    if asr_model_value:
+        os.environ["ASR_CI_MODEL"] = _parse_asr_ci_model(asr_model_value)
 
 
 @pytest.fixture(scope="session")
@@ -534,6 +548,19 @@ def _parse_tts_ci_model(option_value: str) -> str:
         allowed = tuple(sorted(TTS_CI_PRESETS))
         raise pytest.UsageError(
             f"Unsupported value for {TTS_CI_MODEL_OPTION}: {option_value!r}. "
+            f"Use one of {allowed}."
+        )
+    return normalized_value
+
+
+def _parse_asr_ci_model(option_value: str) -> str:
+    from tests.test_model.asr_ci_config import ASR_CI_PRESETS
+
+    normalized_value = option_value.strip().lower()
+    if normalized_value not in ASR_CI_PRESETS:
+        allowed = tuple(sorted(ASR_CI_PRESETS))
+        raise pytest.UsageError(
+            f"Unsupported value for {ASR_CI_MODEL_OPTION}: {option_value!r}. "
             f"Use one of {allowed}."
         )
     return normalized_value
