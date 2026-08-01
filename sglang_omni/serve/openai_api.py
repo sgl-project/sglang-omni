@@ -1587,9 +1587,37 @@ async def _abort_and_close_speech_stream(
         await _close_async_iterator_if_supported(stream)
 
 
+async def _first_transcription_chunk(
+    request: Request,
+    client: Client,
+    chunk_stream: AsyncIterator[GenerateChunk],
+    request_id: str,
+) -> GenerateChunk | None:
+    """Wait for the first stream chunk while watching for client disconnect."""
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    first_chunk_task = asyncio.create_task(anext(chunk_stream))
+    try:
+        done, _ = await asyncio.wait(
+            {first_chunk_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if disconnect_task in done:
+            await _cancel_task_bounded(first_chunk_task)
+            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            raise asyncio.CancelledError
+        try:
+            return first_chunk_task.result()
+        except StopAsyncIteration:
+            return None
+    finally:
+        if not disconnect_task.done():
+            await _cancel_task_bounded(disconnect_task)
+
+
 def _register_transcriptions(app: FastAPI) -> None:
     @app.post("/v1/audio/transcriptions")
     async def create_transcription(
+        request: Request,
         file: UploadFile = File(...),
         model: str | None = Form(default=None),
         language: str | None = Form(default=None),
@@ -1637,11 +1665,13 @@ def _register_transcriptions(app: FastAPI) -> None:
             # headers. Admission rejections such as audio past the context
             # limit arrive as the first stream event, and once headers go out
             # the response is locked to 200 and errors can only degrade into
-            # SSE payloads.
+            # SSE payloads. The wait races against client disconnect because
+            # the response owned disconnect watcher is not running yet and
+            # long audio prefill happens exactly during this wait.
             try:
-                first_chunk = await anext(chunk_stream)
-            except StopAsyncIteration:
-                first_chunk = None
+                first_chunk = await _first_transcription_chunk(
+                    request, client, chunk_stream, request_id
+                )
             except ClientError as exc:
                 await _close_async_iterator_if_supported(chunk_stream)
                 if _is_bad_request_error(exc):

@@ -25,6 +25,7 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _ClosableStreamingResponse,
+    _first_transcription_chunk,
     _speech_audio_response,
     _transcription_stream,
     build_transcription_generate_request,
@@ -1610,6 +1611,37 @@ def test_transcription_stream_maps_input_length_error_to_400() -> None:
 
     assert response.status_code == 400
     assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
+    async def _drive() -> None:
+        aborts: list[str] = []
+        stream_closed = asyncio.Event()
+
+        class _AbortRecordingClient:
+            async def abort(self, request_id: str) -> None:
+                aborts.append(request_id)
+
+        async def _never_first_chunk():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stream_closed.set()
+            yield  # unreachable, makes this an async generator
+
+        request = DisconnectingRequest()
+        request.disconnected.set()
+        with pytest.raises(asyncio.CancelledError):
+            await _first_transcription_chunk(
+                request,
+                _AbortRecordingClient(),
+                _never_first_chunk(),
+                "transcription-1",
+            )
+        assert aborts == ["transcription-1"]
+        assert stream_closed.is_set()
+
+    asyncio.run(_drive())
 
 
 def test_transcription_stream_keeps_500_for_server_errors() -> None:
