@@ -685,12 +685,7 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="seeded sampling kernel needs CUDA")
 def test_widened_top_k_masked_ranks_never_sampled():
-    """Ranks past a row's true k must be impossible, not just probability 0.
-
-    The seeded sampler scores prob + gumbel, so a 0.0-prob rank still wins
-    with weight e^0; only a -inf mask keeps the ladder widening inert. With
-    the 0.0 mask this fails within a handful of seeds.
-    """
+    """Ranks past a row's true k remain impossible after log conversion."""
     device = torch.device("cuda")
     talker = _build_talker(device)
     logits = torch.linspace(2.0, -2.0, PRED_VOCAB, device=device).unsqueeze(0)

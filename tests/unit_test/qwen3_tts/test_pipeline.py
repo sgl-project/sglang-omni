@@ -1852,17 +1852,19 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
 
     sampler_calls = []
 
-    def fake_multinomial_with_seed(inputs, seed, positions):
-        assert torch.all(inputs >= 0)
-        assert torch.allclose(inputs.sum(dim=1), torch.ones(inputs.shape[0]))
+    def fake_multinomial_with_seed(logprobs, seed, positions):
+        assert torch.all(logprobs <= 0)
+        assert torch.allclose(logprobs.exp().sum(dim=1), torch.ones(logprobs.shape[0]))
         sampler_calls.append(
             {
-                "inputs": inputs.detach().clone(),
+                "logprobs": logprobs.detach().clone(),
                 "seed": seed.detach().clone(),
                 "positions": positions.detach().clone(),
             }
         )
-        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
+        return torch.zeros(
+            (logprobs.shape[0], 1), device=logprobs.device, dtype=torch.long
+        )
 
     monkeypatch.setattr(
         sglang_model, "multinomial_with_seed", fake_multinomial_with_seed
@@ -1901,6 +1903,46 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     )
 
     assert sampler_calls[1]["positions"].tolist() == [11, 11]
+
+
+def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_temperature_tensor = torch.tensor([1.0])
+    talker._sub_top_p_tensor = torch.tensor([0.5])
+    talker._sub_top_k_tensor = torch.tensor([-1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17])
+    talker._sub_sampled_has_top_p = True
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
+    sampler_calls = []
+
+    def fake_multinomial_with_seed(logprobs, seed, positions):
+        del seed, positions
+        sampler_calls.append(logprobs.detach().clone())
+        return torch.ones((1, 1), dtype=torch.long)
+
+    monkeypatch.setattr(
+        sglang_model, "multinomial_with_seed", fake_multinomial_with_seed
+    )
+
+    token = Qwen3TTSTalker._sample_subtalker_token_seeded(
+        talker,
+        torch.log(torch.tensor([[0.4, 0.35, 0.25]])),
+        0,
+        row_indices=torch.tensor([0]),
+        semantic_positions=torch.tensor([0]),
+    )
+
+    assert torch.isfinite(sampler_calls[0]).tolist() == [[True, True, False]]
+    assert torch.allclose(sampler_calls[0][0, :2].exp(), torch.tensor([0.4, 0.35]))
+    assert token.item() == 1
 
 
 def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(

@@ -41,14 +41,14 @@ if triton is not None:
 
     @triton.jit
     def _seeded_gumbel_sample_sorted_kernel(
-        probs,
+        logprobs,
         sorted_idx,
         seeds,
         positions,
         out,
         num_cols: tl.constexpr,
-        probs_stride_b: tl.constexpr,
-        probs_stride_k: tl.constexpr,
+        logprobs_stride_b: tl.constexpr,
+        logprobs_stride_k: tl.constexpr,
         idx_stride_b: tl.constexpr,
         idx_stride_k: tl.constexpr,
         block_size: tl.constexpr,
@@ -73,7 +73,7 @@ if triton is not None:
         u = tl.maximum(u, 2.2250738585072014e-308)
         gumbel = -tl.log(-tl.log(u))
         weights = tl.load(
-            probs + row * probs_stride_b + offsets * probs_stride_k,
+            logprobs + row * logprobs_stride_b + offsets * logprobs_stride_k,
             mask=mask,
             other=-float("inf"),
         ).to(tl.float64)
@@ -92,43 +92,43 @@ def _next_power_of_2(value: int) -> int:
     return 1 << (int(value) - 1).bit_length()
 
 
-def sample_from_sorted_probs_with_seed_small_k(
-    probs: torch.Tensor,
+def sample_from_sorted_logprobs_with_seed_small_k(
+    logprobs: torch.Tensor,
     sorted_idx: torch.Tensor,
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor | None:
     if (
         _seeded_gumbel_sample_sorted_kernel is None
-        or not probs.is_cuda
+        or not logprobs.is_cuda
         or not sorted_idx.is_cuda
         or not seeds.is_cuda
         or not positions.is_cuda
     ):
         return None
-    if probs.ndim != 2 or sorted_idx.shape != probs.shape:
+    if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
         return None
     if seeds.ndim != 1 or positions.ndim != 1:
         return None
-    batch_size, num_cols = probs.shape
+    batch_size, num_cols = logprobs.shape
     if batch_size == 0:
-        return torch.empty((0,), device=probs.device, dtype=torch.long)
+        return torch.empty((0,), device=logprobs.device, dtype=torch.long)
     if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
         return None
     if num_cols <= 0 or num_cols > 1024:
         return None
 
     block_size = _next_power_of_2(num_cols)
-    out = torch.empty((batch_size,), device=probs.device, dtype=torch.long)
+    out = torch.empty((batch_size,), device=logprobs.device, dtype=torch.long)
     _seeded_gumbel_sample_sorted_kernel[(batch_size,)](
-        probs,
+        logprobs,
         sorted_idx,
         seeds,
         positions,
         out,
         int(num_cols),
-        probs.stride(0),
-        probs.stride(1),
+        logprobs.stride(0),
+        logprobs.stride(1),
         sorted_idx.stride(0),
         sorted_idx.stride(1),
         block_size,

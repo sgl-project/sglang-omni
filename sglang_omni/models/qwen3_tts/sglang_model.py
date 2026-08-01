@@ -26,7 +26,7 @@ from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
-    sample_from_sorted_probs_with_seed_small_k,
+    sample_from_sorted_logprobs_with_seed_small_k,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
@@ -57,11 +57,11 @@ def _quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
 
 
 def _sample_seeded_categorical(
-    weights: torch.Tensor,
+    logprobs: torch.Tensor,
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor:
-    return multinomial_with_seed(weights, seeds, positions).view(-1)
+    return multinomial_with_seed(logprobs, seeds, positions).view(-1)
 
 
 class _PredictorDecodeGraph:
@@ -1505,15 +1505,20 @@ class Qwen3TTSTalker(nn.Module):
         if self._sub_sampled_has_top_p:
             active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
             cdf = torch.cumsum(sorted_probs, dim=-1)
-            remove = (cdf > top_ps.unsqueeze(1)) & active_top_p.unsqueeze(1)
+            remove = (
+                cdf - sorted_probs >= top_ps.unsqueeze(1)
+            ) & active_top_p.unsqueeze(1)
             remove[:, 0] = False
             sorted_probs = sorted_probs.masked_fill(remove, -float("inf"))
-        # Note: (Jiaxin Deng) the seeded sampler scores prob + gumbel, so a
-        # 0.0 prob can still win; -inf keeps ranks past a row's true k out.
         sorted_probs = sorted_probs.masked_fill(~keep_top_k, -float("inf"))
+        sorted_logprobs = torch.where(
+            sorted_probs > 0,
+            torch.log(sorted_probs),
+            torch.full_like(sorted_probs, -float("inf")),
+        )
 
-        sampled = sample_from_sorted_probs_with_seed_small_k(
-            sorted_probs,
+        sampled = sample_from_sorted_logprobs_with_seed_small_k(
+            sorted_logprobs,
             sorted_idx,
             seeds,
             sub_positions,
@@ -1522,7 +1527,7 @@ class Qwen3TTSTalker(nn.Module):
             return sampled.to(torch.long)
 
         sampled_rank = _sample_seeded_categorical(
-            sorted_probs,
+            sorted_logprobs,
             seeds,
             sub_positions,
         ).to(device=logits.device, dtype=torch.long)
