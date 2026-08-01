@@ -470,10 +470,23 @@ def test_stage_applies_projector_before_local_object_send() -> None:
     asyncio.run(_run())
 
 
-def test_stage_local_object_preserves_fan_in_semantics() -> None:
+def test_stage_local_object_preserves_fan_in_semantics(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
     async def _run() -> None:
         dispatcher = LocalStageDispatcher()
         receiver_scheduler = FakeScheduler()
+        resolved_sources: list[str] = []
+
+        def expected_sources(request_id, from_stage, payload):
+            del request_id, payload
+            resolved_sources.append(from_stage)
+            return {"preprocess", "thinker"}
+
         receiver = make_stage(
             name="aggregate",
             scheduler=receiver_scheduler,
@@ -488,10 +501,12 @@ def test_stage_local_object_preserves_fan_in_semantics() -> None:
                         },
                     },
                 ),
+                expected_sources_fn=expected_sources,
             ),
+            replica_topology={"preprocess": ["preprocess@r0", "preprocess@r1"]},
         )
         preprocess = make_stage(
-            name="preprocess",
+            name="preprocess@r1",
             endpoints={"aggregate": "inproc://aggregate"},
             same_process_targets={"aggregate"},
             local_dispatcher=dispatcher,
@@ -526,6 +541,109 @@ def test_stage_local_object_preserves_fan_in_semantics() -> None:
             "preprocess": {"p": 1},
             "thinker": {"t": 2},
         }
+        assert resolved_sources == ["preprocess"]
+
+    asyncio.run(_run())
+
+    input_events = [
+        event["metadata"]
+        for event in events
+        if event["stage"] == "aggregate"
+        and event["event_name"] == "stage_input_received"
+    ]
+    assert input_events == [
+        {"from_stage": "preprocess@r1", "kind": "payload"},
+        {"from_stage": "thinker", "kind": "payload"},
+    ]
+
+
+def test_stage_exposes_logical_source_names_to_stream_consumers(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="decode",
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+            replica_topology={"talker": ["talker@r0", "talker@r1"]},
+        )
+        receiver._stream_queue = StreamQueue()
+
+        await receiver.receive_local_stream_chunk(
+            "req-stream",
+            "talker@r1",
+            0,
+            "chunk",
+        )
+        chunk = scheduler.inbox.get_nowait()
+        assert chunk.type == "stream_chunk"
+        assert chunk.data.from_stage == "talker"
+
+        await receiver.receive_local_stream_signal(
+            "req-stream",
+            "talker@r1",
+            is_done=True,
+        )
+        done = scheduler.inbox.get_nowait()
+        assert done.type == "stream_done"
+        signal = await receiver._stream_queue.get_with_source("req-stream")
+        assert signal.from_stage == "talker"
+
+    asyncio.run(_run())
+
+    stream_events = [
+        event["metadata"]
+        for event in events
+        if event["stage"] == "decode"
+        and event["event_name"] == "stage_stream_chunk_received"
+    ]
+    assert stream_events == [{"from_stage": "talker@r1", "chunk_id": 0}]
+
+
+def test_stage_normalizes_direct_cuda_ipc_stream_source(monkeypatch) -> None:
+    monkeypatch.setattr(
+        stage_io,
+        "deserialize_direct_cuda_ipc_stream_chunk",
+        lambda data_ref: ("chunk", {"modality": "audio"}),
+    )
+
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        receiver = make_stage(
+            name="decode",
+            scheduler=scheduler,
+            control_plane=control_plane,
+            can_accept_stream_before_payload=True,
+            replica_topology={"talker": ["talker@r0", "talker@r1"]},
+        )
+        receiver._stream_queue = StreamQueue()
+
+        await receiver._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req-direct-stream",
+                from_stage="talker@r1",
+                to_stage="decode",
+                data_ref={
+                    "_type": "TorchCudaIpcStreamChunk",
+                    "version": 1,
+                    "tensor_bytes": b"handle",
+                    "metadata": {"modality": "audio"},
+                },
+                chunk_id=0,
+            )
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.type == "stream_chunk"
+        assert queued.data.data == "chunk"
+        assert queued.data.from_stage == "talker"
+        assert control_plane.sent_to_stage == []
 
     asyncio.run(_run())
 
@@ -1079,12 +1197,17 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
             name="mm_aggregate",
             scheduler=scheduler,
             control_plane=control_plane,
+            input_handler=AggregatedInput(
+                {"encoder"},
+                lambda payloads: payloads["encoder"],
+            ),
+            replica_topology={"encoder": ["encoder@r0", "encoder@r1"]},
         )
 
         await receiver._on_data_ready(
             DataReadyMessage(
                 request_id="req-direct",
-                from_stage="encoder",
+                from_stage="encoder@r1",
                 to_stage="mm_aggregate",
                 data_ref={
                     "_type": "TorchCudaIpcPayload",
@@ -1097,8 +1220,58 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
 
         queued = scheduler.inbox.get_nowait()
         assert queued.type == "new_request"
-        assert queued.data is payload
+        assert queued.data.request_id == payload.request_id
+        assert queued.data.data == payload.data
         assert control_plane.sent_to_stage == []
+
+    asyncio.run(_run())
+
+
+def test_stage_keeps_remote_payload_ack_physical_and_model_source_logical() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="mm_aggregate",
+            scheduler=scheduler,
+            relay=relay,
+            control_plane=control_plane,
+            endpoints={"encoder@r1": "inproc://encoder-r1"},
+            input_handler=AggregatedInput(
+                {"encoder"},
+                lambda payloads: payloads["encoder"],
+            ),
+            replica_topology={"encoder": ["encoder@r0", "encoder@r1"]},
+        )
+        payload = make_stage_payload(
+            request_id="req-relay-replica",
+            data={"answer": 7},
+        )
+        data_ref, _ = await stage_io.write_payload(
+            relay,
+            "req-relay-replica",
+            payload,
+            transport=TransportKind.SHM,
+        )
+
+        await receiver._on_data_ready(
+            DataReadyMessage(
+                request_id="req-relay-replica",
+                from_stage="encoder@r1",
+                to_stage="mm_aggregate",
+                data_ref=data_ref.to_dict(),
+            )
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.type == "new_request"
+        assert queued.data.request_id == payload.request_id
+        assert queued.data.data == payload.data
+        target, endpoint, ack = control_plane.sent_to_stage[0]
+        assert target == "encoder@r1"
+        assert endpoint == "inproc://encoder-r1"
+        assert ack.to_stage == "encoder@r1"
 
     asyncio.run(_run())
 

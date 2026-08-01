@@ -167,16 +167,15 @@ class Stage:
         self._replica_bindings.setdefault(request_id, {}).update(bindings)
 
     def _resolve_target_instance(self, request_id: str, target: str) -> str:
-        if not self._replica_topology.is_replicated(target):
-            return target
         bindings = self._replica_bindings.get(request_id)
-        replica_id = None if bindings is None else bindings.get(target)
-        if replica_id is None:
-            raise RuntimeError(
-                f"Stage {self.name}: no replica binding for target {target!r} "
-                f"(req={request_id})"
-            )
-        return self._replica_topology.resolve(target, replica_id)
+        try:
+            return self._replica_topology.resolve_bound(target, bindings)
+        except ValueError as exc:
+            raise RuntimeError(f"Stage {self.name}: {exc} (req={request_id})") from exc
+
+    def _logical_source_name(self, source_instance: str) -> str:
+        """Return the model-facing logical name for a transport source."""
+        return self._replica_topology.logical_name(source_instance)
 
     async def start(self) -> None:
         if self._running:
@@ -486,10 +485,11 @@ class Stage:
             return
         self._record_replica_bindings(request_id, replica_bindings)
         self._active_requests.add(request_id)
+        logical_from_stage = self._logical_source_name(from_stage)
         item = StreamItem(
             chunk_id=chunk_id,
             data=data,
-            from_stage=from_stage,
+            from_stage=logical_from_stage,
             metadata=metadata,
         )
         self._emit_stream_chunk_received(
@@ -534,7 +534,8 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
-        merged = self.input_handler.receive(request_id, from_stage, payload)
+        logical_from_stage = self._logical_source_name(from_stage)
+        merged = self.input_handler.receive(request_id, logical_from_stage, payload)
         if merged is not None:
             _emit_event(
                 request_id=request_id,
@@ -576,7 +577,7 @@ class Stage:
             item = StreamItem(
                 chunk_id=msg.chunk_id,
                 data=data,
-                from_stage=msg.from_stage,
+                from_stage=self._logical_source_name(msg.from_stage),
                 metadata=metadata,
             )
             self._emit_stream_chunk_received(
@@ -616,7 +617,7 @@ class Stage:
         item = StreamItem(
             chunk_id=msg.chunk_id,
             data=data,
-            from_stage=msg.from_stage,
+            from_stage=self._logical_source_name(msg.from_stage),
             metadata=metadata,
         )
         self._emit_stream_chunk_received(
@@ -805,7 +806,11 @@ class Stage:
                     ),
                 )
                 return
-            self._stream_queue.put_done(request_id, from_stage=from_stage)
+            logical_from_stage = self._logical_source_name(from_stage)
+            self._stream_queue.put_done(
+                request_id,
+                from_stage=logical_from_stage,
+            )
             self.scheduler.inbox.put(
                 IncomingMessage(
                     request_id=request_id,

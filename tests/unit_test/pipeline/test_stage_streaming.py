@@ -94,6 +94,33 @@ class _AbortOnReadRelay(_FakeRelay):
         return _CallbackOp(self._on_wait)
 
 
+class _LoopbackRelay(_FakeRelay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.storage = {}
+
+    async def put_async(
+        self,
+        tensor,
+        request_id=None,
+        dst_rank=None,
+        receiver_id=None,
+    ):
+        op = await super().put_async(
+            tensor,
+            request_id=request_id,
+            dst_rank=dst_rank,
+            receiver_id=receiver_id,
+        )
+        self.storage[request_id] = tensor.detach().clone()
+        return op
+
+    async def get_async(self, metadata, dest_tensor, request_id):
+        del metadata
+        dest_tensor.copy_(self.storage[request_id].reshape_as(dest_tensor))
+        return _DoneOp(dest_tensor.numel())
+
+
 class _CallbackOp:
     def __init__(self, on_wait) -> None:
         self._on_wait = on_wait
@@ -780,6 +807,57 @@ def test_stage_routes_relay_stream_chunk_to_scheduler() -> None:
         assert queued.type == "stream_chunk"
         assert torch.equal(queued.data.data, codes)
         assert queued.data.metadata == {"modality": "audio_codes"}
+
+    asyncio.run(_run())
+
+
+def test_stage_keeps_remote_stream_ack_physical_and_model_source_logical() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        relay = _LoopbackRelay()
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"tts_engine@r1": "inproc://tts_engine-r1"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=scheduler,
+            replica_topology={
+                "tts_engine": ["tts_engine@r0", "tts_engine@r1"],
+            },
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage._stream_queue.open("req-replica")
+        codes = torch.arange(8, dtype=torch.float32)
+
+        await stage._on_stream_chunk(
+            await _make_relay_chunk(
+                relay,
+                request_id="req-replica",
+                from_stage="tts_engine@r1",
+                to_stage="vocoder",
+                chunk_id=0,
+                data=codes,
+                metadata={"modality": "audio_codes"},
+            )
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.request_id == "req-replica"
+        assert queued.type == "stream_chunk"
+        assert torch.equal(queued.data.data, codes)
+        assert queued.data.from_stage == "tts_engine"
+        target, endpoint, ack = control_plane.stage_messages[0]
+        assert target == "tts_engine@r1"
+        assert endpoint == "inproc://tts_engine-r1"
+        assert ack.to_stage == "tts_engine@r1"
 
     asyncio.run(_run())
 
