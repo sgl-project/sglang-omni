@@ -3,7 +3,50 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from huggingface_hub import snapshot_download
+
+
+def _has_transformer_weights(path: Path | None) -> bool:
+    return path is not None and path.is_dir() and any(path.glob("*.safetensors"))
+
+
+def resolve_transformer_weights_path(model_path: str) -> str:
+    """Resolve the unified checkpoint's nested transformer component."""
+
+    local_path = Path(model_path)
+    if local_path.exists():
+        transformer_path = local_path / "transformer"
+    else:
+        allow_patterns = [
+            "transformer/*.json",
+            "transformer/*.safetensors",
+        ]
+        try:
+            snapshot_path = snapshot_download(
+                model_path,
+                allow_patterns=allow_patterns,
+                local_files_only=True,
+            )
+        except FileNotFoundError:
+            snapshot_path = None
+        transformer_path = (
+            Path(snapshot_path) / "transformer" if snapshot_path is not None else None
+        )
+        if not _has_transformer_weights(transformer_path):
+            snapshot_path = snapshot_download(
+                model_path,
+                allow_patterns=allow_patterns,
+            )
+            transformer_path = Path(snapshot_path) / "transformer"
+
+    if transformer_path is None or not _has_transformer_weights(transformer_path):
+        raise FileNotFoundError(
+            f"Cosmos3 transformer weights not found under {model_path!r}"
+        )
+    return str(transformer_path)
 
 
 def create_thinker_scheduler(
@@ -43,13 +86,14 @@ def create_thinker_scheduler(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="Cosmos3TextForCausalLM",
+        model_weights_path=resolve_transformer_weights_path(server_args.model_path),
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
 
     output_processor = SGLangOutputProcessor(capture_hidden=False)
     model_runner = ModelRunner(model_worker, output_processor)
     tokenizer = get_tokenizer(
-        model_config.model_path,
+        server_args.model_path,
         trust_remote_code=True,
     )
     request_builder, result_adapter = make_text_scheduler_adapters(
@@ -76,4 +120,4 @@ def create_thinker_scheduler(
     )
 
 
-__all__ = ["create_thinker_scheduler"]
+__all__ = ["create_thinker_scheduler", "resolve_transformer_weights_path"]

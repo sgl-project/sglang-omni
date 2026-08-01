@@ -14,6 +14,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     monkeypatch,
 ) -> None:
     events: list[str] = []
+    worker_kwargs: dict[str, object] = {}
 
     class FakeRunner:
         model = object()
@@ -31,7 +32,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         model_config = object()
 
         def __init__(self, **kwargs) -> None:
-            del kwargs
+            worker_kwargs.update(kwargs)
             self.model_runner = FakeRunner()
 
         def get_memory_pool(self):
@@ -64,7 +65,11 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         chunked_prefill_size=8,
         max_prefill_tokens=16,
     )
-    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
+    infrastructure = bootstrap.create_sglang_infrastructure(
+        server_args,
+        0,
+        model_weights_path="/models/component",
+    )
 
     assert events == [
         "alloc_memory_pool",
@@ -73,6 +78,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
+    assert worker_kwargs["config"].model_weights_path == "/models/component"
 
 
 def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:

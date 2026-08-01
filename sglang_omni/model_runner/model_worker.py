@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelWorkerConfig:
     model_arch_override: str | None = None
+    model_weights_path: str | None = None
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
@@ -53,6 +54,7 @@ class ModelWorker:
     ):
         self.server_args = server_args
         self.model_arch_override = config.model_arch_override
+        self.model_weights_path = config.model_weights_path
         self.weight_prefix = config.weight_prefix
         self.nccl_port = config.nccl_port
         self.total_gpu_memory_fraction = config.total_gpu_memory_fraction
@@ -99,6 +101,8 @@ class ModelWorker:
 
         if self.model_arch_override is not None:
             self._apply_arch_override(self.model_config, self.model_arch_override)
+        if self.model_weights_path is not None:
+            self.model_config.model_path = self.model_weights_path
 
     @staticmethod
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:

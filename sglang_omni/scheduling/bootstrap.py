@@ -15,6 +15,7 @@ def create_sglang_infrastructure(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     model_arch_override: str | None = None,
+    model_weights_path: str | None = None,
     weight_prefix: str | None = None,
     capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
@@ -31,6 +32,7 @@ def create_sglang_infrastructure(
     model_worker = ModelWorker(
         config=ModelWorkerConfig(
             model_arch_override=model_arch_override,
+            model_weights_path=model_weights_path,
             weight_prefix=weight_prefix,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
