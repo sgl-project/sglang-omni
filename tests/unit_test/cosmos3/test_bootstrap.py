@@ -6,16 +6,12 @@ from types import SimpleNamespace
 
 from sglang.srt.utils import hf_transformers_utils
 
-from sglang_omni.model_runner import base as model_runner_base
-from sglang_omni.models.cosmos3 import bootstrap, request_builders
+from sglang_omni.models.cosmos3 import bootstrap
+from sglang_omni.models.cosmos3 import model_runner as cosmos_model_runner
+from sglang_omni.models.cosmos3 import request_builders
 from sglang_omni.models.cosmos3.bootstrap import resolve_transformer_weights_path
-from sglang_omni.scheduling import (
-    bootstrap as scheduling_bootstrap,
-)
-from sglang_omni.scheduling import (
-    omni_scheduler,
-    sglang_backend,
-)
+from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+from sglang_omni.scheduling import omni_scheduler, sglang_backend
 
 
 def test_resolves_nested_transformer_weights_directory(tmp_path) -> None:
@@ -60,6 +56,7 @@ def test_thinker_loads_tokenizer_from_checkpoint_root(monkeypatch, tmp_path) -> 
         model_path=str(transformer_path),
         vocab_size=10,
         hf_generation_config=SimpleNamespace(),
+        hf_config=SimpleNamespace(),
     )
     tokenizer_paths: list[str] = []
 
@@ -81,7 +78,11 @@ def test_thinker_loads_tokenizer_from_checkpoint_root(monkeypatch, tmp_path) -> 
         "get_tokenizer",
         lambda path, **kwargs: tokenizer_paths.append(path) or object(),
     )
-    monkeypatch.setattr(model_runner_base, "ModelRunner", lambda *args: object())
+    monkeypatch.setattr(
+        cosmos_model_runner,
+        "Cosmos3ThinkerModelRunner",
+        lambda *args: object(),
+    )
     monkeypatch.setattr(
         request_builders,
         "make_text_scheduler_adapters",

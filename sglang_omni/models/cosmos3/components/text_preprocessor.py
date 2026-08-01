@@ -1,23 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Text-only preprocessing for Cosmos3-Nano."""
+"""Text and vision preprocessing for Cosmos3-Nano."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer
 
 from sglang_omni.models.cosmos3.payload_types import Cosmos3PipelineState
+from sglang_omni.preprocessing import (
+    compute_image_cache_key,
+    compute_video_cache_key,
+    ensure_image_list_async,
+    ensure_video_list_async,
+)
 from sglang_omni.preprocessing.text import ensure_chat_template
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_NEW_TOKENS = 2048
-_MEDIA_INPUT_KEYS = ("images", "videos", "audios")
+VISION_STAGE = "vision_encoder"
 
 
 def load_cosmos3_tokenizer(model_path: str) -> Any:
@@ -40,14 +47,28 @@ def load_cosmos3_tokenizer(model_path: str) -> Any:
     )
 
 
+def load_cosmos3_processor(model_path: str) -> Any:
+    """Load the Qwen3-VL processor shipped with Cosmos3-Nano."""
+
+    local_only = Path(model_path).exists()
+    if not local_only:
+        try:
+            return AutoProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        except (OSError, ValueError):
+            pass
+    return AutoProcessor.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        local_files_only=local_only,
+    )
+
+
 def _normalize_text_messages(inputs: Any) -> list[dict[str, str]]:
     if isinstance(inputs, dict):
-        populated_media = [key for key in _MEDIA_INPUT_KEYS if inputs.get(key)]
-        if populated_media:
-            raise ValueError(
-                "Cosmos3 text preprocessing does not support media inputs yet: "
-                + ", ".join(populated_media)
-            )
         if "messages" not in inputs:
             raise ValueError("Cosmos3 text preprocessing expects a messages field")
         inputs = inputs["messages"]
@@ -68,21 +89,10 @@ def _normalize_text_messages(inputs: Any) -> list[dict[str, str]]:
         if not isinstance(content, str):
             raise TypeError(
                 f"Message {index} content must be a string; multimodal content "
-                "will be added in a later Cosmos3 stage"
+                "must be passed with top-level images/videos"
             )
         messages.append({"role": role, "content": content})
     return messages
-
-
-def _reject_media_inputs(container: Any) -> None:
-    if not isinstance(container, dict):
-        return
-    populated_media = [key for key in _MEDIA_INPUT_KEYS if container.get(key)]
-    if populated_media:
-        raise ValueError(
-            "Cosmos3 text preprocessing does not support media inputs yet: "
-            + ", ".join(populated_media)
-        )
 
 
 def _flatten_single_batch(value: Any, *, name: str) -> torch.Tensor:
@@ -139,7 +149,7 @@ def validate_prompt_seq_len(
 
 
 class Cosmos3TextPreprocessor:
-    """Build a tokenizer-only Cosmos3 pipeline state on CPU."""
+    """Build the Cosmos3 prompt and standalone vision-encoder inputs on CPU."""
 
     def __init__(
         self,
@@ -147,11 +157,19 @@ class Cosmos3TextPreprocessor:
         max_seq_len: int | None = None,
         *,
         tokenizer: Any | None = None,
+        processor: Any | None = None,
+        enable_vision: bool = True,
     ) -> None:
         self.model_path = model_path
         self.max_seq_len = max_seq_len
-        self.tokenizer = (
-            tokenizer if tokenizer is not None else load_cosmos3_tokenizer(model_path)
+        self.enable_vision = enable_vision
+        self.processor = processor
+        if self.processor is None and tokenizer is None and enable_vision:
+            self.processor = load_cosmos3_processor(model_path)
+        self.tokenizer = tokenizer or (
+            self.processor.tokenizer
+            if self.processor is not None
+            else load_cosmos3_tokenizer(model_path)
         )
         ensure_chat_template(self.tokenizer, model_path=model_path)
         if not getattr(self.tokenizer, "chat_template", None):
@@ -183,6 +201,129 @@ class Cosmos3TextPreprocessor:
         return input_ids, attention_mask, prompt_text
 
     @staticmethod
+    def _multimodal_messages(
+        messages: list[dict[str, str]],
+        *,
+        num_images: int,
+        num_videos: int,
+    ) -> list[dict[str, Any]]:
+        if num_images == 0 and num_videos == 0:
+            return messages
+
+        result: list[dict[str, Any]] = []
+        target = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message["role"] == "user"
+            ),
+            default=len(messages) - 1,
+        )
+        for index, message in enumerate(messages):
+            if index != target:
+                result.append(message)
+                continue
+            content: list[dict[str, str]] = []
+            content.extend({"type": "image"} for _ in range(num_images))
+            content.extend({"type": "video"} for _ in range(num_videos))
+            content.append({"type": "text", "text": message["content"]})
+            result.append({"role": message["role"], "content": content})
+        return result
+
+    async def _tokenize_multimodal(
+        self,
+        inputs: dict[str, Any],
+    ) -> tuple[dict[str, torch.Tensor], str, str | None]:
+        if self.processor is None:
+            raise ValueError("Cosmos3 media inputs require the checkpoint processor")
+
+        raw_images = inputs.get("images")
+        raw_videos = inputs.get("videos") or inputs.get("video")
+        video_fps = inputs.get("video_fps")
+        video_max_frames = inputs.get("video_max_frames")
+        video_min_pixels = inputs.get("video_min_pixels")
+        video_max_pixels = inputs.get("video_max_pixels")
+        video_total_pixels = inputs.get("video_total_pixels")
+        image_cache_key = compute_image_cache_key(raw_images)
+        video_cache_key = compute_video_cache_key(raw_videos)
+
+        images, video_result = await asyncio.gather(
+            ensure_image_list_async(raw_images),
+            ensure_video_list_async(
+                raw_videos,
+                fps=float(video_fps) if video_fps is not None else None,
+                max_frames=(
+                    int(video_max_frames) if video_max_frames is not None else None
+                ),
+                min_pixels=(
+                    int(video_min_pixels) if video_min_pixels is not None else None
+                ),
+                max_pixels=(
+                    int(video_max_pixels) if video_max_pixels is not None else None
+                ),
+                total_pixels=(
+                    int(video_total_pixels) if video_total_pixels is not None else None
+                ),
+            ),
+        )
+        videos, sampled_fps, _ = video_result
+        messages = _normalize_text_messages(inputs)
+        messages_mm = self._multimodal_messages(
+            messages,
+            num_images=len(images),
+            num_videos=len(videos),
+        )
+        prompt_text = self.processor.apply_chat_template(
+            messages_mm,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        processor_kwargs: dict[str, Any] = {}
+        if videos:
+            videos_kwargs: dict[str, Any] = {"device": "cpu"}
+            if sampled_fps:
+                videos_kwargs["fps"] = (
+                    sampled_fps[0] if len(sampled_fps) == 1 else sampled_fps
+                )
+            elif video_fps is not None:
+                videos_kwargs["fps"] = float(video_fps)
+            if video_max_frames is not None:
+                videos_kwargs["max_frames"] = int(video_max_frames)
+            if video_min_pixels is not None:
+                videos_kwargs["min_pixels"] = int(video_min_pixels)
+            if video_max_pixels is not None:
+                videos_kwargs["max_pixels"] = int(video_max_pixels)
+            if video_total_pixels is not None:
+                videos_kwargs["total_pixels"] = int(video_total_pixels)
+            processor_kwargs["videos_kwargs"] = videos_kwargs
+
+        encoded = self.processor(
+            text=prompt_text,
+            images=images or None,
+            videos=videos or None,
+            add_special_tokens=False,
+            return_tensors="pt",
+            **processor_kwargs,
+        )
+        if video_cache_key is not None:
+            effective_fps = tuple(sampled_fps or ()) or (
+                (float(video_fps),) if video_fps is not None else None
+            )
+            video_cache_key = "|".join(
+                str(part)
+                for part in (
+                    video_cache_key,
+                    f"fps={effective_fps}",
+                    f"max_frames={video_max_frames}",
+                    f"min_pixels={video_min_pixels}",
+                    f"max_pixels={video_max_pixels}",
+                    f"total_pixels={video_total_pixels}",
+                )
+            )
+        cache_parts = [part for part in (image_cache_key, video_cache_key) if part]
+        return dict(encoded), prompt_text, "|".join(cache_parts) or None
+
+    @staticmethod
     def _use_pretokenized_inputs(inputs: Any) -> bool:
         return (
             isinstance(inputs, list)
@@ -190,18 +331,88 @@ class Cosmos3TextPreprocessor:
             and all(isinstance(token_id, int) for token_id in inputs)
         )
 
-    def __call__(self, payload: StagePayload) -> StagePayload:
-        # The OpenAI adapter places top-level media fields in metadata rather
-        # than request.inputs. Keep the first Cosmos3 slice strictly text-only
-        # regardless of which entry point constructed the OmniRequest.
-        _reject_media_inputs(payload.request.metadata)
+    async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         if self._use_pretokenized_inputs(inputs):
             input_ids = torch.tensor(inputs, dtype=torch.long)
             attention_mask = torch.ones_like(input_ids)
             prompt_text = ""
+            mm_token_type_ids = torch.zeros_like(input_ids)
+            mm_inputs: dict[str, Any] = {}
+            vision_inputs: dict[str, Any] = {"_skip": True, "_result": {}}
         else:
-            input_ids, attention_mask, prompt_text = self._tokenize_messages(inputs)
+            if not isinstance(inputs, dict):
+                inputs = {"messages": inputs}
+            for key in (
+                "images",
+                "videos",
+                "video_fps",
+                "video_max_frames",
+                "video_min_pixels",
+                "video_max_pixels",
+                "video_total_pixels",
+            ):
+                if (
+                    inputs.get(key) is None
+                    and payload.request.metadata.get(key) is not None
+                ):
+                    inputs[key] = payload.request.metadata[key]
+
+            if inputs.get("audios") or inputs.get("audio"):
+                raise ValueError("Cosmos3 audio preprocessing is not implemented yet")
+            has_media = bool(
+                inputs.get("images") or inputs.get("videos") or inputs.get("video")
+            )
+            if has_media:
+                if not self.enable_vision:
+                    raise ValueError(
+                        "Cosmos3 text-only pipeline does not accept image/video input"
+                    )
+                encoded, prompt_text, cache_key = await self._tokenize_multimodal(
+                    inputs
+                )
+                input_ids = _flatten_single_batch(
+                    encoded["input_ids"], name="input_ids"
+                )
+                raw_attention_mask = encoded.get("attention_mask")
+                attention_mask = (
+                    torch.ones_like(input_ids)
+                    if raw_attention_mask is None
+                    else _flatten_single_batch(
+                        raw_attention_mask, name="attention_mask"
+                    )
+                )
+                raw_token_types = encoded.get("mm_token_type_ids")
+                if raw_token_types is None:
+                    raise ValueError(
+                        "Cosmos3 processor did not return mm_token_type_ids"
+                    )
+                mm_token_type_ids = _flatten_single_batch(
+                    raw_token_types,
+                    name="mm_token_type_ids",
+                )
+                mm_inputs = {
+                    key: encoded[key]
+                    for key in ("image_grid_thw", "video_grid_thw")
+                    if isinstance(encoded.get(key), torch.Tensor)
+                }
+                vision_inputs = {
+                    key: encoded[key]
+                    for key in (
+                        "pixel_values",
+                        "image_grid_thw",
+                        "pixel_values_videos",
+                        "video_grid_thw",
+                    )
+                    if isinstance(encoded.get(key), torch.Tensor)
+                }
+                if cache_key is not None:
+                    vision_inputs["cache_key"] = cache_key
+            else:
+                input_ids, attention_mask, prompt_text = self._tokenize_messages(inputs)
+                mm_token_type_ids = torch.zeros_like(input_ids)
+                mm_inputs = {}
+                vision_inputs = {"_skip": True, "_result": {}}
 
         max_new_tokens = payload.request.params.get(
             "max_new_tokens", DEFAULT_MAX_NEW_TOKENS
@@ -220,17 +431,23 @@ class Cosmos3TextPreprocessor:
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "prompt_text": prompt_text,
+                "mm_token_type_ids": mm_token_type_ids,
             },
+            mm_inputs=mm_inputs,
+            encoder_inputs={VISION_STAGE: vision_inputs},
             stream_state={"token_ids": [], "text": ""},
         )
         payload.data = state.to_dict()
         payload.request.inputs = None
+        for key in ("images", "videos"):
+            payload.request.metadata.pop(key, None)
         return payload
 
 
 __all__ = [
     "DEFAULT_MAX_NEW_TOKENS",
     "Cosmos3TextPreprocessor",
+    "load_cosmos3_processor",
     "load_cosmos3_tokenizer",
     "validate_prompt_seq_len",
 ]

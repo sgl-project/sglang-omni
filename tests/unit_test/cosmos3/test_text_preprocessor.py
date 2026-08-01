@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import torch
 
+from sglang_omni.models.cosmos3.components import text_preprocessor
 from sglang_omni.models.cosmos3.components.text_preprocessor import (
     Cosmos3TextPreprocessor,
 )
@@ -50,6 +51,27 @@ class _FakeTokenizer:
         }
 
 
+class _FakeProcessor:
+    def __init__(self, tokenizer: _FakeTokenizer) -> None:
+        self.tokenizer = tokenizer
+        self.messages = None
+
+    def apply_chat_template(self, messages, **kwargs) -> str:
+        assert kwargs == {"tokenize": False, "add_generation_prompt": True}
+        self.messages = messages
+        return "multimodal prompt"
+
+    def __call__(self, **kwargs):
+        assert kwargs["images"] == ["loaded-image"]
+        return {
+            "input_ids": torch.tensor([[10, 151655, 11]]),
+            "attention_mask": torch.ones((1, 3), dtype=torch.long),
+            "mm_token_type_ids": torch.tensor([[0, 1, 0]]),
+            "pixel_values": torch.ones((4, 6)),
+            "image_grid_thw": torch.tensor([[1, 2, 2]]),
+        }
+
+
 def _payload(inputs: Any, **params: Any) -> StagePayload:
     return StagePayload(
         request_id="cosmos-request",
@@ -58,7 +80,8 @@ def _payload(inputs: Any, **params: Any) -> StagePayload:
     )
 
 
-def test_preprocesses_text_messages_into_canonical_state() -> None:
+@pytest.mark.asyncio
+async def test_preprocesses_text_messages_into_canonical_state() -> None:
     tokenizer = _FakeTokenizer()
     preprocessor = Cosmos3TextPreprocessor(
         "unused-model",
@@ -70,7 +93,7 @@ def test_preprocesses_text_messages_into_canonical_state() -> None:
         max_new_tokens=8,
     )
 
-    result = preprocessor(payload)
+    result = await preprocessor(payload)
     state = Cosmos3PipelineState.from_dict(result.data)
 
     assert result is payload
@@ -80,11 +103,13 @@ def test_preprocesses_text_messages_into_canonical_state() -> None:
     assert state.prompt["input_ids"].tolist() == [101, 102, 103]
     assert state.prompt["input_ids"].dtype == torch.long
     assert state.prompt["attention_mask"].tolist() == [1, 1, 1]
+    assert state.prompt["mm_token_type_ids"].tolist() == [0, 0, 0]
     assert state.prompt["prompt_text"].endswith("<|im_start|>assistant\n")
     assert state.stream_state == {"token_ids": [], "text": ""}
 
 
-def test_pretokenized_prompt_bypasses_chat_template() -> None:
+@pytest.mark.asyncio
+async def test_pretokenized_prompt_bypasses_chat_template() -> None:
     tokenizer = _FakeTokenizer()
     preprocessor = Cosmos3TextPreprocessor(
         "unused-model",
@@ -92,7 +117,7 @@ def test_pretokenized_prompt_bypasses_chat_template() -> None:
         tokenizer=tokenizer,
     )
 
-    result = preprocessor(_payload([7, 8, 9], max_new_tokens=2))
+    result = await preprocessor(_payload([7, 8, 9], max_new_tokens=2))
     state = Cosmos3PipelineState.from_dict(result.data)
 
     assert tokenizer.tokenize_calls == 0
@@ -102,13 +127,51 @@ def test_pretokenized_prompt_bypasses_chat_template() -> None:
     assert state.prompt["prompt_text"] == ""
 
 
+@pytest.mark.asyncio
+async def test_preprocesses_image_for_standalone_encoder(monkeypatch) -> None:
+    async def fake_images(value):
+        assert value == ["image.png"]
+        return ["loaded-image"]
+
+    async def fake_videos(value, **kwargs):
+        assert value is None
+        return [], None, None
+
+    monkeypatch.setattr(text_preprocessor, "ensure_image_list_async", fake_images)
+    monkeypatch.setattr(text_preprocessor, "ensure_video_list_async", fake_videos)
+    monkeypatch.setattr(
+        text_preprocessor,
+        "compute_image_cache_key",
+        lambda value: "image-cache",
+    )
+    tokenizer = _FakeTokenizer()
+    processor = _FakeProcessor(tokenizer)
+    preprocessor = Cosmos3TextPreprocessor(
+        "unused-model",
+        tokenizer=tokenizer,
+        processor=processor,
+    )
+
+    result = await preprocessor(
+        _payload(
+            {
+                "messages": [{"role": "user", "content": "describe"}],
+                "images": ["image.png"],
+            },
+            max_new_tokens=2,
+        )
+    )
+    state = Cosmos3PipelineState.from_dict(result.data)
+
+    assert state.prompt["mm_token_type_ids"].tolist() == [0, 1, 0]
+    assert state.encoder_inputs["vision_encoder"]["cache_key"] == "image-cache"
+    assert state.encoder_inputs["vision_encoder"]["pixel_values"].shape == (4, 6)
+    assert processor.messages[0]["content"][0] == {"type": "image"}
+
+
 @pytest.mark.parametrize(
     "inputs, expected",
     [
-        (
-            {"messages": [{"role": "user", "content": "hello"}], "images": [1]},
-            "does not support media inputs yet",
-        ),
         (
             [{"role": "user", "content": [{"type": "image"}]}],
             "content must be a string",
@@ -116,17 +179,19 @@ def test_pretokenized_prompt_bypasses_chat_template() -> None:
         ({"prompt": "hello"}, "expects a messages field"),
     ],
 )
-def test_rejects_inputs_outside_pr1_text_scope(inputs: Any, expected: str) -> None:
+@pytest.mark.asyncio
+async def test_rejects_invalid_message_inputs(inputs: Any, expected: str) -> None:
     preprocessor = Cosmos3TextPreprocessor(
         "unused-model",
         tokenizer=_FakeTokenizer(),
     )
 
     with pytest.raises((TypeError, ValueError), match=expected):
-        preprocessor(_payload(inputs, max_new_tokens=2))
+        await preprocessor(_payload(inputs, max_new_tokens=2))
 
 
-def test_rejects_media_from_openai_request_metadata() -> None:
+@pytest.mark.asyncio
+async def test_media_from_openai_metadata_uses_multimodal_path() -> None:
     preprocessor = Cosmos3TextPreprocessor(
         "unused-model",
         tokenizer=_FakeTokenizer(),
@@ -137,11 +202,31 @@ def test_rejects_media_from_openai_request_metadata() -> None:
     )
     payload.request.metadata["images"] = ["data:image/png;base64,abc"]
 
-    with pytest.raises(ValueError, match="does not support media inputs yet: images"):
-        preprocessor(payload)
+    with pytest.raises(ValueError, match="require the checkpoint processor"):
+        await preprocessor(payload)
 
 
-def test_rejects_prompt_and_completion_over_context_limit() -> None:
+@pytest.mark.asyncio
+async def test_text_only_preprocessor_rejects_media_before_loading_it() -> None:
+    preprocessor = Cosmos3TextPreprocessor(
+        "unused-model",
+        tokenizer=_FakeTokenizer(),
+        enable_vision=False,
+    )
+
+    with pytest.raises(ValueError, match="text-only pipeline"):
+        await preprocessor(
+            _payload(
+                {
+                    "messages": [{"role": "user", "content": "describe"}],
+                    "images": ["image.png"],
+                }
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_rejects_prompt_and_completion_over_context_limit() -> None:
     preprocessor = Cosmos3TextPreprocessor(
         "unused-model",
         max_seq_len=8,
@@ -149,7 +234,7 @@ def test_rejects_prompt_and_completion_over_context_limit() -> None:
     )
 
     with pytest.raises(ValueError, match="maximum context length"):
-        preprocessor(_payload([1, 2, 3], max_new_tokens=5))
+        await preprocessor(_payload([1, 2, 3], max_new_tokens=5))
 
 
 def test_pipeline_state_survives_stage_payload_round_trip() -> None:
