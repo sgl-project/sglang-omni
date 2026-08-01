@@ -34,7 +34,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -75,7 +75,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -133,7 +133,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -178,7 +178,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -223,7 +223,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -269,7 +269,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -314,7 +314,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -359,7 +359,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -404,7 +404,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -449,7 +449,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-

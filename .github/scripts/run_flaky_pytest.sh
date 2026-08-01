@@ -46,9 +46,6 @@ cleanup_between_attempts() {
     echo "::error::GPU cleanup failed before retry; not retrying with dirty GPU state"
     return 1
   fi
-  rm -rf "${XDG_CACHE_HOME:-/github/home/.cache}/flashinfer" || {
-    echo "::warning::Failed to remove FlashInfer cache before retry"
-  }
   if [ "${retry_delay_seconds}" -gt 0 ]; then
     sleep "${retry_delay_seconds}"
   fi

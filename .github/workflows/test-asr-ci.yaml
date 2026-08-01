@@ -32,7 +32,7 @@ jobs:
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -86,7 +86,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
