@@ -79,6 +79,8 @@ stages = [
 | `route_fn` | `str` or `None` | `None` | Dotted function path for request-aware result routing. The function receives `(request_id, stage_output)` and returns a downstream stage name or list of stage names. |
 | `gpu` | `int`, `list[int]`, or `None` | `None` | GPU id for the stage. `None` means CPU placement. A list is used for tensor parallel ranks. |
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
+| `num_replicas` | `int` | `1` | Number of runtime instances for this logical stage. Entry stages may be replicated; fused stages may not. |
+| `replica_devices` | `str`, `list[int]`, or `None` | `None` | Explicit GPU assignment for replica TP ranks. GPU stages require exactly `num_replicas * tp_size` entries. |
 | `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; today every non-TP stage must declare one explicitly (see also `_validate_general`). For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
 | `wait_for_fn` | `str` or `None` | `None` | Dotted function path for request-aware fan-in source selection. The function receives `(request_id, from_stage, payload)` and returns the active subset of `wait_for`, or `None` when the payload does not determine the subset yet. |
@@ -99,6 +101,30 @@ per-request subset. The returned subset must be non-empty and contained in
 payload can resolve the active set.
 When using `stream_done_to_fn`, keep `stream_to` as the static superset because
 runtime prep derives stream receivers and same-GPU stream paths from it.
+
+### Stage replicas
+
+For `N = num_replicas` and `T = tp_size`, a replicated GPU stage must provide
+exactly `N * T` ids in `replica_devices`. Each consecutive group of `T` ids is
+assigned to one replica. For example, `N=2`, `T=2`, and
+`replica_devices="0,1,2,3"` produce `[0, 1]` for replica 0 and `[2, 3]` for
+replica 1. CPU-only replicated stages do not require `replica_devices`.
+
+GPU ids must be non-negative and within the launcher's visible device range.
+Ids within one replica's TP group must be unique, but different replicas may
+reuse a GPU; for example, `N=2`, `T=1`, and `replica_devices="0,0"` place both
+replicas on GPU 0. Separate processes sharing a GPU must declare
+`runtime.resources.total_gpu_memory_fraction` values accepted by the placement
+budget checks.
+
+The runtime expands a logical stage `name` into `name@r0`, `name@r1`, and so on.
+Model configuration continues to use logical names in `next`, `wait_for`,
+`stream_to`, and `project_payload`. At receive boundaries, transport messages,
+ACK routing, ordering lanes, and profiler events retain the concrete source
+name, while `wait_for_fn`, merge-input keys, `StreamItem.from_stage`, and
+`StreamSignal.from_stage` receive the logical name. The coordinator applies the
+same request-sticky binding to a replicated entry stage before submitting the
+request.
 
 Derived from stages:
 
