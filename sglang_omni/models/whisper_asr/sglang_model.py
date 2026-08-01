@@ -336,12 +336,14 @@ class WhisperForConditionalGeneration(nn.Module):
         self._encoder_cache_enabled = bool(getattr(config, "enable_encoder_cache", False))
         self._encoder_cache = None
         if self._encoder_cache_enabled:
-            from sglang_omni.scheduling.stage_cache import StageOutputCache
+            from sglang_omni.models.whisper_asr.whisper_encoder_cache import (
+                EncoderOutputCache,
+            )
 
-            self._encoder_cache = StageOutputCache(
+            self._encoder_cache = EncoderOutputCache(
+                getattr(config, "_name_or_path", "whisper"),
                 max_size=getattr(config, "encoder_cache_max_items", 256),
                 max_bytes=getattr(config, "encoder_cache_max_bytes", 256 * 1024 * 1024),
-                cache_device="cpu",
             )
 
     def _batch_audio_inputs(
@@ -407,9 +409,6 @@ class WhisperForConditionalGeneration(nn.Module):
         if not self._encoder_cache_enabled or self._encoder_cache is None:
             return self.model.encoder(audio_features)
 
-        from sglang_omni.models.whisper_asr.whisper_encoder_cache import encoder_cache_key
-
-        model_id = getattr(self.config, "_name_or_path", "whisper")
         features = []
         for mm_input in forward_batch.mm_inputs:
             if mm_input is None:
@@ -418,13 +417,12 @@ class WhisperForConditionalGeneration(nn.Module):
                 if getattr(item, "feature", None) is not None:
                     features.append(item.feature)
 
-        key = encoder_cache_key(model_id, features)
-        cached = self._encoder_cache.get(key)
-        if cached is not None:
-            return cached.to(audio_features.device)
-        encoder_states = self.model.encoder(audio_features)
-        self._encoder_cache.put(key, encoder_states)
-        return encoder_states
+        device = audio_features.device
+        return self._encoder_cache.get_or_encode(
+            features,
+            device,
+            encode_fn=lambda: self.model.encoder(audio_features),
+        )
 
     def forward(
         self,
