@@ -330,6 +330,19 @@ class WhisperForConditionalGeneration(nn.Module):
         self.logits_processor = LogitsProcessor(config)
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
+        # Opt-in cross-request encoder-output cache. Off by default so behavior
+        # is unchanged; when enabled, identical audio features (e.g. repeated
+        # reference clips) reuse a cached encoder forward instead of recomputing.
+        self._encoder_cache_enabled = bool(getattr(config, "enable_encoder_cache", False))
+        self._encoder_cache = None
+        if self._encoder_cache_enabled:
+            from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+            self._encoder_cache = StageOutputCache(
+                max_size=getattr(config, "encoder_cache_max_items", 256),
+                max_bytes=getattr(config, "encoder_cache_max_bytes", 256 * 1024 * 1024),
+                cache_device="cpu",
+            )
 
     def _batch_audio_inputs(
         self,
@@ -360,20 +373,58 @@ class WhisperForConditionalGeneration(nn.Module):
         encoder_states: torch.Tensor,
         encoder_lens: list[int],
     ) -> torch.Tensor:
-        hidden_size = encoder_states.shape[-1]
-        total_encoder_len = sum(encoder_lens)
-        flat = torch.empty(
-            total_encoder_len,
-            hidden_size,
-            device=encoder_states.device,
-            dtype=encoder_states.dtype,
-        )
-        dst_start = 0
-        for index, encoder_len in enumerate(encoder_lens):
-            dst_end = dst_start + encoder_len
-            flat[dst_start:dst_end] = encoder_states[index, :encoder_len]
-            dst_start = dst_end
-        return flat
+        # Vectorized equivalent of the previous per-request Python loop: gather
+        # each request's valid encoder slice [index, :encoder_len] and concat
+        # them in one kernel. Avoids the Python-level loop and the explicit
+        # empty-tensor allocation; numerically identical to the old copy.
+        if not encoder_lens:
+            hidden_size = encoder_states.shape[-1]
+            return torch.empty(
+                0, hidden_size, device=encoder_states.device, dtype=encoder_states.dtype
+            )
+        slices = [
+            encoder_states[index, :encoder_len]
+            for index, encoder_len in enumerate(encoder_lens)
+        ]
+        return torch.cat(slices, dim=0)
+
+    def _maybe_cached_encoder_forward(
+        self,
+        forward_batch: ForwardBatch,
+        audio_features: torch.Tensor,
+        encoder_lens: list[int],
+    ) -> torch.Tensor:
+        """Run the encoder, reusing a cached result when the audio is identical.
+
+        The Whisper encoder is a deterministic, stateless forward pass: the same
+        audio feature map always yields the same ``encoder_states``. We
+        content-address the encoder input (shape + bytes of every request's
+        feature in this batch, order-independent) and, on a hit, skip the encoder
+        entirely. This is an opt-in, batch-granularity cache gated by
+        ``self._encoder_cache_enabled`` (set from ``config.enable_encoder_cache``);
+        when disabled this is a plain ``self.model.encoder`` call with no overhead.
+        """
+        if not self._encoder_cache_enabled or self._encoder_cache is None:
+            return self.model.encoder(audio_features)
+
+        from sglang_omni.models.whisper_asr.whisper_encoder_cache import encoder_cache_key
+
+        model_id = getattr(self.config, "_name_or_path", "whisper")
+        features = []
+        for mm_input in forward_batch.mm_inputs:
+            if mm_input is None:
+                continue
+            for item in mm_input.mm_items:
+                if getattr(item, "feature", None) is not None:
+                    features.append(item.feature)
+
+        key = encoder_cache_key(model_id, features)
+        cached = self._encoder_cache.get(key)
+        if cached is not None:
+            return cached.to(audio_features.device)
+        encoder_states = self.model.encoder(audio_features)
+        self._encoder_cache.put(key, encoder_states)
+        return encoder_states
 
     def forward(
         self,
@@ -394,7 +445,9 @@ class WhisperForConditionalGeneration(nn.Module):
             skip_cross_attention = forward_batch.encoder_lens.max() == 0
 
         if audio_features is not None and encoder_lens is not None:
-            encoder_states = self.model.encoder(audio_features)
+            encoder_states = self._maybe_cached_encoder_forward(
+                forward_batch, audio_features, encoder_lens
+            )
             cross_attention_states = self._flat_encoder_result(
                 encoder_states,
                 encoder_lens,
