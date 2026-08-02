@@ -5,7 +5,12 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
+import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
 import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
+import sglang_omni.scheduling.bootstrap as bootstrap
+import sglang_omni.scheduling.omni_scheduler as omni_scheduler
+import sglang_omni.scheduling.sglang_backend as sglang_backend
+from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -69,38 +74,33 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
-        qwen3_asr_stages.AutoTokenizer,
+        qwen3_asr_builder.AutoTokenizer,
         "from_pretrained",
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(
-        qwen3_asr_stages.AutoFeatureExtractor,
+        qwen3_asr_builder.AutoFeatureExtractor,
         "from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(nb_max_frames=3000),
     )
     monkeypatch.setattr(
-        qwen3_asr_stages,
+        qwen3_asr_builder,
         "get_visible_gpu_sm_version",
         lambda gpu_id: None,
     )
-    monkeypatch.setattr(qwen3_asr_stages, "init_mm_embedding_cache", lambda size: None)
+    monkeypatch.setattr(qwen3_asr_builder, "init_mm_embedding_cache", lambda size: None)
     monkeypatch.setattr(
-        qwen3_asr_stages,
+        request_builders,
         "make_qwen3_asr_scheduler_adapters",
         lambda **kwargs: (object(), object()),
     )
     monkeypatch.setattr(
-        qwen3_asr_stages,
-        "ModelRunner",
-        lambda *args, **kwargs: object(),
-    )
-    monkeypatch.setattr(
-        qwen3_asr_stages,
+        sglang_backend,
         "SGLangOutputProcessor",
         lambda **kwargs: object(),
     )
     monkeypatch.setattr(
-        qwen3_asr_stages,
+        omni_scheduler,
         "OmniScheduler",
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
@@ -117,7 +117,10 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         return server_args
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
-        model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
+        model_worker = SimpleNamespace(
+            gpu_id=gpu_id,
+            model_runner=SimpleNamespace(model=object()),
+        )
         return False, (
             model_worker,
             object(),
@@ -129,12 +132,12 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        qwen3_asr_stages,
+        sglang_backend,
         "build_sglang_server_args",
         _fake_server_args_builder,
     )
     monkeypatch.setattr(
-        qwen3_asr_stages,
+        bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
         _fake_create_infrastructure,
     )
