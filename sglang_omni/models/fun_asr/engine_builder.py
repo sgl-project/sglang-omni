@@ -21,8 +21,10 @@ from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+    get_decode_cuda_graph_bs,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +93,14 @@ class FunASREngineBuilder(AsrEngineBuilder):
         encoder_token_count = int(
             fun_asr_low_frame_rate_length(self.feature_extractor.nb_max_frames)
         )
-        prompt_overhead = request_builders.fun_asr_prompt_overhead_tokens(
-            self.tokenizer
+        prompt_overhead = max(
+            request_builders.fun_asr_prompt_overhead_tokens(
+                self.tokenizer,
+                language=language,
+                itn=itn,
+            )
+            for language in (None, "英文")
+            for itn in (True, False)
         )
         self.context_length = (
             encoder_token_count + self.max_new_tokens + prompt_overhead
@@ -120,6 +128,40 @@ class FunASREngineBuilder(AsrEngineBuilder):
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
+
+    def _log_memory_checkpoint(self, checkpoint: str) -> None:
+        logger.info(
+            "Fun-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+            checkpoint,
+            self.gpu_id,
+            format_bytes_gib(get_process_gpu_memory_bytes(self.gpu_id)),
+        )
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        super().validate_before_infrastructure(server_args)
+        logger.info(
+            "Fun-ASR runtime profile: sm=%s dtype=%s attention_backend=%s "
+            "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
+            "torch_compile=%s max_running_requests=%s mem_fraction_static=%s",
+            get_visible_gpu_sm_version(self.gpu_id),
+            getattr(server_args, "dtype", None),
+            getattr(server_args, "attention_backend", None),
+            getattr(server_args, "mm_attention_backend", None),
+            not getattr(server_args, "disable_cuda_graph", False),
+            get_decode_cuda_graph_bs(server_args),
+            getattr(server_args, "enable_torch_compile", False),
+            getattr(server_args, "max_running_requests", None),
+            getattr(server_args, "mem_fraction_static", None),
+        )
+        self._log_memory_checkpoint("pre_model_load")
+
+    def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
+        del model, server_args
+        self._log_memory_checkpoint("post_static_allocation")
+
+    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+        del model, server_args
+        self._log_memory_checkpoint("post_cuda_graph_capture")
 
     def setup_model_resources(
         self,

@@ -495,6 +495,7 @@ that happened to contain an older version of the test.
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
+  - checked-in RTX 4090 profile loading and runtime override resolution
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
     shutdown, disabled multimodal embedding cache and torch.compile, and
