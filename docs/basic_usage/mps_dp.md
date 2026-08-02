@@ -216,6 +216,30 @@ The #907 profiling, this repeated case study, and the reviewer verification belo
 
 > A separate reviewer verification on the same pinned software revision measured 29.9, 59.7, and 64.5 qps for single, DP2, and DP3. Absolute throughput differed between the two runtime environments, including different observed admission behavior, so the two series should not be combined. Both nevertheless showed a clear DP gain once every configuration was saturated.
 
+### Stage Replica Benchmark Results
+
+These stage-replica results use `bosonai/higgs-tts-3-4b` on the full `zhaochenyang20/seed-tts-eval-arrow` English split: 1,088 samples / 666 references. The request path was `/v1/audio/speech`, voice clone, non-streaming WAV, speaker `Ethan`, temperature `0.7`, with `max_new_tokens=512`. The benchmark used a closed-loop 110 s window (20 s warmup + 90 s scoring), prefill coalescing at 32 requests / 300 ms, `max_running_requests=96`, and CUDA Graph max batch size 96 per scheduler. The vocoder ran in an independent process with `compile_decode=false` and CUDA Graph frame counts `1..512`. For full-MPS rows, all frontend, scheduler, and vocoder GPU processes were attached to one private CUDA MPS server. Server and client processes were pinned to different NUMA nodes.
+
+Every staged row completed the full SeedTTS English split with zero request errors. Reported deltas are cumulative comparisons against the same GPU model's S1F1 MPS-off baseline; they should not be read as isolated MPS-only or replica-only effects.
+
+| Topology | Frontend allocation | Scheduler allocation | Vocoder allocation |
+|---|---|---|---|
+| S1F1 | 1 frontend, memory fraction `0.0245` | 1 scheduler, `0.85` | `0.10` |
+| S1F2 | 2 frontends, `0.0245` each | 1 scheduler, `0.85` | `0.10` |
+| S2F4 | 4 frontends, `0.01225` each | 2 schedulers, `0.425` each | `0.10` |
+
+| Machine | GPU memory |
+|---|---:|
+| RTX PRO 6000 | 97,887 MiB |
+| NVIDIA H200 | 143,771 MiB |
+
+RTX PRO 6000 results:
+
+| Configuration | QPS | QPS vs S1F1 | P50 latency | P50 change | P95 latency | P95 change |
+|---|---:|---:|---:|---:|---:|---:|
+| S1F1C96, MPS off | 15.2778 | - | 6.295 s | - | 7.436 s | - |
+| S1F2C96, full MPS | 24.9778 | **+63.49%** | | | | |
+
 To measure your own setup, check whether one tuned replica is below GPU saturation under your real workload before adopting DP:
 
 ```bash
