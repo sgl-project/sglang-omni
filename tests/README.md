@@ -361,6 +361,15 @@ that happened to contain an older version of the test.
   pytest tests/unit_test/test_tune_ci_thresholds.py -q
   ```
 
+- `unit_test/benchmarks/`: Benchmark data, provenance, and result-contract tests:
+  - canonical/local/custom SeedTTS revision and content-fingerprint behavior
+  - resource-monitor lifecycle, GPU-process host RSS, optional NVML metrics,
+    and sampler ownership
+  - ASR consumer-model revision references, bilingual sample separation,
+    finite argument validation, bounded HTTP/SSE reads, exact total
+    concurrency, global translation cadence and English-semantic gates,
+    Python 3.10 cancellation compatibility, child-task cleanup, transport
+    failures, and fail-closed GPU-memory-retention gates.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation.

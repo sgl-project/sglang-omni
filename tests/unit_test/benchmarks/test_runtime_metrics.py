@@ -22,6 +22,7 @@ def test_summarize_resource_samples_reports_peak_and_steady_values() -> None:
             gpu_memory_used_mib=100.0,
             gpu_memory_free_mib=900.0,
             gpu_process_memory_mib=80.0,
+            gpu_process_rss_mib=256.0,
             gpu_util_percent=10.0,
             power_w=20.0,
             system_cpu_percent=5.0,
@@ -33,6 +34,7 @@ def test_summarize_resource_samples_reports_peak_and_steady_values() -> None:
             gpu_memory_used_mib=200.0,
             gpu_memory_free_mib=800.0,
             gpu_process_memory_mib=180.0,
+            gpu_process_rss_mib=512.0,
             gpu_util_percent=90.0,
             power_w=120.0,
             system_cpu_percent=15.0,
@@ -51,6 +53,7 @@ def test_summarize_resource_samples_reports_peak_and_steady_values() -> None:
         "steady_mean": 150.0,
     }
     assert result["gpu_process_memory_mib"]["max"] == 180.0
+    assert result["gpu_process_rss_mib"]["max"] == 512.0
     assert result["power_w"]["max"] == 120.0
     assert result["gpu_process_cpu_percent"]["max"] == 125.0
     assert result["gpu_process_pids"] == [11, 22]
@@ -116,6 +119,17 @@ def test_nvml_process_snapshot_marks_unsupported_getters_unavailable() -> None:
     assert runtime_metrics._nvml_compute_processes(SimpleNamespace(), object()) is None
 
 
+@pytest.mark.parametrize(
+    "interval_s",
+    [float("nan"), float("inf"), float("-inf"), 0.0],
+)
+def test_resource_monitor_rejects_nonfinite_or_nonpositive_interval(
+    interval_s: float,
+) -> None:
+    with pytest.raises(ValueError, match="interval_s must be finite and > 0"):
+        ResourceMonitor(interval_s=interval_s)
+
+
 def test_resource_monitor_refuses_overlapping_nvml_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,6 +146,28 @@ def test_resource_monitor_refuses_overlapping_nvml_session(
 
     assert result["available"] is False
     assert result["error"] == "another NVML resource monitor is still active"
+
+
+def test_resource_monitor_aggregates_gpu_process_host_rss() -> None:
+    class FakeProcess:
+        def cpu_percent(self, *, interval=None):
+            assert interval is None
+            return 12.5
+
+        def memory_info(self):
+            return SimpleNamespace(rss=2 * 1024 * 1024)
+
+    monitor = ResourceMonitor()
+    monitor._psutil = SimpleNamespace(
+        Process=lambda _pid: FakeProcess(),
+        NoSuchProcess=RuntimeError,
+        AccessDenied=PermissionError,
+    )
+
+    cpu_percent, rss_mib = monitor._gpu_process_host_metrics({11, 22})
+
+    assert cpu_percent == 25.0
+    assert rss_mib == 4.0
 
 
 def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(

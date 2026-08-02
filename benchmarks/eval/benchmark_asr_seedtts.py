@@ -6,7 +6,7 @@
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
+routing balance. It supports Qwen3-ASR, Fun-ASR-Nano, and Whisper through
 ``--model-path``.
 
 Usage:
@@ -87,6 +87,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import statistics
 
@@ -97,12 +98,15 @@ from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
+    PINNED_ASR_MODEL_REVISIONS,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
+PINNED_MODEL_REVISIONS = PINNED_ASR_MODEL_REVISIONS
 
 
 def _positive_int(value: str) -> int:
@@ -112,6 +116,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than zero")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be finite and greater than zero")
     return parsed
 
 
@@ -262,12 +276,14 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "rtfx": speed["rtfx"],
+        "audio_seconds_per_s": speed["rtfx"],
         "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
         "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
         "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
         "rtf_mean": speed["rtf_mean"] if has_rtf else None,
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
+        "per_sample": benchmark_result["per_sample"],
         "resources": resources,
     }
     for key in (
@@ -335,6 +351,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         "wall_clock_s": _stat("wall_clock_s"),
         "throughput_samples_per_s": _stat("throughput_samples_per_s"),
         "rtfx": _stat("rtfx"),
+        "audio_seconds_per_s": _stat("audio_seconds_per_s"),
         "latency_mean_s": _stat("latency_mean_s"),
         "latency_p95_s": _stat("latency_p95_s"),
         "latency_p99_s": _stat("latency_p99_s"),
@@ -454,8 +471,8 @@ def parse_args() -> argparse.Namespace:
         default=QWEN3_ASR_MODEL_PATH,
         help=(
             "ASR model id served by the router. Defaults to "
-            f"{QWEN3_ASR_MODEL_PATH}; use "
-            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
+            f"{QWEN3_ASR_MODEL_PATH}; other supported consumer models are "
+            f"{FUN_ASR_MODEL_PATH} and {OMNI_WHISPER_MODEL_PATH}."
         ),
     )
     parser.add_argument(
@@ -525,7 +542,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--monitor-interval-s",
-        type=float,
+        type=_positive_float,
         default=0.2,
         help="Resource monitor sampling interval.",
     )
