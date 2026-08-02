@@ -46,7 +46,8 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 "request_build_max_workers": _REQUEST_BUILD_MAX_WORKERS,
                 "request_build_max_pending": 16,
             },
-            gpu=0,
+            gpu=[0],
+            tp_size=1,
             terminal=True,
         )
     ]

@@ -7,19 +7,22 @@ without the Ming checkpoint and CUDA resources.
 
 from __future__ import annotations
 
-import json
 import os
-import signal
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import pytest
+
+from tests.utils import (
+    TPParityServerProcess,
+    extract_text,
+    post_json,
+    stop_server_process,
+    wait_health,
+)
 
 MODEL_NAME = os.environ.get("MING_OMNI_MODEL_NAME", "ming-omni")
 MODEL_PATH = os.environ.get("MING_OMNI_MODEL_PATH", "inclusionAI/Ming-flash-omni-2.0")
@@ -32,61 +35,13 @@ class MingServerProcess:
     log_handle: BinaryIO
 
 
-def _post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> Any:
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/chat/completions",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _wait_health(
-    port: int,
-    server: MingServerProcess,
-    timeout: float = 900.0,
-) -> None:
-    deadline = time.monotonic() + timeout
-    url = f"http://127.0.0.1:{port}/health"
-    last_error: BaseException | None = None
-
-    while time.monotonic() < deadline:
-        return_code = server.process.poll()
-        if return_code is not None:
-            raise AssertionError(
-                f"Ming server on port {port} exited early with code {return_code}"
-            )
-
-        try:
-            with urllib.request.urlopen(url, timeout=5.0) as response:
-                body = json.loads(response.read().decode("utf-8"))
-            if body.get("status") == "healthy" or body.get("running") is True:
-                return
-        except (
-            json.JSONDecodeError,
-            OSError,
-            urllib.error.URLError,
-        ) as exc:
-            last_error = exc
-
-        time.sleep(2.0)
-
-    raise AssertionError(
-        f"Ming server on port {port} did not become healthy within {timeout}s; "
-        f"last_error={last_error!r}"
-    )
-
-
 def _start_server(
     port: int,
     tp_size: int,
     cuda_visible_devices: str,
     gpu_talker: int,
     tmp_path: Path,
-) -> MingServerProcess:
+) -> TPParityServerProcess:
     cwd = Path.cwd()
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
@@ -130,38 +85,7 @@ def _start_server(
     except Exception:
         log_handle.close()
         raise
-    return MingServerProcess(process=process, log_handle=log_handle)
-
-
-def _stop_server(server: MingServerProcess) -> None:
-    process = server.process
-    try:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except OSError:
-                process.terminate()
-            try:
-                process.wait(timeout=30.0)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except OSError:
-                    process.kill()
-                process.wait(timeout=30.0)
-    finally:
-        server.log_handle.close()
-
-
-def _extract_text(body: dict[str, Any]) -> str:
-    choices = body.get("choices")
-    assert choices
-    message = choices[0].get("message")
-    assert message
-    content = message.get("content")
-    assert content
-    assert isinstance(content, str)
-    return content.strip()
+    return TPParityServerProcess(process=process, log_handle=log_handle)
 
 
 def _chat_payload(prompt: str) -> dict[str, Any]:
@@ -176,9 +100,7 @@ def _chat_payload(prompt: str) -> dict[str, Any]:
 
 
 def _collect_outputs(port: int, prompts: list[str]) -> list[str]:
-    return [
-        _extract_text(_post_json(port, _chat_payload(prompt))) for prompt in prompts
-    ]
+    return [extract_text(post_json(port, _chat_payload(prompt))) for prompt in prompts]
 
 
 @pytest.mark.benchmark
@@ -205,10 +127,10 @@ def test_ming_tp1_and_tp4_deterministic_text_match(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
     try:
-        _wait_health(18101, tp1_process)
+        wait_health(18101, tp1_process)
         tp1_outputs = _collect_outputs(18101, prompts)
     finally:
-        _stop_server(tp1_process)
+        stop_server_process(tp1_process)
 
     tpn_process = _start_server(
         port=18104,
@@ -218,9 +140,9 @@ def test_ming_tp1_and_tp4_deterministic_text_match(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
     try:
-        _wait_health(18104, tpn_process)
+        wait_health(18104, tpn_process)
         tpn_outputs = _collect_outputs(18104, prompts)
     finally:
-        _stop_server(tpn_process)
+        stop_server_process(tpn_process)
 
     assert tpn_outputs == tp1_outputs

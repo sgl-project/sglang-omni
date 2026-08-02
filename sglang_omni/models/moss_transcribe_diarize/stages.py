@@ -113,6 +113,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
 ):
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
@@ -166,6 +168,8 @@ def create_sglang_moss_transcribe_diarize_executor(
         server_args,
         gpu_id,
         model_arch_override="MossTranscribeDiarizeForConditionalGeneration",
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
     )
 
     if want_cuda_graph:

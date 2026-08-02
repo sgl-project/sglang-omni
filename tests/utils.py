@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 import subprocess
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
@@ -663,3 +668,97 @@ def assert_wer_results(
                 f"Sample {sample.get('id')} WER {wer:.4f} > {max_per_sample_wer}",
             )
     _assert_metric_collector_if_local(collector, checks)
+
+
+@dataclass(frozen=True)
+class TPParityServerProcess:
+    process: subprocess.Popen[bytes]
+    log_handle: BinaryIO
+
+
+def post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> Any:
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def wait_health(
+    port: int,
+    server: TPParityServerProcess,
+    timeout: float = 900.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{port}/health"
+    last_error: BaseException | None = None
+
+    while time.monotonic() < deadline:
+        return_code = server.process.poll()
+        if return_code is not None:
+            raise AssertionError(
+                f"Server on port {port} exited early with code {return_code}"
+            )
+
+        try:
+            with urllib.request.urlopen(url, timeout=5.0) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            if body.get("status") == "healthy" or body.get("running") is True:
+                return
+        except (
+            json.JSONDecodeError,
+            OSError,
+            urllib.error.URLError,
+        ) as exc:
+            last_error = exc
+
+        time.sleep(2.0)
+
+    raise AssertionError(
+        f"Server on port {port} did not become healthy within {timeout}s; "
+        f"last_error={last_error!r}"
+    )
+
+
+def stop_server_process(server: TPParityServerProcess) -> None:
+    import signal
+
+    process = server.process
+    try:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                process.terminate()
+            try:
+                process.wait(timeout=30.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                process.wait(timeout=30.0)
+    finally:
+        server.log_handle.close()
+
+
+def extract_text(body: dict[str, Any]) -> str:
+    choices = body.get("choices")
+    assert choices
+    message = choices[0].get("message")
+    assert message
+    content = message.get("content")
+    assert content
+    assert isinstance(content, str)
+    return content.strip()
+
+
+def get_available_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
