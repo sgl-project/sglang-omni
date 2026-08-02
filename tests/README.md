@@ -500,6 +500,7 @@ that happened to contain an older version of the test.
 
 - `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
   - pipeline config, request builders, and scheduler adapter contracts
+  - production config resolution for the experimental 24 GB RTX 4090 profile
   - decode-state pool acquisition, launch-state gathers, repetition-penalty history, cleanup, and resume/retraction lifecycle
   - chunked prefill feedback/journal suppression and postprocess alignment checks
   - synchronous frame-decode parity harness and S0 gate coverage

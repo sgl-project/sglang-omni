@@ -12,7 +12,9 @@ import torch
 
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.config import StageConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.config.topology import build_process_topology_plan
 from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
 from sglang_omni.models.moss_tts_local.config import (
@@ -418,6 +420,24 @@ def test_registry_resolves_local_architecture():
     # The Delay family keeps its own architecture.
     delay_cls = PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
     assert delay_cls is not MossTTSLocalPipelineConfig
+
+
+def test_rtx4090_profile_moves_reference_codec_to_cpu() -> None:
+    config = ConfigManager.from_file(
+        "examples/configs/moss_tts_local_4090_24gb.yaml"
+    ).config
+
+    assert isinstance(config, MossTTSLocalPipelineConfig)
+    stages = {stage.name: stage for stage in config.stages}
+    preprocessing = stages["preprocessing"]
+    preprocessing_args = resolve_stage_static_factory_args(preprocessing, config)
+    assert preprocessing_args["device"] == "cpu"
+    assert preprocessing_args["max_concurrency"] == 16
+    assert preprocessing.runtime.resources.total_gpu_memory_fraction == pytest.approx(
+        0.15
+    )
+    assert stages["tts_engine"].factory_args["codec_mem_reserve"] == pytest.approx(0.0)
+    assert stages["vocoder"].factory_args["device"] == "cuda:0"
 
 
 def test_pipeline_stage_wiring():
