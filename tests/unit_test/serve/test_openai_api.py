@@ -25,13 +25,15 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _ClosableStreamingResponse,
-    _first_transcription_chunk,
     _speech_audio_response,
-    _transcription_stream,
-    build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from sglang_omni.serve.transcriptions import (
+    _first_transcription_chunk,
+    _transcription_stream,
+    build_transcription_generate_request,
+)
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
