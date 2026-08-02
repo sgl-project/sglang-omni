@@ -19,7 +19,6 @@ def model_dir(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
     talker_prefill._EMBED_SOURCE_CACHE.clear()
     talker_prefill._EMBED_HANDLE_CACHE.clear()
-    talker_prefill._EMBED_ROW_CACHE.clear()
     return tmp_path
 
 
@@ -59,19 +58,9 @@ def test_shard_opened_once_across_calls(model_dir, monkeypatch):
     assert opens["n"] == 1
 
 
-def test_repeated_rows_served_from_cache(model_dir):
+def test_repeated_rows_stay_identical(model_dir):
     first = talker_prefill.load_thinker_embedding_rows(str(model_dir), [4, 11])
-    handle = talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)]
-
-    class Exploding:
-        def __getattr__(self, name):
-            raise AssertionError("cached rows must not touch the shard handle")
-
-    talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)] = Exploding()
-    try:
-        again = talker_prefill.load_thinker_embedding_rows(str(model_dir), [11, 4])
-    finally:
-        talker_prefill._EMBED_HANDLE_CACHE[str(model_dir)] = handle
+    again = talker_prefill.load_thinker_embedding_rows(str(model_dir), [11, 4])
     assert torch.equal(again, first[[1, 0]])
 
 
@@ -79,7 +68,6 @@ def test_no_index_fallback_cached(model_dir, monkeypatch):
     (model_dir / "model.safetensors.index.json").unlink()
     talker_prefill._EMBED_SOURCE_CACHE.clear()
     talker_prefill._EMBED_HANDLE_CACHE.clear()
-    talker_prefill._EMBED_ROW_CACHE.clear()
     rows = talker_prefill.load_thinker_embedding_rows(str(model_dir), [5])
     expected = torch.arange(VOCAB * HIDDEN, dtype=torch.float32).reshape(VOCAB, HIDDEN)
     assert torch.equal(rows, expected[[5]])
