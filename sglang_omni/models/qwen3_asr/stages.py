@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -16,6 +17,7 @@ from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
+    auto_generation_batch_caps,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
@@ -25,6 +27,47 @@ from sglang_omni.scheduling.sglang_backend import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_gpu_device_info
+
+logger = logging.getLogger(__name__)
+
+_AUTO = "auto"
+
+
+def _resolve_generation_batch_caps(
+    gpu_id: int,
+    max_running_requests: int | str,
+    request_build_max_pending: int | str | None,
+) -> tuple[int, int | None]:
+    """Resolve ``"auto"`` generation-batch caps from the GPU's total memory.
+
+    Explicit integer values pass through untouched; ``"auto"`` triggers the
+    memory-tiered defaults (see ``auto_generation_batch_caps``). The GPU is
+    queried at most once, only when something is actually ``"auto"``.
+    """
+    auto_mrr: int | None = None
+    auto_backlog: int | None = None
+    if _AUTO in (max_running_requests, request_build_max_pending):
+        info = get_gpu_device_info(gpu_id)
+        auto_mrr, auto_backlog = auto_generation_batch_caps(info.total_memory_bytes)
+        logger.info(
+            "Qwen3-ASR auto batch caps: gpu=%s (%s) -> "
+            "max_running_requests=%s, request_build_max_pending=%s",
+            gpu_id,
+            format_bytes_gib(info.total_memory_bytes),
+            auto_mrr,
+            auto_backlog,
+        )
+
+    if max_running_requests == _AUTO:
+        max_running_requests = auto_mrr
+    if request_build_max_pending == _AUTO:
+        request_build_max_pending = auto_backlog
+
+    resolved_pending = (
+        None if request_build_max_pending is None else int(request_build_max_pending)
+    )
+    return int(max_running_requests), resolved_pending
 
 
 def create_sglang_qwen3_asr_executor(
@@ -32,18 +75,22 @@ def create_sglang_qwen3_asr_executor(
     *,
     device: str = "cuda:0",
     dtype: str = "float16",
-    max_running_requests: int = 32,
+    max_running_requests: int | str = "auto",
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
-    request_build_max_pending: int | None = 16,
+    request_build_max_pending: int | str | None = "auto",
     server_args_overrides: dict[str, Any] | None = None,
 ):
 
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+
+    max_running_requests, request_build_max_pending = _resolve_generation_batch_caps(
+        gpu_id, max_running_requests, request_build_max_pending
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     feature_extractor = AutoFeatureExtractor.from_pretrained(
