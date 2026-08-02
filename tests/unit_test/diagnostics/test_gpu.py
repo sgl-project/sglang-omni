@@ -44,7 +44,7 @@ class _FakeCuda:
 
 class _FakeTorch:
     __version__ = "2.11.0+cu130"
-    version = SimpleNamespace(cuda="13.0")
+    version = SimpleNamespace(cuda="13.0", hip=None)
 
     def __init__(self) -> None:
         self.cuda = _FakeCuda()
@@ -100,7 +100,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_torch = _FakeTorch()
     fake_torch.cuda.properties.reverse()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "1,0"},
@@ -142,7 +142,7 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,2"},
@@ -158,6 +158,41 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
     assert fake_nvml.shutdown_called is True
 
 
+def test_collect_gpu_diagnostics_reports_rocm_without_nvml(monkeypatch) -> None:
+    fake_torch = _FakeTorch()
+    fake_torch.__version__ = "2.11.0+rocm7.0"
+    fake_torch.version = SimpleNamespace(cuda=None, hip="7.0.0")
+    fake_torch.cuda.properties = [
+        SimpleNamespace(
+            name="AMD Instinct MI300X",
+            total_memory=192 * 1024**3,
+            gcnArchName="gfx942:sramecc+:xnack-",
+            uuid="uuid-amd",
+        )
+    ]
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_try_import_pynvml",
+        lambda: (_ for _ in ()).throw(AssertionError("NVML must not be probed")),
+    )
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"ROCR_VISIBLE_DEVICES": "0"},
+        torch_module=fake_torch,
+    )
+
+    environment = report["environment"]
+    assert environment["accelerator_platform"] == "amd-rocm"
+    assert environment["pytorch_hip_build"] == "7.0.0"
+    assert environment["cuda_runtime_version"] is None
+    assert environment["rocr_visible_devices"] == "0"
+    assert report["gpus"][0]["architecture"].startswith("gfx942")
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "Accelerator platform: amd-rocm" in rendered
+    assert "PyTorch/ROCm build" in rendered
+
+
 def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> None:
     class _PartiallyFailingNVML(_FakeNVML):
         def nvmlDeviceGetPciInfo(self, handle: str) -> SimpleNamespace:
@@ -168,7 +203,7 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,1"},
@@ -201,7 +236,7 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
         )
     ]
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},

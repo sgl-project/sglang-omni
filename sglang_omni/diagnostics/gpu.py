@@ -11,6 +11,10 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from sglang_omni.utils.accelerator import (
+    AcceleratorPlatform,
+    detect_accelerator_platform,
+)
 from sglang_omni.utils.gpu_memory import (
     _decode_nvml_string,
     _shutdown_nvml,
@@ -26,6 +30,7 @@ _BACKENDS = (
     ("attention", "torch-sdpa", "torch.nn.functional"),
     ("gemm", "sgl-deep-gemm", "deep_gemm"),
     ("gemm", "sglang-kernel", "sgl_kernel"),
+    ("gemm", "aiter", "aiter"),
     ("moe", "quack-kernels", "quack"),
     ("quantization", "torchao", "torchao"),
     (
@@ -205,8 +210,7 @@ def _nvml_inventory(
             device["free_memory_bytes"] = int(memory.free)
         except Exception as exc:
             warnings.append(
-                f"NVML memory query failed for physical_index="
-                f"{physical_index}: {exc}"
+                f"NVML memory query failed for physical_index={physical_index}: {exc}"
             )
         try:
             pci = pynvml.nvmlDeviceGetPciInfo(handle)
@@ -298,9 +302,14 @@ def _logical_devices(
                 f"CUDA_VISIBLE_DEVICES entry {visible_device!r} is a MIG device; "
                 "physical GPU mapping and free memory are unsupported."
             )
-        torch_cc = (
-            f"{properties.major}.{properties.minor}" if properties is not None else None
-        )
+        torch_cc = None
+        architecture = None
+        if properties is not None:
+            major = getattr(properties, "major", None)
+            minor = getattr(properties, "minor", None)
+            if major is not None and minor is not None:
+                torch_cc = f"{major}.{minor}"
+            architecture = getattr(properties, "gcnArchName", None)
         devices.append(
             {
                 "logical_index": logical_index,
@@ -312,6 +321,7 @@ def _logical_devices(
                 "pci_bus_id": physical.get("pci_bus_id"),
                 "name": physical.get("name") or getattr(properties, "name", None),
                 "compute_capability": physical.get("compute_capability") or torch_cc,
+                "architecture": architecture,
                 "total_memory_bytes": physical.get("total_memory_bytes")
                 or getattr(properties, "total_memory", None),
                 "free_memory_bytes": physical.get("free_memory_bytes"),
@@ -332,7 +342,15 @@ def collect_gpu_diagnostics(
     visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
     visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
-    pynvml = pynvml_module if pynvml_module is not None else _try_import_pynvml()
+    platform = detect_accelerator_platform(torch)
+    # Importing/querying NVML in a ROCm environment can surface an unrelated
+    # host NVIDIA driver and produce a misleading physical-device inventory.
+    # NVML metadata is meaningful only for an NVIDIA PyTorch build.
+    pynvml = (
+        pynvml_module
+        if pynvml_module is not None
+        else (_try_import_pynvml() if platform is AcceleratorPlatform.NVIDIA else None)
+    )
 
     inventory, system, warnings = _nvml_inventory(pynvml)
     try:
@@ -351,12 +369,20 @@ def collect_gpu_diagnostics(
         "schema_version": 1,
         "environment": {
             "cuda_visible_devices": visible_value,
+            "rocr_visible_devices": source_env.get("ROCR_VISIBLE_DEVICES"),
+            "hip_visible_devices": source_env.get("HIP_VISIBLE_DEVICES"),
+            "accelerator_platform": platform.value,
             **system,
-            "cuda_runtime_version": _cuda_runtime_version(),
+            "cuda_runtime_version": (
+                _cuda_runtime_version()
+                if platform is AcceleratorPlatform.NVIDIA
+                else None
+            ),
             "pytorch_version": getattr(torch, "__version__", None),
             "pytorch_cuda_build": getattr(
                 getattr(torch, "version", None), "cuda", None
             ),
+            "pytorch_hip_build": getattr(getattr(torch, "version", None), "hip", None),
             "cuda_available": bool(torch.cuda.is_available()),
             "logical_device_count": len(devices),
         },
@@ -371,9 +397,26 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
 
     environment = report["environment"]
     visible = environment["cuda_visible_devices"]
+    platform = environment.get("accelerator_platform", "nvidia-cuda")
+    is_amd = platform == AcceleratorPlatform.AMD.value
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
+        f"Accelerator platform: {platform}",
         f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
+        *(
+            [
+                (
+                    "ROCR_VISIBLE_DEVICES: "
+                    f"{environment.get('rocr_visible_devices') or '<unset>'}"
+                ),
+                (
+                    "HIP_VISIBLE_DEVICES: "
+                    f"{environment.get('hip_visible_devices') or '<unset>'}"
+                ),
+            ]
+            if is_amd
+            else []
+        ),
         f"Driver: {environment['driver_version'] or 'unavailable'}",
         (
             "CUDA driver/runtime: "
@@ -381,19 +424,20 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
             f"{environment['cuda_runtime_version'] or 'unavailable'}"
         ),
         (
-            "PyTorch/CUDA build: "
+            f"PyTorch/{'ROCm' if is_amd else 'CUDA'} build: "
             f"{environment['pytorch_version'] or 'unavailable'} / "
-            f"{environment['pytorch_cuda_build'] or 'unavailable'}"
+            f"{(environment.get('pytorch_hip_build') if is_amd else environment['pytorch_cuda_build']) or 'unavailable'}"
         ),
         "GPUs:",
     ]
     if not report["gpus"]:
-        lines.append("  No CUDA devices are visible to PyTorch.")
+        lines.append("  No accelerator devices are visible to PyTorch.")
     for device in report["gpus"]:
         lines.append(
             f"  logical {device['logical_index']} -> physical "
             f"{device['physical_index']} visible={device['visible_device']} "
             f"name={device['name'] or 'unknown'} "
+            f"arch={device.get('architecture') or 'unknown'} "
             f"cc={device['compute_capability'] or 'unknown'} "
             f"memory={format_bytes_gib(device['free_memory_bytes'])}/"
             f"{format_bytes_gib(device['total_memory_bytes'])} "

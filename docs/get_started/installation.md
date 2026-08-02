@@ -1,5 +1,8 @@
 # 🚀 Installation
 
+> AMD GPU users should follow [Installation — AMD ROCm](./installation_rocm.md).
+> The default dependency set below includes NVIDIA CUDA packages.
+
 We provide two installation paths. Docker is recommended — the image ships with UCX, flash-attn, sglang, and CUDA prebuilt.
 
 ## 🐳 Option A: Docker (recommended)

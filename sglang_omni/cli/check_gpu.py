@@ -21,7 +21,7 @@ def check_gpu(
         bool,
         typer.Option(
             "--strict",
-            help="Exit nonzero when warnings are present or no CUDA GPU is visible.",
+            help="Exit nonzero when warnings are present or no accelerator is visible.",
         ),
     ] = False,
 ) -> None:
