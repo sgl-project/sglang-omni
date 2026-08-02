@@ -37,6 +37,12 @@ runs:
         echo "UV_CACHE_DIR=/data/omni-ci/uv-cache" >> "${GITHUB_ENV}"
         echo "UV_PYTHON_INSTALL_DIR=/data/omni-ci/uv-python" >> "${GITHUB_ENV}"
 
+    - name: Install supported uv
+      uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      with:
+        version: "0.11.25"
+        enable-cache: false
+
     - name: Restore cache
       shell: bash
       env:

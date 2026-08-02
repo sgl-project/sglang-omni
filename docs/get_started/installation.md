@@ -2,6 +2,8 @@
 
 We provide two installation paths. Docker is recommended — the image ships with UCX, flash-attn, sglang, and CUDA prebuilt.
 
+Source installs require [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.25 or newer.
+
 ## 🐳 Option A: Docker (recommended)
 
 **1. Pull the image**
