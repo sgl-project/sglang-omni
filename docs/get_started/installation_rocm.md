@@ -30,9 +30,11 @@ docker build -f docker/rocm.Dockerfile \
 
 ## Existing SGLang ROCm environment
 
-The normal `pyproject.toml` contains NVIDIA-only packages. The helper installs
-the scoped ROCm runtime requirements and then installs Omni with `--no-deps`, so
-it cannot replace the working PyTorch/SGLang ROCm stack:
+The normal project dependencies contain NVIDIA-only packages. The helper
+installs the scoped `rocm` dependency group from `pyproject.toml` and then
+installs Omni with `--no-deps`, so it cannot replace the working
+PyTorch/SGLang ROCm stack. It uses `uv`, which is included in the pinned SGLang
+image; install `uv` first when using another environment:
 
 ```bash
 PYTHON=python3 scripts/rocm/install_rocm.sh
