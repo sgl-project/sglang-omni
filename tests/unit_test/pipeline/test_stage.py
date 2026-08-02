@@ -17,6 +17,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
 from sglang_omni.proto import DataReadyMessage
+from sglang_omni.relay.shm import ShmRelay
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
     FakeRelay,
@@ -39,6 +40,30 @@ class _CloseAwareControlPlane(RecordingStageControlPlane):
         while not self.closed:
             await asyncio.sleep(0)
         raise RuntimeError("control plane closed")
+
+
+@pytest.mark.parametrize(
+    ("serialized_device", "receiver_device", "transport_device", "expected"),
+    [
+        ("cpu", "cuda:0", "cpu", torch.device("cpu")),
+        ("cuda:3", "cuda:0", "cpu", torch.device("cuda:0")),
+        ("cuda:3", None, "cuda:2", torch.device("cuda:2")),
+    ],
+)
+def test_resolve_tensor_destination(
+    serialized_device: str,
+    receiver_device: str | None,
+    transport_device: str,
+    expected: torch.device,
+) -> None:
+    assert (
+        stage_io._resolve_tensor_destination(
+            serialized_device,
+            receiver_device=receiver_device,
+            transport_device=transport_device,
+        )
+        == expected
+    )
 
 
 def test_aggregated_input_waits_per_request_without_cross_talk() -> None:
@@ -321,6 +346,40 @@ def test_cuda_payload_round_trip_preserves_cpu_tensor_devices() -> None:
         assert restored.data["embeds"].device.type == "cuda"
         assert restored.data["grid"].device.type == "cpu"
         assert torch.equal(restored.data["grid"], torch.ones(1, dtype=torch.long))
+
+    asyncio.run(_run())
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires an accelerator")
+def test_accelerator_payload_round_trip_through_shm_restores_receiver_device() -> None:
+    async def _run() -> None:
+        destination = torch.device("cuda", torch.cuda.current_device())
+        relay = ShmRelay(engine_id="test-accelerator-shm", device="cpu")
+        expected_accelerator = torch.arange(4, device=destination)
+        expected_cpu = torch.ones(1, dtype=torch.long)
+        payload = make_stage_payload(
+            request_id="req-accelerator-shm",
+            data={"embeds": expected_accelerator, "grid": expected_cpu},
+        )
+
+        data_ref, _ = await stage_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            transport=TransportKind.SHM,
+        )
+        restored = await stage_io.read_payload(
+            relay,
+            payload.request_id,
+            data_ref,
+            destination_device=destination,
+        )
+
+        assert restored.data["embeds"].device == destination
+        assert torch.equal(restored.data["embeds"], expected_accelerator)
+        assert restored.data["grid"].device.type == "cpu"
+        assert torch.equal(restored.data["grid"], expected_cpu)
 
     asyncio.run(_run())
 

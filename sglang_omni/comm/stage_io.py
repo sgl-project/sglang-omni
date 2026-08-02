@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -47,8 +48,7 @@ def relay_device(relay: Relay) -> str:
     device = relay.device
     if not isinstance(device, str):
         raise TypeError(
-            f"{type(relay).__name__}.device must be str, got "
-            f"{type(device).__name__}"
+            f"{type(relay).__name__}.device must be str, got {type(device).__name__}"
         )
     return device
 
@@ -275,8 +275,7 @@ def deserialize_direct_cuda_ipc_stream_chunk(
         return data, None
     if not isinstance(raw_metadata, dict):
         raise TypeError(
-            "direct CUDA IPC metadata must be dict, got "
-            f"{type(raw_metadata).__name__}"
+            f"direct CUDA IPC metadata must be dict, got {type(raw_metadata).__name__}"
         )
     metadata = deserialize_direct_ipc_metadata(raw_metadata)
     if not isinstance(metadata, dict):
@@ -328,6 +327,8 @@ async def read_payload(
     relay: Relay,
     request_id: str,
     data_ref: DataRef,
+    *,
+    destination_device: str | torch.device | None = None,
 ) -> StagePayload:
     if data_ref.kind is not DataKind.STAGE_PAYLOAD:
         raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
@@ -335,15 +336,19 @@ async def read_payload(
         raise ValueError("stage_payload data_ref is missing header")
     header = pickle.loads(base64.b64decode(data_ref.header))
     transfer_buf = await _read_transfer_buffer(relay, request_id, data_ref)
-    tensors = {
-        entry.path: _restore_tensor_device(
+    tensors: dict[str, torch.Tensor] = {}
+    for entry in data_ref.tensors:
+        tensor = (
             transfer_buf[entry.offset : entry.offset + entry.size]
             .view(_torch_dtype(entry.dtype))
-            .reshape(entry.shape),
-            entry.device,
+            .reshape(entry.shape)
         )
-        for entry in data_ref.tensors
-    }
+        destination = _resolve_tensor_destination(
+            serialized_device=entry.device,
+            receiver_device=destination_device,
+            transport_device=tensor.device,
+        )
+        tensors[entry.path] = _restore_tensor_device(tensor, destination)
     relay.cleanup(request_id)
     return StagePayload(
         request_id=header.request_id,
@@ -598,10 +603,34 @@ def _torch_dtype(dtype_str: str) -> torch.dtype:
     return dtype
 
 
-def _restore_tensor_device(tensor: torch.Tensor, device: str) -> torch.Tensor:
-    if torch.device(device).type == "cpu":
-        return tensor.cpu()
-    return tensor
+def _resolve_tensor_destination(
+    serialized_device: str,
+    *,
+    receiver_device: str | torch.device | None,
+    transport_device: str | torch.device,
+) -> torch.device:
+    """
+    serialize_device: where the tensor was originally serialized from (e.g., "cuda:0")
+    receiver_device: where the tensor is being received (e.g., "cuda:1")
+    transport_device: where the tensor is currently located
+    """
+    if torch.device(serialized_device).type == "cpu":
+        return torch.device("cpu")
+    if receiver_device is not None:
+        return torch.device(receiver_device)
+    return torch.device(transport_device)
+
+
+def _restore_tensor_device(
+    tensor: torch.Tensor,
+    destination_device: str | torch.device,
+) -> torch.Tensor:
+    """Copy a reconstructed tensor to its already-resolved destination."""
+
+    destination = torch.device(destination_device)
+    if tensor.device == destination:
+        return tensor
+    return tensor.to(device=destination)
 
 
 def _contains_cuda_tensor(obj: Any, seen: set[int] | None = None) -> bool:

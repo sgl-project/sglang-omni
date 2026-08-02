@@ -57,6 +57,14 @@ class CommRouter:
     def self_is_gpu(self) -> bool:
         return self.gpu_id is not None
 
+    @property
+    def receive_device(self) -> torch.device:
+        """Process-local device on which this stage consumes GPU tensors."""
+
+        if self.gpu_id is None:
+            return torch.device("cpu")
+        return torch.device("cuda", self.gpu_id)
+
     def is_local_object(self, target: str) -> bool:
         return target in self.same_process_targets
 

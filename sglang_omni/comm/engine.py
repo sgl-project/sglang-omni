@@ -168,7 +168,12 @@ class CommEngine:
         request_id: str,
         data_ref: DataRef,
     ) -> StagePayload:
-        return await stage_io.read_payload(relay, request_id, data_ref)
+        return await stage_io.read_payload(
+            relay,
+            request_id,
+            data_ref,
+            destination_device=self.router.receive_device,
+        )
 
     async def send_stream_chunk(
         self,
