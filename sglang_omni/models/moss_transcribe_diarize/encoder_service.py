@@ -11,6 +11,7 @@ import concurrent.futures
 import logging
 import queue
 import threading
+import traceback
 from typing import Any
 
 import torch
@@ -72,33 +73,100 @@ class BatchedAudioEncoderService:
 
     def _worker(self) -> None:
         while True:
-            batch = self._drain_batch()
-            items = [item for item, _ in batch]
-            try:
-                self._encode_batch(items)
-            except Exception:
-                logger.exception(
-                    f"MOSS-TD batched audio encode failed for {len(items)} "
-                    f"items; retrying per item"
+            self._process_batch(self._drain_batch())
+
+    def _process_batch(
+        self, batch: list[tuple[Any, concurrent.futures.Future]]
+    ) -> None:
+        items = [item for item, _ in batch]
+        try:
+            self._encode_batch(items)
+        except Exception as batch_exc:
+            if len(batch) == 1:
+                failure = self._detach_failure(batch_exc)
+                failure_type = type(failure).__name__
+                failure_message = str(failure)
+                logger.error(
+                    "MOSS-TD audio encode failed: %s: %s",
+                    failure_type,
+                    failure_message,
                 )
-                for item, future in batch:
-                    try:
-                        self._encode_batch([item])
-                        future.set_result(None)
-                    except Exception as item_exc:
-                        future.set_exception(item_exc)
-                continue
-            for _, future in batch:
-                future.set_result(None)
-            self._batch_count += 1
-            self._item_count += len(items)
-            if self._batch_count % 50 == 1:
-                logger.info(
-                    f"MOSS-TD pre-LM encoder stage: {self._batch_count} batches, "
-                    f"{self._item_count} items (avg "
-                    f"{self._item_count / self._batch_count:.2f} items/batch, "
-                    f"last batch: {len(items)})"
-                )
+                self._recover_after_failure(failure)
+                batch[0][1].set_exception(failure)
+                return
+
+            failure = self._detach_failure(batch_exc)
+            failure_type = type(failure).__name__
+            failure_message = str(failure)
+            logger.error(
+                "MOSS-TD batched audio encode failed for %d items; "
+                "retrying per item: %s: %s",
+                len(items),
+                failure_type,
+                failure_message,
+            )
+            self._recover_after_failure(failure)
+            for item, future in batch:
+                try:
+                    self._encode_batch([item])
+                except Exception as item_exc:
+                    failure = self._detach_failure(item_exc)
+                    failure_type = type(failure).__name__
+                    failure_message = str(failure)
+                    logger.error(
+                        "MOSS-TD per-item audio encode retry failed: %s: %s",
+                        failure_type,
+                        failure_message,
+                    )
+                    self._recover_after_failure(failure)
+                    future.set_exception(failure)
+                else:
+                    self._record_success(1)
+                    future.set_result(None)
+            return
+
+        self._record_success(len(items))
+        for _, future in batch:
+            future.set_result(None)
+
+    @staticmethod
+    def _detach_failure(exc: Exception) -> Exception:
+        message = str(exc)
+        traceback.clear_frames(exc.__traceback__)
+        exc.__traceback__ = None
+        exc.__cause__ = None
+        exc.__context__ = None
+        if isinstance(exc, torch.OutOfMemoryError):
+            return torch.OutOfMemoryError(message)
+        if isinstance(exc, ValueError):
+            return ValueError(message)
+        return RuntimeError(f"{type(exc).__name__}: {message}")
+
+    def _recover_after_failure(self, exc: Exception) -> None:
+        if not isinstance(exc, torch.OutOfMemoryError):
+            return
+        try:
+            self._stream.synchronize()
+        except Exception:
+            logger.warning(
+                "MOSS-TD encoder stream cleanup failed after OOM", exc_info=True
+            )
+        try:
+            with torch.cuda.device(self._device):
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.warning("MOSS-TD CUDA cache cleanup failed after OOM", exc_info=True)
+
+    def _record_success(self, item_count: int) -> None:
+        self._batch_count += 1
+        self._item_count += item_count
+        if self._batch_count % 50 == 1:
+            logger.info(
+                f"MOSS-TD pre-LM encoder stage: {self._batch_count} batches, "
+                f"{self._item_count} items (avg "
+                f"{self._item_count / self._batch_count:.2f} items/batch, "
+                f"last batch: {item_count})"
+            )
 
     def _encode_batch(self, items: list[Any]) -> None:
         with torch.cuda.stream(self._stream):
@@ -111,11 +179,14 @@ class BatchedAudioEncoderService:
                     f"encoder output rows {embedding.shape[0]} != expected "
                     f"{sum(token_counts)}"
                 )
-            parts = torch.split(embedding, token_counts, dim=0)
-            for item, part in zip(items, parts):
-                item.precomputed_embeddings = part.contiguous()
-                item.feature = None
+            parts = tuple(
+                part.contiguous()
+                for part in torch.split(embedding, token_counts, dim=0)
+            )
         self._stream.synchronize()
+        for item, part in zip(items, parts):
+            item.precomputed_embeddings = part
+            item.feature = None
         for item in items:
             if item.hash is not None:
                 self._cache.put(str(item.hash), item.precomputed_embeddings)
