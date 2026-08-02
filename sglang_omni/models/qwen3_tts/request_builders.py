@@ -24,6 +24,7 @@ from sglang_omni.sampling.seed import (
     derive_sampling_seed,
     new_random_sampling_seed,
 )
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
@@ -33,6 +34,7 @@ from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
 )
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
@@ -101,6 +103,9 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
 
     enforce_request_limits: bool = True
     output_codes: list[torch.Tensor] = field(default_factory=list)
+    latest_stream_code_chunk: torch.Tensor | None = None
+    stream_ref_sent: bool = False
+    stream_codec_output: bool = False
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
     prompt_input_embeds: torch.Tensor | None = None
@@ -1028,6 +1033,7 @@ def build_sglang_qwen3_tts_request(
         subtalker_top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
         subtalker_top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
         subtalker_sampling_seed=subtalker_sampling_seed,
+        stream_codec_output=not state.non_streaming_mode,
         engine_start_s=time.perf_counter(),
     )
     data.suppress_tokens = list(req._codec_suppress_tokens)
@@ -1086,4 +1092,66 @@ def make_qwen3_tts_scheduler_adapters(*, model: Any, wrapper: Any):
     def result_adapter(data: Qwen3TTSSGLangRequestData) -> StagePayload:
         return apply_sglang_qwen3_tts_result(data.stage_payload, data)
 
-    return request_builder, result_adapter
+    def stream_output_builder(
+        request_id: str,
+        data: Qwen3TTSSGLangRequestData,
+        req_output: Any,
+    ) -> list[OutgoingMessage]:
+        del req_output
+        params = data.stage_payload.request.params
+        if (
+            not data.stream_codec_output
+            or not isinstance(params, dict)
+            or not params.get("stream")
+        ):
+            return []
+
+        codes = data.latest_stream_code_chunk
+        if codes is None:
+            return []
+        data.latest_stream_code_chunk = None
+        if codes.ndim == 1:
+            codes = codes.unsqueeze(0)
+        elif codes.ndim != 2:
+            raise ValueError(
+                f"Qwen3-TTS stream codes must be [Q] or [T, Q], got {tuple(codes.shape)}"
+            )
+
+        metadata: dict[str, Any] = {
+            "modality": "audio_codes",
+            "stream": True,
+            "num_quantizers": int(codes.shape[-1]),
+        }
+        if not data.stream_ref_sent:
+            ref_code = data.ref_code
+            ref_code_len = 0
+            if ref_code is not None and ref_code.numel() > 0:
+                ref_code = ref_code.to(device=codes.device, dtype=torch.long)
+                if ref_code.ndim != 2 or ref_code.shape[-1] != codes.shape[-1]:
+                    raise ValueError(
+                        "Qwen3-TTS reference codes must have shape [T, Q] matching "
+                        f"stream codes, got {tuple(ref_code.shape)} and "
+                        f"{tuple(codes.shape)}"
+                    )
+                ref_code_len = int(ref_code.shape[0])
+                codes = torch.cat((ref_code, codes), dim=0)
+            metadata["ref_code_len"] = ref_code_len
+            if INITIAL_CODEC_CHUNK_FRAMES_PARAM in params:
+                metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
+                    INITIAL_CODEC_CHUNK_FRAMES_PARAM
+                ]
+            data.stream_ref_sent = True
+
+        codes = codes.detach().to(dtype=torch.long)
+
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=codes,
+                target="vocoder",
+                metadata=metadata,
+            )
+        ]
+
+    return request_builder, result_adapter, stream_output_builder
