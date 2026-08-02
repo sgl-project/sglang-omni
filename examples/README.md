@@ -95,7 +95,6 @@ hardware is not available.
 | --- | --- | --- | --- |
 | `examples/configs/higgs_tts.yaml` | Higgs Audio v3 TTS (~4B) | `/v1/audio/speech` | Zero-shot + voice cloning; see `docs/cookbook/higgs_tts.md` |
 | `examples/configs/zonos2.yaml` | ZONOS2 (MoE TTS) | `/v1/audio/speech` | Single-process colocated pipeline; see `docs/cookbook/zonos2.md` |
-| `examples/configs/fun_asr.yaml` | Fun-ASR-Nano (ASR) | `/v1/audio/transcriptions`, `/v1/audio/translations` | Small ASR model; see `docs/cookbook/fun_asr.md` |
 
 Launch any of them with:
 
