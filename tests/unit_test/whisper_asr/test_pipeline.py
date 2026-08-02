@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import inspect
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import sglang_omni.model_runner.base as model_runner_base
+import sglang_omni.models.whisper_asr.engine_builder as whisper_engine_builder
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
@@ -42,6 +46,7 @@ def test_whisper_stage_defaults() -> None:
 
     assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["enable_torch_compile"].default is True
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
@@ -222,6 +227,10 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.stages[0].factory_args["prefill_coalesce_requests"] == 2
     assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 6.0
     assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert WhisperASRPipelineConfig.mem_fraction_role_to_stage() == {"asr": "asr"}
+    assert WhisperASRPipelineConfig.generation_sglang_role_to_stage() == {
+        "generation": "asr"
+    }
     assert (
         config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
         is True
@@ -264,9 +273,25 @@ def test_whisper_async_decode_cli_overrides() -> None:
     assert config.stages[0].factory_args["async_decode_min_batch_size"] == 4
 
 
+def test_whisper_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = ConfigManager.from_file(
+        str(repo_root / "examples/configs/whisper_asr_rtx4090.yaml")
+    ).config
+    stage = config.stages[0]
+
+    factory_args = resolve_stage_static_factory_args(stage, config)
+
+    assert factory_args["dtype"] == "bfloat16"
+    assert factory_args["max_running_requests"] == 16
+    assert factory_args["enable_torch_compile"] is False
+    assert factory_args["server_args_overrides"]["mem_fraction_static"] == 0.65
+
+
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
+    runtime_logs: list[tuple[str, tuple[object, ...]]] = []
     fake_processor = SimpleNamespace(
         tokenizer=object(),
         feature_extractor=SimpleNamespace(nb_max_frames=3000),
@@ -292,6 +317,21 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         whisper_request_builders,
         "make_whisper_scheduler_adapters",
         lambda **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(
+        whisper_engine_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: 89,
+    )
+    monkeypatch.setattr(
+        whisper_engine_builder,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 0,
+    )
+    monkeypatch.setattr(
+        whisper_engine_builder.logger,
+        "info",
+        lambda message, *args: runtime_logs.append((message, args)),
     )
     monkeypatch.setattr(
         model_runner_base,
@@ -354,7 +394,31 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
 
     assert build_kwargs["cuda_graph_max_bs"] == 64
-    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]
+    assert build_kwargs["cuda_graph_bs"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
+    assert build_kwargs["enable_torch_compile"] is True
+    runtime_log = next(
+        entry for entry in runtime_logs if entry[0].startswith("Whisper ASR runtime")
+    )
+    assert runtime_log[1][4] == [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]
+    checkpoints = [
+        entry[1][0]
+        for entry in runtime_logs
+        if entry[0].startswith("Whisper ASR memory checkpoint")
+    ]
+    assert checkpoints == ["pre_model_load", "post_static_allocation"]
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0

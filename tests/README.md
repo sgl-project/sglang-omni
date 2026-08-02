@@ -512,6 +512,14 @@ that happened to contain an older version of the test.
   - streaming output: request-contract validation, chunked-prefill gating,
     rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
     and direct-client aggregation without repeating the terminal transcript.
+- `unit_test/whisper_asr/`: Whisper ASR unit tests:
+  - checked-in RTX 4090 profile loading, configurable decoder compile, current
+    SGLang CUDA Graph batch diagnostics, and GPU-memory checkpoints
+  - serialized language/task prefix construction under concurrent traffic,
+    decoder/previous-context budget enforcement, and automatic language
+    detection
+  - shared audio preparation, per-engine 30-second clip limits, prompt
+    handling, and transcription/translation result adaptation.
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
