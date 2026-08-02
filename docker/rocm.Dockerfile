@@ -3,11 +3,17 @@
 ARG BASE_IMAGE=lmsysorg/sglang:v0.5.12.post1-rocm720-mi30x
 FROM ${BASE_IMAGE}
 
+ARG UV_VERSION=0.11.17
 WORKDIR /sgl-workspace/sglang-omni
 COPY pyproject.toml pyproject.toml
-RUN uv pip install --system --no-cache --group rocm
+RUN python3 -m pip install --no-cache-dir "uv==${UV_VERSION}" \
+    && uv pip install --python "$(command -v python3)" --no-cache --group rocm
 
 COPY . .
-RUN uv pip install --system --no-cache --no-deps -e .
+RUN uv pip install \
+    --python "$(command -v python3)" \
+    --no-cache \
+    --no-deps \
+    --editable .
 
 CMD ["sleep", "infinity"]

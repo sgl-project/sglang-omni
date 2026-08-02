@@ -33,8 +33,8 @@ docker build -f docker/rocm.Dockerfile \
 The normal project dependencies contain NVIDIA-only packages. The helper
 installs the scoped `rocm` dependency group from `pyproject.toml` and then
 installs Omni with `--no-deps`, so it cannot replace the working
-PyTorch/SGLang ROCm stack. It uses `uv`, which is included in the pinned SGLang
-image; install `uv` first when using another environment:
+PyTorch/SGLang ROCm stack. The Dockerfile installs a pinned `uv`; install `uv`
+first when using the helper in another environment:
 
 ```bash
 PYTHON=python3 scripts/rocm/install_rocm.sh
