@@ -1,0 +1,10 @@
+# Experimental single-RTX-4090 (24 GB) profile.
+# Concurrency 1 is the only consumer-GPU shape exercised so far; the generation
+# builder derives matching CUDA Graph and torch.compile batch caps.
+config_cls: VoxtralTTSPipelineConfig
+model_path: mistralai/Voxtral-4B-TTS-2603
+
+runtime_overrides:
+  tts_generation:
+    server_args_overrides:
+      max_running_requests: 1

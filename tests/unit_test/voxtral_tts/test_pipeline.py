@@ -11,12 +11,20 @@ import pytest
 import torch
 
 from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
+from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
+    VoxtralTtsEngineBuilder,
+)
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+)
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
@@ -48,6 +56,65 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig
     )
+
+
+def test_rtx4090_profile_caps_generation_to_exercised_concurrency() -> None:
+    config = ConfigManager.from_file(
+        "examples/configs/voxtral_tts_4090_24gb.yaml"
+    ).config
+
+    assert isinstance(config, VoxtralTTSPipelineConfig)
+    generation = next(
+        stage for stage in config.stages if stage.name == "tts_generation"
+    )
+    factory_args = resolve_stage_static_factory_args(generation, config)
+    defaults = VoxtralTtsEngineBuilder().generation_defaults(dtype="bfloat16")
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=factory_args["server_args_overrides"],
+        **defaults,
+    )
+
+    assert overrides["max_running_requests"] == 1
+    assert overrides["cuda_graph_max_bs"] == 1
+    assert overrides["cuda_graph_bs"] == [1]
+    assert overrides["torch_compile_max_bs"] == 1
+    assert overrides["mem_fraction_static"] == pytest.approx(0.85)
+    build_process_topology_plan(config, build_stage_placement_plan(config))
+
+
+def test_audio_tokenizer_sdpa_fallback_preserves_causal_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts import audio_tokenizer
+
+    monkeypatch.setattr(audio_tokenizer, "HAS_FLASH_ATTN", False)
+    attention = audio_tokenizer.Attention(
+        audio_tokenizer.AudioTokenizerArgs(
+            dim=2,
+            hidden_dim=4,
+            head_dim=1,
+            n_heads=2,
+            n_kv_heads=1,
+            qk_norm=False,
+            attn_sliding_window_size=2,
+        ),
+        layer_id=0,
+    )
+    with torch.no_grad():
+        attention.alibi_slopes.zero_()
+        attention.wq.weight.zero_()
+        attention.wk.weight.zero_()
+        attention.wv.weight.zero_()
+        attention.wv.weight[0, 0] = 1.0
+        attention.wo.weight.copy_(torch.eye(2))
+
+    values = torch.tensor([1.0, 2.0, 4.0, 8.0])
+    inputs = torch.stack((values, torch.zeros_like(values)), dim=-1)
+    output = attention(inputs)
+
+    expected_values = torch.tensor([1.0, 1.5, 7.0 / 3.0, 14.0 / 3.0])
+    expected = torch.stack((expected_values, expected_values), dim=-1)
+    torch.testing.assert_close(output, expected)
 
 
 def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:

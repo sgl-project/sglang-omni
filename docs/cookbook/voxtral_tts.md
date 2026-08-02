@@ -32,6 +32,28 @@ sgl-omni serve \
   --port 8000
 ```
 
+### RTX 4090 24 GB Profile
+
+For a single RTX 4090-class 24 GB GPU, use the experimental profile bounded to
+concurrency 1, the only consumer-GPU shape exercised so far:
+
+```bash
+sgl-omni serve \
+  --model-path mistralai/Voxtral-4B-TTS-2603 \
+  --config examples/configs/voxtral_tts_4090_24gb.yaml \
+  --port 8000
+```
+
+The profile keeps BF16 generation, the default `mem_fraction_static=0.85`, CUDA
+Graphs, and `torch.compile`, but caps `max_running_requests` at 1. The generation
+builder derives matching CUDA Graph and compile batch caps, avoiding capture for
+unqualified concurrency shapes.
+
+The audio tokenizer uses `flash_attn` when that package is importable and
+otherwise falls back to PyTorch SDPA. The RTX 4090D run exercised the SDPA
+fallback. That run is functional evidence for SM89 and 24 GB capacity, not
+qualification of a standard RTX 4090 or higher concurrency.
+
 ## Synthesizing Speech
 
 ### Preset Voice
@@ -93,13 +115,15 @@ with open("output.wav", "wb") as f:
     f.write(resp.content)
 ```
 
-### Streaming
+### PCM Output and Stream Compatibility
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time:
+Set `"response_format": "pcm"` to receive raw 24 kHz, 16-bit mono PCM bytes.
+`"stream": true` is accepted for API compatibility, but the current Voxtral
+vocoder does not flush incremental chunks: the response arrives when synthesis
+finishes.
 
 ```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
+curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mistralai/Voxtral-4B-TTS-2603",
@@ -111,9 +135,9 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
-for a full Python raw PCM consumer.
+The response uses `audio/pcm` with sample-rate metadata in its headers. Do not
+interpret request latency as time to first audio until incremental vocoder
+delivery is implemented.
 
 ## Request Parameters
 
@@ -124,7 +148,7 @@ for a full Python raw PCM consumer.
 | `voice` | `default` | Preset voice name from the checkpoint's `voice_embedding/` directory |
 | `max_new_tokens` | `4096` | Maximum number of generated acoustic tokens |
 | `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
-| `stream` | `false` | Stream raw PCM audio chunks |
+| `stream` | `false` | Accepted for compatibility; audio currently arrives after full synthesis |
 
 > Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so sampling
 > parameters such as `top_p`, `top_k`, and `temperature` are not used. Reference-clip voice
@@ -154,10 +178,32 @@ also quotes ~70 ms first-audio latency at concurrency 1; the table above is a th
 run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
 single-stream figure. Output is 24 kHz.
 
+### RTX 4090D Functional Run
+
+[Issue #1188](https://github.com/sgl-project/sglang-omni/issues/1188)
+records a single-GPU functional run on an RTX 4090D (SM89, 24,564 MiB), using
+BF16 and the native SDPA audio-tokenizer fallback. Output length was
+nondeterministic, so real-time factor (RTF) is the comparable metric.
+
+| Metric (concurrency 1, 20 requests) | Value |
+|---|---|
+| Completed / failed | 20 / 0 |
+| Latency median / p95 | 1.404 s / 1.729 s |
+| Audio duration median / p95 | 4.800 s / 6.080 s |
+| RTF median / p95 | 0.286 / 0.296 |
+| RTF min / max | 0.283 / 0.310 |
+
+BF16 startup, preset voice synthesis, WAV output, and PCM output completed.
+Reference-voice cloning was unavailable in that run. Incremental streaming,
+steady-state memory, compile-memory deltas, concurrency above 1, and a
+current-`main` quality sweep remain unqualified.
+
 ## Known Limitations
 
 - **Preset voices only.** Voxtral selects from named voices baked into the checkpoint; it does
   not clone an arbitrary speaker from a reference clip in this engine.
+- **Non-incremental streaming.** The API accepts `stream=true`, but Voxtral
+  currently emits audio only after full synthesis.
 - **Deterministic decoding.** `temperature` is fixed at `0.0`; you cannot trade determinism for
   diversity through sampling parameters.
 - **Language coverage.** Quality is tuned for the 9 supported languages (English, French,
