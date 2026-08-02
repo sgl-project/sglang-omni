@@ -11,6 +11,10 @@ TTS_MODEL_LABELS = {
     "higgs": "run-higgs",
     "moss": "run-moss",
 }
+ASR_MODEL_LABELS = {
+    "fun-asr": "run-fun-asr",
+    "qwen3-asr": "run-qwen3-asr",
+}
 
 
 def get_env_var(name):
@@ -48,22 +52,39 @@ def load_permissions(user_login):
         sys.exit(1)
 
 
-def parse_tts_model_target(tokens):
-    targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
-    if len(set(targets)) > 1:
-        return None, "Specify only one TTS CI model target: higgs or moss."
-    return (targets[0] if targets else None), None
+def parse_model_targets(tokens):
+    tts_targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
+    if len(set(tts_targets)) > 1:
+        return None, None, "Specify only one TTS CI model target: higgs or moss."
+
+    asr_targets = [token for token in tokens[1:] if token in ASR_MODEL_LABELS]
+    if len(set(asr_targets)) > 1:
+        return (
+            None,
+            None,
+            "Specify only one ASR CI model target: fun-asr or qwen3-asr.",
+        )
+    return (
+        tts_targets[0] if tts_targets else None,
+        asr_targets[0] if asr_targets else None,
+        None,
+    )
 
 
 def handle_tag_run_ci(
-    pr, comment, user_perms, react_on_success=True, tts_model_target=None
+    pr,
+    comment,
+    user_perms,
+    react_on_success=True,
+    tts_model_target=None,
+    asr_model_target=None,
 ):
     """
     Handles the /tag-run-ci-label command.
 
-    When tts_model_target is set, also applies the matching TTS model label.
-    The TTS model labels are mutually exclusive, so remove the opposite label
-    before adding the selected one.
+    When a model target is set, also applies its matching model label. Labels
+    are mutually exclusive within the TTS and ASR families, so remove the
+    opposite label before adding the selected one.
 
     The combined /tag-and-rerun-ci command restarts Omni CI after updating
     labels, because labels added by GITHUB_TOKEN do not cascade-trigger a
@@ -76,19 +97,20 @@ def handle_tag_run_ci(
         return False
 
     labels = ["run-ci"]
-    if tts_model_target:
-        selected_label = TTS_MODEL_LABELS[tts_model_target]
-        opposite_labels = [
-            label
-            for model, label in TTS_MODEL_LABELS.items()
-            if model != tts_model_target
-        ]
+    if tts_model_target or asr_model_target:
         current_labels = {label.name for label in pr.get_labels()}
-        for label in opposite_labels:
-            if label in current_labels:
-                print(f"Removing mutually exclusive label: {label}.")
-                pr.remove_from_labels(label)
-        labels.append(selected_label)
+        for model_target, model_labels in (
+            (tts_model_target, TTS_MODEL_LABELS),
+            (asr_model_target, ASR_MODEL_LABELS),
+        ):
+            if not model_target:
+                continue
+            selected_label = model_labels[model_target]
+            for label in model_labels.values():
+                if label != selected_label and label in current_labels:
+                    print(f"Removing mutually exclusive label: {label}.")
+                    pr.remove_from_labels(label)
+            labels.append(selected_label)
 
     print(f"Permission granted. Adding labels: {labels}.")
     for label in labels:
@@ -309,25 +331,32 @@ def main():
     tokens = first_line.split()
 
     if first_line.startswith("/tag-run-ci-label"):
-        tts_model_target, parse_error = parse_tts_model_target(tokens)
+        tts_model_target, asr_model_target, parse_error = parse_model_targets(tokens)
         if parse_error:
             print(parse_error)
             comment.create_reaction("confused")
             return
-        handle_tag_run_ci(pr, comment, user_perms, tts_model_target=tts_model_target)
+        handle_tag_run_ci(
+            pr,
+            comment,
+            user_perms,
+            tts_model_target=tts_model_target,
+            asr_model_target=asr_model_target,
+        )
 
     elif first_line.startswith("/rerun-failed-ci"):
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
     elif first_line.startswith("/tag-and-rerun-ci"):
-        tts_model_target, parse_error = parse_tts_model_target(tokens)
+        tts_model_target, asr_model_target, parse_error = parse_model_targets(tokens)
         if parse_error:
             print(parse_error)
             comment.create_reaction("confused")
             return
         print(
             "Processing combined command: "
-            f"/tag-and-rerun-ci (tts_model_target={tts_model_target})"
+            f"/tag-and-rerun-ci (tts_model_target={tts_model_target}, "
+            f"asr_model_target={asr_model_target})"
         )
 
         tagged = handle_tag_run_ci(
@@ -336,6 +365,7 @@ def main():
             user_perms,
             react_on_success=False,
             tts_model_target=tts_model_target,
+            asr_model_target=asr_model_target,
         )
 
         if tagged:
