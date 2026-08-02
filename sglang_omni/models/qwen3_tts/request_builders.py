@@ -1040,15 +1040,21 @@ def build_sglang_qwen3_tts_request(
     return data
 
 
-def _qwen3_tts_finish_reason(data: Qwen3TTSSGLangRequestData) -> str | None:
+def _qwen3_tts_finish_reason(data: Qwen3TTSSGLangRequestData) -> str:
     """Normalize the scheduler's terminal state for the semantic decoder."""
     raw = data.finish_reason
     if raw is None and data.req is not None:
-        finished_reason = getattr(data.req, "finished_reason", None)
-        if finished_reason is not None and hasattr(finished_reason, "to_json"):
-            raw = finished_reason.to_json().get("type")
-        elif finished_reason is not None:
-            raw = str(finished_reason)
+        try:
+            finished_reason = data.req.finished_reason
+        except AttributeError:
+            finished_reason = None
+        if finished_reason is not None:
+            try:
+                to_json = finished_reason.to_json
+            except AttributeError:
+                raw = finished_reason
+            else:
+                raw = to_json().get("type")
 
     if raw is not None:
         normalized = str(raw).lower()

@@ -109,8 +109,11 @@ def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
 
 
 class SuccessfulSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -144,6 +147,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -552,7 +556,7 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    speech_client = SuccessfulSpeechClient()
+    speech_client = SuccessfulSpeechClient(finish_reason="length")
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
@@ -566,6 +570,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
