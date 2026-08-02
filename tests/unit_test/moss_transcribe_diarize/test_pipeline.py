@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import httpx
 import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -105,6 +108,36 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
     )
 
     assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_max_running", "expected_mem_fraction", "expected_graph_bs"),
+    [
+        ("moss_transcribe_diarize_rtx5090.yaml", 16, 0.80, 16),
+        ("moss_transcribe_diarize_rtx5090_long_audio.yaml", 4, 0.55, 4),
+    ],
+)
+def test_rtx5090_profiles_resolve_validated_runtime(
+    filename: str,
+    expected_max_running: int,
+    expected_mem_fraction: float,
+    expected_graph_bs: int,
+) -> None:
+    config_path = Path(__file__).parents[3] / "examples" / "configs" / filename
+    config = ConfigManager.from_file(str(config_path)).config
+    assert config is not None
+
+    args = resolve_stage_static_factory_args(config.stages[0], config)
+    inspect.signature(create_sglang_moss_transcribe_diarize_executor).bind_partial(
+        **args
+    )
+
+    assert args["max_running_requests"] == expected_max_running
+    assert args["server_args_overrides"]["mem_fraction_static"] == pytest.approx(
+        expected_mem_fraction
+    )
+    assert args["server_args_overrides"]["cuda_graph_max_bs"] == expected_graph_bs
+    assert "cuda_graph_max_bs" not in args
 
 
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
