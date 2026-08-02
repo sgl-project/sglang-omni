@@ -113,9 +113,7 @@ class FunASREngineBuilder(SGLangGenerationEngineBuilder):
     ) -> None:
         del generation_cuda_graph_enabled
         if self.enable_encoder_torch_compile:
-            from sglang_omni.models.fun_asr.stages import (
-                _compile_fun_asr_audio_encoder,
-            )
+            from sglang_omni.models.fun_asr.stages import _compile_fun_asr_audio_encoder
 
             _compile_fun_asr_audio_encoder(
                 model,
