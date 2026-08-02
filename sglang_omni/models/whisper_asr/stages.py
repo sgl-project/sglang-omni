@@ -3,7 +3,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
+
+logger = logging.getLogger(__name__)
+
+
+def _log_memory_checkpoint(checkpoint: str, gpu_id: int) -> None:
+    logger.info(
+        "Whisper ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+        checkpoint,
+        gpu_id,
+        format_bytes_gib(get_process_gpu_memory_bytes(gpu_id)),
+    )
 
 
 def create_sglang_whisper_asr_executor(
@@ -14,6 +29,7 @@ def create_sglang_whisper_asr_executor(
     max_running_requests: int = 16,
     max_new_tokens: int = 256,
     mem_fraction_static: float = 0.85,
+    enable_torch_compile: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from transformers import AutoProcessor, GenerationConfig
@@ -27,6 +43,7 @@ def create_sglang_whisper_asr_executor(
     )
     from sglang_omni.scheduling.generation_batch_policy import (
         build_generation_batch_overrides,
+        get_decode_cuda_graph_bs,
         validate_generation_batch_policy,
     )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -40,13 +57,14 @@ def create_sglang_whisper_asr_executor(
     tokenizer = processor.tokenizer
     generation_config = GenerationConfig.from_pretrained(model_path)
     encoder_token_count = int(processor.feature_extractor.nb_max_frames // 2)
+    sm_version = get_visible_gpu_sm_version(gpu_id)
 
     overrides = build_generation_batch_overrides(
         max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         disable_overlap_schedule=True,
-        enable_torch_compile=True,
+        enable_torch_compile=enable_torch_compile,
         mem_fraction_static=mem_fraction_static,
         max_prefill_tokens=4096,
         chunked_prefill_size=4096,
@@ -63,6 +81,21 @@ def create_sglang_whisper_asr_executor(
         model_name="Whisper ASR",
         server_args=server_args,
     )
+    logger.info(
+        "Whisper ASR runtime profile: sm=%s dtype=%s "
+        "attention_backend=%s encoder_attention_backend=torch_sdpa "
+        "cuda_graph=%s cuda_graph_bs=%s torch_compile=%s "
+        "max_running_requests=%s mem_fraction_static=%s",
+        sm_version,
+        server_args.dtype,
+        server_args.attention_backend,
+        not server_args.disable_cuda_graph,
+        get_decode_cuda_graph_bs(server_args),
+        server_args.enable_torch_compile,
+        server_args.max_running_requests,
+        server_args.mem_fraction_static,
+    )
+    _log_memory_checkpoint("pre_model_load", gpu_id)
 
     want_cuda_graph, (
         model_worker,
@@ -77,9 +110,11 @@ def create_sglang_whisper_asr_executor(
         gpu_id,
         model_arch_override="WhisperForConditionalGeneration",
     )
+    _log_memory_checkpoint("post_static_allocation", gpu_id)
 
     if want_cuda_graph:
         model_worker.model_runner.init_cuda_graphs()
+        _log_memory_checkpoint("post_cuda_graph_capture", gpu_id)
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
