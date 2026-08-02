@@ -12,6 +12,13 @@ runtime_overrides:
   tts_engine:
     server_args_overrides:
       max_running_requests: 8
-      mem_fraction_static: 0.75
       cuda_graph_bs: [1, 2, 4, 8]
       cuda_graph_max_bs: 8
+      disable_cuda_graph: false
+      enable_torch_compile: false
+
+stage_overrides:
+  tts_engine:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.75

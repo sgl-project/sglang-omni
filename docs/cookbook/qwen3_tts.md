@@ -55,6 +55,29 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Experimental RTX 4090 24 GB Profile
+
+The 0.6B Base checkpoint has a bounded single-GPU profile for a 24 GB RTX 4090:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_tts_0_6b_4090_24gb.yaml \
+  --port 8000
+```
+
+The profile limits admission and CUDA Graph capture to batch size 8, reserves
+75% of device memory for the SGLang engine, and disables `torch.compile`. The
+compile-off setting is intentional: the original [RTX 4090 smoke
+run](https://github.com/sgl-project/sglang-omni/pull/1156#issuecomment-5056169521)
+reduced graph-capture time from 101.37 seconds to 2.94 seconds and reduced the
+observed concurrency-8 peak from 20,241 MiB to 19,729 MiB.
+
+This is an experimental functional profile, not a general consumer-GPU or
+quality-validation claim. The source run covered short reference-audio requests
+at concurrency 1, 2, 4, and 8, but did not record a pinned checkpoint revision
+or complete the quality, long-form, and sustained-load gates in
+[the consumer-GPU roadmap](https://github.com/sgl-project/sglang-omni/issues/1120).
+
 ## Synthesizing Speech
 
 ### Text-only Requests

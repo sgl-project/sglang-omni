@@ -473,6 +473,7 @@ that happened to contain an older version of the test.
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts
+  - bounded RTX 4090 profile parsing, including compile and CUDA Graph policy
   - OmniScheduler-backed AR stage factory wiring
   - request mapping for `ref_audio` / `ref_text` and `references`
   - model-owned default preservation for language and sampling parameters

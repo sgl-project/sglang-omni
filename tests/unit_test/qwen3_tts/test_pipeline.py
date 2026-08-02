@@ -7,6 +7,7 @@ import sys
 import threading
 import types
 from collections import deque
+from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
 
@@ -14,6 +15,8 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
@@ -2253,6 +2256,26 @@ def test_qwen3_tts_engine_probes_runtime_before_checkpoint_resolution(
         )
 
     assert checkpoint_resolutions == []
+
+
+def test_qwen3_tts_rtx4090_profile_is_bf16_and_bounded() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = ConfigManager.from_file(
+        str(repo_root / "examples/configs/qwen3_tts_0_6b_4090_24gb.yaml")
+    ).config
+    tts_engine = next(stage for stage in config.stages if stage.name == "tts_engine")
+
+    factory_args = resolve_stage_static_factory_args(tts_engine, config)
+    server_args = factory_args["server_args_overrides"]
+
+    assert config.model_path == "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    assert factory_args["dtype"] == "bfloat16"
+    assert server_args["max_running_requests"] == 8
+    assert server_args["mem_fraction_static"] == 0.75
+    assert server_args["cuda_graph_bs"] == [1, 2, 4, 8]
+    assert server_args["cuda_graph_max_bs"] == 8
+    assert server_args["disable_cuda_graph"] is False
+    assert server_args["enable_torch_compile"] is False
 
 
 def test_qwen3_tts_mem_fraction_role_to_stage_targets_tts_engine() -> None:
