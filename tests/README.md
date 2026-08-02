@@ -532,8 +532,10 @@ that happened to contain an older version of the test.
   - managed launcher command construction and cleanup.
 
 - `unit_test/serve/`: In-process serving API unit tests:
-  - generation-stage SGLang server-args role mapping and CLI override capability boundaries
-  - OpenAI-compatible request/response behavior
+  - generation-stage SGLang server-args role mapping and CLI override capability
+    boundaries
+  - OpenAI-compatible request/response behavior, including Whisper-only audio
+    translation capability checks and source-language validation
   - streaming response framing and failure semantics.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
