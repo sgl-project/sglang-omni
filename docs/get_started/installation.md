@@ -2,8 +2,6 @@
 
 We provide two installation paths. Docker is recommended — the image ships with UCX, flash-attn, sglang, and CUDA prebuilt.
 
-Source installs require [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.25 or newer.
-
 ## 🐳 Option A: Docker (recommended)
 
 **1. Pull the image**
@@ -34,30 +32,24 @@ cd sglang-omni
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv sync
+uv pip install -v -e .   # drop `-e` for a non-editable install
 ```
 
 ## 🛠️ Option B: Manual install
 
-Build **UCX 1.20.x** with CUDA + verbs support first. Follow [upstream](https://github.com/openucx/ucx), or reuse the exact build flags in [`docker/Dockerfile`](../../docker/Dockerfile).
+Build the prerequisites first:
+
+- **UCX 1.20.x** with CUDA + verbs support — follow [upstream](https://github.com/openucx/ucx), or reuse the exact build flags in [`docker/Dockerfile`](../../docker/Dockerfile).
+- **flash-attn-4** — install `>=4.0.0b18`, matching `torch==2.11.0` and SGLang 0.5.16's `nvidia-cutlass-dsl` 4.6.0 pin.
 
 Then install:
 
 ```bash
 git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
+
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv sync
-```
-
-## Optional external FlashAttention 4 package
-
-The documented `uv sync` installation uses SGLang's vendored FA4 implementation and excludes the external `flash-attn-4` package. This exclusion is a uv project setting, so use `uv sync` or `uv lock` rather than `uv pip install` when creating the environment.
-
-If you explicitly set `SGLANG_INKLING_FA4_USE_PIP=1` to route SGLang through the external pip FA4 implementation, install its dependency with:
-
-```bash
-uv sync --extra fa4
+uv pip install -v -e .   # drop `-e` for a non-editable install
 ```

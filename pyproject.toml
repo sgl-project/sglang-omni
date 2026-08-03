@@ -29,6 +29,7 @@ dependencies = [
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     "sglang==0.5.16",
+    "flash-attn-4>=4.0.0b18",  # Required by SGLang 0.5.16; pairs with cutlass-dsl 4.6.0
     "kernels>=0.14.1,<0.15",  # Match the SGLang 0.5.16 stack
     "nixl-cu13>=1.1.0",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
     "mooncake-transfer-engine-cuda13>=0.3.10",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
@@ -83,23 +84,14 @@ audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
 ]
-fa4 = [
-    "flash-attn-4>=4.0.0b18",
-]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
 
 [tool.uv]
-required-version = ">=0.11.25"
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
-]
-exclude-dependencies = [
-    # SGLang 0.5.16 includes a vendored FA4 implementation. Do not also install
-    # the external pip package unless the `fa4` extra explicitly requests it.
-    { package = { name = "sglang", version = "0.5.16" }, dependencies = ["flash-attn-4"] },
 ]
 
 [tool.pytest.ini_options]
