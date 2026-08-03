@@ -208,7 +208,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         model = SimpleNamespace(init_sampling_graphs=init_sampling_graphs)
         model_runner = SimpleNamespace(
             model=model,
-            graph_runner=SimpleNamespace(
+            decode_cuda_graph_runner=SimpleNamespace(
                 capture_bs=tuple(server_args.cuda_graph_bs),
                 disable_padding=False,
             ),

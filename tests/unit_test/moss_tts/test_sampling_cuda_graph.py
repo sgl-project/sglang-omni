@@ -106,7 +106,9 @@ def test_engine_builder_uses_backbone_capture_buckets() -> None:
     builder.setup_model(
         model_worker=SimpleNamespace(
             model_runner=SimpleNamespace(
-                graph_runner=SimpleNamespace(capture_bs=(1, 2, 4), disable_padding=True)
+                decode_cuda_graph_runner=SimpleNamespace(
+                    capture_bs=(1, 2, 4), disable_padding=True
+                )
             )
         ),
         checkpoint_dir="checkpoint",

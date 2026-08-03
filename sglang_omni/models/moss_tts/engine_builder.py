@@ -45,7 +45,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del server_args
-        graph_runner = self._model_runner.graph_runner
+        graph_runner = self._model_runner.decode_cuda_graph_runner
         model.init_sampling_graphs(
             list(graph_runner.capture_bs),
             disable_padding=graph_runner.disable_padding,
