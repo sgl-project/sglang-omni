@@ -23,14 +23,14 @@ _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
 _GPU_ARCHITECTURES = {
     89: "ada",
     90: "hopper",
-    100: "blackwell-datacenter",
-    103: "blackwell-datacenter",
-    120: "blackwell-consumer",
+    100: "blackwell",
+    103: "blackwell",
+    120: "blackwell",
 }
 
 
 def gpu_architecture_for_sm(sm_version: int | None) -> str:
-    """Return the CUDA architecture family without conflating SM100 and SM120."""
+    """Return the CUDA architecture family for a detected SM version."""
     if sm_version is None:
         return "unknown"
     return _GPU_ARCHITECTURES.get(sm_version, f"sm{sm_version}")
