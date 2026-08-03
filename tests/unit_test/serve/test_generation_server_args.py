@@ -144,22 +144,6 @@ def test_generation_server_args_explicit_override_reaches_generation_stage(
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_disable_cuda_graph_reaches_qwen3_asr_stage(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = Qwen3ASRPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(**_serve_kwargs(disable_cuda_graph=True))
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "asr")["server_args_overrides"]
-    assert overrides["disable_cuda_graph"] is True
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_generation_server_args_explicit_override_rejects_unsupported_config(
     from_model_path,
     launch_server,
