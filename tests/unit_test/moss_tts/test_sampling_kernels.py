@@ -32,3 +32,17 @@ def test_seeded_gumbel_argmax_matches_production_shape(
 
     assert seeds.stride(0) == 0
     assert torch.equal(expected, actual)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_seeded_gumbel_argmax_rejects_strided_output() -> None:
+    device = torch.device("cuda")
+    rows, vocab = 2, 16
+    scores = torch.randn(rows, vocab, device=device, dtype=torch.float32)
+    seeds = torch.arange(rows, device=device, dtype=torch.long)
+    positions = torch.arange(rows, device=device, dtype=torch.long)
+    output = torch.empty(rows * 2, device=device, dtype=torch.long)[::2]
+
+    assert output.stride(0) == 2
+    with pytest.raises(ValueError, match="output must have stride 1"):
+        seeded_gumbel_argmax(scores, seeds, positions, output)

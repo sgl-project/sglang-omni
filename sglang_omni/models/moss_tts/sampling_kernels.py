@@ -99,6 +99,8 @@ def seeded_gumbel_argmax(
         raise ValueError(
             "seeded Gumbel output must be a sufficiently large int64 vector"
         )
+    if output.stride(0) != 1:
+        raise ValueError("seeded Gumbel output must have stride 1")
 
     block_size = triton.next_power_of_2(vocab_size)
     if block_size > 2048:
