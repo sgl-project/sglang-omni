@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains
 in place:
 
 ```bash

@@ -30,7 +30,7 @@ class _FakeTokenizer:
 
 def _make_req():
     return SimpleNamespace(
-        is_chunked=0,
+        inflight_middle_chunks=0,
         _ming_stream_token_ids=None,
         _ming_stream_emitted_text="",
     )
@@ -123,7 +123,7 @@ def test_thinker_stream_builder_suppresses_during_chunked_prefill():
         eos_token_id=None,
     )
     req = _make_req()
-    req.is_chunked = 1  # still consuming prompt chunks
+    req.inflight_middle_chunks = 1  # still consuming prompt chunks
     req_data = _make_req_data(req)
 
     msgs = builder("req-2", req_data, _make_req_output(5))

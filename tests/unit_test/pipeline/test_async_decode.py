@@ -22,7 +22,12 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.types import ModelRunnerOutput, RequestOutput
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    RequestOutput,
+    SchedulerOutput,
+)
+from tests.unit_test.fakes import FakeExecutionBridge
 
 
 class _StubRunner(ModelRunner):
@@ -30,6 +35,7 @@ class _StubRunner(ModelRunner):
 
     def __init__(self):
         self._async_enabled = True
+        self._execution_bridge = FakeExecutionBridge()
         self._staging_slot = 0
         self._host_staging_buffers = []
         self._async_query_hit = 0
@@ -42,8 +48,10 @@ class _StubRunner(ModelRunner):
         self.last_skip_rids = None
 
     def _build_forward_batch(self, scheduler_output):
-        sb = types.SimpleNamespace(is_prefill_only=False, output_ids=None)
-        return types.SimpleNamespace(), sb, types.SimpleNamespace(), False  # decode
+        sb = types.SimpleNamespace(is_prefill_only=False, input_ids=None)
+        sb.copy = lambda: sb
+        self.last_schedule_batch = sb
+        return types.SimpleNamespace(), sb, False  # decode
 
     def _prepare_and_forward(
         self,
@@ -56,7 +64,7 @@ class _StubRunner(ModelRunner):
     ):
         self.last_prepare_is_lookahead = is_lookahead
         return types.SimpleNamespace(
-            next_token_ids=object(),
+            next_token_ids=torch.tensor([17], dtype=torch.long),
             logits_output=types.SimpleNamespace(next_token_logits=None),
             can_run_cuda_graph=False,
         )
@@ -76,13 +84,10 @@ class _StubRunner(ModelRunner):
         batch_result,
         forward_batch,
         schedule_batch,
-        model_worker_batch,
         scheduler_output,
-        set_output_ids=True,
         skip_rids=None,
     ):
         self.finalize_calls += 1
-        self.last_set_output_ids = set_output_ids
         self.last_skip_rids = skip_rids or set()
         return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
 
@@ -105,8 +110,8 @@ def _patch_event(ready: bool):
 
 
 def _sched_output(n):
-    req_stub = types.SimpleNamespace(finished=lambda: False)
-    return types.SimpleNamespace(
+    req_stub = types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+    return SchedulerOutput(
         requests=[
             types.SimpleNamespace(
                 request_id=f"r{i}",
@@ -128,12 +133,15 @@ def test_launch_returns_handle_resolve_consumes_it():
     assert (r.launch_calls, r.resolve_calls, r.finalize_calls) == (1, 1, 1)
     assert (r._async_query_hit, r._async_query_miss) == (1, 0)
     assert r.last_prepare_is_lookahead is True
-    # resolve must NOT re-publish output_ids: under launch-first it runs one
-    # step behind on the LIVE running batch, whose output_ids the current launch
-    # already set at the right length. Re-stamping the lagged step's tokens
-    # leaves a stale-length output_ids -> input_ids/seq_lens mismatch once a req
-    # finishes mid-batch (the bs>1 replay crash). The launch publishes it.
-    assert r.last_set_output_ids is False
+    assert len(r._execution_bridge.published) == 1
+    published_batch, published_ids = r._execution_bridge.published[0]
+    assert published_batch is r.last_schedule_batch
+    assert torch.equal(published_ids, torch.tensor([17]))
+    # resolve must NOT re-publish the token rail: under launch-first it runs
+    # one step behind on the LIVE running batch, whose rail the current launch
+    # already published at the right length. Re-stamping the lagged step's
+    # tokens leaves a stale-length rail -> input_ids/seq_lens mismatch once a
+    # req finishes mid-batch (the bs>1 replay crash). The launch publishes it.
 
 
 def test_two_launches_return_distinct_handles():
@@ -168,9 +176,9 @@ def test_query_miss_falls_back_to_synchronize():
 
 def test_resolve_recomputes_finished_overrun_skip_rids():
     r = _StubRunner()
-    keep_req = types.SimpleNamespace(finished=lambda: False)
-    skip_req = types.SimpleNamespace(finished=lambda: True)
-    sched_output = types.SimpleNamespace(
+    keep_req = types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+    skip_req = types.SimpleNamespace(finished=lambda: True, is_retracted=False)
+    sched_output = SchedulerOutput(
         requests=[
             types.SimpleNamespace(
                 request_id="keep",
@@ -202,7 +210,7 @@ def test_resolve_skips_retracted_row():
     r = _StubRunner()
     keep_req = types.SimpleNamespace(finished=lambda: False, is_retracted=False)
     retracted_req = types.SimpleNamespace(finished=lambda: False, is_retracted=True)
-    sched_output = types.SimpleNamespace(
+    sched_output = SchedulerOutput(
         requests=[
             types.SimpleNamespace(
                 request_id="keep",
@@ -278,7 +286,6 @@ def test_finalize_skips_overrun_bookkeeping_and_extras():
         can_run_cuda_graph=False,
     )
     schedule_batch = types.SimpleNamespace(is_prefill_only=False, output_ids=None)
-    model_worker_batch = types.SimpleNamespace()
     keep_data = types.SimpleNamespace(generation_steps=0, extra_model_outputs={})
     skip_data = types.SimpleNamespace(generation_steps=0, extra_model_outputs={})
     scheduler_output = types.SimpleNamespace(
@@ -292,7 +299,6 @@ def test_finalize_skips_overrun_bookkeeping_and_extras():
         batch_result,
         types.SimpleNamespace(),
         schedule_batch,
-        model_worker_batch,
         scheduler_output,
         skip_rids={"skip"},
     )
@@ -338,7 +344,6 @@ def test_finalize_unions_finalize_skip_rids_hook():
         batch_result,
         types.SimpleNamespace(),
         schedule_batch,
-        types.SimpleNamespace(),
         scheduler_output,
     )
 
@@ -489,10 +494,9 @@ def test_batch_is_decode():
     )
 
 
-def test_async_pending_batch_getattr_safe():
-    # OmniScheduler.__getattr__ raises for unset attrs; _async_pending_batch
-    # must tolerate that (test fixtures may bypass __init__).
+def test_async_pending_batch_uses_initialized_state():
     s = OmniScheduler.__new__(OmniScheduler)
+    s._async_pending = None
     assert s._async_pending_batch() is None
     s._async_pending = ("batchX", "sched_out", "pending_step")
     assert s._async_pending_batch() == "batchX"
@@ -510,7 +514,10 @@ def test_async_pending_batch_getattr_safe():
 class _FakeBatch:
     def __init__(self, n):
         # real ScheduleBatch.reqs are Reqs with .finished(); none finish here
-        self.reqs = [types.SimpleNamespace(finished=lambda: False) for _ in range(n)]
+        self.reqs = [
+            types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+            for _ in range(n)
+        ]
         self.out_cache_loc = torch.arange(n)
 
     def copy(self):
@@ -525,6 +532,7 @@ def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
     s._admin_lock = threading.Lock()
     s._admin_queue = queue.Queue()
+    s._model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False
     s.page_size = 1
@@ -714,6 +722,7 @@ class _DFReq:
     def __init__(self, name):
         self.name = name
         self._done = False
+        self.is_retracted = False
 
     def finished(self):
         return self._done
@@ -726,6 +735,9 @@ class _DFBatch:
 
     def __init__(self, reqs):
         self.reqs = list(reqs)
+        self.forward_mode = types.SimpleNamespace(
+            is_decode=lambda: True, is_extend=lambda: False
+        )
         self.out_cache_loc = torch.arange(100, 100 + len(reqs))
         self.decoding_reqs = None
 
@@ -921,7 +933,11 @@ class _MixedBatch:
         )
         logprob = logprob or [False] * len(lens)
         self.reqs = [
-            types.SimpleNamespace(finished=lambda d=d: d, return_logprob=lp)
+            types.SimpleNamespace(
+                finished=lambda d=d: d,
+                return_logprob=lp,
+                is_retracted=False,
+            )
             for d, lp in zip(done, logprob)
         ]
         self.extend_lens = list(lens)
@@ -934,7 +950,8 @@ class _MixedBatch:
         self.input_ids = torch.arange(sum(lens))
         self.input_embeds = None
         self.replace_embeds = None
-        self.token_type_ids = None
+        self.mix_running_indices = None
+        self.prefill_input_ids_cpu = None
         self.decoding_reqs = None
         self.return_logprob = any(logprob)
         if self.return_logprob:
@@ -992,6 +1009,29 @@ def test_drop_stale_overrun_extend_multitoken_drop():
     assert out.extend_lens == [3]
     assert out.extend_num_tokens == 3
     assert out.prefix_lens == [20]
+
+
+def test_drop_stale_overrun_reslices_deferred_prefill_tokens():
+    freed = []
+    s = _drop_stale_scheduler(freed)
+    batch = _MixedBatch(lens=[2, 3], done=[True, False])
+    batch.prefill_input_ids_cpu = batch.input_ids
+    batch.input_ids = None
+
+    out = s._drop_stale_overrun(batch)
+
+    assert freed == [100, 101]
+    assert out.input_ids is None
+    assert out.prefill_input_ids_cpu.tolist() == [2, 3, 4]
+
+
+def test_drop_stale_overrun_rejects_mixed_deferred_prefill():
+    s = _drop_stale_scheduler([])
+    batch = _MixedBatch(lens=[2, 3], done=[True, False])
+    batch.mix_running_indices = torch.tensor([1])
+
+    with pytest.raises(RuntimeError, match="mixed chunked-prefill"):
+        s._drop_stale_overrun(batch)
 
 
 def test_drop_stale_overrun_reslices_logprob_token_ids():

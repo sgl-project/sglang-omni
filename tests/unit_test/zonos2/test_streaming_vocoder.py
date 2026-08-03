@@ -15,12 +15,17 @@ reordered tail is detectable by length and (with overlap=0) by content.
 
 from __future__ import annotations
 
+import queue
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2.components import streaming_vocoder
 from sglang_omni.models.zonos2.components.streaming_vocoder import (
+    _STREAM_INITIAL_CHUNK_FRAMES,
     DAC_HOP_LENGTH,
     Zonos2StreamingVocoderScheduler,
 )
@@ -29,8 +34,13 @@ from sglang_omni.models.zonos2.payload_types import (
     ZONOS2_SAMPLE_RATE,
     Zonos2State,
 )
+from sglang_omni.models.zonos2.request_builders import build_zonos2_stream_metadata
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 HOP = DAC_HOP_LENGTH
 WITHHOLD = N_CODEBOOKS - 1  # trailing delay/flush rows trimmed before decode
@@ -76,6 +86,170 @@ def _scheduler(steady=32, initial=5, overlap=2):
         steady_chunk_frames=steady,
         initial_chunk_frames=initial,
         overlap_frames=overlap,
+    )
+
+
+def test_model_default_initial_chunk_is_continuity_safe():
+    sch = Zonos2StreamingVocoderScheduler(device="cpu")
+    assert sch._default_initial_chunk_frames == _STREAM_INITIAL_CHUNK_FRAMES == 40
+
+
+def test_request_initial_chunk_zero_overrides_model_default():
+    sch = Zonos2StreamingVocoderScheduler(device="cpu")
+    state = sch.create_stream_state("req")
+    sch.latch_stream_contract(
+        "req",
+        state,
+        {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 0},
+        origin="metadata",
+    )
+    assert state.initial_chunk_frames == 0
+
+
+def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params={"stream": True}),
+        data={},
+    )
+    metadata = build_zonos2_stream_metadata(payload, n_codebooks=N_CODEBOOKS)
+    data = SimpleNamespace(
+        req=SimpleNamespace(finished=lambda: False, is_retracted=False),
+        output_codes=list(_codes(DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - 1)),
+        stream_metadata=metadata,
+        _stream_emit_idx=0,
+    )
+    runner = SimpleNamespace(
+        _outbox=queue.Queue(),
+        _stream_emit_chunk_frames=32,
+        _stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+    )
+    scheduler_output = SimpleNamespace(
+        requests=[SimpleNamespace(request_id="req", data=data)]
+    )
+
+    callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
+    with pytest.raises(queue.Empty):
+        runner._outbox.get_nowait()
+
+    data.output_codes.append(_codes(1)[0])
+    callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
+    producer_message = runner._outbox.get_nowait()
+    assert producer_message.data.shape == (
+        DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+        N_CODEBOOKS,
+    )
+
+    scheduler = Zonos2StreamingVocoderScheduler(device="cpu")
+    scheduler._stream_payloads["req"] = _payload(
+        producer_message.data,
+        eos_frame=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - WITHHOLD,
+    )
+    audio_messages = scheduler.on_stream_chunk(
+        "req",
+        StreamItem(
+            chunk_id=0,
+            data=producer_message.data,
+            from_stage="tts_engine",
+            metadata=producer_message.metadata,
+        ),
+    )
+
+    assert len(audio_messages) == 1
+    assert audio_messages[0].type == "stream"
+    assert (
+        np.frombuffer(audio_messages[0].data["audio_waveform"], dtype=np.float32).size
+        > 0
+    )
+
+
+def _run_producer_callback(
+    *,
+    request_params: dict,
+    configured_first_rows: int,
+    generated_rows: int,
+) -> queue.Queue:
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params=request_params),
+        data={},
+    )
+    data = SimpleNamespace(
+        req=SimpleNamespace(finished=lambda: False, is_retracted=False),
+        output_codes=list(_codes(generated_rows)),
+        stream_metadata=build_zonos2_stream_metadata(payload, n_codebooks=N_CODEBOOKS),
+        _stream_emit_idx=0,
+    )
+    outbox = queue.Queue()
+    runner = SimpleNamespace(
+        _outbox=outbox,
+        _stream_emit_chunk_frames=32,
+        _stream_emit_first_chunk_frames=configured_first_rows,
+    )
+    callbacks.extract_zonos2_output(
+        runner,
+        None,
+        SimpleNamespace(
+            requests=[SimpleNamespace(request_id=payload.request_id, data=data)]
+        ),
+        None,
+    )
+    return outbox
+
+
+@pytest.mark.parametrize(
+    ("configured_first_rows", "expected_flush_rows"),
+    [(0, 32), (100, 100)],
+)
+def test_missing_request_override_honors_configured_producer_boundary(
+    configured_first_rows: int,
+    expected_flush_rows: int,
+) -> None:
+    before = _run_producer_callback(
+        request_params={"stream": True},
+        configured_first_rows=configured_first_rows,
+        generated_rows=expected_flush_rows - 1,
+    )
+    assert before.empty()
+
+    at_boundary = _run_producer_callback(
+        request_params={"stream": True},
+        configured_first_rows=configured_first_rows,
+        generated_rows=expected_flush_rows,
+    )
+    assert at_boundary.get_nowait().data.shape == (
+        expected_flush_rows,
+        N_CODEBOOKS,
+    )
+
+
+@pytest.mark.parametrize(
+    ("request_override", "expected_flush_rows"),
+    [(0, DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS), (5, 23)],
+)
+def test_request_override_wins_over_configured_producer_boundary(
+    request_override: int,
+    expected_flush_rows: int,
+) -> None:
+    request_params = {
+        "stream": True,
+        INITIAL_CODEC_CHUNK_FRAMES_PARAM: request_override,
+    }
+    before = _run_producer_callback(
+        request_params=request_params,
+        configured_first_rows=100,
+        generated_rows=expected_flush_rows - 1,
+    )
+    assert before.empty()
+
+    at_boundary = _run_producer_callback(
+        request_params=request_params,
+        configured_first_rows=100,
+        generated_rows=expected_flush_rows,
+    )
+    assert at_boundary.get_nowait().data.shape == (
+        expected_flush_rows,
+        N_CODEBOOKS,
     )
 
 

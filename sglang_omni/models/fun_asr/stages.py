@@ -60,7 +60,7 @@ def _compile_fun_asr_audio_encoder(
     """
     import contextlib
 
-    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     from sglang_omni.models.fun_asr.sglang_model import _sanm_mask_from_lengths
 
@@ -216,7 +216,7 @@ def create_sglang_fun_asr_executor(
     )
 
     if want_cuda_graph:
-        model_worker.model_runner.init_device_graphs()
+        model_worker.model_runner.init_cuda_graphs()
 
     if enable_encoder_torch_compile:
         _compile_fun_asr_audio_encoder(
@@ -241,7 +241,7 @@ def create_sglang_fun_asr_executor(
                 model,
                 model_path=model_path,
                 feature_extractor=feature_extractor,
-                mm_attention_backend=getattr(server_args, "mm_attention_backend", None),
+                mm_attention_backend=server_args.mm_attention_backend,
             ),
             cache_max_entries=pre_lm_cache_max_entries,
             cache_max_bytes=pre_lm_cache_size_bytes,

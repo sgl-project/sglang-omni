@@ -11,6 +11,9 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 
 _PKG = "sglang_omni.models.zonos2"
 
@@ -54,7 +57,9 @@ def _stages(*, auxiliary_gpu: int, auxiliary_process: str) -> list[StageConfig]:
                 "compile_sampler": True,
                 "async_decode": True,
                 "stream_emit_chunk_frames": 32,
-                "stream_emit_first_chunk_frames": 24,
+                "stream_emit_first_chunk_frames": (
+                    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
+                ),
             },
             gpu=0,
             next="vocoder",
@@ -105,6 +110,19 @@ class Zonos2PipelineConfig(PipelineConfig):
         # lets the serve CLI --max-running-requests / --cuda-graph-max-bs flags
         # target the AR engine for single-card throughput tuning.
         return {"generation": "tts_engine"}
+
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): every stage rebuilds Zonos2State from payload.data, so each
+        # handoff splits cleanly. No fractions are recommended yet, so a split requires
+        # the operator to declare them; see tts_process_topology.md.
+        return frozenset(
+            {
+                ("preprocessing", "speaker_encode"),
+                ("speaker_encode", "tts_engine"),
+                ("tts_engine", "vocoder"),
+            }
+        )
 
     model_path: str
     stages: list[StageConfig] = Field(

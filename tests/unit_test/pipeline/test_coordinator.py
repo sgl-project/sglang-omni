@@ -478,7 +478,7 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
     asyncio.run(_run())
 
 
-def test_completed_stream_keeps_request_id_reserved_until_owner_closes() -> None:
+def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
     async def _run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
@@ -513,6 +513,8 @@ def test_completed_stream_keeps_request_id_reserved_until_owner_closes() -> None
         await stream.aclose()
         assert "req-1" not in coordinator._completion_futures
         assert "req-1" not in coordinator._stream_queues
+        await coordinator._submit_request("req-1", "replacement")
+        assert coordinator._requests["req-1"].request_id == "req-1"
 
     asyncio.run(_run())
 

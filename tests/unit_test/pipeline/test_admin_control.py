@@ -127,7 +127,6 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
-    scheduler.result_queue = None
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: ["req-1"]
 
@@ -194,7 +193,6 @@ def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
-    scheduler.result_queue = None
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: []
     scheduler.flush_cache = flush_cache
@@ -255,7 +253,11 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")
     )
-    scheduler.reset_metrics = lambda: reset_calls.append("metrics")
+    scheduler.ps = SimpleNamespace(pp_size=1)
+    scheduler.metrics_reporter = SimpleNamespace(
+        reset_metrics=lambda: reset_calls.append("metrics"),
+        is_stats_logging_rank=False,
+    )
     scheduler.draft_worker = None
 
     assert OmniScheduler._flush_cache_after_update(scheduler) is True
@@ -282,7 +284,6 @@ def test_omni_scheduler_distributed_update_rejects_active_requests_by_default() 
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
-    scheduler.result_queue = None
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: ["req-1"]
 
@@ -339,7 +340,6 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
-    scheduler.result_queue = None
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: ["req-1"]
     scheduler._abort_all_requests = abort_all_requests
@@ -385,7 +385,6 @@ def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
-    scheduler.result_queue = None
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: []
 

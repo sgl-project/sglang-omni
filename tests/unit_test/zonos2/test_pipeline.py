@@ -19,9 +19,17 @@ from sglang_omni.models.zonos2.config import (
     Zonos2PipelineConfig,
 )
 from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
-from sglang_omni.models.zonos2.request_builders import build_zonos2_state
-from sglang_omni.proto import StagePayload
+from sglang_omni.models.zonos2.request_builders import (
+    build_zonos2_state,
+    build_zonos2_stream_metadata,
+)
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
@@ -64,6 +72,36 @@ def test_zonos2_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
+    assert (
+        stages_by_name["tts_engine"].factory_args["stream_emit_first_chunk_frames"]
+        == DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
+        == 58
+    )
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({"stream": True}, None),
+        ({"stream": True, INITIAL_CODEC_CHUNK_FRAMES_PARAM: 0}, 0),
+        ({"stream": True, INITIAL_CODEC_CHUNK_FRAMES_PARAM: 5}, 5),
+    ],
+)
+def test_zonos2_stream_metadata_preserves_request_override_provenance(
+    params: dict, expected: int | None
+) -> None:
+    payload = StagePayload(
+        request_id="req",
+        request=OmniRequest(inputs="", params=params),
+        data={},
+    )
+
+    metadata = build_zonos2_stream_metadata(payload, n_codebooks=9)
+
+    if expected is None:
+        assert INITIAL_CODEC_CHUNK_FRAMES_PARAM not in metadata
+    else:
+        assert metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] == expected
 
 
 def test_zonos2_multi_gpu_uses_typed_gpu_one_process() -> None:
@@ -161,7 +199,7 @@ def test_speech_seed_is_rejected_until_request_rng_is_supported() -> None:
 def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
     """The per-frame feedback/EOS state machine has no rollback, so the builder
     must disable chunked prefill regardless of the ServerArgs default."""
-    server_args = SimpleNamespace(chunked_prefill_size=8192)
+    server_args = FakeServerArgs(chunked_prefill_size=8192)
     Zonos2EngineBuilder().customize_server_args(server_args)
     assert server_args.chunked_prefill_size == 0
 

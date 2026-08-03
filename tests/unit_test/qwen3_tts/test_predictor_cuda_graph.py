@@ -526,18 +526,16 @@ def test_capture_uses_thread_local_error_mode():
 
 def test_normalize_predictor_graph_batch_sizes():
     normalize = Qwen3TTSTalker._normalize_predictor_graph_batch_sizes
-    assert normalize(SimpleNamespace(cuda_graph_bs=None), max_batch_size=16) == (
-        1,
-        2,
-        4,
-        8,
-        12,
-        16,
-    )
-    assert normalize(
-        SimpleNamespace(cuda_graph_bs=[4, 2, 2, 64]), max_batch_size=16
-    ) == (2, 4, 16)
-    assert normalize(SimpleNamespace(), max_batch_size=2) == (1, 2)
+
+    def _args(bs):
+        return SimpleNamespace(
+            cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(bs=bs))
+        )
+
+    assert normalize(_args(None), max_batch_size=16) == (1, 2, 4, 8, 12, 16)
+    assert normalize(_args([4, 2, 2, 64]), max_batch_size=16) == (2, 4, 16)
+    assert normalize(_args([1, 3, 7]), max_batch_size=8) == (1, 3, 7, 8)
+    assert normalize(_args(None), max_batch_size=2) == (1, 2)
 
 
 def test_quantize_predictor_top_k_ladder():
@@ -687,12 +685,7 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="seeded sampling kernel needs CUDA")
 def test_widened_top_k_masked_ranks_never_sampled():
-    """Ranks past a row's true k must be impossible, not just probability 0.
-
-    The seeded sampler scores prob + gumbel, so a 0.0-prob rank still wins
-    with weight e^0; only a -inf mask keeps the ladder widening inert. With
-    the 0.0 mask this fails within a handful of seeds.
-    """
+    """Ranks past a row's true k remain impossible after log conversion."""
     device = torch.device("cuda")
     talker = _build_talker(device)
     logits = torch.linspace(2.0, -2.0, PRED_VOCAB, device=device).unsqueeze(0)

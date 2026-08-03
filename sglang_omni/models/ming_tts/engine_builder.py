@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +146,9 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             self.tp_rank,
             self.tp_size,
             self.total_gpu_memory_fraction,
-            bool(getattr(server_args, "disable_cuda_graph", False)),
-            getattr(server_args, "cuda_graph_bs", None),
-            not bool(getattr(server_args, "disable_radix_cache", True)),
+            bool(server_args.disable_cuda_graph),
+            get_decode_cuda_graph_bs(server_args),
+            not bool(server_args.disable_radix_cache),
             self.nccl_port,
         )
 
@@ -161,7 +162,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         if self.tp_rank != 0:
             return
         model.init_tail_graphs(
-            list(self._model_worker.model_runner.graph_runner.capture_bs)
+            list(self._model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

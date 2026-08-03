@@ -15,6 +15,7 @@ import torch
 import typer
 
 from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
+from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -33,6 +34,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -65,6 +67,12 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "pipeline",
         "pipeline",
     ]
+    assert [
+        stage.runtime.resources.total_gpu_memory_fraction
+        for stage in config.stages
+        if stage.gpu is not None
+    ] == [None, None]
+    build_process_topology_plan(config, build_stage_placement_plan(config))
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -534,10 +542,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     monkeypatch.setenv("HOME", "/tmp")
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
 
-    fake_runner = ModuleType("sglang.srt.model_executor.cuda_graph_runner")
+    fake_runner = ModuleType("sglang.srt.compilation.torch_compile_decoration")
     fake_runner.set_torch_compile_config = lambda: None
     monkeypatch.setitem(
-        sys.modules, "sglang.srt.model_executor.cuda_graph_runner", fake_runner
+        sys.modules,
+        "sglang.srt.compilation.torch_compile_decoration",
+        fake_runner,
     )
 
     compile_calls: list[tuple[object, str | None, dict[str, object]]] = []
@@ -591,12 +601,29 @@ def _run_s2pro_engine_with_fake_buffers(
     *,
     text_buffer_bs: int = 64,
     audio_buffer_bs: int = 64,
+    sm_version: int | None = 90,
+    flashinfer_available: bool = True,
+    server_args_overrides: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
     from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
+    from sglang_omni.models.fishaudio_s2_pro import (
+        engine_builder as fish_engine_builder,
+    )
     from sglang_omni.scheduling import bootstrap as scheduler_bootstrap
     from sglang_omni.scheduling import engine_factory, sglang_backend
 
+    monkeypatch.setattr(
+        fish_engine_builder,
+        "get_visible_gpu_sm_version",
+        lambda _gpu_id: sm_version,
+    )
+    monkeypatch.setattr(
+        fish_engine_builder,
+        "is_flashinfer_available",
+        lambda: flashinfer_available,
+        raising=False,
+    )
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
@@ -611,7 +638,7 @@ def _run_s2pro_engine_with_fake_buffers(
             self.server_args = server_args
             self.model = SimpleNamespace()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
             assert self.server_args.torch_compile_max_bs == 64
             init_graph_calls.append(True)
@@ -650,13 +677,19 @@ def _run_s2pro_engine_with_fake_buffers(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> SimpleNamespace:
+    ) -> FakeServerArgs:
         del model_path
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
@@ -664,7 +697,7 @@ def _run_s2pro_engine_with_fake_buffers(
             page_size=1,
             chunked_prefill_size=kwargs["chunked_prefill_size"],
             max_prefill_tokens=16384,
-            attention_backend=None,
+            attention_backend=kwargs.get("attention_backend", "auto-resolved"),
         )
 
     def fake_create_sglang_infrastructure(
@@ -742,7 +775,11 @@ def _run_s2pro_engine_with_fake_buffers(
 
     monkeypatch.setattr(stages, "_compile_s2pro_codebook_decoder", fake_compile)
 
-    scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
+    scheduler = stages.create_sglang_tts_engine_executor(
+        "model",
+        device="cuda:0",
+        server_args_overrides=server_args_overrides,
+    )
     return SimpleNamespace(
         scheduler=scheduler,
         build_kwargs=build_kwargs,
@@ -803,6 +840,71 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         64,
     ]
     assert scheduler.server_args.torch_compile_max_bs == 64
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_backend"),
+    [
+        (89, "flashinfer"),
+        (90, "fa3"),
+        (100, "flashinfer"),
+        (120, "flashinfer"),
+    ],
+)
+def test_s2pro_engine_selects_model_local_attention_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+    expected_backend: str,
+) -> None:
+    result = _run_s2pro_engine_with_fake_buffers(
+        monkeypatch,
+        sm_version=sm_version,
+    )
+
+    assert result.scheduler.server_args.attention_backend == expected_backend
+
+
+def test_s2pro_engine_preserves_explicit_attention_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _run_s2pro_engine_with_fake_buffers(
+        monkeypatch,
+        sm_version=None,
+        flashinfer_available=False,
+        server_args_overrides={"attention_backend": "fa3"},
+    )
+
+    assert result.scheduler.server_args.attention_backend == "fa3"
+
+
+@pytest.mark.parametrize("sm_version", [None, 80, 103])
+def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+) -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="cannot select a default attention backend",
+    ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=sm_version,
+        )
+
+
+def test_s2pro_engine_rejects_flashinfer_disabled_by_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_IS_FLASHINFER_AVAILABLE", "false")
+    with pytest.raises(
+        RuntimeError,
+        match="FlashInfer is unavailable.*SGLANG_IS_FLASHINFER_AVAILABLE",
+    ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=89,
+            flashinfer_available=False,
+        )
 
 
 @pytest.mark.parametrize(

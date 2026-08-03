@@ -18,6 +18,9 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2.radix_hash import EOS_SENTINEL, poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+)
 
 
 class Zonos2ModelRunner(ModelRunner):
@@ -30,7 +33,9 @@ class Zonos2ModelRunner(ModelRunner):
         frame_graph: bool = False,
         async_decode: bool = False,
         stream_emit_chunk_frames: int = 1,
-        stream_emit_first_chunk_frames: int = 0,
+        stream_emit_first_chunk_frames: int = (
+            DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
+        ),
     ):
         super().__init__(tp_worker, output_processor)
         self._outbox: Any | None = None
@@ -95,7 +100,7 @@ class Zonos2ModelRunner(ModelRunner):
             data = sr.data
             req = data.req
             prefix_len = len(req.prefix_indices)
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
             rows = data.prompt_rows[prefix_len : prefix_len + req_len].to(model.device)
             emb = model.embed_frames(rows)
             if data.speaker_emb is not None:
@@ -269,8 +274,6 @@ class Zonos2ModelRunner(ModelRunner):
         pool.generation_step[row_t] = gstep + 1
         next_ids = torch.where(finished, torch.full_like(keys, EOS_SENTINEL), keys)
         result.next_token_ids = next_ids
-        if schedule_batch is not None:  # async launch publishes output_ids itself
-            schedule_batch.output_ids = next_ids
 
         # launch_buf snapshots what the (lagged) resolve reads. Pack codes +
         # per-row EOS metadata into one fresh int64 tensor (advanced indexing

@@ -10,6 +10,46 @@ from typing import Any
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.vendor.sglang.server_args import override_server_args
+from sglang_omni.vendor.sglang.utils import is_flashinfer_available
+
+_VALIDATED_AUTO_ATTENTION_BACKENDS = {
+    89: "flashinfer",
+    90: "fa3",
+    100: "flashinfer",
+    120: "flashinfer",
+}
+
+
+def _select_default_attention_backend(*, gpu_id: int) -> str:
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    if sm_version is None:
+        raise RuntimeError(
+            "FishAudio S2-Pro cannot select a default attention backend because "
+            f"CUDA compute capability for gpu_id={gpu_id} could not be detected. "
+            "Set server_args_overrides.attention_backend to an explicitly "
+            "validated backend."
+        )
+
+    backend = _VALIDATED_AUTO_ATTENTION_BACKENDS.get(sm_version)
+    if backend is None:
+        raise RuntimeError(
+            "FishAudio S2-Pro cannot select a default attention backend because "
+            f"SM{sm_version} is not validated. Supported automatic selection "
+            "targets are SM89, SM90, SM100, and SM120; otherwise set "
+            "server_args_overrides.attention_backend explicitly."
+        )
+
+    if backend == "flashinfer" and not is_flashinfer_available():
+        raise RuntimeError(
+            f"FishAudio S2-Pro selects FlashInfer on SM{sm_version}, but "
+            "FlashInfer is unavailable. Install and enable FlashInfer, ensure "
+            "SGLANG_IS_FLASHINFER_AVAILABLE is not false, or set "
+            "server_args_overrides.attention_backend to an explicitly "
+            "validated backend."
+        )
+    return backend
 
 
 class FishS2ProEngineBuilder(TtsEngineBuilder):
@@ -49,10 +89,20 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
         }
 
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if overrides.get("attention_backend") is not None:
+            return
+        overrides["attention_backend"] = _select_default_attention_backend(
+            gpu_id=self.gpu_id
+        )
+
     def customize_server_args(self, server_args: Any) -> None:
-        server_args.disable_overlap_schedule = True
-        if getattr(server_args, "attention_backend", None) is None:
-            server_args.attention_backend = "fa3"
+        updates: dict[str, Any] = {"disable_overlap_schedule": True}
+        override_server_args(
+            server_args,
+            "sglang_omni.fishaudio_s2_pro.runtime_defaults",
+            **updates,
+        )
 
     def setup_model(
         self,
@@ -93,12 +143,16 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(getattr(server_args, "enable_torch_compile", False)):
+        if bool(server_args.enable_torch_compile):
             fish_stages._compile_s2pro_codebook_decoder(
                 model,
                 max_batch_size=server_args.torch_compile_max_bs,
             )
-            server_args.enable_torch_compile = False
+            override_server_args(
+                server_args,
+                "sglang_omni.fishaudio_s2_pro.compile_complete",
+                enable_torch_compile=False,
+            )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

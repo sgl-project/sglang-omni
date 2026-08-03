@@ -23,6 +23,9 @@ runs:
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
+        # FlashInfer does not use XDG_CACHE_HOME. Keep it on the image's
+        # architecture-specific prewarmed cache under /root/.cache/flashinfer.
+        echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
@@ -71,18 +74,6 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
-
-    - name: Remove stale flashinfer JIT artifacts
-      shell: bash
-      run: |
-        # Note:(Chenchen Hong) On the hongccc/sglang-omni:dev (CUDA 13) image the
-        # flashinfer-python 0.6.11.post1 wheel JIT-compiles its kernels against the
-        # base image's matching cu13 toolkit. We no longer preinstall a
-        # flashinfer-jit-cache wheel: the only published jit-cache builds are
-        # 0.6.13 (cu128/cu129/cu130) and do not match the pinned 0.6.11.post1,
-        # and the prior cu128 pin mismatched the cu13 runtime. Wipe any stale
-        # JIT artifacts so the cu13 kernels compile cleanly on first use.
-        rm -rf "${OMNI_CI_HOME}/.cache/flashinfer"
 
     - name: Kill GPU processes
       shell: bash

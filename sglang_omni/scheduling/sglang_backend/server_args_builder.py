@@ -6,6 +6,27 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.vendor.sglang.server_args import override_server_args
+
+_DECODE_CUDA_GRAPH_ALIASES = {
+    "cuda_graph_max_bs": "cuda_graph_max_bs_decode",
+    "cuda_graph_bs": "cuda_graph_bs_decode",
+}
+
+
+def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
+    """Translate Omni's legacy public knobs to SGLang 0.5.16 decode fields."""
+    for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
+        if legacy_name not in kwargs:
+            continue
+        legacy_value = kwargs.pop(legacy_name)
+        if decode_name in kwargs and kwargs[decode_name] != legacy_value:
+            raise ValueError(
+                f"Conflicting {legacy_name} and {decode_name} values: "
+                f"{legacy_value!r} != {kwargs[decode_name]!r}"
+            )
+        kwargs[decode_name] = legacy_value
+
 
 def build_sglang_server_args(
     model_path: str,
@@ -32,9 +53,19 @@ def build_sglang_server_args(
     if mem_fraction_static is not None:
         kwargs["mem_fraction_static"] = mem_fraction_static
     kwargs.update(overrides)
+    _normalize_decode_cuda_graph_overrides(kwargs)
+    # Existing Omni models remain eager-prefill by default. Models that have
+    # adapted SGLang's phase-specific prefill contract opt in explicitly
+    # through their generation defaults / server overrides.
+    kwargs.setdefault("cuda_graph_backend_prefill", "disabled")
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
-    return ServerArgs(**kwargs)
+    server_args = ServerArgs(**kwargs)
+    # DP attention is unsupported; reject at configuration time. Mixed
+    # chunked prefill stays allowed (the bridge handles it natively).
+    if server_args.enable_dp_attention:
+        raise ValueError("sglang-omni does not support enable_dp_attention")
+    return server_args
 
 
 def apply_encoder_mem_reserve(
@@ -59,4 +90,8 @@ def apply_encoder_mem_reserve(
             "floor 0.1; lower encoder_mem_reserve or pin mem_fraction_static "
             "explicitly."
         )
-    server_args.mem_fraction_static = round(reserved, 3)
+    override_server_args(
+        server_args,
+        "sglang_omni.encoder_mem_reserve",
+        mem_fraction_static=round(reserved, 3),
+    )

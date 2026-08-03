@@ -38,6 +38,26 @@ class MingTTSPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": TTS_ENGINE_STAGE}
 
+    @classmethod
+    def isolation_role_to_stage(cls) -> dict[str, str]:
+        return {"vocoder": AUDIO_DECODE_STAGE}
+
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        return frozenset({(TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE)})
+
+    @classmethod
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        return {
+            (TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE): {
+                REFERENCE_ENCODE_STAGE: 0.08,
+                TTS_ENGINE_STAGE: 0.72,
+                AUDIO_DECODE_STAGE: 0.12,
+            }
+        }
+
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
     stages: list[StageConfig] = [

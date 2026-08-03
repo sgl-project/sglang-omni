@@ -635,13 +635,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             ),
             prefix=add_prefix("layers", prefix),
         )
-        # make_layers returns (layers, start, end) with PP args, else just layers
-        if isinstance(result, tuple):
-            self.layers, self.start_layer, self.end_layer = result
-        else:
-            self.layers = result
-            self.start_layer = 0
-            self.end_layer = config.num_hidden_layers
+        self.layers = result
+        self.start_layer = 0
+        self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # For EAGLE3 support

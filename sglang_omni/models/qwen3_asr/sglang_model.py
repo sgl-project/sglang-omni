@@ -72,22 +72,51 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         device = next(self.audio_tower.parameters()).device
 
-        input_features = (
-            torch.cat([item.feature for item in items])
-            .type(self.audio_tower.dtype)
-            .to(device)
-        )
+        features = [item.feature for item in items]
+        masks = [getattr(item, "feature_attention_mask", None) for item in items]
 
-        has_mask = all(
-            getattr(item, "feature_attention_mask", None) is not None for item in items
-        )
+        # SGLang batches every cache miss in the forward batch into a single
+        # data_embedding_func call (_batch_encode_per_image_misses), so
+        # mixed-length mel features must agree on a frame count. Pad to the
+        # batch max: every frame added here is masked out before the audio
+        # tower runs, so it sees exactly the frames it saw one-at-a-time.
+        frame_lens = [feature.shape[-1] for feature in features]
+        max_frames = max(frame_lens)
+        has_mask = any(mask is not None for mask in masks)
+        if min(frame_lens) != max_frames or has_mask:
+            normalized_masks = []
+            for feature, mask, length in zip(features, masks, frame_lens):
+                if mask is None:
+                    mask = torch.ones(
+                        (feature.shape[0], length),
+                        dtype=torch.long,
+                        device=device,
+                    )
+                elif mask.shape != (feature.shape[0], length):
+                    raise ValueError(
+                        "Qwen3-ASR feature_attention_mask shape "
+                        f"{tuple(mask.shape)} does not match feature batch/frames "
+                        f"{(feature.shape[0], length)}"
+                    )
+                else:
+                    # Item masks can arrive on CPU while features are already
+                    # on the model device; move for the cat below.
+                    mask = mask.to(device=device)
+                normalized_masks.append(
+                    nn.functional.pad(mask, (0, max_frames - length))
+                )
+            masks = normalized_masks
+            has_mask = True
+            if min(frame_lens) != max_frames:
+                features = [
+                    nn.functional.pad(feature, (0, max_frames - feature.shape[-1]))
+                    for feature in features
+                ]
+
+        input_features = torch.cat(features).type(self.audio_tower.dtype).to(device)
 
         if has_mask:
-            feature_attention_mask = (
-                torch.cat([item.feature_attention_mask for item in items], dim=0)
-                .type(torch.long)
-                .to(device)
-            )
+            feature_attention_mask = torch.cat(masks, dim=0).type(torch.long).to(device)
             audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
             input_features = input_features.permute(0, 2, 1)[
                 feature_attention_mask.bool()

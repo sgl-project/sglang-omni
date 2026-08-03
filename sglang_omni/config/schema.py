@@ -48,16 +48,17 @@ class ParallelismConfig(BaseModel):
 
 
 class StageResourceConfig(BaseModel):
-    """Placement-resource intent for one stage rank/process."""
+    """Placement-resource intent for one logical stage rank."""
 
     model_config = ConfigDict(extra="forbid")
 
     total_gpu_memory_fraction: float | None = Field(
         default=None,
         description=(
-            "Per-rank/process budget as a fraction of total physical GPU "
-            "memory. After TP expansion, each rank contributes this budget to "
-            "its assigned GPU."
+            "Per-stage-rank budget as a fraction of total physical GPU memory. "
+            "After TP expansion, each rank contributes this budget to its "
+            "assigned GPU; stages sharing an OS process contribute jointly to "
+            "that process's budget."
         ),
     )
 
@@ -257,6 +258,38 @@ class PipelineConfig(BaseModel):
     @property
     def terminal_stages(self) -> list[str]:
         return [s.name for s in self.stages if s.terminal]
+
+    @classmethod
+    def isolation_role_to_stage(cls) -> dict[str, str]:
+        """Map public isolation roles to model-specific stage names."""
+        return {}
+
+    @classmethod
+    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
+        """Pipeline edges that stay correct once they become cross-process.
+
+        Keyed by edge rather than by stage because correctness depends on which
+        handoff crosses a process boundary, not on which stage moved. Grouping
+        ``preprocessing`` with ``audio_encoder`` leaves their shared handoff
+        local and only crosses ``audio_encoder -> tts_engine``.
+
+        An edge is safe when the downstream stage rebuilds everything it needs
+        from the payload rather than from a process-local registry. Independent
+        of whether the split also needs GPU memory fractions.
+        """
+        return frozenset()
+
+    @classmethod
+    def process_edge_resources(
+        cls,
+    ) -> dict[tuple[str, str], dict[str, float]]:
+        """Map newly crossed pipeline edges to GPU memory fractions.
+
+        Only a placement recommendation applied when an override makes the
+        edge cross processes. An edge absent here is still splittable when the
+        config already declares fractions, or when nothing else shares its GPU.
+        """
+        return {}
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

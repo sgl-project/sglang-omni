@@ -314,27 +314,61 @@ def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> 
         _stop_scheduler(scheduler, thread)
 
 
-def test_streaming_vocoder_final_payload_preserves_usage_and_authoritative_audio() -> (
-    None
-):
+def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> None:
     scheduler, thread = _start_scheduler()
     usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
+    payload = _payload("req", stream=True, code_len=4, usage=usage)
+    payload.data["finish_reason"] = "length"
     try:
         scheduler.inbox.put(
             IncomingMessage(
                 "req",
                 "new_request",
-                _payload("req", stream=True, code_len=4, usage=usage),
+                payload,
             )
         )
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(3)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(4)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
+        first = scheduler.outbox.get(timeout=2.0)
+        flush = scheduler.outbox.get(timeout=2.0)
         final = scheduler.outbox.get(timeout=2.0)
+        assert first.type == "stream"
+        assert flush.type == "stream"
         assert final.type == "result"
         data = final.data.data
         assert data["usage"] == usage
         assert data["sample_rate"] == 44100
         assert data["modality"] == "audio"
-        assert len(data["audio_data"]) == 16
+        assert data["finish_reason"] == "length"
+        assert "audio_data" not in data
+        assert "audio_waveform" not in data
+        assert len(scheduler._codec.calls) == 2
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
+    scheduler, thread = _start_scheduler()
+    try:
+        scheduler.inbox.put(
+            IncomingMessage("req", "new_request", _payload("req", code_len=4))
+        )
+        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
+
+        stream = scheduler.outbox.get(timeout=2.0)
+        final = scheduler.outbox.get(timeout=2.0)
+
+        assert stream.type == "stream"
+        assert len(stream.data["audio_data"]) == 16
+        assert final.type == "result"
+        assert final.data.data == {
+            "modality": "audio",
+            "sample_rate": 44100,
+        }
+        assert scheduler._codec.calls == [(1, 10, 4)]
     finally:
         _stop_scheduler(scheduler, thread)
 

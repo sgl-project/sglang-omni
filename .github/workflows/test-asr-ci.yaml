@@ -3,6 +3,11 @@ name: ASR CI
 on:
   workflow_call:
     inputs:
+      asr_ci_model:
+        description: ASR CI model preset selected by the parent pick-asr-model job.
+        type: string
+        required: false
+        default: fun
       omni_ci_home:
         description: PR-scoped CI home from the parent omni-ci workflow.
         type: string
@@ -32,7 +37,7 @@ jobs:
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -80,13 +85,13 @@ jobs:
           summary-only: "true"
 
   stage-2-seedtts:
-    name: stage 2 - Fun-ASR SeedTTS
+    name: stage 2 - SeedTTS ASR
     needs: stage-1-multi-speaker
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni:dev
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -102,14 +107,15 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run Fun-ASR SeedTTS CI
+      - name: Run SeedTTS ASR CI
         shell: bash
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_asr_ci_fun_asr.py -v -s -x
+            pytest tests/test_model/test_asr_ci_seedtts.py -v -s -x
         env:
+          ASR_CI_MODEL: ${{ inputs.asr_ci_model }}
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -118,12 +124,12 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: ASR stage 2 (Fun-ASR SeedTTS)
+          stage-label: ASR stage 2 (SeedTTS)
           artifact-path-globs: |
-            */fun_asr_results.json
-            */fun_asr_zh_results.json
+            */asr_seedtts_en_results.json
+            */asr_seedtts_zh_results.json
           artifact-upload-name: asr-stage-seedtts-results
           artifact-upload-path: |
-            /tmp/**/fun_asr_results.json
-            /tmp/**/fun_asr_zh_results.json
+            /tmp/**/asr_seedtts_en_results.json
+            /tmp/**/asr_seedtts_zh_results.json
           summary-only: "true"

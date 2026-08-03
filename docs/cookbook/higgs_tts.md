@@ -199,11 +199,12 @@ The `-N` flag disables curl's output buffering so chunks are written as they arr
 
 Streaming returns `audio/pcm` 16-bit mono PCM bytes. It has no in-band JSON
 events, final usage event, or terminal sentinel. The response headers report the
-actual stream sample rate, channel count, and bit depth. Streaming speech
-requests default `initial_codec_chunk_frames` to `1` for lower first-audio
-latency. Clients can still set another value, including `0`. The setting
-controls only the first vocoder chunk for TTFA tuning. Follow-up chunks return
-to the normal Higgs streaming window.
+actual stream sample rate, channel count, and bit depth. Higgs defaults
+`initial_codec_chunk_frames` to `20`; with eight codebooks, the AR producer
+flushes the corresponding delayed-code rows at row 27. Clients can still set
+another value, including `0` to use the steady chunk size from the start. The
+producer and vocoder share the effective value, and it controls only the first
+chunk. Follow-up chunks return to the normal Higgs streaming window.
 
 2. Use Python
 

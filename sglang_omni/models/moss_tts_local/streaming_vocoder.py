@@ -21,7 +21,6 @@ from sglang_omni.models.moss_tts_local.vocoder_decoder import MossTTSLocalVocode
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
-    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
 )
@@ -468,19 +467,32 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id
         codes = codes.to(dtype=torch.long)
         n_vq = state.n_vq if state.n_vq is not None else self._n_vq
-        if codes.ndim != 1 or int(codes.shape[0]) < n_vq + 1:
-            raise ValueError(
-                f"MOSS-TTS Local stream chunk must be a 1-D row with at least "
-                f"{n_vq + 1} channels (text + codes), got {tuple(codes.shape)}"
-            )
-        # Row layout matches output_rows: [text_token, code_0, ..., code_{n_vq-1}].
-        return codes[1 : 1 + n_vq]
+        if codes.ndim == 1 and int(codes.shape[0]) >= n_vq + 1:
+            return codes[1 : 1 + n_vq]
+        if codes.ndim == 2 and int(codes.shape[1]) >= n_vq + 1:
+            return codes[:, 1 : 1 + n_vq]
+        if codes.ndim not in (1, 2):
+            shape_contract = "[channels] or [frames, channels]"
+        else:
+            shape_contract = f"at least {n_vq + 1} channels"
+        raise ValueError(
+            f"MOSS-TTS Local stream chunk must be {shape_contract}, "
+            f"got {tuple(codes.shape)}"
+        )
 
     def ingest(
         self, request_id: str, state: _LocalStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
-        state.pending.append(codes)
+        if codes.ndim == 1:
+            state.pending.append(codes)
+        elif codes.ndim == 2:
+            state.pending.extend(codes.unbind(0))
+        else:
+            raise ValueError(
+                f"MOSS-TTS Local validated stream codes must be 1-D or 2-D, "
+                f"got {tuple(codes.shape)}"
+            )
         self._ensure_slot(state)
 
     def decode_delta(
@@ -708,18 +720,11 @@ class MossTTSLocalStreamingVocoderScheduler(
         state: _LocalStreamState,
         params: Mapping[str, Any] | None,
     ) -> None:
-        explicit = (
-            isinstance(params, Mapping)
-            and params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None
+        state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+            params,
+            steady_chunk_frames=self._stream_chunk_frames,
+            default_frames=self._default_initial_chunk_frames,
         )
-        if explicit:
-            # Explicit 0 opts out of a smaller first chunk.
-            state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
-                params,
-                steady_chunk_frames=self._stream_chunk_frames,
-            )
-        else:
-            state.initial_chunk_frames = self._default_initial_chunk_frames
         if state.initial_chunk_frames > 0 and not self._stream_has_emitted(request_id):
             state.threshold = state.initial_chunk_frames
         else:
