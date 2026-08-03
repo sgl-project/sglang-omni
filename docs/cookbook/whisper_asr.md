@@ -1,6 +1,9 @@
 # Whisper ASR
 
-Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint, but this path is experimental in the current SGLang-Omni tree. Prefer [Qwen3-ASR](qwen3_asr.md) for validated ASR serving.
+Whisper ASR checkpoints can transcribe audio through `/v1/audio/transcriptions`
+and translate supported source languages to English through
+`/v1/audio/translations`. This path is experimental in the current
+SGLang-Omni tree. Prefer [Qwen3-ASR](qwen3_asr.md) for validated ASR serving.
 
 ## Prerequisites
 
@@ -47,29 +50,42 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Translate Audio to English
+
+The translation route is available only for Whisper pipelines. Pass an
+explicit source-language hint until automatic language detection is implemented.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/translations \
+  -F model=openai/whisper-large-v3 \
+  -F file=@/path/to/french_audio.wav \
+  -F language=fr \
+  -F response_format=json
+```
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
-| `language` | string | unset | Optional language hint |
-| `response_format` | string | `json` | Use `json` for the current Whisper path |
+| `language` | string | unset | Optional transcription hint; required as the source language for translation |
+| `response_format` | string | `json` | Non-streaming requests support `json`, `text`, and `verbose_json` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
-The request builder also supports `task` (`transcribe` by default) and
-`max_new_tokens`, but the public transcription endpoint currently exposes only
-the fields above. The route uses the ASR stage default unless the pipeline is
-configured another way. For smoke tests, keep the request minimal and use
-`response_format=json`.
+The server maps `/v1/audio/transcriptions` to the `transcribe` task and
+`/v1/audio/translations` to the `translate` task. The transcription route also
+accepts `max_new_tokens` and streaming; the translation route is non-streaming.
+The route uses the ASR stage default unless the pipeline is configured another
+way.
 
 ## Known Limitations
 
 - This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
   for validated ASR serving.
 - Keep Whisper ASR at encoder batch size 1.
-- Use `response_format=json`; other response formats are not validated for this
-  experimental path.
+- Translation is non-streaming and requires an explicit source language until
+  automatic language detection is implemented.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
