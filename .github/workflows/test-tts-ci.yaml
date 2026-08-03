@@ -212,7 +212,7 @@ jobs:
           stage-label: TTS stage 3 (consistency)
 
   stage-4-serving:
-    name: stage 4 - serving stress
+    name: stage 4 - serving stress (router DP2)
     needs: stage-3-consistency
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
@@ -235,7 +235,7 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run TTS serving stress stage
+      - name: Run TTS serving stress stage through router DP2
         shell: bash
         run: |
           source omni/bin/activate
@@ -258,6 +258,11 @@ jobs:
             */benchmark/results.json
             */benchmark/manifest.json
             */benchmark.wall_time.json
+            */benchmark_validation.json
+            */router_validation.json
+            */cleanup_validation.json
+            */topology/router.log
+            */topology/launcher.yaml
           artifact-upload-name: tts-stage-serving-results
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
           artifact-if-no-files-found: error

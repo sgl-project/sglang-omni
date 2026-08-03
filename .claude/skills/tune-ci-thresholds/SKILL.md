@@ -135,10 +135,9 @@ host-wide cleanup are forbidden.
 ## Scoping a run to fewer GPUs
 
 `precheck` sizes its GPU requirement from the largest `gpus_per_test` in the
-model, so a standalone `precheck` for `tts` asks for two GPUs even when the
-stages you want need one. `run --stages <subset>` computes the requirement from
-the selected stages and runs its own precheck, so use it to calibrate the
-one-GPU stages (`tts_mps_dp2_*`, `tts_serving_*`) on a single card.
+model. `run --stages <subset>` computes the requirement from the selected
+stages and runs its own precheck, so use it when a subset needs fewer GPUs than
+the full model suite.
 
 Presets own disjoint constant namespaces through
 `calibration_presets[*].constant_filter`. Until this was fixed, the filter was
