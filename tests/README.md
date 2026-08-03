@@ -388,7 +388,9 @@ that happened to contain an older version of the test.
     `FunAsrNanoForConditionalGeneration` registry wiring
   - pre-LM encoder service: bounded batching, complete-embedding validation,
     single-flight deduplication, stale cache races, CPU LRU budgets, failure
-    isolation, telemetry, and worker shutdown
+    isolation, stream-synchronized state commits, request-scoped OOM recovery,
+    detached failure diagnostics, healthy-request continuation, telemetry, and
+    worker shutdown
   - model audio-feature shape and checkpoint weight-loading contracts
   - request builder: inclusive audio offset recording, language-prompt prefix
     construction, encode-after-validation ordering, and result adapter

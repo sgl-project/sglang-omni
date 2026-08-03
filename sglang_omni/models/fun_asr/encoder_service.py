@@ -11,6 +11,8 @@ import logging
 import queue
 import threading
 import time
+import traceback
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -33,6 +35,12 @@ _FRONTEND_CONFIG_FIELDS = (
     "lfr_n",
     "window",
 )
+
+
+@dataclass(frozen=True)
+class _DetachedFailure:
+    exception: Exception
+    formatted_traceback: str
 
 
 def build_cache_namespace(
@@ -316,55 +324,116 @@ class FunASRPreLMEncoderService:
                 self._queue_wait_max_s = max(
                     self._queue_wait_max_s, max(queue_waits, default=0.0)
                 )
-            items = [item for item, _, _ in batch]
-            encode_start = time.perf_counter()
-            try:
-                embeddings = self._encode_batch(items)
-            except Exception as batch_exc:
-                if len(batch) == 1:
-                    batch[0][1].set_exception(batch_exc)
-                    with self._lock:
-                        self._encoder_time_s += time.perf_counter() - encode_start
-                    if shutdown:
-                        return
-                    continue
-                logger.exception(
-                    f"Fun-ASR batched audio encode failed for {len(items)} "
-                    f"items; retrying per item"
-                )
-                recovered = 0
-                for item, future, _ in batch:
-                    try:
-                        embedding = self._encode_batch([item])[0]
-                        future.set_result(embedding)
-                        recovered += 1
-                    except Exception as item_exc:
-                        future.set_exception(item_exc)
-                with self._lock:
-                    self._encoder_time_s += time.perf_counter() - encode_start
-                    # Note (Akazaakane): Retried items are single-item batches.
-                    self._batch_count += recovered
-                    self._item_count += recovered
-                if shutdown:
-                    return
-                continue
-            for (_, future, _), embedding in zip(batch, embeddings):
-                future.set_result(embedding)
-            with self._lock:
-                self._encoder_time_s += time.perf_counter() - encode_start
-                self._batch_count += 1
-                self._item_count += len(items)
-                batch_count = self._batch_count
-                item_count = self._item_count
-            if batch_count % 50 == 1:
-                logger.info(
-                    f"Fun-ASR pre-LM encoder stage: {batch_count} batches, "
-                    f"{item_count} items (avg "
-                    f"{item_count / batch_count:.2f} items/batch, "
-                    f"last batch: {len(items)}), cache: {self.stats()}"
-                )
+            self._process_batch(batch)
             if shutdown:
                 return
+
+    @staticmethod
+    def _detach_failure(exc: Exception) -> _DetachedFailure:
+        formatted_traceback = "".join(traceback.format_exception(exc)).rstrip()
+        traceback.clear_frames(exc.__traceback__)
+        exc.__traceback__ = None
+        exc.__cause__ = None
+        exc.__context__ = None
+        try:
+            detached = type(exc)(*exc.args)
+        except Exception:
+            detached = RuntimeError(f"{type(exc).__name__}: {exc}")
+        detached.__traceback__ = None
+        detached.__cause__ = None
+        detached.__context__ = None
+        return _DetachedFailure(
+            exception=detached,
+            formatted_traceback=formatted_traceback,
+        )
+
+    def _recover_after_failure(self, exc: Exception) -> None:
+        if (
+            not isinstance(exc, torch.OutOfMemoryError)
+            or self._stream is None
+            or self._device.type != "cuda"
+        ):
+            return
+        try:
+            self._stream.synchronize()
+        except Exception as cleanup_exc:
+            failure = self._detach_failure(cleanup_exc)
+            logger.warning(
+                "Fun-ASR encoder stream cleanup failed after OOM:\n%s",
+                failure.formatted_traceback,
+            )
+        try:
+            with torch.cuda.device(self._device):
+                torch.cuda.empty_cache()
+        except Exception as cleanup_exc:
+            failure = self._detach_failure(cleanup_exc)
+            logger.warning(
+                "Fun-ASR CUDA cache cleanup failed after OOM:\n%s",
+                failure.formatted_traceback,
+            )
+
+    def _record_success(self, item_count: int) -> None:
+        with self._lock:
+            self._batch_count += 1
+            self._item_count += item_count
+            batch_count = self._batch_count
+            total_items = self._item_count
+        if batch_count % 50 == 1:
+            logger.info(
+                f"Fun-ASR pre-LM encoder stage: {batch_count} batches, "
+                f"{total_items} items (avg "
+                f"{total_items / batch_count:.2f} items/batch, "
+                f"last batch: {item_count}), cache: {self.stats()}"
+            )
+
+    def _process_batch(
+        self,
+        batch: list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]],
+    ) -> None:
+        items = [item for item, _, _ in batch]
+        encode_start = time.perf_counter()
+        try:
+            embeddings = self._encode_batch(items)
+        except Exception as batch_exc:
+            failure = self._detach_failure(batch_exc)
+            if len(batch) == 1:
+                logger.error(
+                    "Fun-ASR audio encode failed:\n%s",
+                    failure.formatted_traceback,
+                )
+                self._recover_after_failure(failure.exception)
+                batch[0][1].set_exception(failure.exception)
+                return
+
+            logger.error(
+                "Fun-ASR batched audio encode failed for %d items; "
+                "retrying per item:\n%s",
+                len(items),
+                failure.formatted_traceback,
+            )
+            self._recover_after_failure(failure.exception)
+            for item, future, _ in batch:
+                try:
+                    embedding = self._encode_batch([item])[0]
+                except Exception as item_exc:
+                    item_failure = self._detach_failure(item_exc)
+                    logger.error(
+                        "Fun-ASR per-item audio encode retry failed:\n%s",
+                        item_failure.formatted_traceback,
+                    )
+                    self._recover_after_failure(item_failure.exception)
+                    future.set_exception(item_failure.exception)
+                else:
+                    future.set_result(embedding)
+                    self._record_success(1)
+            return
+        finally:
+            with self._lock:
+                self._encoder_time_s += time.perf_counter() - encode_start
+
+        for (_, future, _), embedding in zip(batch, embeddings):
+            future.set_result(embedding)
+        self._record_success(len(items))
 
     def _encode_batch(self, items: list[Any]) -> list[torch.Tensor]:
         stream_context = (
@@ -395,10 +464,10 @@ class FunASRPreLMEncoderService:
                 )
             parts = torch.split(embedding, token_counts, dim=0)
             embeddings = [part.clone() for part in parts]
-            for item, part in zip(items, embeddings):
-                self._attach(item, part)
         if self._stream is not None:
             self._stream.synchronize()
+        for item, part in zip(items, embeddings):
+            self._attach(item, part)
         for item, part in zip(items, embeddings):
             key = self._cache_key(item)
             if key is not None:
