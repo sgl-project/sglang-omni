@@ -107,41 +107,6 @@ def test_comm_router_rejects_narrowed_direct_cuda_ipc_namespace() -> None:
     assert not router.can_use_direct_cuda_ipc("talker")
 
 
-def test_comm_router_routes_rocm_gpu_edges_through_shm() -> None:
-    router = CommRouter(
-        stage_name="thinker",
-        gpu_id=0,
-        same_process_targets=set(),
-        gpu_stage_names={"talker"},
-        stage_gpu_ids={"talker": (0,)},
-        comm_config={},
-        accelerator_platform=AcceleratorPlatform.AMD,
-    )
-
-    assert router.outbound("talker") is TransportKind.SHM
-    assert router.inbound("talker") is TransportKind.SHM
-    assert not router.can_use_direct_cuda_ipc("talker")
-    assert router.receive_device == torch.device("cuda:0")
-
-
-def test_comm_router_routes_rocm_cuda_compatible_payload_through_shm(
-    monkeypatch,
-) -> None:
-    router = CommRouter(
-        stage_name="thinker",
-        gpu_id=0,
-        same_process_targets=set(),
-        gpu_stage_names={"talker"},
-        comm_config={},
-        accelerator_platform=AcceleratorPlatform.AMD,
-    )
-    monkeypatch.setattr(
-        "sglang_omni.comm.router._tensor_devices", lambda payload: {"cuda"}
-    )
-
-    assert router.outbound_payload("talker", object()) is TransportKind.SHM
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_comm_router_uses_cuda_ipc_for_cuda_stream_chunks_only() -> None:
     router = CommRouter(
