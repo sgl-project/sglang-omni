@@ -1782,6 +1782,152 @@ def test_moss_sample_tokens_seeded_is_reproducible() -> None:
     assert len(outs) > 1
 
 
+def test_moss_two_candidate_kernel_cpu_falls_back() -> None:
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
+
+    result = sample_two_candidates(
+        torch.randn(3, 2),
+        torch.ones(3),
+        torch.ones(3),
+        torch.full((3,), 2, dtype=torch.long),
+        torch.arange(3, dtype=torch.long),
+        torch.arange(3, dtype=torch.long),
+        torch.tensor([7, 11], dtype=torch.long),
+    )
+    assert result is None
+
+
+@pytest.mark.gpu
+def test_moss_two_candidate_kernel_matches_eager_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    from sglang_omni.models.moss_tts import model_runner
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
+
+    device = torch.device("cuda")
+    logits = torch.tensor(
+        [[3.0, 1.0], [1.0, 3.0], [0.1, 0.2], [2.0, 2.0]],
+        device=device,
+    )
+    temperatures = torch.tensor([0.0, 1.0, 0.7, 1.5], device=device)
+    top_ps = torch.tensor([1.0, 0.5, 1.0, 0.9], device=device)
+    top_ks = torch.tensor([2, 2, 1, -1], dtype=torch.long, device=device)
+    seeds = torch.tensor([3, 5, 7, 11], dtype=torch.long, device=device)
+    positions = torch.tensor([13, 17, 19, 23], dtype=torch.long, device=device)
+    token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
+
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
+    )
+    if actual is None:
+        pytest.skip("Triton fused sampling kernel is unavailable")
+
+    monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
+    expected = MossTTSModelRunner._sample_tokens(
+        logits,
+        temperature=temperatures,
+        top_p=top_ps,
+        top_k=top_ks,
+        seeds=seeds,
+        positions=positions,
+        candidate_token_ids=token_ids,
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+def test_moss_two_candidate_kernel_randomized_parity_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    from sglang_omni.models.moss_tts import model_runner
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
+
+    device = torch.device("cuda")
+    row_count = 4096
+    generator = torch.Generator(device=device).manual_seed(20260729)
+    rows = torch.arange(row_count, device=device)
+
+    logits = torch.randn(
+        row_count,
+        2,
+        generator=generator,
+        dtype=torch.float32,
+        device=device,
+    )
+    # Exercise exact ties and large score gaps in addition to random logits.
+    tie_rows = rows.remainder(97) == 0
+    logits[tie_rows, 1] = logits[tie_rows, 0]
+    extreme_rows = rows.remainder(89) == 0
+    logits[extreme_rows, 0] = 30.0
+    logits[extreme_rows, 1] = -30.0
+
+    temperature_values = torch.tensor(
+        [0.0, 0.25, 0.7, 1.0, 1.8],
+        dtype=torch.float32,
+        device=device,
+    )
+    top_p_values = torch.tensor(
+        [0.05, 0.5, 0.8, 0.95, 1.0],
+        dtype=torch.float32,
+        device=device,
+    )
+    top_k_values = torch.tensor([-1, 0, 1, 2], dtype=torch.long, device=device)
+    temperatures = temperature_values[rows.remainder(temperature_values.numel())]
+    top_ps = top_p_values[(rows // temperature_values.numel()).remainder(5)]
+    top_ks = top_k_values[
+        (rows // (temperature_values.numel() * top_p_values.numel())).remainder(4)
+    ]
+    # torch.sort is intentionally unstable, so its ordering of exact ties is
+    # unspecified and changes with batch shape.
+    top_ps[tie_rows] = 1.0
+    top_ks[tie_rows] = 2
+    seeds = torch.randint(
+        0,
+        torch.iinfo(torch.int32).max,
+        (row_count,),
+        generator=generator,
+        dtype=torch.long,
+        device=device,
+    )
+    positions = torch.randint(
+        0,
+        1 << 30,
+        (row_count,),
+        generator=generator,
+        dtype=torch.long,
+        device=device,
+    )
+    token_ids = torch.tensor([151643, 151645], dtype=torch.long, device=device)
+
+    actual = sample_two_candidates(
+        logits, temperatures, top_ps, top_ks, seeds, positions, token_ids
+    )
+    if actual is None:
+        pytest.skip("Triton fused sampling kernel is unavailable")
+
+    monkeypatch.setattr(model_runner, "sample_two_candidates", lambda *args: None)
+    expected = MossTTSModelRunner._sample_tokens(
+        logits,
+        temperature=temperatures,
+        top_p=top_ps,
+        top_k=top_ks,
+        seeds=seeds,
+        positions=positions,
+        candidate_token_ids=token_ids,
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def test_moss_tts_rejects_invalid_sampling_params() -> None:
     for bad in (
         {"audio_temperature": -1.0},

@@ -11,6 +11,7 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
+from sglang_omni.models.moss_tts.sampling_kernels import sample_two_candidates
 from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
@@ -497,6 +498,25 @@ class MossTTSModelRunner(ModelRunner):
         top_k_row = MossTTSModelRunner._as_row_tensor(
             top_k, num_rows, torch.long, device
         )
+        seeds_row = MossTTSModelRunner._as_row_tensor(
+            seeds, num_rows, torch.long, device
+        )
+        positions_row = MossTTSModelRunner._as_row_tensor(
+            positions, num_rows, torch.long, device
+        )
+        if candidate_token_ids is not None and device.type == "cuda":
+            fused_sampled = sample_two_candidates(
+                logits,
+                temp,
+                top_p_row,
+                top_k_row,
+                seeds_row,
+                positions_row,
+                candidate_token_ids,
+            )
+            if fused_sampled is not None:
+                return fused_sampled
+
         do_sample = temp > 0
         safe_temp = torch.where(do_sample, temp, torch.ones_like(temp))
         scores = logits / safe_temp.unsqueeze(1)
@@ -514,12 +534,6 @@ class MossTTSModelRunner(ModelRunner):
         probs = torch.softmax(scores, dim=-1)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
-        seeds_row = MossTTSModelRunner._as_row_tensor(
-            seeds, num_rows, torch.long, device
-        )
-        positions_row = MossTTSModelRunner._as_row_tensor(
-            positions, num_rows, torch.long, device
-        )
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
         sampled = torch.argmax(logits, dim=-1)
         if candidate_token_ids is not None:
