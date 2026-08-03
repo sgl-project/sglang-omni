@@ -693,6 +693,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--quantization",
+        type=str,
+        default=None,
+        help=(
+            "SGLang quantization mode (e.g. fp8) for the TTS generation stage "
+            "of the server started by this benchmark. The ASR server is always "
+            "left unquantized. Defaults to none (bf16)."
+        ),
+    )
+    parser.add_argument(
         "--skip-gpu-cleanup",
         action="store_true",
         help=(
@@ -790,6 +800,7 @@ def main() -> None:
             server_config=config.server_config,
             max_running_requests=config.max_running_requests,
             cuda_graph_max_bs=config.cuda_graph_max_bs,
+            quantization=args.quantization,
             log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
             timeout=args.server_timeout,
             wait_for_gpu_release=wait_for_gpu_release,
