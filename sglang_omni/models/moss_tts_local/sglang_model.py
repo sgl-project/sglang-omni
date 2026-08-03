@@ -32,11 +32,13 @@ from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
+    _sample_seeded_branchless_eager,
     sample_seeded_branchless,
 )
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
+from sglang_omni.models.moss_tts_local.sampling_kernels import fused_sampler_available
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
 logger = logging.getLogger(__name__)
@@ -372,12 +374,17 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
 
     def _ensure_frame_sampler_compile(self) -> None:
         if self._compiled_frame_sampler is None:
+            if fused_sampler_available():
+                self._compiled_frame_sampler = sample_seeded_branchless
+                self._sample_seeded_branchless = sample_seeded_branchless
+                logger.info("Enabled fused MOSS-TTS Local frame sampler")
+                return
             compile_mode = os.environ.get(
                 "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
             )
             self._ensure_frame_compile_config()
             self._compiled_frame_sampler = torch.compile(
-                sample_seeded_branchless,
+                _sample_seeded_branchless_eager,
                 mode=compile_mode,
             )
             self._sample_seeded_branchless = self._compiled_frame_sampler
