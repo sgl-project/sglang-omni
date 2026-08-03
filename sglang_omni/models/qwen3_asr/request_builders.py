@@ -160,9 +160,11 @@ def make_qwen3_asr_scheduler_adapters(
             return_tensors="pt",
             return_attention_mask=True,
             padding="longest",
-            truncation=True,
+            # note (Junnan Li): Qwen3-ASR's encoder accepts mel sequences beyond
+            # Whisper's 30-second window, so preprocessing must not truncate them.
+            truncation=False,
         )
-        features = extracted.input_features  # [128, true_frames] (<= 3000)
+        features = extracted.input_features
         feature_attention_mask = getattr(extracted, "attention_mask", None)
         if feature_attention_mask is None:
             # WhisperFeatureExtractor normally returns one; fall back to all-valid.
