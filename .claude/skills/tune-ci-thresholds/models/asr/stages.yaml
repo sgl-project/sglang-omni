@@ -7,8 +7,8 @@ multi_speaker_diarization:
   context_vars:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 800
   sample_counts:
     total:
@@ -126,8 +126,8 @@ multi_speaker_speed:
   context_vars:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 800
   sample_counts:
     total:
@@ -194,8 +194,8 @@ aishell4_long_diarization:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 20
   sample_counts:
     total:
@@ -262,8 +262,8 @@ aishell4_long_speed:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 20
   sample_counts:
     total:
@@ -330,8 +330,8 @@ googletime_diarization:
   extra_env: {}
   context_vars:
     - MOSS_TD_GOOGLETIME_CI_SAMPLES
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 25
   sample_counts:
     total:
@@ -418,8 +418,8 @@ googletime_speed:
   extra_env: {}
   context_vars:
     - MOSS_TD_GOOGLETIME_CI_SAMPLES
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 25
   sample_counts:
     total:
@@ -487,8 +487,8 @@ multi_speaker_stream_diarization:
   context_vars:
     - MOSS_TD_CI_SAMPLES
   variant: "stream"
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 800
   sample_counts:
     total:
@@ -596,8 +596,8 @@ multi_speaker_stream_speed:
   context_vars:
     - MOSS_TD_CI_SAMPLES
   variant: "stream"
-  test_file_sha256: e1001853547eaa6c32bed89b65e705b8ecd9eda10bb2af864219d5cde47ce8be
-  last_discovered_at: 2026-07-29T04:37:10Z
+  test_file_sha256: 00865a54aa5cfceaaf510e6f5f7eb62bef31275cf317c773dcf82627c8317f36
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 800
   sample_counts:
     total:
@@ -677,28 +677,35 @@ multi_speaker_stream_speed:
         scale: 1
         digits: 4
       status: OK
-fun_asr_en_wer:
-  test: tests/test_model/test_asr_ci_fun_asr.py
-  title: "FUN ASR EN Wer"
+seedtts_fun_en_wer:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS FUN EN Wer"
   group: wer
-  extra_env: {}
+  extra_env:
+    ASR_CI_MODEL: "fun"
   context_vars:
-    - SEEDTTS_FUN_ASR_EN_SAMPLES
+    - SEEDTTS_ASR_EN_SAMPLES
   variant: "en"
-  test_file_sha256: 38c9ca219131f2d60c5d25c5c45465c7e9e95708ef5f1023ae90374e9366e670
-  last_discovered_at: 2026-07-29T04:37:11Z
+  calibration_preset: "fun"
+  gpus: 2
+  hf_model_ids:
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 1088
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
   sample_counts:
     total:
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
       source: "FUN_ASR_EN_CORPUS_WER_MAX"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.corpus_wer"
       worst: max
       display:
@@ -708,7 +715,7 @@ fun_asr_en_wer:
       status: OK
     per_sample_wer_max:
       source: "FUN_ASR_EN_SAMPLE_WER_MAX"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.wer_per_sample_max"
       worst: max
       display:
@@ -716,28 +723,35 @@ fun_asr_en_wer:
         scale: 100
         digits: 2
       status: OK
-fun_asr_en_speed:
-  test: tests/test_model/test_asr_ci_fun_asr.py
-  title: "FUN ASR EN Speed"
+seedtts_fun_en_speed:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS FUN EN Speed"
   group: speed
-  extra_env: {}
+  extra_env:
+    ASR_CI_MODEL: "fun"
   context_vars:
-    - SEEDTTS_FUN_ASR_EN_SAMPLES
+    - SEEDTTS_ASR_EN_SAMPLES
   variant: "en"
-  test_file_sha256: 38c9ca219131f2d60c5d25c5c45465c7e9e95708ef5f1023ae90374e9366e670
-  last_discovered_at: 2026-07-29T04:37:11Z
+  calibration_preset: "fun"
+  gpus: 2
+  hf_model_ids:
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
   expected_samples: 1088
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
   sample_counts:
     total:
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.evaluated"
   metrics:
     throughput_qps:
       source: "FUN_ASR_THROUGHPUT_MIN"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "speed.throughput_samples_per_s"
       worst: min
       display:
@@ -747,7 +761,7 @@ fun_asr_en_speed:
       status: OK
     latency_mean_s:
       source: "FUN_ASR_LATENCY_MEAN_MAX_S"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "speed.latency_mean_s"
       worst: max
       display:
@@ -757,7 +771,7 @@ fun_asr_en_speed:
       status: OK
     latency_p95_s:
       source: "FUN_ASR_LATENCY_P95_MAX_S"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "speed.latency_p95_s"
       worst: max
       display:
@@ -767,7 +781,7 @@ fun_asr_en_speed:
       status: OK
     rtf_mean:
       source: "FUN_ASR_RTF_MEAN_MAX"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "speed.rtf_mean"
       worst: max
       display:
@@ -777,7 +791,7 @@ fun_asr_en_speed:
       status: OK
     rtf_p95:
       source: "FUN_ASR_RTF_P95_MAX"
-      json_file: "fun_asr_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "speed.rtf_p95"
       worst: max
       display:
@@ -785,28 +799,157 @@ fun_asr_en_speed:
         scale: 1
         digits: 4
       status: OK
-fun_asr_zh_wer:
-  test: tests/test_model/test_asr_ci_fun_asr.py
-  title: "FUN ASR ZH Wer"
+seedtts_qwen3_en_wer:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS QWEN3 EN Wer"
   group: wer
-  extra_env: {}
+  extra_env:
+    ASR_CI_MODEL: "qwen3"
   context_vars:
-    - SEEDTTS_FUN_ASR_ZH_SAMPLES
-  variant: "zh"
-  test_file_sha256: 38c9ca219131f2d60c5d25c5c45465c7e9e95708ef5f1023ae90374e9366e670
-  last_discovered_at: 2026-07-29T04:37:11Z
-  expected_samples: 2020
+    - SEEDTTS_ASR_EN_SAMPLES
+  variant: "en"
+  calibration_preset: "qwen3"
+  gpus: 2
+  hf_model_ids:
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
+  expected_samples: 1088
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
   sample_counts:
     total:
-      json_file: "fun_asr_zh_results.json"
+      json_file: "asr_seedtts_en_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "fun_asr_zh_results.json"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "QWEN3_ASR_EN_CORPUS_WER_MAX"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "summary.corpus_wer"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+    per_sample_wer_max:
+      source: "QWEN3_ASR_EN_SAMPLE_WER_MAX"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "summary.wer_per_sample_max"
+      worst: max
+      display:
+        label: "Max per-sample WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+seedtts_qwen3_en_speed:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS QWEN3 EN Speed"
+  group: speed
+  extra_env:
+    ASR_CI_MODEL: "qwen3"
+  context_vars:
+    - SEEDTTS_ASR_EN_SAMPLES
+  variant: "en"
+  calibration_preset: "qwen3"
+  gpus: 2
+  hf_model_ids:
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
+  expected_samples: 1088
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
+  sample_counts:
+    total:
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    throughput_qps:
+      source: "QWEN3_ASR_THROUGHPUT_MIN"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "speed.throughput_samples_per_s"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_mean_s:
+      source: "QWEN3_ASR_LATENCY_MEAN_MAX_S"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "speed.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    latency_p95_s:
+      source: "QWEN3_ASR_LATENCY_P95_MAX_S"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "speed.latency_p95_s"
+      worst: max
+      display:
+        label: "Latency p95 (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "QWEN3_ASR_RTF_MEAN_MAX"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "speed.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
+    rtf_p95:
+      source: "QWEN3_ASR_RTF_P95_MAX"
+      json_file: "asr_seedtts_en_results.json"
+      json_path: "speed.rtf_p95"
+      worst: max
+      display:
+        label: "RTF p95"
+        scale: 1
+        digits: 4
+      status: OK
+seedtts_fun_zh_wer:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS FUN ZH Wer"
+  group: wer
+  extra_env:
+    ASR_CI_MODEL: "fun"
+  context_vars:
+    - SEEDTTS_ASR_ZH_SAMPLES
+  variant: "zh"
+  calibration_preset: "fun"
+  gpus: 2
+  hf_model_ids:
+    - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
+  expected_samples: 2020
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
+  sample_counts:
+    total:
+      json_file: "asr_seedtts_zh_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "asr_seedtts_zh_results.json"
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
       source: "FUN_ASR_ZH_CORPUS_WER_MAX"
-      json_file: "fun_asr_zh_results.json"
+      json_file: "asr_seedtts_zh_results.json"
       json_path: "summary.corpus_wer"
       worst: max
       display:
@@ -816,7 +959,53 @@ fun_asr_zh_wer:
       status: OK
     per_sample_wer_max:
       source: "FUN_ASR_ZH_SAMPLE_WER_MAX"
-      json_file: "fun_asr_zh_results.json"
+      json_file: "asr_seedtts_zh_results.json"
+      json_path: "summary.wer_per_sample_max"
+      worst: max
+      display:
+        label: "Max per-sample WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+seedtts_qwen3_zh_wer:
+  test: tests/test_model/test_asr_ci_seedtts.py
+  title: "SEEDTTS QWEN3 ZH Wer"
+  group: wer
+  extra_env:
+    ASR_CI_MODEL: "qwen3"
+  context_vars:
+    - SEEDTTS_ASR_ZH_SAMPLES
+  variant: "zh"
+  calibration_preset: "qwen3"
+  gpus: 2
+  hf_model_ids:
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 828aa81cf286cacc9f5a3f77812d081eeb2a91809306e0e9e86a6582b6783844
+  last_discovered_at: 2026-08-01T21:32:09Z
+  expected_samples: 2020
+  threshold_file: "tests/test_model/asr_ci_config.py"
+  threshold_file_sha256: 7282f36e851d68ed11cd9de972ace3395438baa0de8afdd6c14646377486155a
+  sample_counts:
+    total:
+      json_file: "asr_seedtts_zh_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "asr_seedtts_zh_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    corpus_wer:
+      source: "QWEN3_ASR_ZH_CORPUS_WER_MAX"
+      json_file: "asr_seedtts_zh_results.json"
+      json_path: "summary.corpus_wer"
+      worst: max
+      display:
+        label: "Corpus WER (%)"
+        scale: 100
+        digits: 2
+      status: OK
+    per_sample_wer_max:
+      source: "QWEN3_ASR_ZH_SAMPLE_WER_MAX"
+      json_file: "asr_seedtts_zh_results.json"
       json_path: "summary.wer_per_sample_max"
       worst: max
       display:

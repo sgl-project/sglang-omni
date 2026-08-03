@@ -23,7 +23,7 @@ TUNE_GPU_INCLUDE=2,3 python tune.py ... --stages <B> --output-dir "$RUN_B"
 
 Do not hard-code a fixed “two groups share ASR/TTS/Omni” partition table in
 agent plans. Choose Mode C unless the user explicitly wants one combined
-worst-of-five via Mode B.
+worst-of-N via Mode B.
 
 ## Concurrent isolation (required for any multi-group run)
 
@@ -146,6 +146,22 @@ Do **not** block forever on that pair. Prefer another idle two-GPU pair, update
 substituted. Never broaden cleanup onto reserved or foreign GPUs to chase
 ghost memory. Host-side reset (Fabric Manager / container restart) is outside
 this skill’s scope unless the user asks.
+
+## Destructive rounds and replenishment
+
+`run` rejects rounds whose numbers came from a broken execution and replaces
+them (see `CONTRACT.md`). Operationally this means:
+
+- The round count is **not** fixed at `--repeats`. Watch for
+  `round N REJECTED as destructive` and `replenishing K round(s)` in the log;
+  Tab A shows `D` cells and an effective N above the baseline.
+- Budget roughly **+35–40%** wall clock on a busy host: on a contended 8-GPU
+  machine most units need one replacement pair.
+- A high `n` across many units means the host is contended, not that the code
+  regressed. `n >= 3` triggers one full restart of that unit; a second
+  occurrence stops the unit and says so. Reschedule instead of retrying.
+- Replacement rounds get **new indices** (6, 7, …). Rejected jsons stay on
+  disk as evidence — do not delete them to "clean up" a run directory.
 
 ## Contaminated-run recovery
 
