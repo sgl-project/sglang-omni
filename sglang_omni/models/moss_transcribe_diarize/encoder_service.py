@@ -12,6 +12,7 @@ import logging
 import queue
 import threading
 import traceback
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -22,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
+
+
+@dataclass(frozen=True)
+class _DetachedFailure:
+    exception: Exception
+    formatted_traceback: str
 
 
 class BatchedAudioEncoderService:
@@ -84,42 +91,33 @@ class BatchedAudioEncoderService:
         except Exception as batch_exc:
             if len(batch) == 1:
                 failure = self._detach_failure(batch_exc)
-                failure_type = type(failure).__name__
-                failure_message = str(failure)
                 logger.error(
-                    "MOSS-TD audio encode failed: %s: %s",
-                    failure_type,
-                    failure_message,
+                    "MOSS-TD audio encode failed:\n%s",
+                    failure.formatted_traceback,
                 )
-                self._recover_after_failure(failure)
-                batch[0][1].set_exception(failure)
+                self._recover_after_failure(failure.exception)
+                batch[0][1].set_exception(failure.exception)
                 return
 
             failure = self._detach_failure(batch_exc)
-            failure_type = type(failure).__name__
-            failure_message = str(failure)
             logger.error(
                 "MOSS-TD batched audio encode failed for %d items; "
-                "retrying per item: %s: %s",
+                "retrying per item:\n%s",
                 len(items),
-                failure_type,
-                failure_message,
+                failure.formatted_traceback,
             )
-            self._recover_after_failure(failure)
+            self._recover_after_failure(failure.exception)
             for item, future in batch:
                 try:
                     self._encode_batch([item])
                 except Exception as item_exc:
                     failure = self._detach_failure(item_exc)
-                    failure_type = type(failure).__name__
-                    failure_message = str(failure)
                     logger.error(
-                        "MOSS-TD per-item audio encode retry failed: %s: %s",
-                        failure_type,
-                        failure_message,
+                        "MOSS-TD per-item audio encode retry failed:\n%s",
+                        failure.formatted_traceback,
                     )
-                    self._recover_after_failure(failure)
-                    future.set_exception(failure)
+                    self._recover_after_failure(failure.exception)
+                    future.set_exception(failure.exception)
                 else:
                     self._record_success(1)
                     future.set_result(None)
@@ -130,17 +128,23 @@ class BatchedAudioEncoderService:
             future.set_result(None)
 
     @staticmethod
-    def _detach_failure(exc: Exception) -> Exception:
+    def _detach_failure(exc: Exception) -> _DetachedFailure:
+        formatted_traceback = "".join(traceback.format_exception(exc)).rstrip()
         message = str(exc)
         traceback.clear_frames(exc.__traceback__)
         exc.__traceback__ = None
         exc.__cause__ = None
         exc.__context__ = None
         if isinstance(exc, torch.OutOfMemoryError):
-            return torch.OutOfMemoryError(message)
-        if isinstance(exc, ValueError):
-            return ValueError(message)
-        return RuntimeError(f"{type(exc).__name__}: {message}")
+            detached = torch.OutOfMemoryError(message)
+        elif isinstance(exc, ValueError):
+            detached = ValueError(message)
+        else:
+            detached = RuntimeError(f"{type(exc).__name__}: {message}")
+        return _DetachedFailure(
+            exception=detached,
+            formatted_traceback=formatted_traceback,
+        )
 
     def _recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):

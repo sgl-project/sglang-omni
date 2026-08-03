@@ -213,3 +213,39 @@ def test_batched_oom_falls_back_to_per_item_encoding(
     assert cleanup_steps == ["synchronize", "empty_cache"]
     assert selected_devices == ["cuda:5"]
     assert service._item_count == 2
+
+
+def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = object.__new__(BatchedAudioEncoderService)
+    retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
+
+    def _raise_non_oom_encoder_failure(_items: list[object]) -> None:
+        intermediate = _EncoderIntermediate()
+        retained_intermediates.append(weakref.ref(intermediate))
+        raise ValueError("unexpected encoder shape")
+
+    monkeypatch.setattr(service, "_encode_batch", _raise_non_oom_encoder_failure)
+    future: concurrent.futures.Future = concurrent.futures.Future()
+
+    service._process_batch([(object(), future)])
+
+    failure = future.exception()
+    assert isinstance(failure, ValueError)
+    assert failure.__traceback__ is None
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+
+    gc.collect()
+    assert retained_intermediates[0]() is None
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Traceback (most recent call last):" in message
+    assert "_raise_non_oom_encoder_failure" in message
+    assert "ValueError: unexpected encoder shape" in message
+    assert all(record.exc_info is None for record in caplog.records)
+    assert all(
+        not any(isinstance(arg, BaseException) for arg in record.args)
+        for record in caplog.records
+    )
