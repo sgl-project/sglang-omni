@@ -11,8 +11,8 @@ from sglang_omni.utils.gpu_compat import gpu_architecture_for_sm
         (89, "ada"),
         (90, "hopper"),
         (100, "blackwell-datacenter"),
+        (103, "blackwell-datacenter"),
         (120, "blackwell-consumer"),
-        (103, "sm103"),
         (None, "unknown"),
     ],
 )

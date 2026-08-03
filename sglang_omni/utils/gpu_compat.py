@@ -24,6 +24,7 @@ _GPU_ARCHITECTURES = {
     89: "ada",
     90: "hopper",
     100: "blackwell-datacenter",
+    103: "blackwell-datacenter",
     120: "blackwell-consumer",
 }
 

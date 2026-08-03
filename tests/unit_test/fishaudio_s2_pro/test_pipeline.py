@@ -877,7 +877,7 @@ def test_s2pro_engine_preserves_explicit_attention_backend(
     assert result.scheduler.server_args.attention_backend == "fa3"
 
 
-@pytest.mark.parametrize("sm_version", [None, 80])
+@pytest.mark.parametrize("sm_version", [None, 80, 103])
 def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
     monkeypatch: pytest.MonkeyPatch,
     sm_version: int | None,
