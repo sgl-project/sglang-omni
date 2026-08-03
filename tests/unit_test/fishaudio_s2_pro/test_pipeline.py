@@ -602,6 +602,7 @@ def _run_s2pro_engine_with_fake_buffers(
     text_buffer_bs: int = 64,
     audio_buffer_bs: int = 64,
     sm_version: int | None = 90,
+    flashinfer_available: bool = True,
     server_args_overrides: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
@@ -616,6 +617,12 @@ def _run_s2pro_engine_with_fake_buffers(
         fish_engine_builder,
         "get_visible_gpu_sm_version",
         lambda _gpu_id: sm_version,
+    )
+    monkeypatch.setattr(
+        fish_engine_builder,
+        "is_flashinfer_available",
+        lambda: flashinfer_available,
+        raising=False,
     )
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
@@ -842,7 +849,6 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         (90, "fa3"),
         (100, "flashinfer"),
         (120, "flashinfer"),
-        (None, "flashinfer"),
     ],
 )
 def test_s2pro_engine_selects_model_local_attention_backend(
@@ -863,11 +869,42 @@ def test_s2pro_engine_preserves_explicit_attention_backend(
 ) -> None:
     result = _run_s2pro_engine_with_fake_buffers(
         monkeypatch,
-        sm_version=90,
-        server_args_overrides={"attention_backend": "flashinfer"},
+        sm_version=None,
+        flashinfer_available=False,
+        server_args_overrides={"attention_backend": "fa3"},
     )
 
-    assert result.scheduler.server_args.attention_backend == "flashinfer"
+    assert result.scheduler.server_args.attention_backend == "fa3"
+
+
+@pytest.mark.parametrize("sm_version", [None, 80])
+def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+) -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="cannot select a default attention backend",
+    ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=sm_version,
+        )
+
+
+def test_s2pro_engine_rejects_flashinfer_disabled_by_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_IS_FLASHINFER_AVAILABLE", "false")
+    with pytest.raises(
+        RuntimeError,
+        match="FlashInfer is unavailable.*SGLANG_IS_FLASHINFER_AVAILABLE",
+    ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=89,
+            flashinfer_available=False,
+        )
 
 
 @pytest.mark.parametrize(

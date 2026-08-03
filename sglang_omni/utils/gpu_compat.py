@@ -7,7 +7,6 @@ import importlib
 import logging
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
-from typing import Any
 
 from sglang_omni.utils.gpu_memory import (
     _get_device_handle,
@@ -129,22 +128,6 @@ def get_visible_gpu_sm_version(
         return None
     major, minor = capability
     return major * 10 + minor
-
-
-def describe_sglang_runtime_configuration(server_args: Any, gpu_id: int) -> str:
-    """Describe the final model-owned backend configuration at bootstrap."""
-    sm_version = get_visible_gpu_sm_version(gpu_id)
-    prefill_attention_backend, decode_attention_backend = (
-        server_args.get_attention_backends()
-    )
-    return (
-        f"SGLang runtime configuration: gpu_id={gpu_id}, sm={sm_version}, "
-        f"architecture={gpu_architecture_for_sm(sm_version)}, "
-        f"attention_backend={server_args.attention_backend}, "
-        f"decode_attention_backend={decode_attention_backend}, "
-        f"prefill_attention_backend={prefill_attention_backend}, "
-        f"sampling_backend={server_args.sampling_backend}"
-    )
 
 
 def visible_gpus_need_flashinfer_cuda_norm(
