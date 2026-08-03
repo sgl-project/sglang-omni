@@ -113,6 +113,7 @@ def make_video_send_fn(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+    enable_video_input: bool = True,
     enable_audio_input: bool = False,
     audio_output_dir: str | None = None,
     fixed_prompt: str | None = None,
@@ -132,12 +133,13 @@ def make_video_send_fn(
         payload: dict[str, Any] = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "videos": [sample.video_path],
             "modalities": modalities,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        if enable_video_input:
+            payload["videos"] = [sample.video_path]
         if enable_audio_input:
             assert isinstance(sample, VideoAMMESample)
             payload["audios"] = [sample.audio_path]

@@ -1,8 +1,8 @@
 # SGLang Omni Benchmarks
 
 Benchmark suite for SGLang Omni, covering performance (latency, throughput, RTF)
-and accuracy (WER, MMSU, MMMU, Video-MME, Video-AMME) across supported modality
-combinations.
+and accuracy (WER, MMSU, MMMU, Video-MME, Video-AMME, Daily-Omni) across
+supported modality combinations.
 
 ## Directory Structure
 
@@ -23,6 +23,9 @@ benchmarks/
 ```bash
 # 0. Prepare dataset (once)
 python -m benchmarks.dataset.prepare --dataset seedtts
+
+# Daily-Omni is a 3.9 GB download and is prepared separately when needed
+python -m benchmarks.dataset.prepare --dataset dailyomni
 
 # 1. Start a server on port 8000 (pick one matching the benchmark below)
 
@@ -154,7 +157,13 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
     --enable-audio --asr-device cuda:0 --asr-concurrency 32
 
-# 8a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
+# 9. Daily-Omni (audio-visual temporal reasoning)
+python -m benchmarks.eval.benchmark_omni_dailyomni \
+    --model your-model-name --port 8000 \
+    --max-concurrency 4 \
+    --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
+
+# 10a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
 # For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --utmos-only --output-dir results/s2pro_en --device cuda:0
@@ -163,7 +172,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 python -m benchmarks.eval.benchmark_omni_seedtts \
     --utmos-only --output-dir results/qwen3_omni_en --device cuda:0
 
-# 8b. Offline Speaker Similarity (voice resemblance) scoring on existing output
+# 10b. Offline Speaker Similarity (voice resemblance) scoring on existing output
 # For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --similarity-only --output-dir results/s2pro_en --device cuda:0
@@ -186,6 +195,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_dailyomni.py` | Daily-Omni (audio-visual temporal reasoning) | Multimodal models | `/v1/chat/completions` |
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving

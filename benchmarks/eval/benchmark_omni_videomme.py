@@ -63,7 +63,6 @@ Speed (full set)
 | Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 0      | 15.468         | 16.089           | 18.826        | 19.790        | 7.4                            | 115.0           | 287139           | 13769.0            | 34366523            | 0.258          | PR #411 [H100, c=4, max_tokens=256]                                 |
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -72,6 +71,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -141,9 +141,11 @@ async def run_video_eval(
     task_label: str,
     output_filename: str,
     audio_output_dir_default: str,
+    enable_video_input: bool = True,
     enable_audio_input: bool = False,
     fixed_prompt: str | None = None,
     compute_wer: bool = True,
+    extra_config: dict[str, Any] | None = None,
 ) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
@@ -170,6 +172,7 @@ async def run_video_eval(
         video_min_pixels=config.video_min_pixels,
         video_max_pixels=config.video_max_pixels,
         video_total_pixels=config.video_total_pixels,
+        enable_video_input=enable_video_input,
         enable_audio_input=enable_audio_input,
         audio_output_dir=audio_output_dir,
         fixed_prompt=fixed_prompt,
@@ -188,29 +191,33 @@ async def run_video_eval(
     per_sample = build_videomme_result_records(samples, request_results)
     summary = compute_videomme_metrics(per_sample)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
+    result_config = {
+        "model": config.model,
+        "base_url": base_url,
+        "repo_id": config.repo_id,
+        "split": config.split,
+        "max_samples": config.max_samples,
+        "max_tokens": config.max_tokens,
+        "temperature": config.temperature,
+        "video_fps": config.video_fps,
+        "video_max_frames": config.video_max_frames,
+        "video_min_pixels": config.video_min_pixels,
+        "video_max_pixels": config.video_max_pixels,
+        "video_total_pixels": config.video_total_pixels,
+        "max_concurrency": config.max_concurrency,
+        "warmup": config.warmup,
+        "enable_audio": config.enable_audio,
+        "asr_device": config.asr_device,
+        "asr_concurrency": config.asr_concurrency,
+        "lang": config.lang,
+    }
+    if extra_config:
+        result_config.update(extra_config)
+
     results = {
         "summary": summary,
         "speed": speed,
-        "config": {
-            "model": config.model,
-            "base_url": base_url,
-            "repo_id": config.repo_id,
-            "split": config.split,
-            "max_samples": config.max_samples,
-            "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "video_fps": config.video_fps,
-            "video_max_frames": config.video_max_frames,
-            "video_min_pixels": config.video_min_pixels,
-            "video_max_pixels": config.video_max_pixels,
-            "video_total_pixels": config.video_total_pixels,
-            "max_concurrency": config.max_concurrency,
-            "warmup": config.warmup,
-            "enable_audio": config.enable_audio,
-            "asr_device": config.asr_device,
-            "asr_concurrency": config.asr_concurrency,
-            "lang": config.lang,
-        },
+        "config": result_config,
         "per_sample": per_sample,
     }
     if config.enable_audio and compute_wer:

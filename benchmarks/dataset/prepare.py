@@ -14,6 +14,7 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
     python -m benchmarks.dataset.prepare --dataset videoamme-ci-50
+    python -m benchmarks.dataset.prepare --dataset dailyomni
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ DATASETS: dict[str, str] = {
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
+    "dailyomni": "liarliar/Daily-Omni",
 }
 
 
@@ -56,6 +58,9 @@ def download_dataset(repo_id: str, *, quiet: bool = False) -> None:
     elif repo_id == "BoJack/MMAR":
         load_dataset(repo_id)
         hf_hub_download(repo_id, "mmar-audio.tar.gz", repo_type="dataset")
+    elif repo_id == "liarliar/Daily-Omni":
+        hf_hub_download(repo_id, "qa.json", repo_type="dataset")
+        hf_hub_download(repo_id, "Videos.tar", repo_type="dataset")
     elif repo_id.startswith("lmms-lab/mmau:"):
         dataset_id, split = repo_id.split(":", 1)
         load_dataset(
