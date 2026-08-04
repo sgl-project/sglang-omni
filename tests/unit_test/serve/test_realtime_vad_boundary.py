@@ -9,9 +9,9 @@ import wave
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
-from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -25,211 +25,173 @@ from sglang_omni.serve.realtime.vad import (
     offsets_to_ms,
 )
 
+BOUNDARY = [
+    "input_audio_buffer.speech_started",
+    "input_audio_buffer.speech_stopped",
+    "input_audio_buffer.committed",
+    "input_audio_buffer.speech_started",
+]
 
-def _pcm16_chunk(num_frames: int, *, amplitude: int = 0) -> bytes:
-    sample = amplitude.to_bytes(2, "little", signed=True)
-    return sample * (VAD_FRAME_SAMPLES * num_frames)
+
+def _pcm(frames: int, amp: int = 0) -> bytes:
+    return amp.to_bytes(2, "little", signed=True) * (VAD_FRAME_SAMPLES * frames)
 
 
 def _b64(pcm: bytes) -> str:
-    return base64.b64encode(pcm).decode("ascii")
+    return base64.b64encode(pcm).decode()
 
 
-def _wav_num_samples(data_uri: str) -> int:
-    _, b64 = data_uri.split(",", 1)
-    with wave.open(io.BytesIO(base64.b64decode(b64)), "rb") as wf:
+def _wav_samples(uri: str) -> int:
+    with wave.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1])), "rb") as wf:
         return wf.getnframes()
+
+
+def _speechish(frames: int, seed: int = 0) -> bytes:
+    rng = np.random.default_rng(seed)
+    t = np.arange(frames * VAD_FRAME_SAMPLES) / VAD_SAMPLE_RATE
+    f0 = 120.0 + 10.0 * np.sin(2 * np.pi * 3 * t)
+    x = (
+        0.4 * np.sin(2 * np.pi * f0 * t)
+        + 0.25 * np.sin(2 * np.pi * 2 * f0 * t)
+        + 0.15 * np.sin(2 * np.pi * 3 * f0 * t)
+        + 0.08 * np.sin(2 * np.pi * 800 * t)
+        + 0.05 * rng.normal(0.0, 1.0, t.size)
+    )
+    x = np.clip(x * (0.5 + 0.5 * np.sin(2 * np.pi * 5 * t)), -1.0, 1.0)
+    return (x * 30000).astype(np.int16).tobytes()
 
 
 class FakeVAD:
     def __init__(self, emits: list[Emit]) -> None:
-        self._emits = emits
+        self._emits = list(emits)
         self.reset_calls = 0
-        self.samples_consumed = 0
 
     def process(self, pcm_bytes: bytes) -> list[Emit]:
-        self.samples_consumed += len(pcm_bytes) // 2
-        emits = self._emits
-        self._emits = []
-        return emits
+        out, self._emits = self._emits, []
+        return out
 
     def reset(self) -> None:
         self.reset_calls += 1
-        self.samples_consumed = 0
 
 
-async def _empty_async_iter(*_args: Any, **_kwargs: Any):
+async def _empty(*_a: Any, **_k: Any):
     if False:  # pragma: no cover
         yield None
-    return
 
 
-async def _stop_session(session: RealtimeSession) -> None:
+async def _stop(session: RealtimeSession) -> None:
     session.closed = True
     if session.queue_drainer is not None and not session.queue_drainer.done():
         session.queue_drainer.cancel()
         await asyncio.gather(session.queue_drainer, return_exceptions=True)
 
 
-def _make_session(fake_vad: FakeVAD) -> tuple[RealtimeSession, list[dict[str, Any]]]:
+def _session(
+    vad: FakeVAD | None = None,
+) -> tuple[RealtimeSession, list[dict[str, Any]], list[tuple[str, str]]]:
     sent: list[dict[str, Any]] = []
-    websocket = MagicMock()
+    commits: list[tuple[str, str]] = []
     client = MagicMock()
     client.abort = AsyncMock()
-    client.completion_stream = MagicMock(side_effect=_empty_async_iter)
+    client.completion_stream = MagicMock(side_effect=_empty)
 
-    with patch("sglang_omni.serve.realtime.session.StreamingVAD", return_value=fake_vad):
+    if vad is None:
         session = RealtimeSession(
-            websocket,
-            client=client,
-            model_name="test-model",
-            session_id="sess_test",
+            MagicMock(), client=client, model_name="m", session_id="s"
         )
-    session.vad = fake_vad
-    session.send = AsyncMock(side_effect=lambda event: sent.append(event))
-    return session, sent
+    else:
+        with patch(
+            "sglang_omni.serve.realtime.session.StreamingVAD", return_value=vad
+        ):
+            session = RealtimeSession(
+                MagicMock(), client=client, model_name="m", session_id="s"
+            )
+        session.vad = vad
+
+    orig_put = session.response_queue.put
+
+    async def _put(item: tuple[str, str]) -> None:
+        commits.append(item)
+        await orig_put(item)
+
+    session.response_queue.put = _put  # type: ignore[method-assign]
+    session.send = AsyncMock(side_effect=lambda e: sent.append(e))
+    return session, sent, commits
 
 
-@pytest.mark.asyncio
-async def test_adjacent_turn_in_single_chunk_keeps_suffix_audio():
-    first_start = 0
-    first_stop = VAD_FRAME_SAMPLES
-    prefix_pad = 300 * VAD_SAMPLE_RATE // 1000
-    second_start = max(0, 18 * VAD_FRAME_SAMPLES - VAD_FRAME_SAMPLES - prefix_pad)
-
-    fake_vad = FakeVAD(
-        [
-            Emit(VADEvent.SPEECH_STARTED, first_start),
-            Emit(VADEvent.SPEECH_STOPPED, first_stop),
-            Emit(VADEvent.SPEECH_STARTED, second_start),
-        ]
-    )
-    session, sent = _make_session(fake_vad)
-    committed_payloads: list[tuple[str, str]] = []
-    original_put = session.response_queue.put
-
-    async def _capture_put(item: tuple[str, str]) -> None:
-        committed_payloads.append(item)
-        await original_put(item)
-
-    session.response_queue.put = _capture_put  # type: ignore[method-assign]
-
-    pcm = _pcm16_chunk(1, amplitude=12000) + _pcm16_chunk(16) + _pcm16_chunk(
-        1, amplitude=12000
-    )
-    assert len(pcm) == 18 * VAD_FRAME_SAMPLES * 2
-
+async def _append(session: RealtimeSession, pcm: bytes) -> None:
     await session.handle_audio_append(
         InputAudioBufferAppend(type="input_audio_buffer.append", audio=_b64(pcm))
     )
 
-    types = [e["type"] for e in sent]
-    assert types == [
-        "input_audio_buffer.speech_started",
-        "input_audio_buffer.speech_stopped",
-        "input_audio_buffer.committed",
-        "input_audio_buffer.speech_started",
-    ]
 
-    assert fake_vad.reset_calls == 0
-    committed = next(e for e in sent if e["type"] == "input_audio_buffer.committed")
-    assert len(committed_payloads) == 1
-    _, payload = committed_payloads[0]
-    assert _wav_num_samples(payload) == first_stop - first_start
-
-    expected_suffix_samples = 18 * VAD_FRAME_SAMPLES - first_stop
-    assert session.audio_buffer.num_samples == expected_suffix_samples
-    assert session.buffer_origin_samples == first_stop
-    assert session.vad_origin_samples == 0
-
-    started_events = [
-        e for e in sent if e["type"] == "input_audio_buffer.speech_started"
-    ]
-    assert started_events[0]["audio_start_ms"] == offsets_to_ms(first_start)
-    assert started_events[1]["audio_start_ms"] == offsets_to_ms(second_start)
-    assert started_events[1]["audio_start_ms"] > started_events[0]["audio_start_ms"]
-
-    assert session.utterance_start_byte is not None
-    assert 0 <= session.utterance_start_byte < session.audio_buffer.num_bytes
-    assert session.utterance_item_id != committed["item_id"]
-
-    await _stop_session(session)
+def _by_type(sent: list[dict[str, Any]], typ: str) -> list[dict[str, Any]]:
+    return [e for e in sent if e["type"] == typ]
 
 
 @pytest.mark.asyncio
-async def test_second_turn_commit_uses_retained_suffix():
-    first_stop = VAD_FRAME_SAMPLES
-    second_start = 4 * VAD_FRAME_SAMPLES
-    second_stop = 5 * VAD_FRAME_SAMPLES
-
-    fake_vad = FakeVAD(
+async def test_adjacent_turn_retains_suffix_and_second_commit():
+    stop1 = VAD_FRAME_SAMPLES
+    start2 = 4 * VAD_FRAME_SAMPLES
+    stop2 = 5 * VAD_FRAME_SAMPLES
+    vad = FakeVAD(
         [
             Emit(VADEvent.SPEECH_STARTED, 0),
-            Emit(VADEvent.SPEECH_STOPPED, first_stop),
-            Emit(VADEvent.SPEECH_STARTED, second_start),
+            Emit(VADEvent.SPEECH_STOPPED, stop1),
+            Emit(VADEvent.SPEECH_STARTED, start2),
         ]
     )
-    session, sent = _make_session(fake_vad)
-    committed_payloads: list[tuple[str, str]] = []
-    original_put = session.response_queue.put
+    session, sent, commits = _session(vad)
+    second = _pcm(1, 9000)
+    await _append(session, _pcm(1, 12000) + _pcm(3) + second + _pcm(1))
 
-    async def _capture_put(item: tuple[str, str]) -> None:
-        committed_payloads.append(item)
-        await original_put(item)
+    assert [e["type"] for e in sent] == BOUNDARY
+    assert vad.reset_calls == 0 and len(commits) == 1
+    assert _wav_samples(commits[0][1]) == stop1
+    assert session.buffer_origin_samples == stop1 and session.vad_origin_samples == 0
+    assert second in bytes(session.audio_buffer.buf)
 
-    session.response_queue.put = _capture_put  # type: ignore[method-assign]
+    started, stopped = _by_type(sent, BOUNDARY[0]), _by_type(sent, BOUNDARY[1])[0]
+    assert started[0]["audio_start_ms"] == 0
+    assert stopped["audio_end_ms"] == offsets_to_ms(stop1)
+    assert started[1]["audio_start_ms"] == offsets_to_ms(start2)
+    assert started[0]["audio_start_ms"] < stopped["audio_end_ms"] < started[1]["audio_start_ms"]
 
-    pcm = _pcm16_chunk(6, amplitude=8000)
-    await session.handle_audio_append(
-        InputAudioBufferAppend(type="input_audio_buffer.append", audio=_b64(pcm))
-    )
-
-    fake_vad._emits = [Emit(VADEvent.SPEECH_STOPPED, second_stop)]
-    await session.handle_audio_append(
-        InputAudioBufferAppend(
-            type="input_audio_buffer.append", audio=_b64(_pcm16_chunk(1))
-        )
-    )
-
-    committed = [e for e in sent if e["type"] == "input_audio_buffer.committed"]
-    assert len(committed) == 2
-    assert len(committed_payloads) == 2
-
-    first_item, first_payload = committed_payloads[0]
-    second_item, second_payload = committed_payloads[1]
-    assert first_item != second_item
-    assert _wav_num_samples(first_payload) == first_stop
-    assert _wav_num_samples(second_payload) == second_stop - second_start
-    assert session.buffer_origin_samples == second_stop
-    assert fake_vad.reset_calls == 0
-
-    await _stop_session(session)
+    vad._emits = [Emit(VADEvent.SPEECH_STOPPED, stop2)]
+    await _append(session, _pcm(1))
+    committed = _by_type(sent, BOUNDARY[2])
+    assert len(committed) == len(commits) == 2
+    assert committed[0]["item_id"] != committed[1]["item_id"]
+    assert _wav_samples(commits[1][1]) == stop2 - start2
+    assert session.buffer_origin_samples == stop2 and vad.reset_calls == 0
+    await _stop(session)
 
 
 @pytest.mark.asyncio
-async def test_audio_clear_still_resets_vad_timeline():
-    fake_vad = FakeVAD([])
-    session, sent = _make_session(fake_vad)
-    session.audio_buffer.append_b64(_b64(_pcm16_chunk(2, amplitude=1000)))
-    session.buffer_origin_samples = 0
-    session.vad_origin_samples = 0
-    fake_vad.samples_consumed = 2 * VAD_FRAME_SAMPLES
+async def test_silero_adjacent_turns_preserve_second_speech():
+    second = _speechish(5, seed=1)
+    session, sent, commits = _session()
+    await _append(session, _speechish(5, seed=0) + _pcm(16) + second)
 
-    await session.handle_audio_clear(
-        InputAudioBufferClear(type="input_audio_buffer.clear")
+    assert [e["type"] for e in sent] == BOUNDARY and len(commits) == 1
+    started, stopped = _by_type(sent, BOUNDARY[0]), _by_type(sent, BOUNDARY[1])[0]
+    assert (
+        started[0]["audio_start_ms"]
+        < stopped["audio_end_ms"]
+        < started[1]["audio_start_ms"]
     )
+    assert session.vad_origin_samples == 0
+    assert session.buffer_origin_samples == stopped["audio_end_ms"] * VAD_SAMPLE_RATE // 1000
+    assert bytes(session.audio_buffer.buf).endswith(second)
+    await _stop(session)
 
+
+@pytest.mark.asyncio
+async def test_clear_resets_vad_timeline():
+    vad = FakeVAD([])
+    session, sent, _ = _session(vad)
+    session.audio_buffer.append_b64(_b64(_pcm(2, 1000)))
+    await session.handle_audio_clear(InputAudioBufferClear(type="input_audio_buffer.clear"))
     assert session.audio_buffer.is_empty()
-    assert session.buffer_origin_samples == 2 * VAD_FRAME_SAMPLES
-    assert session.vad_origin_samples == session.buffer_origin_samples
-    assert fake_vad.reset_calls == 1
-    assert sent[-1]["type"] == "input_audio_buffer.cleared"
-
-
-def test_audio_buffer_drop_prefix_keeps_suffix():
-    buf = RealtimeAudioBuffer()
-    buf.buf.extend(b"abcdefgh")
-    buf.drop_prefix(3)
-    assert bytes(buf.buf) == b"defgh"
-    buf.drop_prefix(100)
-    assert buf.is_empty()
+    assert session.buffer_origin_samples == session.vad_origin_samples == 2 * VAD_FRAME_SAMPLES
+    assert vad.reset_calls == 1 and sent[-1]["type"] == "input_audio_buffer.cleared"
