@@ -40,7 +40,16 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del model_worker, checkpoint_dir, device, gpu_id, server_args
+        del checkpoint_dir, device, gpu_id, server_args
+        self._model_runner = model_worker.model_runner
+
+    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+        del server_args
+        graph_runner = self._model_runner.decode_cuda_graph_runner
+        model.init_sampling_graphs(
+            list(graph_runner.capture_bs),
+            disable_padding=graph_runner.disable_padding,
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

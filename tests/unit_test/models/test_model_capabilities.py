@@ -26,7 +26,7 @@ EXPECTED_TTS_CAPABILITIES = {
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
-        supports_streaming_vocoder=False,
+        supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
     ),
@@ -194,7 +194,7 @@ def test_launcher_model_capabilities_log_summary() -> None:
         "architecture": "Qwen3TTSForConditionalGeneration",
         "reference_audio": True,
         "batch_vocoder": True,
-        "streaming_vocoder": False,
+        "streaming_vocoder": True,
         "cuda_graph": True,
         "torch_compile": True,
     }

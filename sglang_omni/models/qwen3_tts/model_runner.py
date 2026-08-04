@@ -154,6 +154,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             code_chunk = self.model._output_codes[row_idx].detach().clone()
             feedback = self.model._output_embeds[row_idx].detach().clone()
             sched_req.data.output_codes.append(code_chunk)
+            sched_req.data.latest_stream_code_chunk = code_chunk
             sched_req.data.pending_feedback_queue.append(feedback)
 
     def _sample_positions(

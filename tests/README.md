@@ -378,7 +378,8 @@ that happened to contain an older version of the test.
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
-  - pipeline config and stage factory concurrency defaults
+  - pipeline config, stage factory concurrency defaults, async-decode default,
+    and `--decode-mode async|sync` CLI overrides
   - single-source audio token length formula used by both processor and
     request builder paths
   - token-level result adapter marker handling, avoiding decode/encode
@@ -479,6 +480,8 @@ that happened to contain an older version of the test.
   - pipeline config and registry contracts
   - OmniScheduler-backed AR stage factory wiring
   - request mapping for `ref_audio` / `ref_text` and `references`
+  - incremental codec-to-vocoder ordering, priority batching, fallback parity,
+    CUDA stream handoff, and abort/failure cleanup
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation

@@ -1196,9 +1196,7 @@ def test_build_generation_kwargs_precedence():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_decode_frame_graphed_matches_branchless_eager():
     """The captured frame graph must reproduce the branchless eager decode."""
-    from sglang_omni.models.moss_tts_local.local_transformer import (
-        sample_seeded_branchless,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
 
     torch.manual_seed(11)
     device = torch.device("cuda")
@@ -1736,9 +1734,7 @@ def test_branchless_sampler_matches_eager_sampler():
     """The CUDA-graphable sampler must reproduce the eager path exactly."""
     pytest.importorskip("sglang")
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-    from sglang_omni.models.moss_tts_local.local_transformer import (
-        sample_seeded_branchless,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
 
     torch.manual_seed(7)
     rows, vocab = 6, 64
