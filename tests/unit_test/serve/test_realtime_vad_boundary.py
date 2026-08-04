@@ -41,9 +41,13 @@ def _b64(pcm: bytes) -> str:
     return base64.b64encode(pcm).decode()
 
 
-def _wav_samples(uri: str) -> int:
+def _wav_pcm(uri: str) -> bytes:
     with wave.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1])), "rb") as wf:
-        return wf.getnframes()
+        return wf.readframes(wf.getnframes())
+
+
+def _wav_samples(uri: str) -> int:
+    return len(_wav_pcm(uri)) // 2
 
 
 def _speechish(frames: int, seed: int = 0) -> bytes:
@@ -188,6 +192,45 @@ async def test_silero_adjacent_turns_preserve_second_speech():
         == stopped["audio_end_ms"] * VAD_SAMPLE_RATE // 1000
     )
     assert bytes(session.audio_buffer.buf).endswith(second)
+    await _stop(session)
+
+
+@pytest.mark.asyncio
+async def test_silero_silence_threshold_across_appends():
+    """Silence threshold can accumulate across client appends (network streaming)."""
+    first = _speechish(5, seed=0)
+    second = _speechish(5, seed=1)
+    session, sent, commits = _session()
+    reset_calls = 0
+    orig_reset = session.vad.reset
+
+    def _counting_reset() -> None:
+        nonlocal reset_calls
+        reset_calls += 1
+        orig_reset()
+
+    session.vad.reset = _counting_reset  # type: ignore[method-assign]
+
+    await _append(session, first + _pcm(15))
+    assert [e["type"] for e in sent] == [BOUNDARY[0]]
+    assert commits == [] and reset_calls == 0
+
+    await _append(session, _pcm(1) + second)
+    assert [e["type"] for e in sent] == BOUNDARY
+    assert len(commits) == 1 and reset_calls == 0
+    assert session.vad_origin_samples == 0
+    assert second in bytes(session.audio_buffer.buf)
+
+    started, stopped = _by_type(sent, BOUNDARY[0]), _by_type(sent, BOUNDARY[1])[0]
+    assert (
+        started[0]["audio_start_ms"]
+        < stopped["audio_end_ms"]
+        < started[1]["audio_start_ms"]
+    )
+
+    await _append(session, _pcm(16))
+    assert len(commits) == 2 and reset_calls == 0
+    assert second in _wav_pcm(commits[1][1])
     await _stop(session)
 
 
