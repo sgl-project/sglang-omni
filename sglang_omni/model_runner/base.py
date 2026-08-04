@@ -392,11 +392,7 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        if (
-            not current_platform.is_cpu()
-            and self.device.type == current_platform.device_type
-        ):
-            current_platform.set_device(self.device)
+        current_platform.set_device(self.device)
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:

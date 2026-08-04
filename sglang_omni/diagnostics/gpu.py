@@ -299,14 +299,13 @@ def _logical_devices(
                 f"CUDA_VISIBLE_DEVICES entry {visible_device!r} is a MIG device; "
                 "physical GPU mapping and free memory are unsupported."
             )
-        torch_cc = None
         architecture = None
-        if properties is not None:
-            major = getattr(properties, "major", None)
-            minor = getattr(properties, "minor", None)
-            if major is not None and minor is not None:
-                torch_cc = f"{major}.{minor}"
-            architecture = getattr(properties, "gcnArchName", None)
+        torch_cc = (
+            f"{properties.major}.{properties.minor}" if properties is not None else None
+        )
+        architecture = (
+            getattr(properties, "gcnArchName", None) if properties is not None else None
+        )
         devices.append(
             {
                 "logical_index": logical_index,
@@ -338,6 +337,8 @@ def collect_gpu_diagnostics(
     source_env = os.environ if env is None else env
     torch = torch_module or importlib.import_module("torch")
     device_platform = resolve_current_platform(torch)
+
+    # TODO: fold these into device abstraction
     platform = device_platform.device_name
     control_env_var = device_platform.device_control_env_var
     platform_visible_value = (
@@ -383,7 +384,7 @@ def collect_gpu_diagnostics(
                 getattr(torch, "version", None), "cuda", None
             ),
             "pytorch_hip_build": getattr(getattr(torch, "version", None), "hip", None),
-            "cuda_available": not device_platform.is_cpu(),
+            "cuda_available": device_platform.is_cuda(),
             "logical_device_count": len(devices),
         },
         "gpus": devices,

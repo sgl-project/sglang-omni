@@ -70,7 +70,11 @@ def test_cpu_is_the_fallback_when_no_runtime_is_usable() -> None:
     platform = resolve_current_platform(_torch_runtime(cuda=_Runtime(False)))
 
     assert platform.is_cpu()
-    assert platform.get_device() == torch.device("cpu")
+    device = platform.get_device()
+    assert device == torch.device("cpu")
+    assert platform.set_device(device) is None
+    assert platform.empty_cache() is None
+    assert platform.synchronize() is None
 
 
 def test_platforms_define_one_device_control_variable() -> None:

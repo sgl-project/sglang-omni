@@ -2006,8 +2006,6 @@ class OmniScheduler:
 
     @staticmethod
     def _empty_torch_cache() -> None:
-        if current_platform.is_cpu():
-            return
         current_platform.empty_cache()
 
     def _mark_running_request_aborted(self, request_id: str) -> bool:

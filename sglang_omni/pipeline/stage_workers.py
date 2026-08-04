@@ -531,8 +531,6 @@ def _reclaim_process_accelerator_memory(
         return
     gc.collect()
     try:
-        if current_platform.is_cpu():
-            return
         log.warning(
             "Reclaiming accelerator memory after %s on device_ids=%s",
             reason,
