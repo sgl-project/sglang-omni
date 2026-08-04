@@ -26,6 +26,14 @@ def moss_tts_special_token_defaults(
     )
 
 
+def resolve_moss_audio_pad_code(config: Any) -> int:
+    value = getattr(config, "audio_pad_code", None)
+    if value is not None:
+        return int(value)
+    audio_vocab_size = int(getattr(config, "audio_vocab_size", 1024) or 1024)
+    return dict(moss_tts_special_token_defaults(audio_vocab_size))["audio_pad_code"]
+
+
 @dataclass
 class MossTTSState(DeclarativeStateBase):
     """Per-request state for MOSS-TTS Delay generation."""

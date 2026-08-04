@@ -102,6 +102,7 @@ tests/
     │   └── test_streaming_client.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
+    │   ├── test_encoder_service.py
     │   ├── test_pipeline.py
     │   ├── test_request_builders.py
     │   ├── test_stream_output_builder.py
@@ -116,7 +117,8 @@ tests/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_tts/
-    │   └── test_pipeline.py
+    │   ├── test_pipeline.py
+    │   └── test_streaming_vocoder.py
     ├── moss_tts_local/
     │   ├── test_pipeline.py
     │   ├── test_radix_hash.py
@@ -400,6 +402,8 @@ that happened to contain an older version of the test.
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
     token padding, and default transcribe+diarize prompt injection
+  - pre-LM encoder service bounded batching, request-scoped OOM recovery,
+    transactional embedding publication, and per-item fallback
   - verbose_json transcription adapter: architecture-based resolution, special
     token stripping, and speaker/timestamp segment parsing with fallback.
 - `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
@@ -496,7 +500,9 @@ that happened to contain an older version of the test.
   - OmniScheduler-backed AR/vocoder stage factory wiring
   - request mapping for `ref_audio`, `references`, and `token_count`
   - preprocessing handoff and abort cleanup behavior
-  - delay-pattern runner, codec splitting, and seeded sampling contracts.
+  - delay-pattern runner, codec splitting, and seeded sampling contracts
+  - incremental delay-row emission, bounded overlap decode parity, early-done
+    final-tail handling, and streaming abort cleanup.
 
 - `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
   - pipeline config, request builders, and scheduler adapter contracts

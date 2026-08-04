@@ -112,6 +112,10 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     }
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert config.supports_uploaded_voice_references() is True
+    tts_engine = next(stage for stage in config.stages if stage.name == "tts_engine")
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    assert tts_engine.stream_to == ["vocoder"]
+    assert vocoder.can_accept_stream_before_payload is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
         is MossTTSPipelineConfig

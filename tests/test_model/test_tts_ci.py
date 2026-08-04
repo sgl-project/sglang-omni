@@ -155,6 +155,7 @@ def _run_benchmark(
     *,
     concurrency: int,
     max_samples: int | None = None,
+    warmup: int = 1,
     stream: bool = False,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
@@ -164,6 +165,7 @@ def _run_benchmark(
         output_dir=output_dir,
         concurrency=concurrency,
         max_samples=max_samples,
+        warmup=warmup,
         stream=stream,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
