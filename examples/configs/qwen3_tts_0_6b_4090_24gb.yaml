@@ -1,0 +1,24 @@
+# Experimental single-RTX-4090 (24GB) profile for Qwen3-TTS 0.6B Base.
+#
+# This profile deliberately bounds the SGLang AR stage below the model-family
+# defaults. The values are a validation target, not a claim of general
+# consumer-GPU support; see #1120 for the roadmap context.
+
+config_cls: Qwen3TTSPipelineConfig
+name: qwen3-tts-0.6b-4090-24gb
+model_path: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+
+runtime_overrides:
+  tts_engine:
+    server_args_overrides:
+      max_running_requests: 8
+      cuda_graph_bs: [1, 2, 4, 8]
+      cuda_graph_max_bs: 8
+      disable_cuda_graph: false
+      enable_torch_compile: false
+
+stage_overrides:
+  tts_engine:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.75
