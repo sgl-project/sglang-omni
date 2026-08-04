@@ -111,12 +111,9 @@ class RealtimeSession:
         # VAD is created once with default config; session.update doesn't
         # touch it. Reconnect to change VAD params.
         self.vad = StreamingVAD(VADConfig())
-        # Session-wall-clock sample offset of buffer byte 0; advances on
-        # commit so speech timestamps stay correct after a buffer drop.
+        self.vad_origin_samples = 0
         self.buffer_origin_samples = 0
         self.utterance_start_byte: int | None = None
-        # speech_started.item_id predicts the eventual committed id so
-        # clients can align live VAD events to the transcript.
         self.utterance_item_id: str | None = None
 
     async def run(self) -> None:
@@ -190,11 +187,17 @@ class RealtimeSession:
         for emit in emits:
             await self.handle_vad_emit(emit)
 
+    def absolute_sample(self, sample_offset: int) -> int:
+        return self.vad_origin_samples + sample_offset
+
+    def sample_offset_to_buffer_byte(self, sample_offset: int) -> int:
+        rel_samples = self.absolute_sample(sample_offset) - self.buffer_origin_samples
+        return max(0, rel_samples * 2)
+
     async def handle_vad_emit(self, emit: Any) -> None:
-        timestamp_ms = offsets_to_ms(self.buffer_origin_samples + emit.sample_offset)
+        timestamp_ms = offsets_to_ms(self.absolute_sample(emit.sample_offset))
         if emit.event_type == VADEvent.SPEECH_STARTED:
-            # PCM16 mono: 2 bytes/sample.
-            vad_byte = max(0, emit.sample_offset * 2)
+            vad_byte = self.sample_offset_to_buffer_byte(emit.sample_offset)
             self.utterance_start_byte = min(vad_byte, self.audio_buffer.num_bytes)
             self.utterance_item_id = new_id("item")
             await self.send(
@@ -215,24 +218,35 @@ class RealtimeSession:
             await self.auto_commit_utterance(emit.sample_offset)
 
     def drop_buffer_and_reset_vad(self) -> None:
-        self.buffer_origin_samples += self.audio_buffer.num_samples
+        discarded = self.audio_buffer.num_samples
+        self.buffer_origin_samples += discarded
+        self.vad_origin_samples = self.buffer_origin_samples
         self.audio_buffer.clear()
         self.utterance_start_byte = None
         self.utterance_item_id = None
         self.vad.reset()
 
+    def consume_committed_prefix(self, end_byte: int) -> None:
+        self.audio_buffer.drop_prefix(end_byte)
+        self.buffer_origin_samples += end_byte // 2
+        self.utterance_start_byte = None
+        self.utterance_item_id = None
+
     async def auto_commit_utterance(self, end_sample_offset: int) -> None:
         if self.audio_buffer.is_empty():
             return
         start_byte = self.utterance_start_byte or 0
-        end_byte = min(end_sample_offset * 2, self.audio_buffer.num_bytes)
+        end_byte = min(
+            self.sample_offset_to_buffer_byte(end_sample_offset),
+            self.audio_buffer.num_bytes,
+        )
         if end_byte <= start_byte:
             return
         payload = self.audio_buffer.to_sliced_wav_data_uri(
             start_byte=start_byte, end_byte=end_byte
         )
         item_id = self.utterance_item_id or new_id("item")
-        self.drop_buffer_and_reset_vad()
+        self.consume_committed_prefix(end_byte)
 
         await self.send(make_event("input_audio_buffer.committed", item_id=item_id))
         await self.response_queue.put((item_id, payload))
