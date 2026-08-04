@@ -384,6 +384,7 @@ that happened to contain an older version of the test.
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
+  - checked-in RTX 4090 profile loading and runtime override resolution
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
     shutdown, disabled multimodal embedding cache and torch.compile, and
@@ -393,8 +394,8 @@ that happened to contain an older version of the test.
     isolation, telemetry, and worker shutdown
   - model audio-feature shape and checkpoint weight-loading contracts
   - request builder: inclusive audio offset recording, language-prompt prefix
-    construction, encode-after-validation ordering, and result adapter
-    direct-transcript decoding and token telemetry
+    construction, encode-after-validation ordering, invalid-audio error
+    mapping, and result adapter direct-transcript decoding and token telemetry
   - streaming output: request-contract validation, chunked-prefill gating,
     rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
     and direct-client aggregation without repeating the terminal transcript.
