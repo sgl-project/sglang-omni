@@ -24,12 +24,14 @@ from sglang_omni.models.moss_tts.hf_loading import (
 from sglang_omni.models.moss_tts.payload_types import (
     MossTTSState,
     moss_tts_special_token_defaults,
+    resolve_moss_audio_pad_code,
 )
 from sglang_omni.models.moss_tts.request_builders import (
     cleanup_prepared_moss_tts_request,
     preprocess_moss_tts_payload,
     set_moss_tts_preprocessing_context,
 )
+from sglang_omni.models.moss_tts.streaming_vocoder import MossStreamingVocoderScheduler
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
@@ -233,12 +235,8 @@ class _MossTTSVocoder(BatchVocoderBase):
         delayed_codes: torch.Tensor,
     ) -> tuple[torch.Tensor, int]:
         delayed_codes = delayed_codes.to(device=self._device, dtype=torch.long)
-        audio_pad_code = int(
-            getattr(
-                getattr(self._processor, "model_config", None),
-                "audio_pad_code",
-                1024,
-            )
+        audio_pad_code = resolve_moss_audio_pad_code(
+            getattr(self._processor, "model_config", None)
         )
         segments = split_moss_audio_segments(
             delayed_codes,
@@ -298,7 +296,12 @@ def create_vocoder_executor(
     codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-) -> SimpleScheduler:
+    stream_stride: int = 8,
+    stream_followup_stride: int = 8,
+    stream_overlap_tokens: int = 8,
+    stream_holdback_tokens: int = 1,
+    initial_chunk_frames: int = 0,
+) -> MossStreamingVocoderScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
     processor = _load_moss_processor(model_path)
@@ -308,7 +311,14 @@ def create_vocoder_executor(
         dtype=dtype,
     )
 
-    return _MossTTSVocoder(processor, audio_tokenizer, device).build_scheduler(
+    vocoder = _MossTTSVocoder(processor, audio_tokenizer, device)
+    return MossStreamingVocoderScheduler(
+        vocoder,
+        stream_stride=stream_stride,
+        stream_followup_stride=stream_followup_stride,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_holdback_tokens=stream_holdback_tokens,
+        initial_chunk_frames=initial_chunk_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

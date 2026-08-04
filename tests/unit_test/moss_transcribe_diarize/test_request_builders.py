@@ -64,7 +64,8 @@ class FakeProcessor:
         return "<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|>prompt"
 
     def __call__(self, *, text: str, audio, return_tensors: str, max_length: int):
-        del text, audio, return_tensors, max_length
+        del text, audio, return_tensors
+        self.max_length_arg = max_length
         return {
             "input_ids": torch.tensor(
                 [[10, 151669, 151671, 151671, 20, 151671, 151670, 11]],
@@ -95,16 +96,21 @@ def _payload(
     )
 
 
-def _payload_with_inputs(inputs, *, metadata: dict | None = None) -> StagePayload:
+def _payload_with_inputs(
+    inputs, *, params: dict | None = None, metadata: dict | None = None
+) -> StagePayload:
     return StagePayload(
         request_id="req-1",
         request=OmniRequest(
             inputs=inputs,
-            params={},
+            params=params or {},
             metadata=metadata or {"model": "moss-transcribe-diarize"},
         ),
         data={},
     )
+
+
+TEST_CONTEXT_LENGTH = 131072
 
 
 def _request_builder(processor: FakeProcessor | None = None):
@@ -113,6 +119,7 @@ def _request_builder(processor: FakeProcessor | None = None):
         processor=processor,
         tokenizer=processor.tokenizer,
         max_new_tokens=32,
+        context_length=TEST_CONTEXT_LENGTH,
     )
     return request_builder
 
@@ -132,6 +139,89 @@ def test_request_builder_replaces_audio_tokens_with_item_pad_value() -> None:
     assert input_ids[3] == audio_item.pad_value
     assert input_ids[5] == audio_item.pad_value
     assert input_ids[4] == 20
+    assert data.req.sampling_params.max_new_tokens == 32
+
+
+def test_request_builder_enforces_scheduler_request_limits() -> None:
+    request_builder = _request_builder()
+
+    data = request_builder(_payload())
+
+    assert data.enforce_request_limits is True
+
+
+def test_request_builder_caps_processor_max_length_at_context() -> None:
+    processor = FakeProcessor()
+    request_builder = _request_builder(processor)
+
+    request_builder(_payload())
+
+    assert processor.max_length_arg == TEST_CONTEXT_LENGTH
+
+
+def test_request_builder_respects_explicit_max_length_param() -> None:
+    processor = FakeProcessor()
+    request_builder = _request_builder(processor)
+
+    request_builder(_payload(params={"max_length": 2048}))
+
+    assert processor.max_length_arg == 2048
+
+
+def test_request_builder_caps_explicit_max_length_at_context() -> None:
+    processor = FakeProcessor()
+    request_builder = _request_builder(processor)
+
+    request_builder(_payload(params={"max_length": TEST_CONTEXT_LENGTH + 4096}))
+
+    assert processor.max_length_arg == TEST_CONTEXT_LENGTH
+
+
+def test_request_builder_rejects_non_positive_max_new_tokens() -> None:
+    request_builder = _request_builder()
+
+    with pytest.raises(ValueError, match="max_new_tokens must be at least 1"):
+        request_builder(_payload(params={"max_new_tokens": 0}))
+
+
+def test_request_builder_scales_default_output_budget_with_duration() -> None:
+    request_builder = _request_builder()
+
+    data = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=16000 * 60)]})
+    )
+
+    expected = 60 * request_builders._OUTPUT_TOKENS_PER_AUDIO_SECOND
+    assert data.req.sampling_params.max_new_tokens == expected
+
+
+def test_request_builder_explicit_max_new_tokens_beats_duration_budget() -> None:
+    request_builder = _request_builder()
+
+    data = request_builder(
+        _payload_with_inputs(
+            {"audios": [_wav_bytes(num_samples=16000 * 60)]},
+            params={"max_new_tokens": 64},
+        )
+    )
+
+    assert data.req.sampling_params.max_new_tokens == 64
+
+
+def test_request_builder_operator_default_disables_duration_budget() -> None:
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=32,
+        context_length=TEST_CONTEXT_LENGTH,
+        duration_scaled_default=False,
+    )
+
+    data = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=16000 * 60)]})
+    )
+
     assert data.req.sampling_params.max_new_tokens == 32
 
 

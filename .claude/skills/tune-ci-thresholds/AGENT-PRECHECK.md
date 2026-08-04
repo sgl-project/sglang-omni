@@ -17,13 +17,21 @@ Run this checklist before every fresh session and after environment recovery.
 
 ## 1. Scope and provenance
 
-- Confirm model, selected stages, repeats (default 5), and layout mode
+- Confirm model, selected stages, repeats (baseline 5 clean observations per
+  stage; destructive rounds are rejected and replenished on top), and layout mode
   (A / B / C in `SKILL.md`). Prefer Mode C for multi-group hosts unless the
-  user asks for one shared worst-of-five (Mode B).
+  user asks for one shared worst-of-N (Mode B).
 - Record `git rev-parse HEAD`.
 - Use a fresh `.tune-runs/<UTC>_<label>/` per calibration process unless
   explicitly resuming.
-- Resume only when `HEAD` matches the run plan.
+- Resume when `HEAD` matches the run plan, or when `run --resume` proves the
+  commits measurement-equivalent and says so. It prints either
+  `note: HEAD moved … no measured code differs` and continues, or an error
+  naming the file whose logic changed.
+- **Never discard observations because a gate refused.** A refusal says the
+  tool would not proceed, not that the data is wrong. Check what actually
+  changed (`git diff --name-only <plan-sha>..HEAD`) before spending GPU hours
+  on a re-run; hours of valid observations have been thrown away this way.
 - Regenerate `stages.yaml` after relevant test/config changes.
 
 ## 2. GPU ownership
@@ -144,18 +152,26 @@ and `nvidia-smi`.
 Stop on CUDA initialization failure, extraction warnings, wrong sample scope,
 or cleanup affecting GPUs outside the configured group.
 
+A `round N REJECTED as destructive` line is **not** a stop condition — `run`
+replaces the round on its own. Intervene only when it reports that a unit hit
+the restart or round cap, which means the host is too contended to calibrate.
+
 ## 8. Completion
 
 Before report or apply:
 
-- every selected stage has N/N strict observations (`strict-audit`);
+- every selected stage has at least `repeats` clean strict observations
+  (`strict-audit`); `D` cells are rejected destructive rounds and do not count,
+  so a ready stage may show more than `repeats` cells;
 - `status` reports `missing=[]` (pytest exit 1 from old threshold asserts does
   not by itself mean missing metrics — see `CONTRACT.md`);
-- every observation has full expected sample scope and all metrics;
+- every counted observation has full expected sample scope and all metrics;
 - git provenance passes;
 - `report` succeeds through `validate_run_ready()`;
 - no calibration or pytest process remains alive for that run directory;
 - for speed metrics, skim per-run spread before apply (see `SKILL.md` /
-  `CONTRACT.md` speed health check). If a stage’s five runs show large
+  `CONTRACT.md` speed health check). If a stage’s clean runs still show large
   relative range (rough guide: throughput or latency span ≳ 20–30%), flag it
-  and ask before applying large loosens.
+  and ask before applying large loosens;
+- read the report’s **Suspected real defects** section: correctness metrics
+  that moved in a rejected round are investigation leads, not noise.

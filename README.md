@@ -28,6 +28,7 @@
 
 ## News
 
+- [2026/08] 🚀 SGLang-Omni completed its TTS architecture refactor, consolidating pipeline state, engine construction, reference encoding, capability metadata, and streaming and non-streaming vocoder scheduling into reusable framework components. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
 - [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 runs on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
 - [2026/06] 🔥 Higgs Audio v3 TTS runs on SGLang-Omni for real-time, controllable speech for voice agents. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
 

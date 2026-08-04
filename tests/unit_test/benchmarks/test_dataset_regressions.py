@@ -352,6 +352,7 @@ def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:
     expected_tests = [
         "tests/test_model/test_tts_ci.py",
         "tests/test_model/test_tts_serving_ci.py",
+        "tests/test_ci/test_tts_mps_dp2.py",
     ]
     assert config["test_globs"] == expected_tests
     assert "test_asr_ci.py" not in config.get("gpus_per_test", {})
