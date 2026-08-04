@@ -9,6 +9,7 @@ import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
+from sglang_omni.models.moss_transcribe_diarize import stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -196,7 +197,6 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     from sglang_omni.models.moss_transcribe_diarize import (
         engine_builder,
         request_builders,
-        stages,
     )
     from sglang_omni.scheduling import (
         bootstrap,
@@ -299,11 +299,7 @@ def test_factory_context_length_override_reaches_server_args(
 ) -> None:
     from types import SimpleNamespace
 
-    from sglang_omni.models.moss_transcribe_diarize import (
-        engine_builder,
-        request_builders,
-        stages,
-    )
+    from sglang_omni.models.moss_transcribe_diarize import request_builders
     from sglang_omni.scheduling import engine_factory, sglang_backend
     from sglang_omni.scheduling.generation_batch_policy import (
         build_generation_batch_overrides,
