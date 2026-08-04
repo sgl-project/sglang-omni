@@ -83,8 +83,10 @@ sgl-omni serve \
   --port 8000
 
 # Sweep the full SeedTTS EN set (1088 clips), 3 repeats per concurrency:
+# Set SERVER_GPU_PID to the server process PID reported by nvidia-smi.
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 \
+  --gpu-process-pid "${SERVER_GPU_PID}" \
   --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
   --model-revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
   --concurrencies 1,2,4,8,16,32,64 \
@@ -95,9 +97,13 @@ The result JSON includes the applied dataset revision, declared model revision,
 an effective evaluation-input content hash, normalization, repository and
 dependency fingerprints, complete sample counts, and latency/RTF/throughput.
 When local NVML and `psutil` sampling are available, it also includes CPU use,
-power, and peak/steady GPU memory; unavailable metrics and monitor errors remain
-explicit. Optional server settings and an exact launch command can be declared
-with the benchmark's provenance flags.
+power, and peak/steady GPU memory. Pass each server GPU PID reported by NVML via
+`--gpu-process-pid`; without explicit PIDs, process-specific metrics remain
+unavailable rather than including unrelated workloads on the same GPU. In a
+Docker container, use the host PID namespace (`--pid=host`) to collect process
+CPU metrics. Unavailable metrics and monitor errors remain explicit. Optional
+server settings and an exact launch command can be declared with the benchmark's
+provenance flags.
 
 The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (`tests/test_model/test_asr_ci_seedtts.py`). Qwen3-ASR remains

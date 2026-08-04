@@ -116,6 +116,63 @@ def test_nvml_process_snapshot_marks_unsupported_getters_unavailable() -> None:
     assert runtime_metrics._nvml_compute_processes(SimpleNamespace(), object()) is None
 
 
+def test_resource_monitor_requires_explicit_gpu_process_targets() -> None:
+    monitor = ResourceMonitor()
+    monitor._pynvml = SimpleNamespace(
+        nvmlDeviceGetMemoryInfo=lambda _handle: SimpleNamespace(used=4096, free=8192),
+        nvmlDeviceGetComputeRunningProcesses=lambda _handle: [
+            SimpleNamespace(pid=11, usedGpuMemory=2 * 1024**2)
+        ],
+        nvmlDeviceGetUtilizationRates=lambda _handle: SimpleNamespace(gpu=50),
+        nvmlDeviceGetPowerUsage=lambda _handle: 1000,
+    )
+    monitor._psutil = SimpleNamespace(cpu_percent=lambda interval=None: 10.0)
+    monitor._handle = object()
+    monitor._started_at = time.perf_counter()
+
+    monitor._sample_once()
+    result = monitor.stop()
+
+    assert monitor.samples[0].gpu_process_memory_mib is None
+    assert monitor.samples[0].gpu_process_pids == ()
+    assert "--gpu-process-pid" in result["error"]
+
+
+def test_resource_monitor_filters_targets_and_reports_pid_namespace() -> None:
+    class NoSuchProcess(Exception):
+        pass
+
+    def missing_process(_pid):
+        raise NoSuchProcess
+
+    monitor = ResourceMonitor(gpu_process_pids=[22])
+    monitor._pynvml = SimpleNamespace(
+        nvmlDeviceGetMemoryInfo=lambda _handle: SimpleNamespace(used=4096, free=8192),
+        nvmlDeviceGetComputeRunningProcesses=lambda _handle: [
+            SimpleNamespace(pid=11, usedGpuMemory=78 * 1024**2),
+            SimpleNamespace(pid=22, usedGpuMemory=2 * 1024**2),
+        ],
+        nvmlDeviceGetUtilizationRates=lambda _handle: SimpleNamespace(gpu=50),
+        nvmlDeviceGetPowerUsage=lambda _handle: 1000,
+    )
+    monitor._psutil = SimpleNamespace(
+        cpu_percent=lambda interval=None: 10.0,
+        Process=missing_process,
+        NoSuchProcess=NoSuchProcess,
+        AccessDenied=PermissionError,
+    )
+    monitor._handle = object()
+    monitor._started_at = time.perf_counter()
+
+    monitor._sample_once()
+    result = monitor.stop()
+
+    assert monitor.samples[0].gpu_process_memory_mib == 2.0
+    assert monitor.samples[0].gpu_process_cpu_percent is None
+    assert monitor.samples[0].gpu_process_pids == (22,)
+    assert "--pid=host" in result["error"]
+
+
 def test_resource_monitor_refuses_overlapping_nvml_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,6 +267,7 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
         disable_resource_monitor=False,
         gpu_index=0,
         monitor_interval_s=0.2,
+        gpu_process_pids=None,
         host="127.0.0.1",
         port=8000,
         model_path="model",

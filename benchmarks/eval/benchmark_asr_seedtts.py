@@ -224,6 +224,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         else ResourceMonitor(
             gpu_index=args.gpu_index,
             interval_s=args.monitor_interval_s,
+            gpu_process_pids=args.gpu_process_pids,
         ).start()
     )
     try:
@@ -530,6 +531,17 @@ def parse_args() -> argparse.Namespace:
         help="Resource monitor sampling interval.",
     )
     parser.add_argument(
+        "--gpu-process-pid",
+        dest="gpu_process_pids",
+        type=_positive_int,
+        action="append",
+        help=(
+            "NVML/host PID to include in process memory and CPU metrics; repeat "
+            "for multiple GPU processes. Without this option, process-specific "
+            "metrics are unavailable instead of including every GPU workload."
+        ),
+    )
+    parser.add_argument(
         "--disable-resource-monitor",
         action="store_true",
         help="Disable local GPU/CPU resource sampling.",
@@ -670,6 +682,7 @@ def main() -> None:
                 "enabled": not args.disable_resource_monitor,
                 "gpu_index": args.gpu_index,
                 "interval_s": args.monitor_interval_s,
+                "gpu_process_pids": args.gpu_process_pids or [],
             },
         },
         "results": aggregates,

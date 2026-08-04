@@ -33,15 +33,23 @@ class ResourceSample:
 
 
 class ResourceMonitor:
-    """Sample one local GPU and its compute processes in a background thread."""
+    """Sample one local GPU and explicitly selected processes in a background thread."""
 
-    def __init__(self, gpu_index: int = 0, interval_s: float = 0.2) -> None:
+    def __init__(
+        self,
+        gpu_index: int = 0,
+        interval_s: float = 0.2,
+        gpu_process_pids: list[int] | None = None,
+    ) -> None:
         if gpu_index < 0:
             raise ValueError("gpu_index must be >= 0")
         if interval_s <= 0:
             raise ValueError("interval_s must be > 0")
+        if any(pid <= 0 for pid in gpu_process_pids or []):
+            raise ValueError("gpu_process_pids must contain only positive PIDs")
         self.gpu_index = gpu_index
         self.interval_s = interval_s
+        self.gpu_process_pids = frozenset(gpu_process_pids or [])
         self.samples: list[ResourceSample] = []
         self.error: str | None = None
         self._ready_event = threading.Event()
@@ -52,6 +60,7 @@ class ResourceMonitor:
         self._handle: Any = None
         self._psutil: Any = None
         self._processes: dict[int, Any] = {}
+        self._inaccessible_process_pids: set[int] = set()
 
     def start(self) -> "ResourceMonitor":
         if not _NVML_SESSION_LOCK.acquire(blocking=False):
@@ -79,10 +88,30 @@ class ResourceMonitor:
             self._thread.join(timeout=max(5.0, self.interval_s * 5))
             if self._thread.is_alive() and self.error is None:
                 self.error = "resource sampler did not stop before timeout"
+        process_error = None
+        if not self.gpu_process_pids:
+            process_error = (
+                "GPU process metrics require at least one explicit NVML PID; "
+                "pass --gpu-process-pid"
+            )
+        elif missing_pids := self.gpu_process_pids - {
+            pid for sample in self.samples for pid in sample.gpu_process_pids
+        }:
+            pids = ", ".join(map(str, sorted(missing_pids)))
+            process_error = (
+                f"target NVML PID(s) {pids} were not observed on GPU "
+                f"{self.gpu_index}"
+            )
+        elif self._inaccessible_process_pids:
+            pids = ", ".join(map(str, sorted(self._inaccessible_process_pids)))
+            process_error = (
+                f"GPU process CPU metrics unavailable for NVML PID(s) {pids}; "
+                "use the host PID namespace (for Docker, --pid=host)"
+            )
         return summarize_resource_samples(
             list(self.samples),
             interval_s=self.interval_s,
-            error=self.error,
+            error=self.error or process_error,
         )
 
     def _run(self) -> None:
@@ -114,7 +143,16 @@ class ResourceMonitor:
         try:
             pynvml = self._pynvml
             memory = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
-            nvml_processes = _nvml_compute_processes(pynvml, self._handle)
+            all_nvml_processes = _nvml_compute_processes(pynvml, self._handle)
+            nvml_processes = (
+                [
+                    process
+                    for process in all_nvml_processes
+                    if int(process.pid) in self.gpu_process_pids
+                ]
+                if all_nvml_processes is not None and self.gpu_process_pids
+                else None
+            )
             process_memory_bytes: int | None = 0 if nvml_processes is not None else None
             process_pids: set[int] = set()
             for process in nvml_processes or []:
@@ -181,6 +219,7 @@ class ResourceMonitor:
                 observed = True
             except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
                 self._processes.pop(pid, None)
+                self._inaccessible_process_pids.add(pid)
         return total if observed else None
 
     def _shutdown_nvml(self) -> None:
