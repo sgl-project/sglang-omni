@@ -11,10 +11,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from sglang_omni.utils.accelerator import (
-    AcceleratorPlatform,
-    detect_accelerator_platform,
-)
+from sglang_omni.platforms import Platform, resolve_current_platform
 from sglang_omni.utils.gpu_memory import (
     _decode_nvml_string,
     _shutdown_nvml,
@@ -264,12 +261,12 @@ def _physical_device(
 
 
 def _logical_devices(
-    torch: Any,
+    platform: Platform,
     visible_devices: list[int | str],
     inventory: list[dict[str, Any]],
     warnings: list[str],
 ) -> list[dict[str, Any]]:
-    if not torch.cuda.is_available():
+    if platform.is_cpu():
         return []
 
     by_index = {device["physical_index"]: device for device in inventory}
@@ -279,9 +276,9 @@ def _logical_devices(
         if (uuid := _normalize_uuid(device.get("uuid"))) is not None
     }
     devices = []
-    for logical_index in range(int(torch.cuda.device_count())):
+    for logical_index in range(platform.device_count()):
         try:
-            properties = torch.cuda.get_device_properties(logical_index)
+            properties = platform.get_device_properties(logical_index)
         except Exception as exc:
             warnings.append(f"PyTorch GPU {logical_index} query failed: {exc}")
             properties = None
@@ -339,22 +336,28 @@ def collect_gpu_diagnostics(
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
-    visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
-    visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
-    platform = detect_accelerator_platform(torch)
+    device_platform = resolve_current_platform(torch)
+    platform = device_platform.device_name
+    control_env_var = device_platform.device_control_env_var
+    platform_visible_value = (
+        source_env.get(control_env_var) if control_env_var else None
+    )
+    visible_devices = parse_cuda_visible_devices(platform_visible_value)
     # Importing/querying NVML in a ROCm environment can surface an unrelated
     # host NVIDIA driver and produce a misleading physical-device inventory.
     # NVML metadata is meaningful only for an NVIDIA PyTorch build.
     pynvml = (
         pynvml_module
         if pynvml_module is not None
-        else (_try_import_pynvml() if platform is AcceleratorPlatform.NVIDIA else None)
+        else (_try_import_pynvml() if device_platform.is_cuda() else None)
     )
 
     inventory, system, warnings = _nvml_inventory(pynvml)
     try:
-        devices = _logical_devices(torch, visible_devices, inventory, warnings)
+        devices = _logical_devices(
+            device_platform, visible_devices, inventory, warnings
+        )
     finally:
         if pynvml is not None:
             _shutdown_nvml(pynvml)
@@ -368,22 +371,19 @@ def collect_gpu_diagnostics(
     return {
         "schema_version": 1,
         "environment": {
-            "cuda_visible_devices": visible_value,
-            "rocr_visible_devices": source_env.get("ROCR_VISIBLE_DEVICES"),
-            "hip_visible_devices": source_env.get("HIP_VISIBLE_DEVICES"),
-            "accelerator_platform": platform.value,
+            "device_control_env_var": control_env_var,
+            "visible_devices": platform_visible_value,
+            "accelerator_platform": platform,
             **system,
             "cuda_runtime_version": (
-                _cuda_runtime_version()
-                if platform is AcceleratorPlatform.NVIDIA
-                else None
+                _cuda_runtime_version() if device_platform.is_cuda() else None
             ),
             "pytorch_version": getattr(torch, "__version__", None),
             "pytorch_cuda_build": getattr(
                 getattr(torch, "version", None), "cuda", None
             ),
             "pytorch_hip_build": getattr(getattr(torch, "version", None), "hip", None),
-            "cuda_available": bool(torch.cuda.is_available()),
+            "cuda_available": not device_platform.is_cpu(),
             "logical_device_count": len(devices),
         },
         "gpus": devices,
@@ -396,26 +396,16 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     """Render a compact diagnostic summary for terminal output."""
 
     environment = report["environment"]
-    visible = environment["cuda_visible_devices"]
-    platform = environment.get("accelerator_platform", "nvidia-cuda")
-    is_amd = platform == AcceleratorPlatform.AMD.value
+    control_env_var = environment.get("device_control_env_var")
+    visible = environment.get("visible_devices")
+    platform = environment.get("accelerator_platform", "cuda")
+    is_amd = platform == "rocm"
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
         f"Accelerator platform: {platform}",
-        f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
-        *(
-            [
-                (
-                    "ROCR_VISIBLE_DEVICES: "
-                    f"{environment.get('rocr_visible_devices') or '<unset>'}"
-                ),
-                (
-                    "HIP_VISIBLE_DEVICES: "
-                    f"{environment.get('hip_visible_devices') or '<unset>'}"
-                ),
-            ]
-            if is_amd
-            else []
+        (
+            f"{control_env_var or 'Device visibility'}: "
+            f"{visible if visible is not None else '<unset>'}"
         ),
         f"Driver: {environment['driver_version'] or 'unavailable'}",
         (

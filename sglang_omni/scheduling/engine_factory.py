@@ -6,6 +6,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+import torch
+
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
@@ -34,8 +37,9 @@ class TtsEngineBuilder(ABC):
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
         if gpu_id is not None:
-            device = f"cuda:{gpu_id}"
-        gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+            device = str(current_platform.get_device(gpu_id))
+        resolved_device = torch.device(device)
+        gpu_id = resolved_device.index if resolved_device.index is not None else 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
         self.gpu_id = gpu_id

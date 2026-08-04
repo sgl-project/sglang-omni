@@ -114,7 +114,8 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
         "GPU-uuid-b",
         "GPU-uuid-a",
     ]
-    assert report["environment"]["cuda_visible_devices"] == "1,0"
+    assert report["environment"]["device_control_env_var"] == ("CUDA_VISIBLE_DEVICES")
+    assert report["environment"]["visible_devices"] == "1,0"
     assert set(report) == {
         "schema_version",
         "environment",
@@ -183,13 +184,14 @@ def test_collect_gpu_diagnostics_reports_rocm_without_nvml(monkeypatch) -> None:
     )
 
     environment = report["environment"]
-    assert environment["accelerator_platform"] == "amd-rocm"
+    assert environment["accelerator_platform"] == "rocm"
     assert environment["pytorch_hip_build"] == "7.0.0"
     assert environment["cuda_runtime_version"] is None
-    assert environment["rocr_visible_devices"] == "0"
+    assert environment["device_control_env_var"] == "ROCR_VISIBLE_DEVICES"
+    assert environment["visible_devices"] == "0"
     assert report["gpus"][0]["architecture"].startswith("gfx942")
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
-    assert "Accelerator platform: amd-rocm" in rendered
+    assert "Accelerator platform: rocm" in rendered
     assert "PyTorch/ROCm build" in rendered
 
 

@@ -14,7 +14,15 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
     get_stage_process_env,
 )
+from sglang_omni.platforms import CudaPlatform, RocmPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
+
+
+@pytest.fixture(autouse=True)
+def _cuda_platform(monkeypatch):
+    """These tests specify the established NVIDIA worker-launch contract."""
+
+    monkeypatch.setattr(stage_workers, "current_platform", CudaPlatform())
 
 
 def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
@@ -46,6 +54,19 @@ def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
         get_stage_process_env(_tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "0"})
 
 
+def test_rocm_tp_process_env_maps_logical_gpu_through_rocr_mask(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stage_workers, "current_platform", RocmPlatform())
+
+    env = get_stage_process_env(
+        _tp_spec(gpu_id=1),
+        {"ROCR_VISIBLE_DEVICES": "3,4"},
+    )
+
+    assert env["ROCR_VISIBLE_DEVICES"] == "4"
+
+
 def test_tp_process_env_requires_gpu_id() -> None:
     with pytest.raises(ValueError, match="requires a GPU id"):
         get_stage_process_env(StageLaunchConfig(stage_name="thinker", tp_size=2), {})
@@ -65,7 +86,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         comm_config={"gpu_id": 1},
     )
 
-    stage_workers._prepare_cuda_environment(spec, _RecordingLog())
+    stage_workers._prepare_accelerator_environment(spec, _RecordingLog())
 
     assert spec.gpu_id == 0
     assert spec.placement_gpu_id == 1
@@ -113,6 +134,18 @@ def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -
 
     assert "SGLANG_TEST_STAGE_ENV" not in os.environ
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3,4"
+
+
+def test_rocm_spawn_env_scopes_and_restores_device_mask(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stage_workers, "current_platform", RocmPlatform())
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "3,4")
+
+    with _patched_spawn_env(_worker_spec(_tp_spec(gpu_id=1))):
+        assert os.environ["ROCR_VISIBLE_DEVICES"] == "4"
+
+    assert os.environ["ROCR_VISIBLE_DEVICES"] == "3,4"
 
 
 class _RecordingLog:
@@ -201,7 +234,9 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     monkeypatch.setattr(
         torch.cuda,
         "set_device",
-        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+        lambda device: set_device_calls.append(
+            int(device.index) if isinstance(device, torch.device) else int(device)
+        ),
     )
     monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
     monkeypatch.setattr(stage_workers, "Stage", _FakeStage)

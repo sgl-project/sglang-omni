@@ -1,0 +1,141 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from sglang_omni.platforms import PlatformEnum, resolve_current_platform
+
+
+class _Runtime:
+    def __init__(self, available: bool = True):
+        self._available = available
+        self.calls: list[tuple] = []
+        self.properties = SimpleNamespace(name="Test", total_memory=1024)
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def device_count(self) -> int:
+        return 2
+
+    def set_device(self, device) -> None:
+        self.calls.append(("set_device", device))
+
+    def get_device_properties(self, device_id: int):
+        self.calls.append(("get_device_properties", device_id))
+        return self.properties
+
+    def synchronize(self) -> None:
+        self.calls.append(("synchronize",))
+
+    def empty_cache(self) -> None:
+        self.calls.append(("empty_cache",))
+
+    def ipc_collect(self) -> None:
+        self.calls.append(("ipc_collect",))
+
+
+def _torch_runtime(
+    *,
+    cuda: _Runtime | None = None,
+    hip: str | None = None,
+):
+    return SimpleNamespace(
+        version=SimpleNamespace(hip=hip),
+        cuda=cuda,
+    )
+
+
+def test_rocm_identity_is_distinct_from_torch_device_type() -> None:
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime(), hip="7.2"))
+
+    assert platform._enum is PlatformEnum.ROCM
+    assert platform.is_rocm()
+    assert platform.device_name == "rocm"
+    assert platform.device_type == "cuda"
+    assert platform.get_device(3) == torch.device("cuda", 3)
+
+
+def test_cuda_is_resolved_from_an_available_cuda_runtime() -> None:
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime()))
+
+    assert platform._enum is PlatformEnum.CUDA
+    assert platform.is_cuda()
+
+
+def test_cpu_is_the_fallback_when_no_runtime_is_usable() -> None:
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime(False)))
+
+    assert platform.is_cpu()
+    assert platform.get_device() == torch.device("cpu")
+
+
+def test_platforms_define_one_device_control_variable() -> None:
+    cuda = resolve_current_platform(_torch_runtime(cuda=_Runtime()))
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime(), hip="7.2"))
+
+    assert cuda.device_control_env_var == "CUDA_VISIBLE_DEVICES"
+    assert platform.device_control_env_var == "ROCR_VISIBLE_DEVICES"
+
+
+@pytest.mark.parametrize(
+    ("hip", "expects_rocm"),
+    [
+        (None, False),
+        ("7.2", True),
+    ],
+)
+def test_runtime_lifecycle_contract(
+    hip: str | None,
+    expects_rocm: bool,
+) -> None:
+    runtime = _Runtime()
+    platform = resolve_current_platform(_torch_runtime(cuda=runtime, hip=hip))
+    device = platform.get_device(1)
+
+    assert platform.is_rocm() is expects_rocm
+    assert platform.device_count() == 2
+    assert platform.get_device_properties(1) is runtime.properties
+    platform.reclaim_process_memory(device)
+
+    assert ("set_device", device) in runtime.calls
+    assert ("synchronize",) in runtime.calls
+    assert ("empty_cache",) in runtime.calls
+    assert ("ipc_collect",) in runtime.calls
+
+
+def test_reclaim_can_suppress_optional_cleanup_failures() -> None:
+    class _FailingOptionalCleanupRuntime(_Runtime):
+        def synchronize(self) -> None:
+            self.calls.append(("synchronize",))
+            raise RuntimeError("synchronize failed")
+
+        def ipc_collect(self) -> None:
+            self.calls.append(("ipc_collect",))
+            raise RuntimeError("ipc collect failed")
+
+    runtime = _FailingOptionalCleanupRuntime()
+    platform = resolve_current_platform(_torch_runtime(cuda=runtime))
+
+    platform.reclaim_process_memory(
+        platform.get_device(0),
+        suppress_errors=True,
+    )
+
+    assert ("synchronize",) in runtime.calls
+    assert ("empty_cache",) in runtime.calls
+    assert ("ipc_collect",) in runtime.calls
+
+
+def test_reclaim_propagates_cleanup_failures_by_default() -> None:
+    class _FailingRuntime(_Runtime):
+        def synchronize(self) -> None:
+            raise RuntimeError("synchronize failed")
+
+    platform = resolve_current_platform(_torch_runtime(cuda=_FailingRuntime()))
+
+    with pytest.raises(RuntimeError, match="synchronize failed"):
+        platform.reclaim_process_memory(platform.get_device(0))
