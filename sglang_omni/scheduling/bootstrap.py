@@ -3,9 +3,41 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Protocol
 
+from sglang_omni.utils.gpu_compat import (
+    get_visible_gpu_sm_version,
+    gpu_architecture_for_sm,
+)
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+logger = logging.getLogger(__name__)
+
+
+class _SGLangServerArgsForDiagnostics(Protocol):
+    attention_backend: str | None
+    sampling_backend: str | None
+
+    def get_attention_backends(self) -> tuple[str | None, str | None]: ...
+
+
+def _describe_sglang_runtime_configuration(
+    server_args: _SGLangServerArgsForDiagnostics,
+    gpu_id: int,
+) -> str:
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    prefill_attention_backend, decode_attention_backend = (
+        server_args.get_attention_backends()
+    )
+    return (
+        f"SGLang runtime configuration: gpu_id={gpu_id}, sm={sm_version}, "
+        f"architecture={gpu_architecture_for_sm(sm_version)}, "
+        f"attention_backend={server_args.attention_backend}, "
+        f"decode_attention_backend={decode_attention_backend}, "
+        f"prefill_attention_backend={prefill_attention_backend}, "
+        f"sampling_backend={server_args.sampling_backend}"
+    )
 
 
 def create_sglang_infrastructure(
@@ -27,6 +59,8 @@ def create_sglang_infrastructure(
         PrefillManager,
         create_tree_cache,
     )
+
+    logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
     model_worker = ModelWorker(
         config=ModelWorkerConfig(

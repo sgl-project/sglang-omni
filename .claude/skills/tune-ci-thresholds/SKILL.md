@@ -23,7 +23,7 @@ Read these files before running a calibration:
 | Model | Scope |
 |---|---|
 | `asr` | MOSS-Transcribe-Diarize and Qwen3-ASR CI |
-| `tts` | Every configured Higgs and MOSS preset; CI may select one preset, calibration observes both |
+| `tts` | Every configured Higgs and MOSS preset; CI may select one preset, calibration observes both. Includes the Stage 5 MPS placement stages (`tts_mps_dp2_*`), whose references live in `tests/test_ci/tts_mps_ci_config.py` rather than the test file itself |
 | `omni` | Numeric threshold stages in Qwen3-Omni CI |
 
 `stages.yaml` is generated from the current test files and `config.yaml`. It is
@@ -131,6 +131,25 @@ wants one combined worst-of-N faster; it is not the default multi-GPU layout.
 Every concurrent process must set `TUNE_GPU_INCLUDE`. Cleanup is scoped to the
 physical GPU indices owned by that process. Global `pkill`, user-wide kills, and
 host-wide cleanup are forbidden.
+
+## Scoping a run to fewer GPUs
+
+`precheck` sizes its GPU requirement from the largest `gpus_per_test` in the
+model, so a standalone `precheck` for `tts` asks for two GPUs even when the
+stages you want need one. `run --stages <subset>` computes the requirement from
+the selected stages and runs its own precheck, so use it to calibrate the
+one-GPU stages (`tts_mps_dp2_*`, `tts_serving_*`) on a single card.
+
+Presets own disjoint constant namespaces through
+`calibration_presets[*].constant_filter`. Until this was fixed, the filter was
+applied only to tests that also declare `variants`, so every preset of a
+variant-less test claimed the first preset's symbols and one preset's
+worst-of-N could be written over another's. Always read the `discover` output
+and confirm each stage points at its own symbols.
+
+Run `discover` on a Linux checkout. It records a sha256 of the working-tree
+file, so regenerating on a CRLF checkout rewrites every hash and the schema
+then mismatches on the calibration host.
 
 ## Stage schema lifecycle
 

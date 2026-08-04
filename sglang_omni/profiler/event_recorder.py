@@ -9,6 +9,7 @@ imports so it can be loaded from any process without circular risk.
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
 import logging
 import os
@@ -274,3 +275,38 @@ def emit(
         metadata=metadata,
         timestamp_ns=timestamp_ns,
     )
+
+
+@functools.cache
+def _read_host_boot_id() -> str | None:
+    # Note: (Jiaxin Deng) constant for the process lifetime, and these events
+    # are emitted from the scheduler loop while profiling is active, which is
+    # exactly when extra syscalls would contaminate what is being measured.
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
+    if not _RECORDER.is_active():
+        return
+    emit(
+        request_id=request_id,
+        stage=None,
+        event_name=event_name,
+        metadata={
+            "clock": "CLOCK_MONOTONIC",
+            "host_boot_id": _read_host_boot_id(),
+            "monotonic_ns": time.monotonic_ns(),
+            **extra,
+        },
+    )
+
+
+def emit_model_path_start(request_id: str) -> None:
+    _emit_model_path("model_path_start", request_id)
+
+
+def emit_model_path_end(request_id: str, *, status: str) -> None:
+    _emit_model_path("model_path_end", request_id, status=status)

@@ -50,6 +50,8 @@ from sglang_omni.scheduling.messages import IncomingMessage
 
 logger = logging.getLogger(__name__)
 
+_SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
+
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
 
@@ -221,6 +223,30 @@ class Stage:
                 self.scheduler.stop()
             except Exception as exc:
                 _record_cleanup_error("scheduler", exc)
+            # Note: (Jiaxin Deng) the scheduler thread emits its terminal
+            # model-path events from its own finally, and the MPS validation
+            # stage reads those files right after stop() returns, so wait for
+            # the thread instead of letting a daemon thread be reclaimed at
+            # process exit. A slow thread is logged, not fatal: shutdown
+            # correctness must not start depending on this timeout.
+            scheduler_thread = self._scheduler_thread
+            if scheduler_thread is not None:
+                try:
+                    await asyncio.to_thread(
+                        scheduler_thread.join,
+                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                    )
+                except Exception as exc:
+                    _record_cleanup_error("scheduler thread", exc)
+                else:
+                    if scheduler_thread.is_alive():
+                        logger.warning(
+                            "Stage %s scheduler thread did not stop within %gs",
+                            self.name,
+                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        )
+                    else:
+                        self._scheduler_thread = None
         try:
             self.control_plane.close()
         except Exception as exc:
