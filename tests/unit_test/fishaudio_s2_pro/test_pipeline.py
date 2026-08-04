@@ -874,23 +874,88 @@ def test_s2pro_engine_preserves_explicit_attention_backend(
 ) -> None:
     result = _run_s2pro_engine_with_fake_buffers(
         monkeypatch,
-        sm_version=None,
-        flashinfer_available=False,
-        server_args_overrides={"attention_backend": "fa3"},
+        sm_version=89,
+        flashinfer_available=True,
+        server_args_overrides={"attention_backend": "triton"},
     )
 
-    assert result.scheduler.server_args.attention_backend == "fa3"
+    assert result.scheduler.server_args.attention_backend == "triton"
 
 
-@pytest.mark.parametrize("sm_version", [None, 80, 103])
-def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+@pytest.mark.parametrize(
+    ("sm_version", "expected_error"),
+    [
+        (None, "cannot validate Fast-AR attention.*gpu_id=0"),
+        (80, "Fast-AR does not support SM80"),
+        (103, "Fast-AR does not support SM103"),
+    ],
+)
+def test_s2pro_engine_rejects_explicit_override_on_unvalidated_fast_ar_architecture(
     monkeypatch: pytest.MonkeyPatch,
     sm_version: int | None,
+    expected_error: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=expected_error):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=sm_version,
+            server_args_overrides={"attention_backend": "fa3"},
+        )
+
+
+def test_s2pro_engine_rejects_explicit_override_without_fast_ar_flashinfer(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(
         RuntimeError,
-        match="cannot select a default attention backend",
+        match="Fast-AR requires FlashInfer.*SGLANG_IS_FLASHINFER_AVAILABLE",
     ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=89,
+            flashinfer_available=False,
+            server_args_overrides={"attention_backend": "fa3"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_compile"),
+    [(89, False), (90, True), (100, False), (120, False)],
+)
+def test_s2pro_engine_compile_default_follows_validation_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int,
+    expected_compile: bool,
+) -> None:
+    result = _run_s2pro_engine_with_fake_buffers(
+        monkeypatch,
+        sm_version=sm_version,
+    )
+
+    assert result.build_kwargs["enable_torch_compile"] is expected_compile
+    expected_compile_calls = (
+        [(result.scheduler.model_runner.args[0].model_runner.model, 64)]
+        if expected_compile
+        else []
+    )
+    assert result.compile_calls == expected_compile_calls
+    assert result.init_graph_calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_error"),
+    [
+        (None, "cannot validate Fast-AR attention.*gpu_id=0"),
+        (80, "Fast-AR does not support SM80"),
+        (103, "Fast-AR does not support SM103"),
+    ],
+)
+def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+    expected_error: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=expected_error):
         _run_s2pro_engine_with_fake_buffers(
             monkeypatch,
             sm_version=sm_version,
