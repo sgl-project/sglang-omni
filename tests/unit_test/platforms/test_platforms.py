@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.platforms.cuda_platform as cuda_platform_module
 from sglang_omni.platforms import PlatformEnum, resolve_current_platform
 
 
@@ -83,6 +84,53 @@ def test_platforms_define_one_device_control_variable() -> None:
 
     assert cuda.device_control_env_var == "CUDA_VISIBLE_DEVICES"
     assert platform.device_control_env_var == "ROCR_VISIBLE_DEVICES"
+
+
+def test_platform_resolves_worker_device_environment() -> None:
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime(), hip="7.2"))
+
+    assert (
+        platform.visible_device_value({"ROCR_VISIBLE_DEVICES": "3,GPU-abc"})
+        == "3,GPU-abc"
+    )
+    assert platform.visible_devices({"ROCR_VISIBLE_DEVICES": "3,GPU-abc"}) == [
+        3,
+        "GPU-abc",
+    ]
+    assert platform.worker_device_env(1, {"ROCR_VISIBLE_DEVICES": "3,GPU-abc"}) == {
+        "ROCR_VISIBLE_DEVICES": "GPU-abc"
+    }
+
+
+def test_platform_rejects_device_outside_visibility_mask() -> None:
+    platform = resolve_current_platform(_torch_runtime(cuda=_Runtime()))
+
+    with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES only exposes"):
+        platform.worker_device_env(1, {"CUDA_VISIBLE_DEVICES": "0"})
+
+
+def test_cuda_owns_compatibility_environment_policy(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    def _defaults(env):
+        calls.append(dict(env))
+        return {"FLASHINFER_USE_CUDA_NORM": "1"}
+
+    monkeypatch.setattr(
+        cuda_platform_module,
+        "get_gpu_compat_env_defaults",
+        _defaults,
+    )
+    cuda = resolve_current_platform(_torch_runtime(cuda=_Runtime()))
+    rocm = resolve_current_platform(_torch_runtime(cuda=_Runtime(), hip="7.2"))
+
+    env = {"CUDA_VISIBLE_DEVICES": "0"}
+    assert cuda.apply_compatibility_env_defaults(env) == {
+        "FLASHINFER_USE_CUDA_NORM": "1"
+    }
+    assert env["FLASHINFER_USE_CUDA_NORM"] == "1"
+    assert calls == [{"CUDA_VISIBLE_DEVICES": "0"}]
+    assert rocm.compatibility_env_defaults({"ROCR_VISIBLE_DEVICES": "0"}) == {}
 
 
 @pytest.mark.parametrize(

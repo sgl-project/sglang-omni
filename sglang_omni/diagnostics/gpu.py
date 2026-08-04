@@ -17,7 +17,6 @@ from sglang_omni.utils.gpu_memory import (
     _shutdown_nvml,
     _try_import_pynvml,
     format_bytes_gib,
-    parse_cuda_visible_devices,
 )
 
 _BACKENDS = (
@@ -266,9 +265,6 @@ def _logical_devices(
     inventory: list[dict[str, Any]],
     warnings: list[str],
 ) -> list[dict[str, Any]]:
-    if platform.is_cpu():
-        return []
-
     by_index = {device["physical_index"]: device for device in inventory}
     by_uuid = {
         uuid: device
@@ -338,13 +334,9 @@ def collect_gpu_diagnostics(
     torch = torch_module or importlib.import_module("torch")
     device_platform = resolve_current_platform(torch)
 
-    # TODO: fold these into device abstraction
     platform = device_platform.device_name
-    control_env_var = device_platform.device_control_env_var
-    platform_visible_value = (
-        source_env.get(control_env_var) if control_env_var else None
-    )
-    visible_devices = parse_cuda_visible_devices(platform_visible_value)
+    platform_visible_value = device_platform.visible_device_value(source_env)
+    visible_devices = device_platform.visible_devices(source_env)
     # Importing/querying NVML in a ROCm environment can surface an unrelated
     # host NVIDIA driver and produce a misleading physical-device inventory.
     # NVML metadata is meaningful only for an NVIDIA PyTorch build.
@@ -372,7 +364,7 @@ def collect_gpu_diagnostics(
     return {
         "schema_version": 1,
         "environment": {
-            "device_control_env_var": control_env_var,
+            "device_control_env_var": device_platform.device_control_env_var,
             "visible_devices": platform_visible_value,
             "accelerator_platform": platform,
             **system,

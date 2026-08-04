@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
 import torch
 
 from sglang_omni.platforms.interface import DeviceMixin, Platform, PlatformEnum
+from sglang_omni.utils.gpu_compat import get_gpu_compat_env_defaults
 
 
 class CudaDeviceMixin(DeviceMixin):
@@ -37,6 +39,12 @@ class CudaDeviceMixin(DeviceMixin):
 
 class CudaPlatform(CudaDeviceMixin, Platform):
     device_control_env_var = "CUDA_VISIBLE_DEVICES"
+
+    def compatibility_env_defaults(
+        self,
+        env: Mapping[str, str],
+    ) -> dict[str, str]:
+        return get_gpu_compat_env_defaults(env)
 
     def reclaim_process_memory(
         self,
@@ -70,3 +78,9 @@ class RocmDeviceMixin(CudaDeviceMixin):
 
 class RocmPlatform(RocmDeviceMixin, CudaPlatform):
     device_control_env_var = "ROCR_VISIBLE_DEVICES"
+
+    def compatibility_env_defaults(
+        self,
+        env: Mapping[str, str],
+    ) -> dict[str, str]:
+        return {}

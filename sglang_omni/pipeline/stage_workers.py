@@ -24,10 +24,6 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform
-from sglang_omni.utils.gpu_compat import (
-    apply_gpu_compat_env_defaults,
-    get_gpu_compat_env_defaults,
-)
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 
@@ -163,9 +159,8 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
                 env_default_updates[key] = value
 
     worker_process_env = _get_worker_process_env(spec)
-    effective_env = {**os.environ, **env_default_updates, **worker_process_env}
-    compat_env_defaults = (
-        get_gpu_compat_env_defaults(effective_env) if current_platform.is_cuda() else {}
+    compat_env_defaults = current_platform.compatibility_env_defaults(
+        {**os.environ, **env_default_updates, **worker_process_env}
     )
     updates = {
         **env_default_updates,
@@ -374,8 +369,7 @@ def stage_process_main(
     try:
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log)
-        if current_platform.is_cuda():
-            apply_gpu_compat_env_defaults()
+        current_platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         _destroy_torch_distributed_process_group(log)
@@ -796,27 +790,11 @@ def get_stage_process_env(
         return {}
 
     source_env = env if env is not None else os.environ
-    # TODO: this validation can be folded into device abstraction
-    # e.g. current_platform.validate_device_id
-    visibility_env = current_platform.device_control_env_var
-    if visibility_env is None:
-        raise RuntimeError("TP stages require an accelerator platform")
-    original_visible = source_env.get(visibility_env)
     if spec.gpu_id is None:
         raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
-    if original_visible:
-        visible_devices = [item.strip() for item in original_visible.split(",")]
-        if spec.gpu_id >= len(visible_devices):
-            raise ValueError(
-                f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                f"but {visibility_env} only exposes {visible_devices}"
-            )
-        mapped_gpu = visible_devices[spec.gpu_id]
-    else:
-        mapped_gpu = str(spec.gpu_id)
 
     return {
-        visibility_env: mapped_gpu,
+        **current_platform.worker_device_env(spec.gpu_id, source_env),
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
     }
@@ -828,12 +806,8 @@ def _prepare_accelerator_environment(
 ) -> None:
     """Map a TP rank to one visible accelerator before torch initialization."""
     if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
-        # TODO: same applies here. Fold into device abstraction.
-        visibility_env = current_platform.device_control_env_var
-        if visibility_env is None:
-            raise RuntimeError("TP stages require an accelerator platform")
-        visible_value = os.environ.get(visibility_env)
-        mapped_gpu = visible_value or str(spec.gpu_id)
+        mapped_device_env = current_platform.worker_device_env(0, os.environ)
+        visibility_env, mapped_gpu = next(iter(mapped_device_env.items()))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
             "TP stage %s rank %d sees %s device=%s (local device_id=0)",
