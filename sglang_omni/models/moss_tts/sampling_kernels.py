@@ -10,6 +10,8 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
+_UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
+
 
 @triton.jit
 def _seeded_gumbel_argmax_kernel(
@@ -43,7 +45,8 @@ def _seeded_gumbel_argmax_kernel(
     hash_value ^= 16
     hash_value = fmix32(hash_value)
 
-    uniform = hash_value.to(tl.float64) * 2.3283064370807974e-10
+    # Match multinomial_with_seed exactly, including hash_value == UINT32_MAX.
+    uniform = hash_value.to(tl.float64) / _UINT32_MAX_F64
     log_uniform = libdevice.log(uniform)
     neg_log_uniform = -tl.maximum(log_uniform, -1.7976931348623157e308)
     gumbel = -libdevice.log(neg_log_uniform)
