@@ -15,7 +15,8 @@ tests/
 │   └── test_asr_ci_seedtts.py
 └── unit_test/
     ├── benchmarks/
-    │   └── test_dataset_regressions.py
+    │   ├── test_dataset_regressions.py
+    │   └── test_runtime_metrics.py
     ├── test_tune_ci_thresholds.py
     ├── quantization/
     │   ├── test_autoround.py
@@ -351,7 +352,8 @@ that happened to contain an older version of the test.
   - these tests prove transport mechanics, not full pipeline throughput,
     NVLink selection, or production backpressure behavior; keep those covered
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
-- `unit_test/benchmarks/`: Benchmark dataset/loading regression tests.
+- `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
+  runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
