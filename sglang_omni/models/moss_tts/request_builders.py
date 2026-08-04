@@ -15,10 +15,18 @@ import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.models.moss_tts.payload_types import MossTTSState
+from sglang_omni.models.moss_tts.payload_types import (
+    AUDIO_REPETITION_PENALTY,
+    AUDIO_SAMPLING,
+    TEXT_SAMPLING,
+    MossTTSState,
+    resolve_moss_audio_pad_code,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.sampling.seed import derive_sampling_seed, new_random_sampling_seed
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.scheduling.types import ARRequestData
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
@@ -79,14 +87,19 @@ class MossTTSSGLangRequestData(ARRequestData):
     prompt_rows: torch.Tensor | None = None
     assistant_prefix_rows: torch.Tensor | None = None
     output_rows: list[torch.Tensor] = field(default_factory=list)
+    stream_audio_active: bool = False
+    stream_audio_ended: bool = False
+    stream_prefix_scanned: bool = False
+    stream_output_row_count: int = 0
+    stream_row_count: int = 0
     pending_feedback_queue: Any = field(default_factory=collections.deque)
-    text_temperature: float = 1.5
-    text_top_p: float = 1.0
-    text_top_k: int = 50
-    audio_temperature: float = 1.7
-    audio_top_p: float = 0.8
-    audio_top_k: int = 25
-    audio_repetition_penalty: float = 1.0
+    text_temperature: float = TEXT_SAMPLING.temperature
+    text_top_p: float = TEXT_SAMPLING.top_p
+    text_top_k: int = TEXT_SAMPLING.top_k
+    audio_temperature: float = AUDIO_SAMPLING.temperature
+    audio_top_p: float = AUDIO_SAMPLING.top_p
+    audio_top_k: int = AUDIO_SAMPLING.top_k
+    audio_repetition_penalty: float = AUDIO_REPETITION_PENALTY
     seed: int | None = None
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     delay_state: torch.Tensor | None = None
@@ -293,13 +306,13 @@ def build_generation_kwargs(
         # note (chenyang): the checkpoint's own generate() defaults; greedy
         # (temperature=0) collapses the codec LM into copying the reference
         # audio. Callers may override any field.
-        "text_temperature": 1.5,
-        "audio_temperature": 1.7,
-        "text_top_p": 1.0,
-        "audio_top_p": 0.8,
-        "text_top_k": 50,
-        "audio_top_k": 25,
-        "audio_repetition_penalty": 1.0,
+        "text_temperature": TEXT_SAMPLING.temperature,
+        "audio_temperature": AUDIO_SAMPLING.temperature,
+        "text_top_p": TEXT_SAMPLING.top_p,
+        "audio_top_p": AUDIO_SAMPLING.top_p,
+        "text_top_k": TEXT_SAMPLING.top_k,
+        "audio_top_k": AUDIO_SAMPLING.top_k,
+        "audio_repetition_penalty": AUDIO_REPETITION_PENALTY,
     }
 
     if "temperature" in explicit_fields and params.get("temperature") is not None:
@@ -527,6 +540,127 @@ def _resolve_audio_payload_bounds(
     return start, end
 
 
+def _moss_stream_metadata(
+    data: MossTTSSGLangRequestData,
+    *,
+    n_vq: int,
+) -> dict[str, Any]:
+    config = data.model_config
+    metadata: dict[str, Any] = {
+        "modality": "audio_codes",
+        "stream": True,
+        "n_vq": int(n_vq),
+        "audio_pad_code": resolve_moss_audio_pad_code(config),
+        "sample_rate": int(
+            data.state.sample_rate or getattr(config, "sampling_rate", 0) or 24000
+        ),
+    }
+    params = getattr(getattr(data.stage_payload, "request", None), "params", None)
+    if (
+        isinstance(params, dict)
+        and params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None
+    ):
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
+            INITIAL_CODEC_CHUNK_FRAMES_PARAM
+        ]
+    return metadata
+
+
+def _collect_moss_stream_rows(
+    data: MossTTSSGLangRequestData,
+    req_output: Any,
+) -> list[torch.Tensor]:
+    config = data.model_config
+    rows: list[torch.Tensor] = []
+
+    if not data.stream_prefix_scanned:
+        prefix = data.assistant_prefix_rows
+        if isinstance(prefix, torch.Tensor) and prefix.ndim == 2:
+            for row in prefix.unbind(0):
+                token = int(row[0].item())
+                if token == int(config.audio_start_token_id):
+                    data.stream_audio_active = True
+                    data.stream_audio_ended = False
+                    continue
+                if token == int(config.audio_end_token_id):
+                    data.stream_audio_active = False
+                    data.stream_audio_ended = True
+                    continue
+                if not data.stream_audio_active and token == int(
+                    config.audio_assistant_gen_slot_token_id
+                ):
+                    data.stream_audio_active = True
+                if data.stream_audio_active and not data.stream_audio_ended:
+                    rows.append(row[1:].detach().clone())
+        data.stream_prefix_scanned = True
+
+    output_rows = data.output_rows
+    start = min(int(data.stream_output_row_count), len(output_rows))
+    for index in range(start, len(output_rows)):
+        row = output_rows[index]
+        token = (
+            int(req_output.data)
+            if index == len(output_rows) - 1 and req_output.data is not None
+            else int(row[0].item())
+        )
+        if token == int(config.audio_start_token_id):
+            data.stream_audio_active = True
+            data.stream_audio_ended = False
+            continue
+        if token == int(config.audio_end_token_id):
+            data.stream_audio_active = False
+            data.stream_audio_ended = True
+            continue
+        if not data.stream_audio_active and token == int(
+            config.audio_assistant_gen_slot_token_id
+        ):
+            data.stream_audio_active = True
+        if data.stream_audio_active and not data.stream_audio_ended:
+            rows.append(row[1:].detach().clone())
+    data.stream_output_row_count = len(output_rows)
+    return rows
+
+
+def make_moss_tts_stream_output_builder():
+    """Build incremental delayed-code chunks for streaming requests."""
+
+    def stream_output_builder(
+        request_id: str,
+        data: MossTTSSGLangRequestData,
+        req_output: Any,
+    ) -> list[OutgoingMessage]:
+        params = getattr(getattr(data.stage_payload, "request", None), "params", None)
+        if not isinstance(params, dict) or not bool(params.get("stream", False)):
+            return []
+        req = data.req
+        if req is not None and int(getattr(req, "inflight_middle_chunks", 0) or 0):
+            return []
+
+        rows = _collect_moss_stream_rows(data, req_output)
+        if not rows:
+            return []
+        n_vq = int(rows[0].shape[0])
+        if n_vq <= 0 or any(int(row.shape[0]) != n_vq for row in rows):
+            raise RuntimeError("MOSS-TTS stream rows have inconsistent codebook widths")
+
+        row_index = int(data.stream_row_count)
+        data.stream_row_count += len(rows)
+        chunk = rows[0] if len(rows) == 1 else torch.stack(rows, dim=0)
+        metadata = _moss_stream_metadata(data, n_vq=n_vq)
+        metadata["row_index"] = row_index
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                target="vocoder",
+                data=chunk,
+                metadata=metadata,
+            )
+        ]
+
+    return stream_output_builder
+
+
 def _initialize_generation_state(
     data: MossTTSSGLangRequestData,
     *,
@@ -597,13 +731,22 @@ def build_sglang_moss_tts_request(
         state=prepared.state,
         model_config=cfg,
         prompt_rows=prepared.prompt_rows,
-        text_temperature=float(gen_kwargs.get("text_temperature", 0.0)),
-        text_top_p=float(gen_kwargs.get("text_top_p", 1.0)),
-        text_top_k=int(gen_kwargs.get("text_top_k", -1)),
-        audio_temperature=float(gen_kwargs.get("audio_temperature", 0.0)),
-        audio_top_p=float(gen_kwargs.get("audio_top_p", 1.0)),
-        audio_top_k=int(gen_kwargs.get("audio_top_k", -1)),
-        audio_repetition_penalty=float(gen_kwargs.get("audio_repetition_penalty", 1.0)),
+        text_temperature=float(
+            gen_kwargs.get("text_temperature", TEXT_SAMPLING.temperature)
+        ),
+        text_top_p=float(gen_kwargs.get("text_top_p", TEXT_SAMPLING.top_p)),
+        text_top_k=int(gen_kwargs.get("text_top_k", TEXT_SAMPLING.top_k)),
+        audio_temperature=float(
+            gen_kwargs.get("audio_temperature", AUDIO_SAMPLING.temperature)
+        ),
+        audio_top_p=float(gen_kwargs.get("audio_top_p", AUDIO_SAMPLING.top_p)),
+        audio_top_k=int(gen_kwargs.get("audio_top_k", AUDIO_SAMPLING.top_k)),
+        audio_repetition_penalty=float(
+            gen_kwargs.get(
+                "audio_repetition_penalty",
+                AUDIO_REPETITION_PENALTY,
+            )
+        ),
         seed=gen_kwargs.get("seed"),
         sampling_seed=(
             derive_moss_tts_sampling_seed(gen_kwargs["seed"])

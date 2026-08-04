@@ -10,7 +10,42 @@ from typing import Any
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
+from sglang_omni.vendor.sglang.utils import is_flashinfer_available
+
+_VALIDATED_AUTO_ATTENTION_BACKENDS = {
+    89: "flashinfer",
+    90: "fa3",
+    100: "flashinfer",
+    120: "flashinfer",
+}
+
+
+def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    if sm_version is None:
+        raise RuntimeError(
+            "FishAudio S2-Pro cannot validate Fast-AR attention because "
+            f"CUDA compute capability for gpu_id={gpu_id} could not be detected."
+        )
+
+    backend = _VALIDATED_AUTO_ATTENTION_BACKENDS.get(sm_version)
+    if backend is None:
+        raise RuntimeError(
+            f"FishAudio S2-Pro Fast-AR does not support SM{sm_version}; "
+            "supported architectures are SM89, SM90, SM100, and SM120. "
+            "A Slow-AR attention_backend override cannot bypass this requirement."
+        )
+
+    if backend == "flashinfer" and not is_flashinfer_available():
+        raise RuntimeError(
+            f"FishAudio S2-Pro Fast-AR requires FlashInfer on SM{sm_version}, but "
+            "FlashInfer is unavailable. Install and enable FlashInfer and ensure "
+            "SGLANG_IS_FLASHINFER_AVAILABLE is not false; a Slow-AR "
+            "attention_backend override cannot bypass this requirement."
+        )
+    return backend
 
 
 class FishS2ProEngineBuilder(TtsEngineBuilder):
@@ -40,20 +75,26 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
+        sm_version = get_visible_gpu_sm_version(self.gpu_id)
         return {
             "max_running_requests": 64,
             "disable_cuda_graph": False,
             "mem_fraction_static": 0.85,
             "chunked_prefill_size": 8192,
             "dtype": "bfloat16",
-            "enable_torch_compile": True,
+            # FlashInfer Fast-AR compile+graph replay is not yet validated with
+            # trained S2-Pro weights. Keep those decoder layers uncompiled.
+            "enable_torch_compile": sm_version == 90,
             "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
         }
 
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
+        if overrides.get("attention_backend") is None:
+            overrides["attention_backend"] = fast_ar_backend
+
     def customize_server_args(self, server_args: Any) -> None:
         updates: dict[str, Any] = {"disable_overlap_schedule": True}
-        if server_args.attention_backend is None:
-            updates["attention_backend"] = "fa3"
         override_server_args(
             server_args,
             "sglang_omni.fishaudio_s2_pro.runtime_defaults",

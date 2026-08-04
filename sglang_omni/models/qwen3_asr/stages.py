@@ -37,6 +37,8 @@ def create_sglang_qwen3_asr_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
@@ -126,6 +128,8 @@ def create_sglang_qwen3_asr_executor(
         model_runner=ModelRunner(model_worker, output_proc),
         request_builder=request_builder,
         result_adapter=result_adapter,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
     )

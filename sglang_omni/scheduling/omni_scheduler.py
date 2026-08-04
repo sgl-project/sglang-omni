@@ -40,6 +40,12 @@ from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import (
+    emit_model_path_end as _emit_model_path_end,
+)
+from sglang_omni.profiler.event_recorder import (
+    emit_model_path_start as _emit_model_path_start,
+)
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
@@ -1303,6 +1309,7 @@ class OmniScheduler:
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
         for req in reqs:
             self._emit_request_error(req.rid, error)
+            self._emit_model_path_end_once(req.rid, status="error")
             self.abort(req.rid, defer_running_cleanup=False)
 
     def _emit_prefill_start_for_batch(self, batch: ScheduleBatch) -> None:
@@ -1316,12 +1323,23 @@ class OmniScheduler:
             if rid in self._prefill_start_done:
                 continue
             self._prefill_start_done.add(rid)
+            _emit_model_path_start(rid)
             _emit_event(
                 request_id=rid,
                 stage=None,
                 event_name="scheduler_prefill_start",
                 metadata=metadata,
             )
+
+    def _emit_model_path_end_once(self, request_id: str, *, status: str) -> None:
+        if request_id not in self._prefill_start_done:
+            return
+        self._prefill_start_done.discard(request_id)
+        _emit_model_path_end(request_id, status=status)
+
+    def _emit_remaining_model_path_ends(self, *, status: str) -> None:
+        for request_id in tuple(self._prefill_start_done):
+            self._emit_model_path_end_once(request_id, status=status)
 
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
         """Intercept finished requests and emit to outbox.
@@ -1366,7 +1384,7 @@ class OmniScheduler:
                 # resurrect the request downstream.
                 self._run_abort_callback(rid)
                 self._first_emit_done.discard(rid)
-                self._prefill_start_done.discard(rid)
+                self._emit_model_path_end_once(rid, status="aborted")
                 _detach_request_data(req)
                 continue
 
@@ -1407,14 +1425,25 @@ class OmniScheduler:
                             terminal_error = exc
                 data.prefill_input_embeds = None
                 data.decode_input_embeds = None
+                # Note: (Jiaxin Deng) close the model-path interval before
+                # _close_completed_request, which discards the same rid that
+                # _emit_model_path_end_once dedups on. Emitting afterwards
+                # silently drops every terminal event on the success path.
+                self._emit_model_path_end_once(
+                    rid,
+                    status="error" if terminal_error is not None else "success",
+                )
                 abort_cleanup_needed = self._close_completed_request(req)
 
             if abort_cleanup_needed:
                 self._run_abort_callback(rid)
 
             if terminal_error is not None:
+                self._first_emit_done.discard(rid)
                 self._emit_request_error(rid, terminal_error)
                 continue
+
+            self._first_emit_done.discard(rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -1457,6 +1486,7 @@ class OmniScheduler:
     def start(self) -> None:
         self._scheduler_thread_id = threading.get_ident()
         self._running = True
+        model_path_status = "error"
         try:
             if self.enable_async_decode:
                 self._event_loop_async_decode()
@@ -1464,7 +1494,9 @@ class OmniScheduler:
                 self._event_loop_overlap()
             else:
                 self._event_loop_normal()
+            model_path_status = "aborted"
         finally:
+            self._emit_remaining_model_path_ends(status=model_path_status)
             self._scheduler_thread_id = None
             try:
                 self._shutdown_request_build_executor()
@@ -1535,6 +1567,12 @@ class OmniScheduler:
         self._deferred_request_payloads.pop(request_id, None)
         self._dirty_deferred_request_ids.discard(request_id)
         self._first_emit_done.discard(request_id)
+        # Note: (Jiaxin Deng) emit before discarding, and discard whether or
+        # not the request is still in a running batch. A running abort that
+        # never reaches stream_output used to leave its rid here forever,
+        # which grew unbounded on a long-lived server and then swallowed a
+        # later prefill_start for the same id.
+        self._emit_model_path_end_once(request_id, status="aborted")
         self._prefill_start_done.discard(request_id)
         if not running_abort:
             self._release_immediate_request_resources(request_id)

@@ -29,6 +29,9 @@ _LAZY_EXPORTS = {
     "ImageMediaIO": "sglang_omni.preprocessing.image",
     "load_chat_template": "sglang_omni.preprocessing.text",
     "normalize_messages": "sglang_omni.preprocessing.text",
+    "prepare_audio": "sglang_omni.preprocessing.transcription",
+    "PreparedAudio": "sglang_omni.preprocessing.transcription",
+    "resolve_audio_source": "sglang_omni.preprocessing.transcription",
     "VideoMediaIO": "sglang_omni.preprocessing.video",
 }
 
@@ -52,6 +55,9 @@ __all__ = [
     "MultiModalResourceConnector",
     "MediaIO",
     "normalize_messages",
+    "prepare_audio",
+    "PreparedAudio",
+    "resolve_audio_source",
     "VideoMediaIO",
 ]
 
