@@ -1,0 +1,21 @@
+# Default single-GPU profile validated on one RTX 5090 (SM120, 32 GB).
+# Covers short/medium audio up to ~30 min per request; peak throughput at
+# concurrency 8 on this GPU. For >30 min items use
+# moss_transcribe_diarize_rtx5090_long_audio.yaml (the binding constraint is
+# transient encoder activation memory, not KV cache).
+config_cls: MossTranscribeDiarizePipelineConfig
+name: moss-transcribe-diarize-rtx5090
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 16
+    server_args_overrides:
+      cuda_graph_max_bs: 16
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.80
