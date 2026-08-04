@@ -7,7 +7,8 @@
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
 
 ```bash
-hf download Qwen/Qwen3-ASR-1.7B
+MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
+MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
 ```
 
 ## Server Configuration
@@ -16,7 +17,8 @@ Qwen3-ASR runs a single ASR stage on one GPU.
 
 ```bash
 sgl-omni serve \
-  --model-path Qwen/Qwen3-ASR-1.7B \
+  --model-path "${MODEL_PATH}" \
+  --model-name Qwen/Qwen3-ASR-1.7B \
   --port 8000
 ```
 
@@ -56,13 +58,14 @@ print(resp.json()["text"])
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint; `zh`/`cn` select Chinese, other values use English prompting |
+| `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
+| `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
+| `stream` | boolean | `false` | Return transcript events over SSE |
 
-`verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
-`{"text": "..."}`.
-
-`max_new_tokens` is supported inside the model request builder, but the public transcription endpoint does not currently expose it as a form field. The route uses the ASR stage default unless the pipeline is configured another way.
+`verbose_json` uses the model adapter's verbose response schema and includes
+duration-based usage (rounded-up audio seconds) when duration probing succeeds.
 
 ## Benchmarking
 
@@ -74,12 +77,27 @@ The report includes RTF (processing time divided by audio duration) and RTFx
 (successful input-audio seconds divided by wall-clock seconds).
 
 ```bash
-sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8000
+sgl-omni serve \
+  --model-path "${MODEL_PATH}" \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --port 8000
 
-# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
+# Sweep the full SeedTTS EN set (1088 clips), 3 repeats per concurrency:
 python -m benchmarks.eval.benchmark_asr_seedtts \
-  --port 8000 --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+  --port 8000 \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --model-revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+  --concurrencies 1,2,4,8,16,32,64 \
+  --repeats 3 --warmup
 ```
+
+The result JSON includes the applied dataset revision, declared model revision,
+an effective evaluation-input content hash, normalization, repository and
+dependency fingerprints, complete sample counts, and latency/RTF/throughput.
+When local NVML and `psutil` sampling are available, it also includes CPU use,
+power, and peak/steady GPU memory; unavailable metrics and monitor errors remain
+explicit. Optional server settings and an exact launch command can be declared
+with the benchmark's provenance flags.
 
 The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (`tests/test_model/test_asr_ci_seedtts.py`). Qwen3-ASR remains

@@ -186,7 +186,8 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR, Whisper | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_stability.py` | ASR functional, soak, chaos, and memory-retention validation | Qwen3-ASR, Fun-ASR, Whisper | `/v1/audio/transcriptions`, `/v1/audio/translations`, `/health` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -207,12 +208,12 @@ and MOSS-TTS. MOSS-TTS additionally supports duration control through
 docstring (sequential phases on CI to reduce OOM risk).
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
-transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
-or Fun-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. It reports evaluation coverage and RTFx (successful
-input-audio seconds per wall-clock second) alongside the existing RTF. Use it
-to measure how ASR concurrency affects capacity, latency, and WER for a given
-workload.
+transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR,
+Fun-ASR, or Whisper router and reports WER, speed, per-sample evidence, and
+per-worker routing balance per concurrency level. It reports evaluation
+coverage and RTFx (successful input-audio seconds per wall-clock second)
+alongside the existing RTF. Use it to measure how ASR concurrency affects
+capacity, latency, and WER for a given workload.
 
 Add `--stream` to exercise the transcription SSE path and report text TTFT and
 inter-chunk latency while retaining the terminal transcript for WER:
@@ -222,6 +223,86 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
   --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
+
+### Consumer ASR stability and memory-retention validation
+
+`benchmark_asr_stability.py` validates the running public server, rather than
+calling model code directly. It covers EN/ZH transcription, SSE terminal-text
+consistency, cancel/reconnect recovery, malformed-audio fault injection, staged
+load and `/health`. With explicit `--include-translation`, Whisper also mixes
+speech-to-English translation into Chinese traffic.
+
+Prepare the canonical bilingual SeedTTS dataset, then start the server in one
+terminal:
+
+```bash
+python -m benchmarks.dataset.prepare --dataset seedtts
+FUN_ASR_REVISION=854d88f94205cd17d2afdb24332130d86fbe654a
+FUN_ASR_PATH="$(hf download FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --revision "${FUN_ASR_REVISION}")"
+
+
+python -m sglang_omni.cli serve \
+  --model-path "${FUN_ASR_PATH}" \
+  --model-name FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
+Run the 30-minute consumer-GPU profile in a second terminal:
+
+```bash
+FUN_ASR_REVISION=854d88f94205cd17d2afdb24332130d86fbe654a
+FUN_ASR_PATH="$(hf download FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --revision "${FUN_ASR_REVISION}")"
+
+python -m benchmarks.eval.benchmark_asr_stability \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --model-revision 854d88f94205cd17d2afdb24332130d86fbe654a \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --port 8000 --duration-s 1800 --concurrencies 1,4,8,16 \
+  --min-free-memory-mib 2048 --max-retained-memory-mib 256 \
+  --launch-command "python -m sglang_omni.cli serve \
+    --model-path ${FUN_ASR_PATH} \
+    --model-name FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000" \
+  --output results/fun-asr-stability.json
+```
+
+`--duration-s` is divided evenly across the requested concurrency stages. The
+concurrency value is an exact cap across normal load and injected fault
+requests, not a worker count with extra chaos traffic added on top. With
+translation enabled, one in every four Chinese requests is sent to
+`/v1/audio/translations`; the cadence is shared by the whole stage and the
+returned text must be predominantly Latin rather than untranslated Chinese.
+Every stage must complete normal requests and at least one chaos event, and
+translation stages must complete translation traffic, or the result fails.
+
+The memory gate requires working NVML and `psutil` sampling. It records
+device-wide used/free memory, GPU-process allocation, the host RSS and CPU use
+of the GPU process IDs, utilization, and power. Missing samples fail closed.
+`--min-free-memory-mib` applies to the minimum observed free device memory;
+`--max-retained-memory-mib` compares the post-cooldown device allocation with
+the pre-functional checkpoint. Use `--cooldown-s` to match the deployment's
+expected cache-release interval.
+
+The stability harness always loads distinct `en` and `zh` dataset splits. A
+single local `meta.lst` is rejected because reusing it for both languages would
+invalidate the bilingual evidence. HTTP JSON, health, and SSE reads are bounded;
+oversized or malformed responses become request failures instead of growing
+client memory without limit. The JSON result is written atomically and records
+the repository state, dependency inventory, effective input-content hash,
+declared server settings, exact/observed concurrency, translation cadence,
+latency reservoir method, chaos events, memory checkpoints, and final health.
+
+Validated revision references are Qwen3-ASR
+`7278e1e70fe206f11671096ffdd38061171dd6e5`, Fun-ASR
+`854d88f94205cd17d2afdb24332130d86fbe654a`, and Whisper
+`06f233fe06e710322aca913c1bc4249a0d71fce1`. The harness cannot inspect which
+checkpoint the server loaded, so `--model-revision` is required for auditable
+evidence. Whisper translation and boundary checks are explicit opt-ins until
+the running server exposes the matching contracts. Use `--include-translation`
+only with `/v1/audio/translations` support (tracked in #1280), and use
+`--check-audio-boundary` only with an over-limit rejection guard (tracked in
+#1279). Translation is non-streaming and requires
+`--translation-source-language` until automatic detection exists.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

@@ -6,7 +6,7 @@
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
+routing balance. It supports Qwen3-ASR, Fun-ASR-Nano, and Whisper through
 ``--model-path``.
 
 Usage:
@@ -14,22 +14,21 @@ Usage:
     # Download the test set once:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Launch Qwen3-ASR behind the router, matching ASR CI
-    python -m sglang_omni_router.serve \
-        --host 0.0.0.0 \
-        --port 8000 \
-        --launcher-config examples/configs/qwen3_asr_router.yaml \
-        --policy least_request \
-        --health-success-threshold 1 \
-        --health-failure-threshold 2 \
-        --health-check-interval-secs 2 \
-        --log-level info
+    # Pin and launch Qwen3-ASR:
+    MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B \
+        --revision 7278e1e70fe206f11671096ffdd38061171dd6e5)
+    sgl-omni serve \
+        --model-path "${MODEL_PATH}" \
+        --model-name Qwen/Qwen3-ASR-1.7B \
+        --port 8000
 
-    # Sweep the issue's matrix (3 repeats each) over the full SeedTTS EN set:
+    # Sweep the full SeedTTS EN set (3 repeats each):
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 \
         --concurrencies 1,2,4,8,16,32,64 \
-        --repeats 3
+        --repeats 3 --warmup \
+        --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+        --model-revision 7278e1e70fe206f11671096ffdd38061171dd6e5
 
     # Quick local smoke on a 20-sample subset:
     python -m benchmarks.eval.benchmark_asr_seedtts \
@@ -86,22 +85,72 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import math
 import os
 import statistics
 
 import requests
 
-from benchmarks.dataset.prepare import DATASETS
+from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
+    PINNED_ASR_MODEL_REVISIONS,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
 )
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
+PINNED_MODEL_REVISIONS = PINNED_ASR_MODEL_REVISIONS
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be finite and greater than zero")
+    return parsed
+
+
+def _parse_concurrencies(value: str) -> list[int]:
+    tokens = [token.strip() for token in value.split(",")]
+    if not tokens or any(not token for token in tokens):
+        raise argparse.ArgumentTypeError(
+            "concurrencies must be a non-empty comma-separated list"
+        )
+    return [_positive_int(token) for token in tokens]
+
+
+def _evaluation_input_sha256(samples: list[SampleInput]) -> str:
+    digest = hashlib.sha256(b"seedtts-evaluation-input-v1\0")
+    for sample in samples:
+        for value in (sample.sample_id, sample.ref_text, sample.target_text):
+            encoded = value.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        with open(sample.ref_audio, "rb") as audio:
+            size = os.fstat(audio.fileno()).st_size
+            digest.update(size.to_bytes(8, "big"))
+            while chunk := audio.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
@@ -183,15 +232,33 @@ async def run_asr_seedtts_once(
 
 
 async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
-    benchmark_result = await run_asr_seedtts_once(
-        samples,
-        host=args.host,
-        port=args.port,
-        model_path=args.model_path,
-        lang=args.lang,
-        concurrency=concurrency,
-        stream=args.stream,
+    monitor = (
+        None
+        if args.disable_resource_monitor
+        else ResourceMonitor(
+            gpu_index=args.gpu_index,
+            interval_s=args.monitor_interval_s,
+        ).start()
     )
+    try:
+        benchmark_result = await run_asr_seedtts_once(
+            samples,
+            host=args.host,
+            port=args.port,
+            model_path=args.model_path,
+            lang=args.lang,
+            concurrency=concurrency,
+            stream=args.stream,
+        )
+    finally:
+        resources = (
+            monitor.stop()
+            if monitor is not None
+            else {
+                "available": False,
+                "error": "resource monitoring disabled",
+            }
+        )
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
     has_evaluated_samples = summary["evaluated"] > 0
@@ -209,12 +276,15 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "rtfx": speed["rtfx"],
+        "audio_seconds_per_s": speed["rtfx"],
         "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
         "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
         "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
         "rtf_mean": speed["rtf_mean"] if has_rtf else None,
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
+        "per_sample": benchmark_result["per_sample"],
+        "resources": resources,
     }
     for key in (
         "text_ttft_mean_s",
@@ -246,6 +316,26 @@ def _aggregate(repeats: list[dict]) -> dict:
             "n": len(values),
         }
 
+    def _resource_metric(*path: str) -> dict | None:
+        values: list[float] = []
+        for repeat in repeats:
+            current = repeat.get("resources")
+            for key in path:
+                if not isinstance(current, dict):
+                    current = None
+                    break
+                current = current.get(key)
+            if isinstance(current, (int, float)):
+                values.append(float(current))
+        if not values:
+            return None
+        return {
+            "per_repeat": values,
+            "mean": statistics.mean(values),
+            "min": min(values),
+            "max": max(values),
+        }
+
     total_requests = sum(r["total"] for r in repeats)
     evaluated = sum(r["evaluated"] for r in repeats)
     skipped = sum(r["skipped"] for r in repeats)
@@ -261,11 +351,31 @@ def _aggregate(repeats: list[dict]) -> dict:
         "wall_clock_s": _stat("wall_clock_s"),
         "throughput_samples_per_s": _stat("throughput_samples_per_s"),
         "rtfx": _stat("rtfx"),
+        "audio_seconds_per_s": _stat("audio_seconds_per_s"),
         "latency_mean_s": _stat("latency_mean_s"),
         "latency_p95_s": _stat("latency_p95_s"),
         "latency_p99_s": _stat("latency_p99_s"),
         "rtf_mean": _stat("rtf_mean"),
         "rtf_p95": _stat("rtf_p95"),
+        "resources": {
+            "gpu_memory_used_peak_mib": _resource_metric("gpu_memory_used_mib", "max"),
+            "gpu_memory_used_steady_mib": _resource_metric(
+                "gpu_memory_used_mib", "steady_mean"
+            ),
+            "gpu_process_memory_peak_mib": _resource_metric(
+                "gpu_process_memory_mib", "max"
+            ),
+            "power_peak_w": _resource_metric("power_w", "max"),
+            "system_cpu_peak_percent": _resource_metric("system_cpu_percent", "max"),
+            "gpu_process_cpu_peak_percent": _resource_metric(
+                "gpu_process_cpu_percent", "max"
+            ),
+            "monitor_errors": [
+                repeat["resources"].get("error")
+                for repeat in repeats
+                if repeat.get("resources", {}).get("error")
+            ],
+        },
         "per_repeat": repeats,
     }
     for key in (
@@ -351,18 +461,95 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--concurrencies",
-        default=DEFAULT_CONCURRENCIES,
-        help="Comma-separated ASR concurrency levels to sweep.",
+        type=_parse_concurrencies,
+        default=_parse_concurrencies(DEFAULT_CONCURRENCIES),
+        help="Comma-separated positive ASR concurrency levels to sweep.",
     )
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=_positive_int, default=3)
     parser.add_argument(
         "--model-path",
         default=QWEN3_ASR_MODEL_PATH,
         help=(
             "ASR model id served by the router. Defaults to "
-            f"{QWEN3_ASR_MODEL_PATH}; use "
-            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
+            f"{QWEN3_ASR_MODEL_PATH}; other supported consumer models are "
+            f"{FUN_ASR_MODEL_PATH} and {OMNI_WHISPER_MODEL_PATH}."
         ),
+    )
+    parser.add_argument(
+        "--model-revision",
+        default=None,
+        help="Declared model revision loaded by the running server.",
+    )
+    parser.add_argument(
+        "--dataset-revision",
+        default=None,
+        help="Exact dataset revision; canonical SeedTTS uses a pinned default.",
+    )
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        help="Served dtype recorded as provenance (for example, bfloat16).",
+    )
+    parser.add_argument(
+        "--quantization",
+        default=None,
+        help="Selected model quantization recorded as declared provenance.",
+    )
+    parser.add_argument(
+        "--attention-backend",
+        default=None,
+        help="Selected language-model attention backend recorded as provenance.",
+    )
+    parser.add_argument(
+        "--mm-attention-backend",
+        default=None,
+        help="Selected multimodal attention backend recorded as provenance.",
+    )
+    parser.add_argument(
+        "--cuda-graph",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether the server uses CUDA Graphs, recorded as provenance.",
+    )
+    parser.add_argument(
+        "--torch-compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether the server uses torch.compile, recorded as provenance.",
+    )
+    parser.add_argument(
+        "--max-running-requests",
+        type=int,
+        default=None,
+        help="Server admission limit recorded as provenance.",
+    )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help="Server static-memory fraction recorded as provenance.",
+    )
+    parser.add_argument(
+        "--launch-command",
+        default=os.environ.get("SGLANG_OMNI_BENCHMARK_LAUNCH_COMMAND"),
+        help="Exact server launch command stored in the result JSON.",
+    )
+    parser.add_argument(
+        "--gpu-index",
+        type=int,
+        default=0,
+        help="Logical local GPU index sampled for memory, utilization, and power.",
+    )
+    parser.add_argument(
+        "--monitor-interval-s",
+        type=_positive_float,
+        default=0.2,
+        help="Resource monitor sampling interval.",
+    )
+    parser.add_argument(
+        "--disable-resource-monitor",
+        action="store_true",
+        help="Disable local GPU/CPU resource sampling.",
     )
     parser.add_argument(
         "--warmup",
@@ -430,10 +617,28 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 
 def main() -> None:
     args = parse_args()
-    concurrencies = [int(c) for c in args.concurrencies.split(",") if c.strip()]
+    concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None
+    model_revision = args.model_revision
+    is_local_source = os.path.isfile(args.meta) or args.meta.endswith(".lst")
+    if is_local_source:
+        dataset_revision = None
+    elif args.dataset_revision is not None:
+        dataset_revision = args.dataset_revision
+    elif args.meta == DATASETS["seedtts"]:
+        dataset_revision = SEEDTTS_DATASET_REVISION
+    else:
+        dataset_revision = None
 
-    samples = load_seedtts_samples(args.meta, max_samples=max_samples, split=args.lang)
+    samples = load_seedtts_samples(
+        args.meta,
+        max_samples=max_samples,
+        split=args.lang,
+        revision=dataset_revision,
+    )
+    if not samples:
+        raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
+    evaluation_input_sha256 = _evaluation_input_sha256(samples)
     print(
         f"Loaded {len(samples)} SeedTTS {args.lang} samples; "
         f"sweeping concurrency={concurrencies} x {args.repeats} repeats "
@@ -443,18 +648,46 @@ def main() -> None:
     aggregates = asyncio.run(_sweep(args, samples, concurrencies))
     _print_table(aggregates)
 
+    server_config = {
+        "dtype": args.dtype,
+        "quantization": args.quantization,
+        "attention_backend": args.attention_backend,
+        "mm_attention_backend": args.mm_attention_backend,
+        "cuda_graph": args.cuda_graph,
+        "torch_compile": args.torch_compile,
+        "max_running_requests": args.max_running_requests,
+        "mem_fraction_static": args.mem_fraction_static,
+    }
     payload = {
+        "schema_version": 2,
+        "provenance": collect_benchmark_provenance(
+            model_id=args.model_path,
+            model_revision=model_revision,
+            dataset_id=args.meta,
+            dataset_revision=dataset_revision,
+            launch_command=args.launch_command,
+            server_config=server_config,
+            evaluation_input_sha256=evaluation_input_sha256,
+        ),
         "config": {
             "host": args.host,
             "port": args.port,
             "meta": args.meta,
             "lang": args.lang,
             "model_path": args.model_path,
+            "declared_model_revision": model_revision,
+            "dataset_revision": dataset_revision,
             "num_samples": len(samples),
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,
             "stream": args.stream,
+            "declared_server": server_config,
+            "resource_monitor": {
+                "enabled": not args.disable_resource_monitor,
+                "gpu_index": args.gpu_index,
+                "interval_s": args.monitor_interval_s,
+            },
         },
         "results": aggregates,
     }
