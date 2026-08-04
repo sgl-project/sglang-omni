@@ -97,12 +97,7 @@ _VC_NON_STREAM_P95 = {
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
 QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9536
-# note (db-ol): the default slack assumes the idle calibration host. The
-# CI runner missed those gates in 14 straight measurements on PR 1034,
-# even running alone, so widen until the next recalibration.
-VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _VC_NON_STREAM_P95, slack_higher=0.8, slack_lower=1.25
-)
+VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
     QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX,
