@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|endoftext)\|>")
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 50
+
+# note (db-ol): dense multi speaker meetings decode to about 4.5 output
+# tokens per audio second including time markers, so 10 leaves roughly 2x
+# headroom without approaching the input token cost of the same audio.
+_OUTPUT_TOKENS_PER_AUDIO_SECOND = 10
 # Note (yichi): MOSS-Transcribe-Diarize is an audio LLM: a Qwen3 text decoder
 # over Whisper audio embeddings, trained on a fixed transcribe+diarize
 # instruction with the timestamped/speaker-labelled transcript as the target
@@ -52,6 +58,9 @@ class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     language: str = "auto"
     engine_start_s: float = 0.0
+    # note (db-ol): the scheduler clamps max_new_tokens to the remaining
+    # context, required once the duration scaled default can exceed it.
+    enforce_request_limits: bool = True
 
 
 def _only_audio(value: Any) -> Any:
@@ -218,6 +227,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     processor: Any,
     tokenizer: Any,
     max_new_tokens: int,
+    context_length: int,
+    duration_scaled_default: bool = True,
     audio_encoder_service: Any | None = None,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
@@ -241,11 +252,18 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         fingerprint = audio_fingerprint(audio)
         prompt = _prompt_from_payload(payload, processor)
 
+        # note (db-ol): cap the processor limit at the model context. The
+        # processor rejects sequences past max_length rather than truncating,
+        # and a request max_length above the context would skip that early
+        # rejection and defer the failure to scheduler admission.
+        max_length = min(
+            int(params.get("max_length") or context_length), context_length
+        )
         encoded = processor(
             text=prompt,
             audio=audio,
             return_tensors="pt",
-            max_length=int(params.get("max_length") or 131072),
+            max_length=max_length,
         )
         input_ids = encoded["input_ids"][0].tolist()
         features = encoded["input_features"]
@@ -289,7 +307,31 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
         top_p = _sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
         top_k = _sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        # note (db-ol): the model default was sized for short clips and
+        # silently cuts transcripts past about 20 minutes. Scale the default
+        # budget with duration unless the operator configured a fixed one.
+        requested_max_new_tokens = params.get("max_new_tokens")
+        if requested_max_new_tokens is not None:
+            request_max_new_tokens = int(requested_max_new_tokens)
+            # note (db-ol): the API layer enforces ge=1 but internal callers
+            # bypass it, and a zero here would otherwise silently fall
+            # through to the duration scaled default.
+            if request_max_new_tokens < 1:
+                raise ValueError("max_new_tokens must be at least 1")
+        elif duration_scaled_default:
+            if audio_duration_s <= 0.0:
+                logger.warning(
+                    "Request %s decoded to empty audio, the output budget "
+                    "falls back to the fixed default %d",
+                    payload.request_id,
+                    max_new_tokens,
+                )
+            request_max_new_tokens = max(
+                max_new_tokens,
+                math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
+            )
+        else:
+            request_max_new_tokens = max_new_tokens
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
