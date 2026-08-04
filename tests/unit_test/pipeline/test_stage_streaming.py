@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,30 @@ class _FakeControlPlane:
 
     async def send_complete(self, msg) -> None:
         self.completions.append(msg)
+
+
+class _OrderedControlPlane(_FakeControlPlane):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events = []
+
+    async def send_stream(self, msg) -> None:
+        await super().send_stream(msg)
+        self.events.append(("stream", msg.request_id, msg.chunk_id, msg.chunk))
+
+    async def send_complete(self, msg) -> None:
+        await super().send_complete(msg)
+        self.events.append(("complete", msg.request_id, msg.success, msg.result))
+
+
+class _CountingExecutor(ThreadPoolExecutor):
+    def __init__(self) -> None:
+        super().__init__(max_workers=1)
+        self.submit_calls = 0
+
+    def submit(self, fn, /, *args, **kwargs):
+        self.submit_calls += 1
+        return super().submit(fn, *args, **kwargs)
 
 
 class _FakeRelay:
@@ -213,6 +238,91 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
         assert msg.chunk == {"audio_data": [0.1], "modality": "audio"}
         assert msg.modality == "audio"
         assert [msg.chunk_id for msg in control_plane.streams] == [0, 1]
+
+    asyncio.run(_run())
+
+
+def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages() -> None:
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        executor = _CountingExecutor()
+        loop.set_default_executor(executor)
+
+        control_plane = _OrderedControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"tts_engine": "inproc://tts_engine"},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        stage._active_requests.add("req-live")
+
+        for sequence in range(4):
+            scheduler.outbox.put(
+                OutgoingMessage(
+                    request_id="req-live",
+                    type="stream",
+                    data={"sequence": sequence, "modality": "audio"},
+                )
+            )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-stale",
+                type="stream",
+                data={"sequence": 999, "modality": "audio"},
+            )
+        )
+        for sequence in range(4, 8):
+            scheduler.outbox.put(
+                OutgoingMessage(
+                    request_id="req-live",
+                    type="stream",
+                    data={"sequence": sequence, "modality": "audio"},
+                )
+            )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-live",
+                type="result",
+                data={"answer": "done"},
+            )
+        )
+
+        await stage._drain_outbox_external()
+
+        assert [msg.chunk_id for msg in control_plane.streams] == list(range(8))
+        assert [
+            msg.chunk["sequence"] for msg in control_plane.streams
+        ] == list(range(8))
+        assert all(msg.request_id == "req-live" for msg in control_plane.streams)
+        assert control_plane.events == [
+            *[
+                (
+                    "stream",
+                    "req-live",
+                    sequence,
+                    {"sequence": sequence, "modality": "audio"},
+                )
+                for sequence in range(8)
+            ],
+            ("complete", "req-live", True, {"answer": "done"}),
+        ]
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is True
+        assert control_plane.completions[0].result == {"answer": "done"}
+        assert scheduler.outbox.empty()
+        assert "req-live" not in stage._active_requests
+
+        # Current behavior submits once per outbox message (10 calls). The
+        # optimized drain should use one blocking wakeup, then consume the
+        # already-ready messages without another executor round trip.
+        assert executor.submit_calls == 1
 
     asyncio.run(_run())
 
