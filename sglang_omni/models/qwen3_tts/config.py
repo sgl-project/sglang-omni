@@ -66,6 +66,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_args={"dtype": "bfloat16"},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -74,6 +75,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_args={"dtype": "bfloat16"},
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

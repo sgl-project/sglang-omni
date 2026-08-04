@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
 
+_GPU_ARCHITECTURES = {
+    89: "ada",
+    90: "hopper",
+    100: "blackwell",
+    103: "blackwell",
+    120: "blackwell",
+}
+
+
+def gpu_architecture_for_sm(sm_version: int | None) -> str:
+    """Return the CUDA architecture family for a detected SM version."""
+    if sm_version is None:
+        return "unknown"
+    return _GPU_ARCHITECTURES.get(sm_version, f"sm{sm_version}")
+
 
 def _get_compute_capability(
     logical_gpu_id: int,
