@@ -193,7 +193,11 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
 
     from transformers import AutoProcessor
 
-    from sglang_omni.models.moss_transcribe_diarize import request_builders, stages
+    from sglang_omni.models.moss_transcribe_diarize import (
+        engine_builder,
+        request_builders,
+        stages,
+    )
     from sglang_omni.scheduling import (
         bootstrap,
         engine_factory,
