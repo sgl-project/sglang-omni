@@ -29,9 +29,6 @@ from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
-from sglang_omni.profiler.stream_overhead import (
-    get_stream_overhead_recorder as _get_stream_overhead_recorder,
-)
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
     AdminMessage,
@@ -154,8 +151,6 @@ class Stage:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
         self._background_task_error: BaseException | None = None
-        stream_overhead = _get_stream_overhead_recorder()
-        self._stream_overhead = stream_overhead if stream_overhead.enabled else None
 
     async def start(self) -> None:
         if self._running:
@@ -265,8 +260,6 @@ class Stage:
             self._comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
-        if self._stream_overhead is not None:
-            self._stream_overhead.log_stage(self.name)
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -347,15 +340,12 @@ class Stage:
         if msg.is_done or msg.error is not None:
             handler = self._on_stream_signal
             label = f"stream signal {msg.request_id}:{msg.from_stage}"
-            message_kind = "signal"
         elif msg.chunk_id is not None:
             handler = self._on_stream_chunk
             label = f"stream chunk {msg.request_id}:{msg.from_stage}:{msg.chunk_id}"
-            message_kind = "stream"
         else:
             handler = self._on_data_ready
             label = f"payload {msg.request_id}:{msg.from_stage}"
-            message_kind = "payload"
 
         lane = (msg.request_id, msg.from_stage)
         predecessor = self._receive_lane_tails.get(lane)
@@ -372,16 +362,6 @@ class Stage:
         self._receive_tasks.add(task)
         task.add_done_callback(self._receive_tasks.discard)
         task.add_done_callback(lambda done: self._on_background_task_done(done, label))
-        if self._stream_overhead is not None:
-            self._stream_overhead.add(
-                self.name,
-                {
-                    "receive_tasks_created": 1,
-                    "receive_futures_created": 1,
-                    "receive_callbacks_registered": 2,
-                    f"receive_{message_kind}_tasks_created": 1,
-                },
-            )
 
     async def _run_receive_task(
         self,
@@ -643,11 +623,6 @@ class Stage:
         from_stage: str,
         chunk_id: int | None,
     ) -> None:
-        if self._stream_overhead is not None:
-            self._stream_overhead.add(
-                self.name,
-                {"stream_chunks_materialized": 1},
-            )
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -990,33 +965,12 @@ class Stage:
         """Drain scheduler outbox and route results downstream."""
         loop = asyncio.get_running_loop()
         while self._running or not self.scheduler.outbox.empty():
-            track_empty_poll = bool(self._active_requests)
             try:
                 out = await loop.run_in_executor(
                     None, lambda: self.scheduler.outbox.get(timeout=0.1)
                 )
             except _queue_mod.Empty:
-                if self._stream_overhead is not None and track_empty_poll:
-                    self._stream_overhead.add(
-                        self.name,
-                        {
-                            "outbox_executor_submits": 1,
-                            "outbox_executor_empty_submits": 1,
-                            "outbox_empty_polls": 1,
-                        },
-                    )
                 continue
-
-            if self._stream_overhead is not None:
-                self._stream_overhead.add(
-                    self.name,
-                    {
-                        "outbox_executor_submits": 1,
-                        "outbox_executor_data_submits": 1,
-                        "outbox_messages_dequeued": 1,
-                        f"outbox_{out.type}_messages": 1,
-                    },
-                )
 
             if out.request_id not in self._active_requests:
                 continue
@@ -1057,33 +1011,12 @@ class Stage:
         """Drain follower outbox without emitting external stage traffic."""
         loop = asyncio.get_running_loop()
         while self._running or not self.scheduler.outbox.empty():
-            track_empty_poll = bool(self._active_requests)
             try:
                 out = await loop.run_in_executor(
                     None, lambda: self.scheduler.outbox.get(timeout=0.1)
                 )
             except _queue_mod.Empty:
-                if self._stream_overhead is not None and track_empty_poll:
-                    self._stream_overhead.add(
-                        self.name,
-                        {
-                            "outbox_executor_submits": 1,
-                            "outbox_executor_empty_submits": 1,
-                            "outbox_empty_polls": 1,
-                        },
-                    )
                 continue
-
-            if self._stream_overhead is not None:
-                self._stream_overhead.add(
-                    self.name,
-                    {
-                        "outbox_executor_submits": 1,
-                        "outbox_executor_data_submits": 1,
-                        "outbox_messages_dequeued": 1,
-                        f"outbox_{out.type}_messages": 1,
-                    },
-                )
 
             if out.type == "result":
                 self._clear_request_state(out.request_id)

@@ -8,14 +8,6 @@ from dataclasses import dataclass
 
 import torch
 
-from sglang_omni.profiler.stream_overhead import (
-    get_stream_overhead_recorder,
-    pending_text_stage,
-)
-
-
-_STREAM_OVERHEAD = get_stream_overhead_recorder()
-
 
 def _as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
     try:
@@ -95,47 +87,15 @@ class PendingTextTensorQueue:
         rows = _as_rows(rows)
         if rows is None:
             return
-        appended_rows = int(rows.shape[0])
-        stage = None
-        if _STREAM_OVERHEAD.enabled:
-            stage = pending_text_stage()
-            _STREAM_OVERHEAD.add(
-                stage,
-                {
-                    "pending_text_append_calls": 1,
-                    "pending_text_rows_appended": appended_rows,
-                },
-            )
         if self.rows is None or len(self) == 0:
             self.rows = rows
             self.cursor = 0
-            if stage is not None:
-                _STREAM_OVERHEAD.observe_max(
-                    stage,
-                    "pending_text_queue_rows_max",
-                    appended_rows,
-                )
             return
 
         remaining = self.rows[self.cursor :]
         rows = rows.to(device=remaining.device, dtype=remaining.dtype)
-        consolidated_rows = int(remaining.shape[0]) + appended_rows
-        if stage is not None:
-            _STREAM_OVERHEAD.add(
-                stage,
-                {
-                    "pending_text_cat_calls": 1,
-                    "pending_text_rows_consolidated": consolidated_rows,
-                },
-            )
         self.rows = torch.cat([remaining, rows], dim=0)
         self.cursor = 0
-        if stage is not None:
-            _STREAM_OVERHEAD.observe_max(
-                stage,
-                "pending_text_queue_rows_max",
-                consolidated_rows,
-            )
 
 
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:
