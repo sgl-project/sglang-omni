@@ -100,9 +100,7 @@ def _session(
             MagicMock(), client=client, model_name="m", session_id="s"
         )
     else:
-        with patch(
-            "sglang_omni.serve.realtime.session.StreamingVAD", return_value=vad
-        ):
+        with patch("sglang_omni.serve.realtime.session.StreamingVAD", return_value=vad):
             session = RealtimeSession(
                 MagicMock(), client=client, model_name="m", session_id="s"
             )
@@ -155,7 +153,11 @@ async def test_adjacent_turn_retains_suffix_and_second_commit():
     assert started[0]["audio_start_ms"] == 0
     assert stopped["audio_end_ms"] == offsets_to_ms(stop1)
     assert started[1]["audio_start_ms"] == offsets_to_ms(start2)
-    assert started[0]["audio_start_ms"] < stopped["audio_end_ms"] < started[1]["audio_start_ms"]
+    assert (
+        started[0]["audio_start_ms"]
+        < stopped["audio_end_ms"]
+        < started[1]["audio_start_ms"]
+    )
 
     vad._emits = [Emit(VADEvent.SPEECH_STOPPED, stop2)]
     await _append(session, _pcm(1))
@@ -181,7 +183,10 @@ async def test_silero_adjacent_turns_preserve_second_speech():
         < started[1]["audio_start_ms"]
     )
     assert session.vad_origin_samples == 0
-    assert session.buffer_origin_samples == stopped["audio_end_ms"] * VAD_SAMPLE_RATE // 1000
+    assert (
+        session.buffer_origin_samples
+        == stopped["audio_end_ms"] * VAD_SAMPLE_RATE // 1000
+    )
     assert bytes(session.audio_buffer.buf).endswith(second)
     await _stop(session)
 
@@ -191,7 +196,13 @@ async def test_clear_resets_vad_timeline():
     vad = FakeVAD([])
     session, sent, _ = _session(vad)
     session.audio_buffer.append_b64(_b64(_pcm(2, 1000)))
-    await session.handle_audio_clear(InputAudioBufferClear(type="input_audio_buffer.clear"))
+    await session.handle_audio_clear(
+        InputAudioBufferClear(type="input_audio_buffer.clear")
+    )
     assert session.audio_buffer.is_empty()
-    assert session.buffer_origin_samples == session.vad_origin_samples == 2 * VAD_FRAME_SAMPLES
+    assert (
+        session.buffer_origin_samples
+        == session.vad_origin_samples
+        == 2 * VAD_FRAME_SAMPLES
+    )
     assert vad.reset_calls == 1 and sent[-1]["type"] == "input_audio_buffer.cleared"
