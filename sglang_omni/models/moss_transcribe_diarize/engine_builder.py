@@ -93,8 +93,9 @@ class MossTranscribeDiarizeEngineBuilder(SGLangGenerationEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        # ``context_length`` is an explicit server-args parameter, so consume
-        # the operator override before the shared builder expands overrides.
+        # note (Dayuxiaoshui): context_length is an explicit server-args
+        # parameter, so consume the operator override before the shared builder
+        # expands overrides.
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
 
