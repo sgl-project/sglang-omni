@@ -19,7 +19,11 @@ def model_dir(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
     talker_prefill._EMBED_SOURCE_CACHE.clear()
     talker_prefill._EMBED_HANDLE_CACHE.clear()
-    return tmp_path
+    try:
+        yield tmp_path
+    finally:
+        talker_prefill._EMBED_SOURCE_CACHE.clear()
+        talker_prefill._EMBED_HANDLE_CACHE.clear()
 
 
 def test_rows_correct(model_dir):
