@@ -212,6 +212,21 @@ class StageConfig(BaseModel):
             self.tp_size = self.parallelism.tp
 
 
+class AudioChunkingConfig(BaseModel):
+    """Per-model long-audio policy for the transcription endpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allow_audio_chunking: bool = False
+    max_audio_clip_s: float | None = Field(default=None, gt=0)
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.allow_audio_chunking and self.max_audio_clip_s is None:
+            raise ValueError(
+                "max_audio_clip_s is required when audio chunking is enabled"
+            )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -228,6 +243,7 @@ class PipelineConfig(BaseModel):
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
+    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig()
 
     model_path: str
     stages: list[StageConfig]

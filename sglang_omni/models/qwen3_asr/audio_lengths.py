@@ -7,6 +7,9 @@ from typing import Any
 
 import torch
 
+QWEN3_ASR_MAX_INPUT_SECONDS = 1200
+QWEN3_ASR_MEL_FRAMES_PER_SECOND = 100
+
 
 def qwen3_asr_audio_token_lengths(input_lengths: Any) -> torch.Tensor:
     """Return Qwen3-ASR encoder output lengths for mel-frame lengths.
@@ -26,7 +29,17 @@ def qwen3_asr_num_audio_tokens(num_mel_frames: int) -> int:
     return int(qwen3_asr_audio_token_lengths(num_mel_frames).item())
 
 
+def qwen3_asr_max_audio_tokens() -> int:
+    """Return the audio-token budget for the model-owned input duration limit."""
+    return qwen3_asr_num_audio_tokens(
+        QWEN3_ASR_MAX_INPUT_SECONDS * QWEN3_ASR_MEL_FRAMES_PER_SECOND
+    )
+
+
 __all__ = [
+    "QWEN3_ASR_MAX_INPUT_SECONDS",
+    "QWEN3_ASR_MEL_FRAMES_PER_SECOND",
     "qwen3_asr_audio_token_lengths",
+    "qwen3_asr_max_audio_tokens",
     "qwen3_asr_num_audio_tokens",
 ]

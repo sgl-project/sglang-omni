@@ -87,6 +87,27 @@ def _encode_literal(tokenizer: Any, text: str) -> list[int]:
     return list(input_ids)
 
 
+def qwen3_asr_prompt_token_ids(
+    tokenizer: Any,
+    num_audio_tokens: int,
+    language: str,
+) -> list[int]:
+    """Build the model prompt for one audio-token count and forced language."""
+    prompt = (
+        f"<|im_start|>user\n"
+        f"{_AUDIO_START}{_AUDIO_PAD * num_audio_tokens}{_AUDIO_END}"
+        f"<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+        f"language {language}<asr_text>"
+    )
+    return list(tokenizer(prompt, add_special_tokens=False).input_ids)
+
+
+def qwen3_asr_prompt_token_count(tokenizer: Any, num_audio_tokens: int) -> int:
+    """Return the exact prompt length used to size the serving context."""
+    return len(qwen3_asr_prompt_token_ids(tokenizer, num_audio_tokens, "English"))
+
+
 def make_qwen3_asr_scheduler_adapters(
     *,
     tokenizer: Any,
@@ -103,20 +124,6 @@ def make_qwen3_asr_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
     asr_text_token_ids = _encode_literal(tokenizer, _ASR_TEXT)
-
-    def _build_prompt_ids(num_audio_tokens: int, language: str) -> list[int]:
-        prompt = (
-            f"<|im_start|>user\n"
-            f"{_AUDIO_START}{_AUDIO_PAD * num_audio_tokens}{_AUDIO_END}"
-            f"<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-        # Qwen3-ASR needs a forced prefix "language <Lang><asr_text>" on the
-        # assistant turn; the model then generates only the transcription after
-        # <asr_text>. Without it the (small) model emits the language tag then
-        # stops. Upstream qwen_asr does the same (_build_text_prompt).
-        prompt = prompt + f"language {language}<asr_text>"
-        return tokenizer(prompt, add_special_tokens=False).input_ids
 
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
@@ -165,7 +172,11 @@ def make_qwen3_asr_scheduler_adapters(
         forced_language = {"zh": "Chinese", "cn": "Chinese"}.get(
             lang_raw, "Chinese" if lang_raw.startswith("zh") else "English"
         )
-        input_ids = _build_prompt_ids(num_audio_tokens, forced_language)
+        input_ids = qwen3_asr_prompt_token_ids(
+            tokenizer,
+            num_audio_tokens,
+            forced_language,
+        )
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -291,4 +302,6 @@ def make_qwen3_asr_scheduler_adapters(
 __all__ = [
     "Qwen3ASRRequestData",
     "make_qwen3_asr_scheduler_adapters",
+    "qwen3_asr_prompt_token_count",
+    "qwen3_asr_prompt_token_ids",
 ]

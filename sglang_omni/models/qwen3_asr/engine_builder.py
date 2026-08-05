@@ -9,6 +9,7 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import request_builders
+from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_max_audio_tokens
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
@@ -77,8 +78,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
-        encoder_token_count = int(self.feature_extractor.nb_max_frames // 2)
-        self.context_length = encoder_token_count + self.max_new_tokens + 8
+        prompt_token_count = request_builders.qwen3_asr_prompt_token_count(
+            self.tokenizer,
+            qwen3_asr_max_audio_tokens(),
+        )
+        # OmniScheduler admits at most context_length - 1 tokens per request.
+        self.context_length = prompt_token_count + self.max_new_tokens + 1
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         defaults: dict[str, Any] = {
