@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from typing import Any
+
+import torch
 
 from sglang_omni.models.fun_cosyvoice3 import request_builders
 from sglang_omni.models.fun_cosyvoice3.utils import (
@@ -16,11 +19,27 @@ from sglang_omni.models.fun_cosyvoice3.utils import (
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
+logger = logging.getLogger(__name__)
+
 
 class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     model_name = "Fun-CosyVoice3"
-    context_length = 32768
+    context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._checkpoint_root: str | None = None
+
+    def _blanken_dir(self) -> str:
+        assert self._checkpoint_root is not None, "checkpoint_root not set"
+        return os.path.join(self._checkpoint_root, "CosyVoice-BlankEN")
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        resolved = _resolve_checkpoint(model_path)
+        self._checkpoint_root = resolved
+        # SGLang needs CosyVoice-BlankEN/ which has config.json (model_type: qwen2)
+        return self._blanken_dir()
 
     def generation_defaults(
         self,
@@ -50,14 +69,30 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del gpu_id, server_args
+        del checkpoint_dir, gpu_id, server_args
         model = model_worker.model_runner.model
+        root = self._checkpoint_root
+        assert root is not None, "checkpoint_root not set"
 
-        tokenizer_path = os.path.join(checkpoint_dir, "CosyVoice-BlankEN")
-        speech_tokenizer_path = os.path.join(
-            checkpoint_dir, "speech_tokenizer_v3.onnx"
-        )
-        campplus_path = os.path.join(checkpoint_dir, "campplus.onnx")
+        # SGLang's model_config reads vocab_size from HF config (151936 for
+        # Qwen2 text). CosyVoice3 outputs speech tokens (vocab=6761). Patch
+        # the model config so sampling penalty tensors match our logit dim.
+        from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
+        model_worker.model_runner.model_config.vocab_size = TOTAL_VOCAB_SIZE
+
+        # Load fine-tuned CosyVoice3 LLM weights from llm.pt (backbone +
+        # speech_embedding + llm_decoder). SGLang already loaded the Qwen2
+        # backbone from HF safetensors; this overwrites with the fine-tuned
+        # speech-adapted weights.
+        llm_pt_path = os.path.join(root, "llm.pt")
+        logger.info("Loading CosyVoice3 fine-tuned weights from %s", llm_pt_path)
+        state_dict = torch.load(llm_pt_path, map_location="cpu", weights_only=True)
+        model.load_weights(list(state_dict.items()))
+        logger.info("CosyVoice3 weights loaded")
+
+        tokenizer_path = os.path.join(root, "CosyVoice-BlankEN")
+        speech_tokenizer_path = os.path.join(root, "speech_tokenizer_v3.onnx")
+        campplus_path = os.path.join(root, "campplus.onnx")
 
         tokenizer = CosyVoice3Tokenizer(tokenizer_path)
         speech_tokenizer = SpeechTokenizerV3(speech_tokenizer_path, device=device)

@@ -95,24 +95,34 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        params_dict = self._cached_params_dict
+        backbone_weights = []
+        custom_weights = {}
 
         for name, loaded_weight in weights:
-            target = _map_cosyvoice3_weight_key(name)
-            if target is None:
+            # note: Qwen2 backbone inside CosyVoice3LM uses llm.model.model.* prefix
+            backbone_prefix = "llm.model.model."
+            if name.startswith(backbone_prefix):
+                backbone_weights.append(
+                    ("model." + name[len(backbone_prefix) :], loaded_weight)
+                )
                 continue
 
-            param = params_dict.get(target)
-            if param is not None:
-                loader = getattr(param, "weight_loader", default_weight_loader)
-                loader(param, loaded_weight)
-            elif target not in params_dict:
-                logger.warning(
-                    "Fun-CosyVoice3 checkpoint weight %s has no matching "
-                    "model parameter (%s)",
-                    name,
-                    target,
-                )
+            # note: skip Qwen2 text lm_head — CosyVoice3 uses llm_decoder instead
+            if name == "llm.model.lm_head.weight":
+                continue
+
+            if name in ("speech_embedding.weight", "llm_decoder.weight", "llm_decoder.bias"):
+                param = self._cached_params_dict.get(name)
+                if param is not None:
+                    loader = getattr(param, "weight_loader", default_weight_loader)
+                    loader(param, loaded_weight)
+                continue
+
+            # note: pass through HF safetensors keys (model.*) to Qwen2 backbone
+            backbone_weights.append((name, loaded_weight))
+
+        if backbone_weights:
+            super().load_weights(backbone_weights)
 
 
 def _map_cosyvoice3_weight_key(name: str) -> str | None:

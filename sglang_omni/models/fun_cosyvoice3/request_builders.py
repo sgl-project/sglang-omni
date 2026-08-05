@@ -361,6 +361,11 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
     with _PREPARED_REQUESTS_LOCK:
         _PREPARED_REQUESTS[payload.request_id] = prepared
 
+    # Store flow embedding and prompt tokens in state for vocoder
+    prepared.state.flow_embedding = prepared.flow_embedding
+    prepared.state.prompt_speech_token = prepared.prompt_speech_token
+    prepared.state.prompt_speech_feat = prepared.prompt_speech_feat
+
     data = prepared.state.to_dict()
     data[_COSYVOICE3_PREPARED_MARKER] = payload.request_id
     return StagePayload(

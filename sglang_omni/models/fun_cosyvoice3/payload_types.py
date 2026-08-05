@@ -24,5 +24,8 @@ class FunCosyVoice3State(DeclarativeStateBase):
     speed: float = wire(1.0, codec="float")
     seed: int | None = None
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
+    flow_embedding: Any | None = wire(None, codec="tensor_list")
+    prompt_speech_token: Any | None = wire(None, codec="tensor_list")
+    prompt_speech_feat: Any | None = wire(None, codec="tensor_list")
     audio_codes: Any | None = wire(None, codec="tensor_list")
     audio_samples: Any | None = wire(None, codec="tensor_list")

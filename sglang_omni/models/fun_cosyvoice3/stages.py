@@ -10,6 +10,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.sglang_model import FILL_ID
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
@@ -54,6 +55,7 @@ def _load_cosyvoice3_flow_hift(
     hift = cv.model.hift
     flow.to(device).eval()
     hift.to(device).eval()
+    del cv.model.llm
     return flow, hift
 
 
@@ -116,11 +118,26 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
     ) -> list[tuple[Any, int]]:
         results = []
         for state, codes in items:
+            prompt_token = (
+                torch.as_tensor(state.prompt_speech_token, dtype=torch.int32)
+                if state.prompt_speech_token is not None
+                else torch.zeros(1, 0, dtype=torch.int32)
+            )
+            prompt_feat = (
+                torch.as_tensor(state.prompt_speech_feat)
+                if state.prompt_speech_feat is not None
+                else torch.zeros(1, 0, 80)
+            )
+            embedding = (
+                torch.as_tensor(state.flow_embedding)
+                if state.flow_embedding is not None
+                else torch.zeros(1, 192)
+            )
             wav = self._token2wav(
                 token=codes.unsqueeze(0),
-                prompt_token=torch.zeros(1, 0, dtype=torch.int32),
-                prompt_feat=torch.zeros(1, 0, 80),
-                embedding=torch.zeros(0, 192),
+                prompt_token=prompt_token,
+                prompt_feat=prompt_feat,
+                embedding=embedding,
                 speed=state.speed,
             )
             results.append((wav, state.sample_rate))
@@ -135,6 +152,15 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         speed: float = 1.0,
     ) -> torch.Tensor:
         device = next(self._flow.parameters()).device
+        # note: the HiFT vocoder requires a minimum mel length for its
+        # convolutional upsampling. Pad short token sequences with a
+        # zero token so the vocoder has enough frames to process.
+        min_tokens = 10
+        if token.shape[1] < min_tokens:
+            pad_len = min_tokens - token.shape[1]
+            pad = torch.zeros(1, pad_len, dtype=token.dtype, device=token.device)
+            token = torch.cat([token, pad], dim=1)
+
         with torch.cuda.amp.autocast(self._fp16):
             tts_mel, _ = self._flow.inference(
                 token=token.to(device, dtype=torch.int32),

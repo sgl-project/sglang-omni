@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -10,6 +11,10 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
+
+from .sglang_model import EOS_ID
+
+logger = logging.getLogger(__name__)
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
@@ -59,6 +64,13 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             token_id = int(token_ids[idx].item())
             sched_req.data.output_codes.append(
                 torch.tensor([token_id], dtype=torch.long)
+            )
+        if len(sched_req.data.output_codes) <= 3 or len(sched_req.data.output_codes) % 50 == 0:
+            logger.info(
+                "CosyVoice3 decode step=%d token=%d eos=%d",
+                len(sched_req.data.output_codes),
+                token_id,
+                EOS_ID,
             )
 
     def _build_prefill_input_embeds(

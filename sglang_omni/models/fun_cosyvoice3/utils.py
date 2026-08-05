@@ -147,17 +147,15 @@ def build_llm_prompt_embeddings(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
+    # note: CosyVoice3 inference does NOT inject the speaker embedding into
+    # the LLM prompt — speaker identity is carried through prompt_speech_token
+    # (the reference audio's speech tokens). The CAMPPlus embedding is reserved
+    # for flow/vocoder conditioning (flow_embedding).
+    del embedding
+
     sos_emb = speech_embed(
         torch.tensor([[sos_id]], device=device)
     ).reshape(1, 1, -1)
-
-    if embedding.numel() > 0 and embedding.shape[-1] > 0:
-        spk_emb = torch.nn.functional.normalize(
-            embedding.to(device=device, dtype=dtype), dim=-1
-        )
-        spk_emb = spk_emb.unsqueeze(1)
-    else:
-        spk_emb = torch.zeros(1, 0, hidden_size, device=device, dtype=dtype)
 
     task_emb = speech_embed(
         torch.tensor([[task_id]], device=device)
@@ -171,7 +169,7 @@ def build_llm_prompt_embeddings(
         )
 
     lm_input = torch.cat(
-        [sos_emb, spk_emb, text_embed, task_emb, prompt_speech_emb], dim=1
+        [sos_emb, text_embed, task_emb, prompt_speech_emb], dim=1
     )
     return lm_input
 
