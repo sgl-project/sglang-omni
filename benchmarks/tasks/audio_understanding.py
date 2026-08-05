@@ -16,7 +16,11 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
-from benchmarks.benchmarker.utils import get_wav_duration, save_json_results
+from benchmarks.benchmarker.utils import (
+    get_wav_duration,
+    read_streaming_chat_response,
+    save_json_results,
+)
 from benchmarks.dataset.mmsu import MmsuSample, normalize_text
 from benchmarks.metrics.accuracy import INDEX_TO_LETTER, extract_answer_letter
 
@@ -71,6 +75,7 @@ def _build_request_payload(
     modalities: list[str],
     max_tokens: int,
     temperature: float,
+    stream: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model_name,
@@ -84,7 +89,7 @@ def _build_request_payload(
         "modalities": modalities,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "stream": False,
+        "stream": stream,
     }
     if "audio" in modalities:
         payload["audio"] = {"format": "wav"}
@@ -171,6 +176,7 @@ def make_mmsu_send_fn(
     max_tokens: int = 32,
     temperature: float = 0.0,
     save_audio_dir: str | None = None,
+    stream: bool = False,
 ) -> SendFn:
     if modalities is None:
         modalities = ["text"]
@@ -189,6 +195,7 @@ def make_mmsu_send_fn(
             modalities=modalities,
             max_tokens=max_tokens,
             temperature=temperature,
+            stream=stream,
         )
 
         start_time = time.perf_counter()
@@ -199,15 +206,25 @@ def make_mmsu_send_fn(
                 headers={"Content-Type": "application/json"},
             ) as response:
                 response.raise_for_status()
-                response_json = await response.json()
-
-            result = _build_result_from_response(
-                result,
-                response_json,
-                audio_mode=audio_mode,
-                sample_id=sample.sample_id,
-                save_audio_dir=save_audio_dir,
-            )
+                if stream:
+                    usage = await read_streaming_chat_response(
+                        response,
+                        result,
+                        start_time=start_time,
+                        expect_audio=audio_mode,
+                    )
+                    result.is_success = True
+                    result.prompt_tokens = usage.get("prompt_tokens", 0)
+                    result.completion_tokens = usage.get("completion_tokens", 0)
+                else:
+                    response_json = await response.json()
+                    result = _build_result_from_response(
+                        result,
+                        response_json,
+                        audio_mode=audio_mode,
+                        sample_id=sample.sample_id,
+                        save_audio_dir=save_audio_dir,
+                    )
 
             elapsed = time.perf_counter() - start_time
             result.engine_time_s = elapsed
@@ -215,7 +232,7 @@ def make_mmsu_send_fn(
                 result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and elapsed > 0:
                 result.tok_per_s = result.completion_tokens / elapsed
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
@@ -274,7 +291,10 @@ def build_mmsu_results(
         )
 
         if audio_mode:
-            result.has_audio = request_result.audio_duration_s > 0
+            result.has_audio = (
+                request_result.audio_duration_s > 0
+                or request_result.audio_ttfp_s is not None
+            )
             result.audio_duration_s = request_result.audio_duration_s
 
         results.append(result)

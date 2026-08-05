@@ -16,8 +16,14 @@ import time
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests as requests_lib
+
+if TYPE_CHECKING:
+    import aiohttp
+
+    from benchmarks.benchmarker.data import RequestResult
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +324,76 @@ def parse_sse_event(line: str) -> dict | None:
     if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
         return None
     return json.loads(line[len(SSE_DATA_PREFIX) :])
+
+
+async def read_streaming_chat_response(
+    response: aiohttp.ClientResponse,
+    result: RequestResult,
+    *,
+    start_time: float,
+    expect_audio: bool,
+) -> dict:
+    """Parse chat-completion SSE shared by image- and audio-input benchmarks.
+    Records text TTFT, first-audio time, and audio chunk timing on ``result``;
+    ``expect_audio=True`` treats a missing audio payload as an error.
+    """
+    text_parts: list[str] = []
+    usage: dict = {}
+    last_audio_time: float | None = None
+    buffer = bytearray()
+
+    def consume_line(raw_line: bytes) -> None:
+        nonlocal last_audio_time, usage
+        try:
+            event = parse_sse_event(raw_line.decode("utf-8", errors="replace").strip())
+        except ValueError:
+            return
+        if event is None:
+            return
+
+        event_usage = event.get("usage")
+        if isinstance(event_usage, dict):
+            usage = event_usage
+
+        for choice in event.get("choices", []):
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                if result.text_ttft_s is None:
+                    result.text_ttft_s = time.perf_counter() - start_time
+                text_parts.append(content)
+
+            audio = delta.get("audio")
+            if not isinstance(audio, dict) or not isinstance(audio.get("data"), str):
+                continue
+            now = time.perf_counter()
+            if result.audio_ttfp_s is None:
+                result.audio_ttfp_s = now - start_time
+            elif last_audio_time is not None:
+                result.inter_chunk_s.append(now - last_audio_time)
+            last_audio_time = now
+            result.audio_chunk_count += 1
+
+    async for chunk in response.content.iter_any():
+        buffer.extend(chunk)
+        while b"\n" in buffer:
+            index = buffer.index(b"\n")
+            raw_line = bytes(buffer[:index])
+            del buffer[: index + 1]
+            consume_line(raw_line)
+
+    if buffer.strip():
+        consume_line(bytes(buffer))
+
+    result.text = "".join(text_parts)
+    if expect_audio and result.audio_ttfp_s is None:
+        raise ValueError("No audio chunks received from streaming response")
+    return usage
 
 
 def wait_for_service(

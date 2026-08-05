@@ -115,6 +115,7 @@ class MMMUEvalConfig:
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     enable_audio: bool = False
+    stream: bool = False
     asr_device: str = "cuda:0"
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
@@ -135,7 +136,7 @@ async def run_mmmu_eval(
     """Run full MMMU evaluation and return results dict.
 
     Returns a dict with keys: summary, speed, config,
-    per_sample, and wer (only when enable_audio is True).
+    per_sample, and wer (only for non-streaming audio runs).
     """
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
@@ -148,7 +149,7 @@ async def run_mmmu_eval(
     logger.info(f"Prepared {len(samples)} MMMU samples")
 
     audio_dir: str | None = None
-    if config.enable_audio and config.output_dir:
+    if config.enable_audio and config.output_dir and not config.stream:
         audio_dir = str(Path(config.output_dir) / "audio")
         Path(audio_dir).mkdir(parents=True, exist_ok=True)
 
@@ -159,6 +160,7 @@ async def run_mmmu_eval(
         temperature=config.temperature,
         enable_audio=config.enable_audio,
         audio_dir=audio_dir,
+        stream=config.stream,
     )
 
     runner = BenchmarkRunner(
@@ -187,6 +189,7 @@ async def run_mmmu_eval(
         "max_concurrency": config.max_concurrency,
         "warmup": config.warmup,
         "enable_audio": config.enable_audio,
+        "stream": config.stream,
         "asr_concurrency": config.asr_concurrency,
     }
 
@@ -197,7 +200,7 @@ async def run_mmmu_eval(
         "per_sample": per_sample,
     }
 
-    if config.enable_audio and compute_wer:
+    if config.enable_audio and compute_wer and not config.stream:
         results["wer"] = compute_text_audio_consistency(
             request_results,
             config.lang,
@@ -226,6 +229,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         enable_audio=args.enable_audio,
+        stream=args.stream,
         asr_device=args.asr_device,
         asr_concurrency=args.asr_concurrency,
         lang=args.lang,
@@ -287,7 +291,15 @@ def main() -> None:
     parser.add_argument(
         "--enable-audio",
         action="store_true",
-        help="Request audio output and compute text-audio WER.",
+        help="Request audio output; WER is computed only in non-streaming mode.",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Use streaming chat completions and record text TTFT and "
+            "time-to-first-audio-payload."
+        ),
     )
     parser.add_argument(
         "--asr-device",

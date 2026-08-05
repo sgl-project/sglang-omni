@@ -10,12 +10,14 @@ import typer
 from sglang_omni.cli.serve import (
     apply_cuda_graph_cli_overrides,
     apply_encoder_mem_reserve_cli_override,
+    apply_max_batch_wait_cli_override,
     apply_parallelism_cli_overrides,
     apply_partial_start_cli_overrides,
     apply_torch_compile_cli_overrides,
     serve,
 )
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -59,6 +61,7 @@ def _serve_kwargs(**overrides):
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
         encoder_mem_reserve=None,
+        max_batch_wait_ms=None,
         log_level="info",
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -117,6 +120,49 @@ def test_cli_colocate_accepts_budgeted_colocated_config(
     assert "Merged Configuration" in capsys.readouterr().out
     from_file.assert_called_once_with("colocated.yaml")
     launch_server.assert_called_once()
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_file")
+def test_cli_max_batch_wait_overrides_both_media_encoders(
+    from_file,
+    launch_server,
+):
+    config = Qwen3OmniSpeechColocatedPipelineConfig(
+        model_path="dummy",
+        runtime_overrides={
+            "image_encoder": {"max_batch_wait_ms": 50},
+            "audio_encoder": {"max_batch_wait_ms": 50},
+        },
+    )
+    _set_colocated_runtime(config)
+    from_file.return_value = _DummyManager(config)
+
+    serve(
+        **_serve_kwargs(
+            config="colocated.yaml",
+            colocate=True,
+            max_batch_wait_ms=5,
+        )
+    )
+
+    launched_config = launch_server.call_args.args[0]
+    for stage_name in ("image_encoder", "audio_encoder"):
+        assert (
+            _stage(launched_config, stage_name).factory_args["max_batch_wait_ms"] == 5
+        )
+        assert launched_config.runtime_overrides[stage_name]["max_batch_wait_ms"] == 5
+        args = resolve_stage_static_factory_args(
+            _stage(launched_config, stage_name), launched_config
+        )
+        assert args["max_batch_wait_ms"] == 5
+
+
+def test_cli_max_batch_wait_rejects_negative_values() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="--max-batch-wait-ms"):
+        apply_max_batch_wait_cli_override(config, max_batch_wait_ms=-1)
 
 
 @patch("sglang_omni.cli.serve.launch_server")

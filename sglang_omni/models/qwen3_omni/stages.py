@@ -788,6 +788,7 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    max_batch_wait_ms: int = 10,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -849,7 +850,7 @@ def create_image_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=max_batch_wait_ms,
         request_cost_fn=_create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     )
@@ -860,6 +861,7 @@ def create_audio_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    max_batch_wait_ms: int = 10,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -919,7 +921,7 @@ def create_audio_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=max_batch_wait_ms,
     )
 
 

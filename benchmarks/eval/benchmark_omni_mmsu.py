@@ -27,7 +27,7 @@ Usage:
     # Text + audio
     python benchmarks/eval/benchmark_omni_mmsu.py \
         --model qwen3-omni --port 8000 --max-samples 50 \
-        --modalities text+audio
+        --modalities text+audio --stream
 
     # Filter by task names or categories
     python benchmarks/eval/benchmark_omni_mmsu.py \
@@ -132,6 +132,7 @@ async def run(
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
     modalities = ["text", "audio"] if args.modalities == "text+audio" else ["text"]
+    stream = getattr(args, "stream", False)
     asr_concurrency = getattr(
         args, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     )
@@ -146,7 +147,7 @@ async def run(
         )
 
     save_audio_dir = None
-    if args.save_audio and args.output_dir:
+    if args.save_audio and args.output_dir and not stream:
         save_audio_dir = os.path.join(args.output_dir, "audio")
         os.makedirs(save_audio_dir, exist_ok=True)
 
@@ -155,6 +156,7 @@ async def run(
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         save_audio_dir=save_audio_dir,
+        stream=stream,
     )
     if args.prompt:
         send_fn_kwargs["prompt"] = args.prompt
@@ -176,7 +178,9 @@ async def run(
     audio_mode = "audio" in modalities
     if audio_mode:
         speed["audio_returned"] = sum(
-            1 for r in request_results if r.audio_duration_s > 0
+            1
+            for r in request_results
+            if (r.audio_ttfp_s is not None if stream else r.audio_duration_s > 0)
         )
         speed["audio_expected"] = len(request_results)
 
@@ -186,7 +190,7 @@ async def run(
         "per_sample": [asdict(result) for result in results],
     }
     wer_results = None
-    if audio_mode and compute_wer:
+    if audio_mode and compute_wer and not stream:
         wer_results = compute_text_audio_consistency(
             request_results,
             args.lang,
@@ -203,6 +207,7 @@ async def run(
                 "model": args.model,
                 "base_url": base_url,
                 "modalities": modalities,
+                "stream": stream,
                 "max_samples": args.max_samples,
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
@@ -224,6 +229,14 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--model", type=str, default="qwen3-omni")
     p.add_argument("--modalities", choices=["text", "text+audio"], default="text")
+    p.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Stream responses and record TTFT/TTFA; streaming audio is not "
+            "saved for WER."
+        ),
+    )
     p.add_argument("--output-dir", type=str, default="results/mmsu")
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--task-names", type=str, default=None)

@@ -331,6 +331,11 @@ sgl-omni serve \
   --port 8008
 ```
 
+`--max-batch-wait-ms` sets one batching deadline, in milliseconds, for both the
+image and audio encoders. Omit it to keep the config default (10 ms); for
+example, add `--max-batch-wait-ms 5` when prioritizing lower first-response
+latency over forming larger encoder batches.
+
 The config file contains the FP8 checkpoint path:
 `marksverdhei/Qwen3-Omni-30B-A3B-FP8`. You can still pass `--model-path` to
 override the config value.
