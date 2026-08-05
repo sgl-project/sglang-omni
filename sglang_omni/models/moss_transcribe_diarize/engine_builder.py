@@ -11,10 +11,10 @@ from sglang_omni.models.moss_transcribe_diarize import request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
-from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
 
-class MossTranscribeDiarizeEngineBuilder(SGLangGenerationEngineBuilder):
+class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
     model_name = "MOSS-Transcribe-Diarize"
     model_arch_override = "MossTranscribeDiarizeForConditionalGeneration"
 

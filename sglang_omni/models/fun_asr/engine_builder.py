@@ -16,11 +16,11 @@ from sglang_omni.models.fun_asr.encoder_service import (
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
-from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 
-class FunASREngineBuilder(SGLangGenerationEngineBuilder):
+class FunASREngineBuilder(AsrEngineBuilder):
     model_name = "Fun-ASR"
     model_arch_override = "FunAsrNanoForConditionalGeneration"
 

@@ -17,9 +17,9 @@ class SGLangGenerationEngineBuilder(ABC):
     """Build the model-neutral parts of a SGLang AR engine stage.
 
     Model-specific builders provide checkpoint preprocessing, model setup,
-    request/result adapters, and any stage-owned resources.  The default
-    phase order matches the ASR stages; :class:`TtsEngineBuilder` keeps the
-    historical TTS-specific ordering through a small compatibility layer.
+    request/result adapters, validation policy, and any stage-owned resources.
+    Family-specific builders such as :class:`AsrEngineBuilder` and
+    :class:`TtsEngineBuilder` define the lifecycle policy for each modality.
     """
 
     model_name: str
@@ -131,9 +131,8 @@ class SGLangGenerationEngineBuilder(ABC):
             raise
 
     def resolve_checkpoint(self, model_path: str) -> str:
-        # ASR and other model families pass the original repo id to the
-        # Transformers/SGLang loaders.  Builders that need a local snapshot
-        # override this method (TTS does so below).
+        # The shared builder treats checkpoint resolution as a family policy.
+        # Subclasses override this when they need a resolved local snapshot.
         return model_path
 
     @abstractmethod
@@ -148,10 +147,7 @@ class SGLangGenerationEngineBuilder(ABC):
         del checkpoint_dir
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
-        validate_generation_batch_policy(
-            model_name=self.model_name,
-            server_args=server_args,
-        )
+        del server_args
 
     def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
         del model, server_args
@@ -198,10 +194,9 @@ class SGLangGenerationEngineBuilder(ABC):
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del model, server_args
 
+    @abstractmethod
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang_omni.model_runner.base import ModelRunner
-
-        return ModelRunner(model_worker, output_proc)
+        raise NotImplementedError
 
     @abstractmethod
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
@@ -294,6 +289,26 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del scheduler, model_runner
+
+
+class AsrEngineBuilder(SGLangGenerationEngineBuilder):
+    """Shared lifecycle policy for SGLang-backed ASR stages."""
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        # ASR model loaders accept either a repo id or a local path and should
+        # preserve the operator-provided value through server-args creation.
+        return model_path
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        validate_generation_batch_policy(
+            model_name=self.model_name,
+            server_args=server_args,
+        )
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang_omni.model_runner.base import ModelRunner
+
+        return ModelRunner(model_worker, output_proc)
 
 
 class TtsEngineBuilder(SGLangGenerationEngineBuilder):

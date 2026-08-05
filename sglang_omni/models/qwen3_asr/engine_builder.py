@@ -9,11 +9,11 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import request_builders
-from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 
-class Qwen3ASREngineBuilder(SGLangGenerationEngineBuilder):
+class Qwen3ASREngineBuilder(AsrEngineBuilder):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
 

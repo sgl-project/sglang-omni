@@ -14,24 +14,24 @@ from tests.unit_test.fakes import FakeServerArgs
 TEST_MAX_TOTAL_TOKENS = 82000
 
 
-def test_tts_engine_builder_import_is_cpu_only() -> None:
+def test_engine_builder_import_is_cpu_only() -> None:
     from sglang_omni.scheduling.engine_factory import (
+        AsrEngineBuilder,
         SGLangGenerationEngineBuilder,
         TtsEngineBuilder,
     )
 
     assert SGLangGenerationEngineBuilder.__name__ == "SGLangGenerationEngineBuilder"
+    assert AsrEngineBuilder.__name__ == "AsrEngineBuilder"
     assert TtsEngineBuilder.__name__ == "TtsEngineBuilder"
+    assert issubclass(AsrEngineBuilder, SGLangGenerationEngineBuilder)
     assert issubclass(TtsEngineBuilder, SGLangGenerationEngineBuilder)
 
 
-def test_generation_engine_builder_preserves_model_path() -> None:
-    from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+def test_asr_engine_builder_preserves_model_path() -> None:
+    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
-    assert (
-        SGLangGenerationEngineBuilder.resolve_checkpoint(object(), "repo/id")
-        == "repo/id"
-    )
+    assert AsrEngineBuilder.resolve_checkpoint(object(), "repo/id") == "repo/id"
 
 
 def test_legacy_tts_engine_factory_paths_remain_importable() -> None:
@@ -334,9 +334,9 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
 
 
-def test_generation_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:
+def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
-    from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
     events: list[str] = []
 
@@ -390,7 +390,7 @@ def test_generation_engine_builder_phase_order_and_failure_cleanup(monkeypatch) 
         engine_factory, "validate_generation_batch_policy", fake_validate
     )
 
-    class RecordingBuilder(SGLangGenerationEngineBuilder):
+    class RecordingBuilder(AsrEngineBuilder):
         model_name = "Test ASR"
         context_length = 256
 

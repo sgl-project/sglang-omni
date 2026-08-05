@@ -5,10 +5,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
 
-class WhisperASREngineBuilder(SGLangGenerationEngineBuilder):
+class WhisperASREngineBuilder(AsrEngineBuilder):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
 
