@@ -26,12 +26,16 @@ from sglang_omni.serve.openai_api import (
     _chat_stream,
     _ClosableStreamingResponse,
     _first_transcription_chunk,
+    _probe_audio_duration,
     _speech_audio_response,
+    _stream_transcription_chunks,
     _transcription_stream,
+    _TranscriptionRequestOptions,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from sglang_omni.serve.transcription_chunking import plan_audio_chunks
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -1383,6 +1387,157 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
     assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
     omni_req = Client._build_omni_request(gen_req)
     assert omni_req.params["max_new_tokens"] == 4096
+
+
+def test_create_app_stores_the_audio_chunking_policy() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    app = create_app(SuccessfulTranscriptionClient(), model_name="asr")
+    assert app.state.audio_chunking.allow_audio_chunking is False
+
+    declared = AudioChunkingConfig(
+        allow_audio_chunking=True,
+        max_audio_clip_s=1200.0,
+    )
+    app = create_app(
+        SuccessfulTranscriptionClient(),
+        model_name="asr",
+        audio_chunking=declared,
+    )
+    assert app.state.audio_chunking is declared
+
+
+def test_transcription_endpoint_chunks_audio_past_the_model_limit() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="Qwen/Qwen3-ASR-1.7B",
+            audio_chunking=AudioChunkingConfig(
+                allow_audio_chunking=True,
+                max_audio_clip_s=1.0,
+            ),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "Qwen/Qwen3-ASR-1.7B"},
+        files={"file": ("sample.wav", _wav_bytes(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "text": "hello worldhello worldhello world",
+        "usage": {"type": "duration", "seconds": 3},
+    }
+    assert len(transcription_client.requests) == 3
+    for request in transcription_client.requests:
+        assert _probe_audio_duration(request.prompt["audio_bytes"]) <= 1.0
+
+
+def test_transcription_stream_chunks_audio_past_the_model_limit() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="Qwen/Qwen3-ASR-1.7B",
+            audio_chunking=AudioChunkingConfig(
+                allow_audio_chunking=True,
+                max_audio_clip_s=1.0,
+            ),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "Qwen/Qwen3-ASR-1.7B", "stream": "true"},
+        files={"file": ("sample.wav", _wav_bytes(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert len(transcription_client.requests) == 3
+    assert '"delta":" "' not in response.text
+    assert '"text":"hello worldhello worldhello world"' in response.text
+    assert response.text.endswith("data: [DONE]\n\n")
+
+
+def test_transcription_chunk_planning_maps_decode_errors_to_400() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    client = TestClient(
+        create_app(
+            SuccessfulTranscriptionClient(),
+            model_name="Qwen/Qwen3-ASR-1.7B",
+            audio_chunking=AudioChunkingConfig(
+                allow_audio_chunking=True,
+                max_audio_clip_s=1.0,
+            ),
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "Qwen/Qwen3-ASR-1.7B"},
+        files={"file": ("broken.wav", b"not audio", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "Could not decode uploaded audio" in response.json()["detail"]
+
+
+def test_closing_a_chunked_transcription_stream_aborts_the_active_chunk() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    class AbortRecordingClient:
+        def __init__(self) -> None:
+            self.request_ids: list[str] = []
+            self.aborted: list[str] = []
+
+        async def generate(self, request, request_id=None):
+            del request
+            self.request_ids.append(request_id)
+            yield GenerateChunk(request_id=request_id, text="partial")
+            await asyncio.Event().wait()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    async def _drive() -> None:
+        config = AudioChunkingConfig(
+            allow_audio_chunking=True,
+            max_audio_clip_s=1.0,
+        )
+        plan = plan_audio_chunks(_wav_bytes(2.5), config)
+        assert plan is not None
+        transcription_client = AbortRecordingClient()
+        stream = _stream_transcription_chunks(
+            transcription_client,
+            plan,
+            "transcription-1",
+            _TranscriptionRequestOptions(
+                filename="sample.wav",
+                content_type="audio/wav",
+                model="Qwen/Qwen3-ASR-1.7B",
+                language=None,
+                prompt=None,
+                temperature=None,
+                max_new_tokens=None,
+            ),
+        )
+
+        first_chunk = await anext(stream)
+        assert first_chunk.text == "partial"
+        await stream.aclose()
+
+        assert transcription_client.request_ids == ["transcription-1-chunk-0"]
+        assert transcription_client.aborted == ["transcription-1-chunk-0"]
+
+    asyncio.run(_drive())
 
 
 def test_transcription_endpoint_returns_text_json() -> None:

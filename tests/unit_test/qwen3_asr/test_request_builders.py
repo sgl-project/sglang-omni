@@ -17,6 +17,7 @@ from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcess
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
+    qwen3_asr_max_prompt_token_count,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -82,6 +83,18 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
     assert torch.equal(qwen3_asr_audio_token_lengths(lengths), expected)
     assert torch.equal(processor._get_feat_extract_output_lengths(lengths), expected)
     assert qwen3_asr_num_audio_tokens(3000) == 390
+
+
+def test_qwen3_asr_context_uses_the_largest_supported_language_prompt() -> None:
+    class LanguageAwareTokenizer:
+        def __call__(self, text: str, *, add_special_tokens: bool = False):
+            assert not add_special_tokens
+            extra_tokens = 2 if "Chinese" in text else 1
+            return SimpleNamespace(
+                input_ids=[0] * (text.count("<|audio_pad|>") + extra_tokens)
+            )
+
+    assert qwen3_asr_max_prompt_token_count(LanguageAwareTokenizer(), 3) == 5
 
 
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:

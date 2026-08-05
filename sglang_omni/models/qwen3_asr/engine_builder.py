@@ -78,7 +78,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
-        prompt_token_count = request_builders.qwen3_asr_prompt_token_count(
+        prompt_token_count = request_builders.qwen3_asr_max_prompt_token_count(
             self.tokenizer,
             qwen3_asr_max_audio_tokens(),
         )

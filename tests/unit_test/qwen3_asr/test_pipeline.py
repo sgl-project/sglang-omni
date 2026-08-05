@@ -12,6 +12,7 @@ import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
+from sglang_omni.config import AudioChunkingConfig
 from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
@@ -49,6 +50,14 @@ def test_qwen3_asr_config_owns_the_long_audio_chunk_threshold() -> None:
 
     assert config.audio_chunking.allow_audio_chunking is True
     assert config.audio_chunking.max_audio_clip_s == 1200.0
+
+
+def test_audio_chunking_policy_rejects_a_threshold_when_disabled() -> None:
+    with pytest.raises(
+        ValueError,
+        match="must be omitted when audio chunking is disabled",
+    ):
+        AudioChunkingConfig(max_audio_clip_s=1200.0)
 
 
 def test_qwen3_asr_stage_default_allows_32_running_requests() -> None:
@@ -132,7 +141,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         request_builders,
-        "qwen3_asr_prompt_token_count",
+        "qwen3_asr_max_prompt_token_count",
         lambda tokenizer, num_audio_tokens: num_audio_tokens + 13,
     )
     monkeypatch.setattr(

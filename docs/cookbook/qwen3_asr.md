@@ -75,7 +75,24 @@ print(resp.json()["text"])
 `verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
 `{"text": "..."}`.
 
-`max_new_tokens` is supported inside the model request builder, but the public transcription endpoint does not currently expose it as a form field. The route uses the ASR stage default unless the pipeline is configured another way.
+`max_new_tokens` can be supplied as a multipart form field. The route uses the
+Qwen3-ASR stage default of 4,096 when it is omitted.
+
+## Long Audio
+
+Qwen3-ASR accepts up to 1,200 seconds of audio in one native model request.
+This is a model-owned limit rather than Whisper's 30-second feature-extractor
+window. Audio at or below the limit is therefore processed without serving-layer
+chunking.
+
+Longer uploads are decoded once, split at low-energy boundaries into
+non-overlapping chunks of at most 1,200 seconds, transcribed in order, and
+stitched into one response. This applies to blocking and streaming
+transcriptions. Chunk failures fail the whole upload instead of returning a
+transcript with a silent gap.
+
+Qwen3-ASR does not currently produce timestamped segments, so chunk offsets are
+not exposed in `verbose_json`.
 
 ## Benchmarking
 

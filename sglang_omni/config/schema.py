@@ -225,6 +225,10 @@ class AudioChunkingConfig(BaseModel):
             raise ValueError(
                 "max_audio_clip_s is required when audio chunking is enabled"
             )
+        if not self.allow_audio_chunking and self.max_audio_clip_s is not None:
+            raise ValueError(
+                "max_audio_clip_s must be omitted when audio chunking is disabled"
+            )
 
 
 class PipelineConfig(BaseModel):

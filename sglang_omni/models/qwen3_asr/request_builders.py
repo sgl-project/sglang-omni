@@ -103,9 +103,12 @@ def qwen3_asr_prompt_token_ids(
     return list(tokenizer(prompt, add_special_tokens=False).input_ids)
 
 
-def qwen3_asr_prompt_token_count(tokenizer: Any, num_audio_tokens: int) -> int:
-    """Return the exact prompt length used to size the serving context."""
-    return len(qwen3_asr_prompt_token_ids(tokenizer, num_audio_tokens, "English"))
+def qwen3_asr_max_prompt_token_count(tokenizer: Any, num_audio_tokens: int) -> int:
+    """Return the largest supported forced-language prompt length."""
+    return max(
+        len(qwen3_asr_prompt_token_ids(tokenizer, num_audio_tokens, language))
+        for language in ("Chinese", "English")
+    )
 
 
 def make_qwen3_asr_scheduler_adapters(
@@ -302,6 +305,6 @@ def make_qwen3_asr_scheduler_adapters(
 __all__ = [
     "Qwen3ASRRequestData",
     "make_qwen3_asr_scheduler_adapters",
-    "qwen3_asr_prompt_token_count",
+    "qwen3_asr_max_prompt_token_count",
     "qwen3_asr_prompt_token_ids",
 ]
