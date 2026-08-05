@@ -8,6 +8,8 @@ from typing import ClassVar
 from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.moss_tts"
+_REF_AUDIO_CACHE_MAX_ITEMS = 8192
+_REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 
 class MossTTSPipelineConfig(PipelineConfig):
@@ -60,7 +62,12 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={"dtype": "float32"},
+            factory_args={
+                "dtype": "float32",
+                "ref_audio_cache": True,
+                "ref_audio_cache_max_items": _REF_AUDIO_CACHE_MAX_ITEMS,
+                "ref_audio_cache_max_bytes": _REF_AUDIO_CACHE_MAX_BYTES,
+            },
             gpu=0,
             next="tts_engine",
         ),
