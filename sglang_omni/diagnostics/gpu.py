@@ -376,7 +376,7 @@ def collect_gpu_diagnostics(
                 getattr(torch, "version", None), "cuda", None
             ),
             "pytorch_hip_build": getattr(getattr(torch, "version", None), "hip", None),
-            "cuda_available": device_platform.is_cuda(),
+            "accelerator_available": device_platform.device_count() > 0,
             "logical_device_count": len(devices),
         },
         "gpus": devices,

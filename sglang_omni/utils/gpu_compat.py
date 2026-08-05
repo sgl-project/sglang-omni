@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from collections.abc import Mapping, Sequence
 
@@ -14,6 +15,8 @@ from sglang_omni.utils.gpu_memory import (
     parse_cuda_visible_devices,
     resolve_visible_device_id,
 )
+
+logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
 

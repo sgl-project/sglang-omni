@@ -1557,6 +1557,10 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Decode should use SGLang's graph-capable forward result."""
+    import sglang_omni.model_runner.base as model_runner_base
+    from sglang_omni.platforms import CpuPlatform
+
+    monkeypatch.setattr(model_runner_base, "current_platform", CpuPlatform())
     install_fake_sglang(monkeypatch)
     from sglang.srt.model_executor import forward_batch_info
 

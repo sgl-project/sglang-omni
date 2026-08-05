@@ -35,7 +35,7 @@ def check_gpu(
 
     if strict and (
         report["warnings"]
-        or not report["environment"]["cuda_available"]
+        or not report["environment"]["accelerator_available"]
         or not report["gpus"]
     ):
         raise typer.Exit(code=1)
