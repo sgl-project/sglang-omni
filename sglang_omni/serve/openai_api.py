@@ -1737,10 +1737,11 @@ def _register_transcriptions(app: FastAPI) -> None:
             # Decoding is blocking CPU work; keep it off the event loop.
             plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
 
+        chunk_texts: list[str] | None = None
         try:
             if plan is not None:
                 duration_s = plan.duration_s
-                text = await _await_transcription_with_disconnect_abort(
+                chunk_texts = await _await_transcription_with_disconnect_abort(
                     request,
                     _transcribe_audio_chunks(
                         client,
@@ -1755,6 +1756,7 @@ def _register_transcriptions(app: FastAPI) -> None:
                         max_concurrent=chunking.max_concurrent_chunks,
                     ),
                 )
+                text = join_transcript_parts(chunk_texts)
             else:
                 gen_req = build_transcription_generate_request(
                     audio_bytes=audio_bytes,
@@ -1797,11 +1799,25 @@ def _register_transcriptions(app: FastAPI) -> None:
             else None
         )
         if normalized_response_format == "verbose_json":
-            response = adapter.build_verbose_response(
-                text=text,
-                language=language,
-                audio_duration_s=duration_s,
-            )
+            if plan is not None and chunk_texts is not None:
+                # Chunked path: the split already knows where each chunk sits
+                # in the upload, so segments get real (chunk-level) timestamps
+                # instead of one segment spanning the whole file.
+                response = adapter.build_verbose_response_from_chunks(
+                    text=text,
+                    chunks=[
+                        (span.start_s, span.end_s, chunk_text)
+                        for span, chunk_text in zip(plan.spans, chunk_texts)
+                    ],
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
+            else:
+                response = adapter.build_verbose_response(
+                    text=text,
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
             response.usage = usage
             return JSONResponse(content=response.model_dump(exclude_none=True))
         return JSONResponse(
@@ -1895,13 +1911,16 @@ async def _transcribe_audio_chunks(
     temperature: float | None,
     max_new_tokens: int | None,
     max_concurrent: int,
-) -> str:
-    """Transcribe the chunks of a plan as independent engine requests.
+) -> list[str]:
+    """Transcribe the chunks of a plan, returning one text per chunk.
 
-    Up to ``max_concurrent`` chunks run in the engine at once; ``asyncio.gather`` returns their texts in span order no
-    matter which finishes first.
+    Texts come back in span order no matter which chunk finishes first
+    (``asyncio.gather`` preserves input order); the caller joins them and,
+    for verbose_json, pairs them with the spans' timestamps. Up to
+    ``max_concurrent`` chunks run in the engine at once.
 
-    Any chunk failing fails the whole request. The error names the chunk and its time range to make sure the failure is diagnosable.
+    Any chunk failing fails the whole request. The error names the chunk and
+    its time range to make sure the failure is diagnosable.
     """
     semaphore = asyncio.Semaphore(max_concurrent)
     in_flight: set[str] = set()
@@ -1959,13 +1978,13 @@ async def _transcribe_audio_chunks(
             except Exception:
                 logger.warning("Failed to abort chunk request %s", chunk_request_id)
         raise
-    return join_transcript_parts(texts)
+    return texts
 
 
 async def _await_transcription_with_disconnect_abort(
     request: Request,
-    work: Awaitable[str],
-) -> str:
+    work: Awaitable[list[str]],
+) -> list[str]:
     """Run chunked transcription while watching for client disconnect.
 
     The non-stream handler has no response-owned disconnect watcher, so

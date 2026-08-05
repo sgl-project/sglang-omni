@@ -1493,6 +1493,50 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
+def test_verbose_json_reports_per_chunk_segments() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "response_format": "verbose_json"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    segments = body["segments"]
+    # One segment per chunk, with the chunk's own timestamps -- not a single
+    # segment spanning the whole upload.
+    assert len(segments) == len(transcription_client.requests) > 1
+    previous_end = 0.0
+    for index, segment in enumerate(segments):
+        assert segment["id"] == index
+        assert segment["text"] == f"part{index}"
+        assert segment["start"] == pytest.approx(previous_end)
+        assert segment["end"] > segment["start"]
+        previous_end = segment["end"]
+    assert previous_end == pytest.approx(2.5, abs=0.01)
+    assert body["duration"] == pytest.approx(2.5, abs=0.01)
+
+
+def test_chunk_segments_skip_silent_chunks() -> None:
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
+
+    response = DefaultTranscriptionAdapter().build_verbose_response_from_chunks(
+        text="hello world",
+        chunks=[(0.0, 1.0, "hello"), (1.0, 2.0, "   "), (2.0, 2.5, "world")],
+        language="en",
+        audio_duration_s=2.5,
+    )
+
+    # The silent chunk emits no segment and ids stay consecutive.
+    assert [(s.id, s.text) for s in response.segments] == [(0, "hello"), (1, "world")]
+    assert response.segments[1].start == 2.0
+
+
 def test_chunk_failure_fails_the_whole_request() -> None:
     transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=1)
     client = _chunking_test_client(transcription_client)
@@ -1650,8 +1694,8 @@ def test_chunks_run_concurrently() -> None:
 
     async def scenario() -> None:
         barrier_client = BarrierClient(expected=3)
-        text = await _run_chunks(barrier_client, _tiny_plan(3), max_concurrent=3)
-        assert text == "part0 part1 part2"
+        texts = await _run_chunks(barrier_client, _tiny_plan(3), max_concurrent=3)
+        assert texts == ["part0", "part1", "part2"]
         assert barrier_client.max_active == 3
 
     asyncio.run(scenario())
@@ -1675,8 +1719,8 @@ def test_chunk_concurrency_respects_the_limit() -> None:
 
     async def scenario() -> None:
         counting_client = CountingClient()
-        text = await _run_chunks(counting_client, _tiny_plan(6), max_concurrent=2)
-        assert text == " ".join(f"part{i}" for i in range(6))
+        texts = await _run_chunks(counting_client, _tiny_plan(6), max_concurrent=2)
+        assert texts == [f"part{i}" for i in range(6)]
         assert counting_client.max_active <= 2
 
     asyncio.run(scenario())
@@ -1693,10 +1737,10 @@ def test_chunk_texts_join_in_span_order_not_completion_order() -> None:
             return CompletionResult(request_id=request_id, text=f"part{index}")
 
     async def scenario() -> None:
-        text = await _run_chunks(
+        texts = await _run_chunks(
             ReversedLatencyClient(), _tiny_plan(3), max_concurrent=3
         )
-        assert text == "part0 part1 part2"
+        assert texts == ["part0", "part1", "part2"]
 
     asyncio.run(scenario())
 
