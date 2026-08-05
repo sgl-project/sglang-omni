@@ -95,6 +95,7 @@ fractions would not make that split correct.
 | Qwen3-TTS | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
 | MOSS-TTS Delay | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
 | Audar-TTS | `preprocessing -> reference_encoder`, `reference_encoder -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
+| Fun-CosyVoice3 | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — prepared requests live in `_PREPROCESSING_CONTEXT` / `_PREPARED_REQUESTS`, read in-process by the AR engine builder |
 | Zonos2 | `preprocessing -> speaker_encode`, `speaker_encode -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 
 Higgs-TTS already groups `preprocessing` and `audio_encoder` in a
