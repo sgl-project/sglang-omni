@@ -122,17 +122,15 @@ class StageWorkerProcessSpec:
     """Everything one OS process needs to run one or more stages."""
 
     process_name: str
+    platform_spec: ResolvedPlatformSpec
     stage_specs: list[StageLaunchConfig]
 
-    @property
-    def platform_spec(self) -> ResolvedPlatformSpec:
-        specs = {stage.platform_spec for stage in self.stage_specs}
-        if len(specs) != 1:
-            raise RuntimeError(
-                f"Process {self.process_name!r} has conflicting platform specs: {specs}"
+    def __post_init__(self) -> None:
+        if any(stage.platform_spec != self.platform_spec for stage in self.stage_specs):
+            raise ValueError(
+                f"Process {self.process_name!r} and its stages must use the same "
+                "platform spec"
             )
-        platform_spec = next(iter(specs))
-        return platform_spec
 
     def platform(self) -> OmniPlatform:
         return OmniPlatform.from_spec(self.platform_spec)
@@ -385,7 +383,6 @@ def stage_process_main(
         platform = spec.platform()
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log, platform=platform)
-        platform.initialize_worker()
         platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
@@ -867,8 +864,6 @@ def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     spec.gpu_id = 0
     if "gpu_id" in spec.factory_arg_defaults:
         spec.factory_arg_defaults["gpu_id"] = 0
-    if "device" in spec.factory_arg_defaults:
-        spec.factory_arg_defaults["device"] = "cuda:0"
     if "gpu_id" in spec.comm_config:
         spec.comm_config["gpu_id"] = 0
 

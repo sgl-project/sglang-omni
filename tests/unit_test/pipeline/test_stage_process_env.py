@@ -44,6 +44,7 @@ def _worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
         assert stage_spec.platform_spec == CUDA_PLATFORM_SPEC
     return StageWorkerProcessSpec(
         process_name="worker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         stage_specs=list(stage_specs),
     )
 
@@ -96,7 +97,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         tp_rank=1,
         tp_size=2,
         gpu_id=1,
-        factory_arg_defaults={"gpu_id": 1, "device": "cuda:1"},
+        factory_arg_defaults={"gpu_id": 1},
         comm_config={"gpu_id": 1},
     )
 
@@ -105,7 +106,6 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     assert spec.gpu_id == 0
     assert spec.placement_gpu_id == 1
     assert spec.factory_arg_defaults["gpu_id"] == 0
-    assert spec.factory_arg_defaults["device"] == "cuda:0"
     assert spec.comm_config["gpu_id"] == 0
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
