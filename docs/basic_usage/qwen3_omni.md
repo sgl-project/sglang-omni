@@ -311,6 +311,14 @@ Audio output is opt-in: sessions remain text-only unless both modalities are
 requested. A thinker-only server rejects audio negotiation because it has no
 `code2wav` stage.
 
+For text-and-audio sessions, server-owned barge-in is enabled by default. When
+server VAD emits `input_audio_buffer.speech_started`, the active response is
+cancelled with reason `turn_detected`; its user transcription still completes
+and enters conversation history before the next queued turn runs. Clients must
+also stop any assistant audio already buffered for local playback. Set
+`turn_detection.interrupt_response` to `false` in `session.update` to opt out.
+Text-only responses are not interrupted automatically.
+
 The browser example in `playground/qwen-omni/realtime` captures microphone
 input and lets the user select text-only output or text plus streamed PCM16
 audio playback.

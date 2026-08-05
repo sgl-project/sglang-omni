@@ -31,6 +31,7 @@ class TurnDetection(EventBase):
     threshold: float | None = None
     prefix_padding_ms: int | None = None
     silence_duration_ms: int | None = None
+    interrupt_response: bool | None = None
 
 
 class SessionConfig(EventBase):

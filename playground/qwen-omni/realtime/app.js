@@ -49,6 +49,9 @@
   let drawRaf = 0;
   let playbackCtx = null;
   let nextPlaybackTime = 0;
+  let acceptingResponseAudio = false;
+  const playbackSources = new Map();
+  const interruptedTurnItemIds = new Set();
   let activeModalities = null;
   let sessionReady = false;
   let turnCounter = 0;
@@ -182,6 +185,8 @@
   });
 
   function clearTurns() {
+    interruptPlayback();
+    interruptedTurnItemIds.clear();
     turnCards.clear();
     turnCounter = 0;
     pendingAudioForResponse.length = 0;
@@ -322,6 +327,7 @@
   }
 
   function queueAudioDelta(encoded) {
+    if (!acceptingResponseAudio || !respondingTurnItemId) return;
     const bytes = base64ToBytes(encoded);
     if (bytes.byteLength % 2 !== 0) {
       throw new Error("Received an odd-length PCM16 audio delta");
@@ -339,13 +345,55 @@
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
+    playbackSources.set(source, respondingTurnItemId);
+    source.onended = () => playbackSources.delete(source);
 
     const startAt = Math.max(ctx.currentTime + 0.02, nextPlaybackTime);
     source.start(startAt);
     nextPlaybackTime = startAt + buffer.duration;
   }
 
+  function interruptPlayback() {
+    acceptingResponseAudio = false;
+    const interruptedItemIds = new Set(playbackSources.values());
+    if (respondingTurnItemId) {
+      interruptedItemIds.add(respondingTurnItemId);
+    }
+    for (const source of Array.from(playbackSources.keys())) {
+      try {
+        source.stop();
+      } catch (_) {
+        // The source may have already ended between iteration and stop().
+      }
+    }
+    playbackSources.clear();
+    nextPlaybackTime = playbackCtx ? playbackCtx.currentTime : 0;
+    return interruptedItemIds;
+  }
+
+  function markTurnInterrupted(itemId) {
+    interruptedTurnItemIds.add(itemId);
+    const node = turnCards.get(itemId);
+    const responseStatus = node && node.dataset.state;
+    const terminal = responseStatus && responseStatus !== "in-progress";
+    const terminalLabel =
+      responseStatus === "completed" ? "complete" : responseStatus;
+    setTurnMeta(
+      itemId,
+      terminal
+        ? `${terminalLabel} · interrupted`
+        : "response interrupted",
+    );
+    if (terminal) {
+      interruptedTurnItemIds.delete(itemId);
+    }
+  }
+
   function stopPlayback() {
+    interruptPlayback();
+    interruptedTurnItemIds.clear();
+    pendingAudioForResponse.length = 0;
+    respondingTurnItemId = null;
     if (playbackCtx) {
       playbackCtx.close();
       playbackCtx = null;
@@ -424,6 +472,11 @@
         return;
 
       case "input_audio_buffer.speech_started":
+        if (connectionWantsAudio() && (respondingTurnItemId || playbackSources.size)) {
+          for (const itemId of interruptPlayback()) {
+            markTurnInterrupted(itemId);
+          }
+        }
         ensureTurn(evt.item_id);
         setTurnMeta(evt.item_id, `started ${ms(evt.audio_start_ms)}`);
         return;
@@ -443,6 +496,8 @@
       // ── Pass 1: assistant reply (streams first) ──
       case "response.created":
         respondingTurnItemId = pendingAudioForResponse.shift() || null;
+        acceptingResponseAudio =
+          connectionWantsAudio() && respondingTurnItemId !== null;
         if (respondingTurnItemId) {
           setTurnMeta(respondingTurnItemId, "replying");
         }
@@ -455,7 +510,10 @@
         return;
 
       case "response.text.done":
-        if (respondingTurnItemId) {
+        if (
+          respondingTurnItemId &&
+          !interruptedTurnItemIds.has(respondingTurnItemId)
+        ) {
           setTurnMeta(
             respondingTurnItemId,
             connectionWantsAudio()
@@ -466,26 +524,42 @@
         return;
 
       case "response.audio.delta":
-        if (connectionWantsAudio() && evt.delta) {
+        if (connectionWantsAudio() && acceptingResponseAudio && evt.delta) {
           queueAudioDelta(evt.delta);
         }
         return;
 
       case "response.audio.done":
-        if (respondingTurnItemId) {
+        if (
+          respondingTurnItemId &&
+          !interruptedTurnItemIds.has(respondingTurnItemId)
+        ) {
           setTurnMeta(respondingTurnItemId, "reply streaming");
         }
         return;
 
       case "response.done":
+        acceptingResponseAudio = false;
         if (respondingTurnItemId) {
+          const completedItemId = respondingTurnItemId;
           const responseStatus =
             (evt.response && evt.response.status) || "completed";
-          const node = turnCards.get(respondingTurnItemId);
+          const node = turnCards.get(completedItemId);
           if (node) node.dataset.state = responseStatus;
-          if (connectionWantsAudio() || responseStatus !== "completed") {
+          if (interruptedTurnItemIds.has(completedItemId)) {
             setTurnMeta(
-              respondingTurnItemId,
+              completedItemId,
+              responseStatus === "completed"
+                ? "complete · interrupted"
+                : `${responseStatus} · interrupted`,
+            );
+            interruptedTurnItemIds.delete(completedItemId);
+          } else if (
+            connectionWantsAudio() ||
+            responseStatus !== "completed"
+          ) {
+            setTurnMeta(
+              completedItemId,
               responseStatus === "completed" ? "complete" : responseStatus,
             );
           }
@@ -604,7 +678,8 @@
   // ─────────────────────  Misc UI  ─────────────────────
 
   function updatePresentation() {
-    if (wantsAudioOutput()) {
+    const audioOutput = wantsAudioOutput();
+    if (audioOutput) {
       mastheadModeEl.textContent = "LIVE AUDIO RESPONSES";
       mastheadTaglineEl.textContent =
         "A demonstration of /v1/realtime — voice in, streamed text and voice " +

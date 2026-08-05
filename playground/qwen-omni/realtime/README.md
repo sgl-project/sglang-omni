@@ -78,6 +78,30 @@ build step.
 - Text-only mode requests only the `text` modality.
 - Text + audio mode requests both modalities. Audio deltas are mono 24 kHz
   PCM16 little-endian and are queued with Web Audio for gapless playback.
+- Server-owned barge-in is the default behavior for text-plus-audio sessions.
+  The server cancels the active response when new speech starts, while the
+  browser stops queued PCM playback. The interrupted user transcription remains
+  in conversation history before the next queued response starts.
+- Text-only mode keeps its existing behavior and finishes the active response.
+- Custom realtime applications get the same behavior by requesting
+  `["text", "audio"]`. They must also stop any assistant audio already buffered
+  for local playback when they receive `input_audio_buffer.speech_started`.
+- To opt out for a specific audio session, set:
+
+  ```json
+  {
+    "type": "session.update",
+    "session": {
+      "modalities": ["text", "audio"],
+      "turn_detection": {
+        "type": "server_vad",
+        "interrupt_response": false
+      }
+    }
+  }
+  ```
+- The standalone `/v1/audio/speech` TTS API is unchanged because it does not
+  have a live microphone/VAD session to trigger barge-in.
 - The page does no error handling beyond updating the status line —
   matching the project's house style. If the WS drops mid-session,
   reconnect.

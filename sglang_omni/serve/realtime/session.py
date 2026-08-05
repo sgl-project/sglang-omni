@@ -100,9 +100,15 @@ class RealtimeSession:
 
         self.active_request_id: str | None = None
         self.active_task: asyncio.Task | None = None
+        self.active_response_task: asyncio.Task | None = None
+        self.active_response_request_id: str | None = None
+        self.active_response_has_audio = False
+        self.response_cancel_reason: str | None = None
+        self.cancelled_response_text = ""
+        self.turn_cancel_requested = False
         self.cancel_cleanup_tasks: dict[asyncio.Task, asyncio.Task] = {}
         self.response_start_pending = False
-        self.cancel_pending_response = False
+        self.pending_response_cancel_reason: str | None = None
         # VAD may emit speech_stopped while engine is still busy on an
         # earlier utterance — serialize via FIFO.
         self.response_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
@@ -204,6 +210,16 @@ class RealtimeSession:
                     item_id=self.utterance_item_id,
                 )
             )
+            turn_detection = self.session_object.turn_detection
+            interrupt_response = (
+                turn_detection is None or turn_detection.interrupt_response is not False
+            )
+            response_has_audio = self.active_response_has_audio or (
+                self.response_start_pending
+                and "audio" in self.session_object.modalities
+            )
+            if response_has_audio and interrupt_response:
+                await self.cancel_active_response("turn_detected")
         elif emit.event_type == VADEvent.SPEECH_STOPPED:
             await self.send(
                 make_event(
@@ -244,18 +260,21 @@ class RealtimeSession:
         await self.send(make_event("input_audio_buffer.cleared"))
 
     async def handle_response_cancel(self, event: ResponseCancel) -> None:
-        if self.active_task is None or self.active_task.done():
-            return
-        task = self.active_task
+        await self.cancel_active_response("client_cancelled")
+
+    async def cancel_active_response(self, reason: str) -> None:
         if self.response_start_pending:
-            self.cancel_pending_response = True
+            if self.pending_response_cancel_reason is None:
+                self.pending_response_cancel_reason = reason
             return
-        if self.active_request_id is None:
+        task = self.active_response_task
+        request_id = self.active_response_request_id
+        if task is None or task.done() or request_id is None:
             return
         cleanup_task = self.cancel_cleanup_tasks.get(task)
         if cleanup_task is not None and not cleanup_task.done():
             return
-        request_id = self.active_request_id
+        self.response_cancel_reason = reason
         task.cancel()
         cleanup_task = asyncio.create_task(self._abort_and_drain(task, request_id))
         self.cancel_cleanup_tasks[task] = cleanup_task
@@ -273,13 +292,26 @@ class RealtimeSession:
             finally:
                 self.active_task = None
                 self.response_start_pending = False
-                self.cancel_pending_response = False
+                self.pending_response_cancel_reason = None
 
     async def run_turn(self, item_id: str, audio_payload: str) -> None:
         """Pass 1: response (user-facing, streams fast).
         Pass 2: transcription (background, fills history).
         """
-        response_text = await self.run_response(audio_payload)
+        self.turn_cancel_requested = False
+        self.active_response_task = asyncio.create_task(
+            self.run_response(audio_payload)
+        )
+        try:
+            response_text = await self.active_response_task
+        except asyncio.CancelledError:
+            if self.response_cancel_reason is None or self.turn_cancel_requested:
+                raise
+            response_text = self.cancelled_response_text
+        finally:
+            self.active_response_task = None
+            self.response_cancel_reason = None
+            self.cancelled_response_text = ""
         transcript = await self.run_transcription(item_id, audio_payload)
         # Append in chronological order: user spoke first, assistant replied.
         if transcript:
@@ -297,6 +329,8 @@ class RealtimeSession:
         resp_item_id = new_id("item")
         request_id = f"rt-{self.session_id}-{uuid.uuid4().hex}"
         self.active_request_id = request_id
+        self.active_response_request_id = request_id
+        self.active_response_has_audio = wants_audio
         text_acc: list[str] = []
         finish_reason = "stop"
         usage: dict[str, Any] | None = None
@@ -319,8 +353,10 @@ class RealtimeSession:
             )
 
             self.response_start_pending = False
-            if self.cancel_pending_response:
-                self.cancel_pending_response = False
+            if self.pending_response_cancel_reason is not None:
+                reason = self.pending_response_cancel_reason
+                self.pending_response_cancel_reason = None
+                self.response_cancel_reason = reason
                 await self.send(
                     make_event(
                         "response.text.done",
@@ -337,7 +373,7 @@ class RealtimeSession:
                     response_text="",
                     include_audio=False,
                     status="cancelled",
-                    reason="client_cancelled",
+                    reason=reason,
                     usage=None,
                 )
                 response_done = True
@@ -469,6 +505,7 @@ class RealtimeSession:
             response_done = True
             return response_text
         except asyncio.CancelledError:
+            self.cancelled_response_text = "".join(text_acc)
             if not response_done:
                 if not text_done:
                     await self.send(
@@ -497,7 +534,7 @@ class RealtimeSession:
                     response_text="".join(text_acc),
                     include_audio=wants_audio and saw_audio,
                     status="cancelled",
-                    reason="client_cancelled",
+                    reason=self.response_cancel_reason or "client_cancelled",
                     usage=usage,
                 )
             raise
@@ -547,7 +584,11 @@ class RealtimeSession:
                 )
             return ""
         finally:
-            self.active_request_id = None
+            if self.active_request_id == request_id:
+                self.active_request_id = None
+            if self.active_response_request_id == request_id:
+                self.active_response_request_id = None
+                self.active_response_has_audio = False
 
     async def _send_response_done(
         self,
@@ -700,6 +741,8 @@ class RealtimeSession:
         """
         if task is None or task.done():
             return
+        if task is self.active_task:
+            self.turn_cancel_requested = True
         task.cancel()
         await self._abort_and_drain(task, request_id)
 
