@@ -11,7 +11,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from sglang_omni.platforms import Platform, resolve_current_platform
+from sglang_omni.platforms import OmniPlatform, resolve_current_platform
 from sglang_omni.utils.gpu_memory import (
     _decode_nvml_string,
     _shutdown_nvml,
@@ -260,7 +260,7 @@ def _physical_device(
 
 
 def _logical_devices(
-    platform: Platform,
+    platform: OmniPlatform,
     visible_devices: list[int | str],
     inventory: list[dict[str, Any]],
     warnings: list[str],

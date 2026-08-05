@@ -6,6 +6,7 @@ from __future__ import annotations
 import enum
 import logging
 from collections.abc import Mapping, MutableMapping
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -13,14 +14,37 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-class PlatformEnum(enum.Enum):
+class PlatformEnum(str, enum.Enum):
     """Known platform types, following SGLang's platform convention."""
 
-    CUDA = enum.auto()
-    ROCM = enum.auto()
-    CPU = enum.auto()
-    OOT = enum.auto()
-    UNSPECIFIED = enum.auto()
+    CUDA = "cuda"
+    CPU = "cpu"
+    UNSPECIFIED = "unspecified"
+
+
+class TransferPolicy(str, enum.Enum):
+    CUDA_IPC = "cuda_ipc"
+    HOST_STAGED = "host_staged"
+
+
+@dataclass(frozen=True)
+class ResolvedPlatformSpec:
+    platform_type: PlatformEnum
+    device_type: str
+    distributed_backend: str
+
+    def __post_init__(self) -> None:
+        actual = (
+            self.platform_type,
+            self.device_type,
+            self.distributed_backend,
+        )
+        supported = {
+            (PlatformEnum.CUDA, "cuda", "nccl"),
+            (PlatformEnum.CPU, "cpu", "gloo"),
+        }
+        if actual not in supported:
+            raise ValueError(f"Unsupported platform spec: {actual!r}")
 
 
 class DeviceMixin:
@@ -32,9 +56,6 @@ class DeviceMixin:
 
     def is_cuda(self) -> bool:
         return self._enum is PlatformEnum.CUDA
-
-    def is_rocm(self) -> bool:
-        return self._enum is PlatformEnum.ROCM
 
     def is_cpu(self) -> bool:
         return self._enum is PlatformEnum.CPU
@@ -61,10 +82,49 @@ class DeviceMixin:
         return f"{self.__class__.__name__}(device={self.device_name})"
 
 
-class Platform(DeviceMixin):
+class OmniPlatform(DeviceMixin):
     """Omni's process-lifecycle additions to SGLang's device vocabulary."""
 
     device_control_env_var: str | None = None
+    distributed_backend: str = "gloo"
+
+    @staticmethod
+    def detect(torch_module: Any = torch) -> "OmniPlatform":
+        from sglang_omni.platforms.cuda_platform import CudaOmniPlatform
+
+        runtime = getattr(torch_module, "cuda", None)
+        if runtime is not None and runtime.is_available():
+            return CudaOmniPlatform()
+        return CpuOmniPlatform()
+
+    @staticmethod
+    def from_spec(spec: ResolvedPlatformSpec) -> "OmniPlatform":
+        from sglang_omni.platforms.cuda_platform import CudaOmniPlatform
+
+        if spec.platform_type is PlatformEnum.CUDA:
+            return CudaOmniPlatform()
+        if spec.platform_type is PlatformEnum.CPU:
+            return CpuOmniPlatform()
+        raise ValueError(f"Unsupported platform type {spec.platform_type!r}")
+
+    def to_spec(self) -> ResolvedPlatformSpec:
+        return ResolvedPlatformSpec(
+            platform_type=self._enum,
+            device_type=self.device_type,
+            distributed_backend=self.distributed_backend,
+        )
+
+    def transfer_policy(self) -> TransferPolicy:
+        return TransferPolicy.HOST_STAGED
+
+    def support_same_device_weight_sharing(self) -> bool:
+        return False
+
+    def support_worker_visibility_isolation(self) -> bool:
+        return False
+
+    def support_cross_node_transport(self) -> bool:
+        return False
 
     def visible_device_value(self, env: Mapping[str, str]) -> str | None:
         """
@@ -85,7 +145,6 @@ class Platform(DeviceMixin):
         value = self.visible_device_value(env)
         if not value:
             return []
-
         devices: list[int | str] = []
         for item in value.split(","):
             item = item.strip()
@@ -98,9 +157,7 @@ class Platform(DeviceMixin):
         return devices
 
     def worker_device_env(
-        self,
-        logical_device_id: int,
-        env: Mapping[str, str],
+        self, logical_device_id: int, env: Mapping[str, str]
     ) -> dict[str, str]:
         """Return the visibility override that isolates one worker device.
 
@@ -120,7 +177,6 @@ class Platform(DeviceMixin):
             raise RuntimeError("Accelerator worker requires a device control variable")
         if logical_device_id < 0:
             raise ValueError(f"Invalid device id {logical_device_id}")
-
         visible_devices = self.visible_devices(env)
         if visible_devices:
             if logical_device_id >= len(visible_devices):
@@ -133,18 +189,20 @@ class Platform(DeviceMixin):
             selector = logical_device_id
         return {env_var: str(selector)}
 
-    def compatibility_env_defaults(
-        self,
-        env: Mapping[str, str],
-    ) -> dict[str, str]:
+    def initialize_worker(self) -> None:
+        pass
+
+    def get_available_memory(self, device_id: int = 0) -> tuple[int, int]:
+        raise NotImplementedError
+
+    def compatibility_env_defaults(self, env: Mapping[str, str]) -> dict[str, str]:
         """Return unset environment defaults required by this platform.
         e.g. _FLASHINFER_USE_CUDA_NORM
         """
         return {}
 
     def apply_compatibility_env_defaults(
-        self,
-        env: MutableMapping[str, str],
+        self, env: MutableMapping[str, str]
     ) -> dict[str, str]:
         """
         Apply and return this platform's compatibility defaults in ``env``.
@@ -152,18 +210,11 @@ class Platform(DeviceMixin):
         overrides = self.compatibility_env_defaults(env)
         for key, value in overrides.items():
             env[key] = value
-            logger.info(
-                "Applied device compatibility env override: %s=%s",
-                key,
-                value,
-            )
+            logger.info("Applied device compatibility env override: %s=%s", key, value)
         return overrides
 
     def reclaim_process_memory(
-        self,
-        device: torch.device,
-        *,
-        suppress_errors: bool = False,
+        self, device: torch.device, *, suppress_errors: bool = False
     ) -> None:
         """Release process-scoped accelerator resources for ``device``."""
 
@@ -186,5 +237,5 @@ class CpuDeviceMixin(DeviceMixin):
         raise RuntimeError("CPU has no accelerator device properties")
 
 
-class CpuPlatform(CpuDeviceMixin, Platform):
+class CpuOmniPlatform(CpuDeviceMixin, OmniPlatform):
     pass

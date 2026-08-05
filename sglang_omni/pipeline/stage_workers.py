@@ -23,7 +23,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec, current_platform
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 
@@ -44,6 +44,7 @@ class StageLaunchConfig:
 
     # Identity
     stage_name: str
+    platform_spec: ResolvedPlatformSpec
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
@@ -123,6 +124,19 @@ class StageWorkerProcessSpec:
     process_name: str
     stage_specs: list[StageLaunchConfig]
 
+    @property
+    def platform_spec(self) -> ResolvedPlatformSpec:
+        specs = {stage.platform_spec for stage in self.stage_specs}
+        if len(specs) != 1:
+            raise RuntimeError(
+                f"Process {self.process_name!r} has conflicting platform specs: {specs}"
+            )
+        platform_spec = next(iter(specs))
+        return platform_spec
+
+    def platform(self) -> OmniPlatform:
+        return OmniPlatform.from_spec(self.platform_spec)
+
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
@@ -133,15 +147,31 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     is a placement bug.
     """
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
-    if not tp_stages:
-        return {}
-    if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
+    if tp_stages and (len(tp_stages) > 1 or len(spec.stage_specs) > 1):
         raise AssertionError(
             f"Process {spec.process_name!r} mixes a TP stage with other "
             "stages; TP stages must own their OS process exclusively. "
             f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
         )
-    return get_stage_process_env(tp_stages[0])
+    accelerator_stages = [
+        stage for stage in spec.stage_specs if stage.gpu_id is not None
+    ]
+    if not accelerator_stages:
+        return {}
+    device_ids = {int(stage.gpu_id) for stage in accelerator_stages}
+    if len(device_ids) != 1:
+        raise AssertionError(
+            f"Process {spec.process_name!r} spans accelerator devices "
+            f"{sorted(device_ids)}; one process may have only one assignment"
+        )
+    platform = spec.platform()
+    if not tp_stages and not platform.support_worker_visibility_isolation():
+        return {}
+    updates = platform.worker_device_env(next(iter(device_ids)), os.environ)
+    updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
+    if tp_stages:
+        updates["SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK"] = "false"
+    return updates
 
 
 @contextmanager
@@ -159,7 +189,8 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
                 env_default_updates[key] = value
 
     worker_process_env = _get_worker_process_env(spec)
-    compat_env_defaults = current_platform.compatibility_env_defaults(
+    platform = spec.platform()
+    compat_env_defaults = platform.compatibility_env_defaults(
         {**os.environ, **env_default_updates, **worker_process_env}
     )
     updates = {
@@ -367,9 +398,17 @@ def stage_process_main(
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
+        platform = spec.platform()
         for stage_spec in spec.stage_specs:
-            _prepare_accelerator_environment(stage_spec, log)
-        current_platform.apply_compatibility_env_defaults(os.environ)
+            _prepare_accelerator_environment(stage_spec, log, platform=platform)
+        if any(stage.gpu_id is not None for stage in spec.stage_specs):
+            platform.initialize_worker()
+            if platform.device_count() < 1:
+                raise RuntimeError(
+                    f"Worker {spec.process_name!r} initialized {platform.device_name} "
+                    "but no assigned accelerator is visible"
+                )
+        platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         _destroy_torch_distributed_process_group(log)
@@ -752,6 +791,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        platform_spec=spec.platform_spec,
     )
 
     if spec.is_stream_receiver:
@@ -793,8 +833,9 @@ def get_stage_process_env(
     if spec.gpu_id is None:
         raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
 
+    platform = OmniPlatform.from_spec(spec.platform_spec)
     return {
-        **current_platform.worker_device_env(spec.gpu_id, source_env),
+        **platform.worker_device_env(spec.gpu_id, source_env),
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
     }
@@ -803,10 +844,15 @@ def get_stage_process_env(
 def _prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
+    *,
+    platform: OmniPlatform | None = None,
 ) -> None:
     """Map a TP rank to one visible accelerator before torch initialization."""
+    if spec.gpu_id is None:
+        return
+    platform = platform or OmniPlatform.from_spec(spec.platform_spec)
     if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
-        mapped_device_env = current_platform.worker_device_env(0, os.environ)
+        mapped_device_env = platform.worker_device_env(0, os.environ)
         visibility_env, mapped_gpu = next(iter(mapped_device_env.items()))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
@@ -822,7 +868,7 @@ def _prepare_accelerator_environment(
     if not env_updates:
         return
 
-    visibility_env = current_platform.device_control_env_var
+    visibility_env = platform.device_control_env_var
     assert visibility_env is not None
     mapped_gpu = env_updates.get(visibility_env, str(spec.gpu_id))
     os.environ.update(env_updates)
@@ -843,6 +889,8 @@ def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     spec.gpu_id = 0
     if "gpu_id" in spec.factory_arg_defaults:
         spec.factory_arg_defaults["gpu_id"] = 0
+    if "device" in spec.factory_arg_defaults:
+        spec.factory_arg_defaults["device"] = "cuda:0"
     if "gpu_id" in spec.comm_config:
         spec.comm_config["gpu_id"] = 0
 

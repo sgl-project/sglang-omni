@@ -6,6 +6,7 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 _DECODE_CUDA_GRAPH_ALIASES = {
@@ -49,6 +50,7 @@ def build_sglang_server_args(
         "max_running_requests": max_running_requests,
         "random_seed": 123,
         "context_length": context_length,
+        "device": current_platform.device_type,
     }
     if mem_fraction_static is not None:
         kwargs["mem_fraction_static"] = mem_fraction_static

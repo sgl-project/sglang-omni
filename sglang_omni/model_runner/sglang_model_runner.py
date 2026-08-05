@@ -248,6 +248,10 @@ class SGLModelRunner(ModelRunner):
         self._weight_share_record = None
         if ws is None:
             return super().load_model()
+        if not current_platform.support_same_device_weight_sharing():
+            raise ipc_weights.WeightShareError(
+                f"Weight sharing is not supported on {current_platform.device_name}"
+            )
 
         # Note (Jiaxin Deng): TP/PP ranks are separate processes inheriting the
         # env var, and their shards share names/shapes/dtypes across ranks, so

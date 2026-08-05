@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
 from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
@@ -17,6 +18,7 @@ from tests.unit_test.fixtures.pipeline_fakes import (
 )
 
 FACTORY = fake_factory_path("make_scheduler")
+CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
 
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
@@ -44,6 +46,7 @@ def make_stage(
         gpu_id=None,
         endpoints=endpoints or {},
         control_plane=control_plane or RecordingStageControlPlane(),
+        platform_spec=CUDA_PLATFORM_SPEC,
         relay=relay or FakeRelay(),
         scheduler=scheduler or FakeScheduler(),
         **kwargs,

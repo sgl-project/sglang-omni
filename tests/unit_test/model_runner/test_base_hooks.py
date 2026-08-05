@@ -11,7 +11,7 @@ import torch
 
 import sglang_omni.model_runner.base as model_runner_base
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.platforms import CpuPlatform
+from sglang_omni.platforms import CpuOmniPlatform
 from tests.unit_test.fakes import FakeExecutionBridge
 
 
@@ -169,7 +169,7 @@ def test_execute_uses_explicit_custom_forward_hook(
     is_prefill: bool,
     expected: list[str],
 ) -> None:
-    monkeypatch.setattr(model_runner_base, "current_platform", CpuPlatform())
+    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
     _install_fake_forward_batch_module(monkeypatch)
     calls: list[str] = []
     custom_result = SimpleNamespace(
@@ -189,7 +189,7 @@ def test_execute_uses_explicit_custom_forward_hook(
 def test_execute_falls_back_to_standard_forward_after_before_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_runner_base, "current_platform", CpuPlatform())
+    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
     _install_fake_forward_batch_module(monkeypatch)
     calls: list[str] = []
 
@@ -210,7 +210,7 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
 def test_execute_isolates_scheduler_sampling_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_runner_base, "current_platform", CpuPlatform())
+    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
     _install_fake_forward_batch_module(monkeypatch)
     isolate_sampling_values = []
 

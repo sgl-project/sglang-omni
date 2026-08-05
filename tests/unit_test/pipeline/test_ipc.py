@@ -16,6 +16,7 @@ import sglang_omni.pipeline.runtime_config as runtime_config
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
+from tests.unit_test.pipeline.helpers import CUDA_PLATFORM_SPEC
 
 
 def noop_factory():
@@ -161,6 +162,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             endpoints=prep_a.endpoints,
             placement_plan=prep_a.placement_plan,
             process_plan=prep_a.process_plan,
+            platform_spec=CUDA_PLATFORM_SPEC,
         )
         groups_b = mp_runner._build_stage_groups(
             config,
@@ -170,6 +172,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             endpoints=prep_b.endpoints,
             placement_plan=prep_b.placement_plan,
             process_plan=prep_b.process_plan,
+            platform_spec=CUDA_PLATFORM_SPEC,
         )
 
         assert prep_a.endpoints["completion"] != prep_b.endpoints["completion"]
