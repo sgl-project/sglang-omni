@@ -35,12 +35,12 @@ echo "Preparing fresh ${HOST} (full rebuild)"
 rm -f "${OMNI_CI_HOME}/.omni-env-complete"
 rm -rf "${OMNI_CI_HOME}"
 mkdir -p "${OMNI_CI_HOME}"
-uv venv "${HOST}" -p 3.11
+uv venv --system-site-packages "${HOST}" -p /usr/bin/python3.12
 
 rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
-uv pip install -e .
+uv pip install --no-deps -e .
 
 if ! python -c "import av" 2>/dev/null; then
   echo "PyAV native libraries corrupted in prepared venv, force-reinstalling..."
@@ -55,6 +55,11 @@ fi
 if ! python -c "import zhon.hanzi" 2>/dev/null; then
   echo "zhon missing from prepared venv, installing pinned dependency..."
   uv pip install --force-reinstall --no-deps --no-cache zhon==2.1.1
+fi
+
+if ! python -c "import nemo_text_processing" 2>/dev/null; then
+  echo "nemo_text_processing missing from prepared venv, installing pinned dependency..."
+  uv pip install --force-reinstall --no-deps --no-cache nemo_text_processing==1.2.0
 fi
 
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
