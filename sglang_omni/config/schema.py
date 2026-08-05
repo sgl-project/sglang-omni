@@ -212,6 +212,44 @@ class StageConfig(BaseModel):
             self.tp_size = self.parallelism.tp
 
 
+class AudioChunkingConfig(BaseModel):
+    """Per-model long-audio policy for the transcription endpoint.
+
+    Each ASR model declares the longest clip it can take in one request; anything
+    longer gets split into non-overlapping chunks that are transcribed
+    independently.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # Some models can't correctly transcribe an isolated chunk (e.g. diarization needs to track speakers across the whole
+    # recording), so we leave the default value of `allow_audio_chunking` = False.
+    allow_audio_chunking: bool = False
+    # Longest clip(chunk length) sent to the engine in one request
+    # Bounded by the model's context: for exp Qwen3-ASR spends 13 tokens per
+    # audio second, so its structural ceiling is ~115s.
+    # prompt = 13T + 15; ctx_Len = 1500 + max_new_tokens + 8; prompt + max_new_tokens <= ctx_len - 1
+    # T <= 114.8s
+    # TODO: ^ need polish
+    max_audio_clip_s: float = Field(default=60.0, gt=0)
+
+    max_total_audio_s: float | None = Field(default=3600.0, gt=0)
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if (
+            self.max_total_audio_s is not None
+            and self.max_total_audio_s < self.max_audio_clip_s
+        ):
+            raise ValueError(
+                f"max_total_audio_s={self.max_total_audio_s} must be at least "
+                f"max_audio_clip_s={self.max_audio_clip_s}"
+            )
+
+    def chunk_samples(self, sample_rate: int) -> int:
+        """Chunk length in samples, at least one sample."""
+        return max(int(self.max_audio_clip_s * sample_rate), 1)
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
