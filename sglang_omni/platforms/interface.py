@@ -187,6 +187,7 @@ class OmniPlatform(DeviceMixin):
         return {env_var: str(selector)}
 
     def initialize_worker(self) -> None:
+        # TODO: not used right now. Refactor into this method for device initialization
         pass
 
     def get_available_memory(self, device_id: int = 0) -> tuple[int, int]:

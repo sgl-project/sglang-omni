@@ -158,6 +158,7 @@ def _build_stage_groups(
                     process_name=process_plan.tp_stage_to_processes[stage_cfg.name][
                         spec.tp_rank
                     ],
+                    platform_spec=platform_spec,
                     stage_specs=[spec],
                 )
                 for spec in specs
@@ -172,6 +173,7 @@ def _build_stage_groups(
                 [
                     StageWorkerProcessSpec(
                         process_name=group.name,
+                        platform_spec=platform_spec,
                         stage_specs=[
                             single_stage_specs[stage_name]
                             for stage_name in group.stage_names
@@ -181,14 +183,6 @@ def _build_stage_groups(
             )
         )
     groups.extend(tp_groups)
-    for group in groups:
-        for stage_spec in group.specs:
-            device = (
-                "cpu"
-                if stage_spec.gpu_id is None
-                else f"{platform_spec.device_type}:{stage_spec.gpu_id}"
-            )
-            stage_spec.factory_arg_defaults.setdefault("device", device)
     _attach_process_memory_fraction_defaults(groups)
 
     return groups
