@@ -68,18 +68,6 @@ def _silence(num_samples: int) -> np.ndarray:
     return np.zeros(num_samples, dtype=np.float32)
 
 
-class _AlwaysZeroSplitter(RMSSplitter):
-    """A split point that never advances, walking the cursor back to zero.
-
-    The failure this guards against: a search that returns its initial value
-    instead of a real index, which without the clamp in ``split`` would loop
-    forever.
-    """
-
-    def _find_split_point(self, waveform, search_start, search_end):
-        return 0
-
-
 def test_pipeline_config_leaves_chunking_off_by_default() -> None:
     from sglang_omni.config import PipelineConfig
 
@@ -161,6 +149,7 @@ def test_total_limit_below_clip_limit_is_rejected_at_config_time() -> None:
         ("max_audio_clip_s", 0.0),
         ("max_audio_clip_s", -1.0),
         ("max_total_audio_s", 0.0),
+        ("min_tail_s", -0.5),
     ],
 )
 def test_out_of_range_config_values_are_rejected(field: str, value: float) -> None:
@@ -243,26 +232,14 @@ def test_single_sample_chunks_terminate() -> None:
     assert spans == [(index, index + 1) for index in range(10)]
 
 
-def test_out_of_range_split_point_is_clamped_and_logged(caplog) -> None:
-    waveform = _speech(40_000)
-    splitter = _AlwaysZeroSplitter(search_window_s=0.25)
-
-    with caplog.at_level("WARNING", logger="sglang_omni.serve.transcription_chunking"):
-        spans = splitter.split(waveform, _SAMPLE_RATE, _SAMPLE_RATE)
-
-    validate_spans(spans, 40_000, _SAMPLE_RATE)
-    assert "outside" in caplog.text
-
-
 @pytest.mark.parametrize(
     "splitter",
     [
         RMSSplitter(),
         RMSSplitter(search_window_s=0.0),
         RMSSplitter(search_window_s=0.25, energy_window_samples=1),
-        _AlwaysZeroSplitter(search_window_s=0.25),
     ],
-    ids=["rms-default", "rms-no-search", "rms-tiny-window", "always-zero"],
+    ids=["rms-default", "rms-no-search", "rms-tiny-window"],
 )
 @pytest.mark.parametrize(
     "waveform",
@@ -305,17 +282,31 @@ def test_validate_spans_rejects_broken_output(spans: list[Span], message: str) -
     [_SAMPLE_RATE + 1, _SAMPLE_RATE + 800, 2 * _SAMPLE_RATE - 1],
     ids=["one-sample-tail", "half-window-tail", "near-full-tail"],
 )
-def test_short_final_chunk_still_satisfies_the_contract(total_samples: int) -> None:
-    # Audio that ends just past a boundary leaves a very short last chunk. A
-    # future "merge the stub into the previous chunk" tweak is the likeliest
-    # way to break rule 2, so pin the behaviour now.
+def test_sub_minimum_tail_is_avoided_by_shifting_the_cut(total_samples: int) -> None:
+    # Audio ending just past a boundary would leave a stub final chunk; a
+    # 0.1s clip transcribes to garbage. The splitter pulls the previous cut
+    # earlier instead, so the tail is worth transcribing and every span
+    # still fits the limit.
     waveform = _speech(total_samples)
 
     spans = RMSSplitter(search_window_s=0.25).split(
-        waveform, _SAMPLE_RATE, _SAMPLE_RATE
+        waveform, _SAMPLE_RATE, _SAMPLE_RATE, min_tail_s=0.5
     )
 
     validate_spans(spans, total_samples, _SAMPLE_RATE)
+    min_tail = _SAMPLE_RATE // 2  # 0.5s
+    last_start, last_end = spans[-1]
+    assert last_end - last_start >= min_tail
+
+
+def test_min_tail_shift_skips_degenerate_chunk_sizes() -> None:
+    # When the chunk limit itself is below the tail minimum, shifting would
+    # produce over-limit spans; the splitter leaves the cuts alone instead.
+    waveform = _speech(10)
+
+    spans = RMSSplitter().split(waveform, _SAMPLE_RATE, 1, min_tail_s=0.5)
+
+    assert spans == [(index, index + 1) for index in range(10)]
 
 
 _PLAN_CONFIG = AudioChunkingConfig(allow_audio_chunking=True, max_audio_clip_s=1.0)

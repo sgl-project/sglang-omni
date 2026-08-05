@@ -234,6 +234,9 @@ class AudioChunkingConfig(BaseModel):
 
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)
 
+    # Shortest final chunk worth transcribing.
+    min_tail_s: float = Field(default=0.5, ge=0)
+
     # Note (Jeffro): How many chunks of one HTTP request may run in the engine at once.
     # This is a fairness cap: to avoid a single long
     # upload grabs every batch slot and queues out everyone else's requests.

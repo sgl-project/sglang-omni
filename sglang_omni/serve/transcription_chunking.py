@@ -74,9 +74,18 @@ class RMSSplitter:
         self.energy_window_samples = int(energy_window_samples)
 
     def split(
-        self, waveform: np.ndarray, sample_rate: int, max_chunk_samples: int
+        self,
+        waveform: np.ndarray,
+        sample_rate: int,
+        max_chunk_samples: int,
+        *,
+        min_tail_s: float = 0.0,
     ) -> list[Span]:
-        """Split ``waveform`` into the spans that become chunk requests."""
+        """Split ``waveform`` into the spans that become chunk requests.
+
+        ``min_tail_s`` is the model's floor for a worth-transcribing final
+        chunk (AudioChunkingConfig.min_tail_s); 0 disables the guard.
+        """
         total_samples = int(waveform.shape[-1])
         if total_samples <= 0:
             return []
@@ -96,21 +105,16 @@ class RMSSplitter:
             # and never back to `start`.
             search_start = max(boundary - search_samples, start + 1)
             cut = self._find_split_point(waveform, search_start, boundary)
-            clamped = min(max(int(cut), search_start), boundary)
-            if clamped != cut:
-                # An out-of-range split point would either loop forever or
-                # emit oversized chunks; repair it, but loudly.
-                logger.warning(
-                    "[transcription] %s returned split point %s outside "
-                    "[%s, %s]; clamped to %s",
-                    type(self).__name__,
-                    cut,
-                    search_start,
-                    boundary,
-                    clamped,
-                )
-            spans.append((start, clamped))
-            start = clamped
+            tail_samples = total_samples - cut
+            min_tail = int(min_tail_s * sample_rate)
+            if 0 < tail_samples < min_tail <= chunk_samples:
+                # This cut would leave a sub-minimum final chunk. Pull the
+                # cut earlier so the tail is worth transcribing; shrinking
+                # the current chunk keeps every span within max_chunk_samples
+                # (merging the tail forward instead would not).
+                cut = max(total_samples - min_tail, start + 1)
+            spans.append((start, cut))
+            start = cut
         return spans
 
     def _find_split_point(
@@ -213,7 +217,9 @@ def plan_audio_chunks(
         )
         return None
 
-    spans = (splitter or RMSSplitter()).split(waveform, sample_rate, max_chunk_samples)
+    spans = (splitter or RMSSplitter()).split(
+        waveform, sample_rate, max_chunk_samples, min_tail_s=config.min_tail_s
+    )
     return ChunkPlan(
         sample_rate=sample_rate,
         duration_s=total_samples / sample_rate,
