@@ -115,10 +115,19 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     ]
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    max_concurrency: int = 8,
+) -> SimpleScheduler:
     del model_path
+    # note (luojiaxuan): preprocessing must admit several requests at once. A
+    # serial executor keeps at most one reference-code request in flight, so
+    # the speech-tokenizer batcher would only ever see batches of one; the
+    # default matches the batcher's max_batch_size.
     return SimpleScheduler(
         preprocess_qwen3_tts_payload,
+        max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
     )
 
@@ -166,6 +175,7 @@ def create_vocoder_executor(
     initial_batch_wait_ms: int = 2,
     followup_max_batch_size: int = 8,
     followup_batch_wait_ms: int = 1,
+    initial_cuda_graph: bool = True,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
@@ -190,4 +200,5 @@ def create_vocoder_executor(
         initial_batch_wait_ms=initial_batch_wait_ms,
         followup_max_batch_size=followup_max_batch_size,
         followup_batch_wait_ms=followup_batch_wait_ms,
+        initial_cuda_graph=initial_cuda_graph,
     )
