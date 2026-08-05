@@ -244,7 +244,9 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         engine_factory, "build_generation_batch_overrides", lambda **k: {}
     )
     monkeypatch.setattr(
-        sglang_backend, "build_sglang_server_args", lambda *a, **k: object()
+        sglang_backend,
+        "build_sglang_server_args",
+        lambda *a, **k: SimpleNamespace(context_length=4096),
     )
     monkeypatch.setattr(
         engine_factory, "validate_generation_batch_policy", lambda **k: None
@@ -294,7 +296,7 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert calls["encoder_services"][0][1] == 2
 
 
-def test_factory_context_length_override_reaches_server_args(
+def test_factory_context_length_override_uses_final_server_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from types import SimpleNamespace
@@ -317,11 +319,12 @@ def test_factory_context_length_override_reaches_server_args(
 
     server_args_kwargs: dict[str, object] = {}
     adapter_kwargs: dict[str, object] = {}
+    final_context_length = 8193
 
     def capture_server_args(model_path, **kwargs):
         del model_path
         server_args_kwargs.update(kwargs)
-        return SimpleNamespace(context_length=kwargs["context_length"])
+        return SimpleNamespace(context_length=final_context_length)
 
     def capture_adapters(**kwargs):
         adapter_kwargs.update(kwargs)
@@ -340,7 +343,7 @@ def test_factory_context_length_override_reaches_server_args(
     )
 
     assert server_args_kwargs["context_length"] == 8192
-    assert adapter_kwargs["context_length"] == 8192
+    assert adapter_kwargs["context_length"] == final_context_length
 
 
 def _repo_not_found(url: str) -> RepositoryNotFoundError:

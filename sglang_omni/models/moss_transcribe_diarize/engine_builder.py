@@ -99,6 +99,11 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
 
+    def customize_server_args(self, server_args: Any) -> None:
+        # note (Dayuxiaoshui): adapters must use the context length finalized by
+        # ServerArgs, matching the pre-refactor factory behavior.
+        self.context_length = int(server_args.context_length)
+
     def setup_model_resources(
         self,
         model: Any,
