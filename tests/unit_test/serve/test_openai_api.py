@@ -296,17 +296,31 @@ class SuccessfulTranscriptionClient:
 
 
 class ChunkRecordingTranscriptionClient:
-    """Records (request_id, request) pairs; can fail at one chunk index."""
+    """Records (request_id, request) pairs; can fail one chunk by index.
+
+    Texts derive from the chunk index parsed out of the request id, so the
+    "joined in span order" assertions hold however chunks are scheduled.
+    """
 
     def __init__(
-        self, *, fail_at: int | None = None, fail_message: str = "cuda out of memory"
+        self,
+        *,
+        fail_chunk: int | None = None,
+        fail_message: str = "cuda out of memory",
     ) -> None:
         self.requests: list[tuple[str, GenerateRequest]] = []
-        self.fail_at = fail_at
+        self.aborted: list[str] = []
+        self.fail_chunk = fail_chunk
         self.fail_message = fail_message
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
+
+    @staticmethod
+    def _chunk_index(request_id: str) -> int | None:
+        if "-chunk-" not in request_id:
+            return None
+        return int(request_id.rsplit("-chunk-", 1)[-1])
 
     async def completion(
         self,
@@ -319,11 +333,17 @@ class ChunkRecordingTranscriptionClient:
         from sglang_omni.client.types import CompletionResult
 
         del audio_format
-        index = len(self.requests)
+        arrival = len(self.requests)
         self.requests.append((request_id, request))
-        if self.fail_at is not None and index == self.fail_at:
+        index = self._chunk_index(request_id)
+        if index is None:
+            index = arrival
+        if self.fail_chunk is not None and index == self.fail_chunk:
             raise ClientError(self.fail_message)
         return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
 
 
 class FailingTranscriptionClient:
@@ -1416,20 +1436,6 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
     assert omni_req.params["max_new_tokens"] == 4096
 
 
-def test_create_app_stores_the_audio_chunking_policy() -> None:
-    from sglang_omni.config import AudioChunkingConfig
-
-    # No audio_chunking argument -> app.state still gets a config object
-    app = create_app(SuccessfulTranscriptionClient(), model_name="asr")
-    assert app.state.audio_chunking.allow_audio_chunking is False
-
-    declared = AudioChunkingConfig(allow_audio_chunking=True, max_audio_clip_s=60.0)
-    app = create_app(
-        SuccessfulTranscriptionClient(), model_name="asr", audio_chunking=declared
-    )
-    assert app.state.audio_chunking is declared
-
-
 def _wav_upload(duration_s: float, sample_rate: int = 16000) -> bytes:
     """Loud float32 WAV of the given duration."""
     import numpy as np
@@ -1473,15 +1479,16 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.status_code == 200
     # Chunk count depends on where the energy search cuts; the contract is
     # covered by the splitter tests. Here: more than one chunk, each sent as
-    # its own WAV request with an indexed request id.
+    # its own WAV request with an indexed request id (arrival order is
+    # scheduling-dependent now that chunks run concurrently).
     count = len(transcription_client.requests)
     assert count > 1
-    for index, (request_id, request) in enumerate(transcription_client.requests):
-        assert request_id.endswith(f"-chunk-{index}")
-        chunk_bytes = request.prompt["audio_bytes"]
-        assert chunk_bytes[:4] == b"RIFF"
+    seen_ids = {request_id for request_id, _ in transcription_client.requests}
+    assert {int(rid.rsplit("-chunk-", 1)[-1]) for rid in seen_ids} == set(range(count))
+    for _, request in transcription_client.requests:
+        assert request.prompt["audio_bytes"][:4] == b"RIFF"
         assert request.prompt["content_type"] == "audio/wav"
-    # Chunk texts come back in span order.
+    # Chunk texts are assembled in span order regardless of completion order.
     expected_text = " ".join(f"part{index}" for index in range(count))
     assert response.json()["text"] == expected_text
     # usage reports the whole upload, not one chunk.
@@ -1489,7 +1496,7 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
 
 
 def test_chunk_failure_fails_the_whole_request() -> None:
-    transcription_client = ChunkRecordingTranscriptionClient(fail_at=1)
+    transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=1)
     client = _chunking_test_client(transcription_client)
 
     response = client.post(
@@ -1502,13 +1509,12 @@ def test_chunk_failure_fails_the_whole_request() -> None:
     assert response.status_code == 500
     assert "chunk 1" in response.json()["detail"]
     assert "cuda out of memory" in response.json()["detail"]
-    # The failure stopped the serial loop: chunk 2 was never submitted.
-    assert len(transcription_client.requests) == 2
 
 
 def test_chunk_bad_request_failure_maps_to_400() -> None:
     transcription_client = ChunkRecordingTranscriptionClient(
-        fail_at=0, fail_message="Requested audio is longer than the model's context length"
+        fail_chunk=0,
+        fail_message="Requested audio is longer than the model's context length",
     )
     client = _chunking_test_client(transcription_client)
 
@@ -1572,6 +1578,216 @@ def test_short_audio_with_chunking_enabled_stays_one_request() -> None:
     assert response.status_code == 200
     assert len(transcription_client.requests) == 1
     assert transcription_client.requests[0][1].prompt["audio_bytes"] == upload
+
+
+def _tiny_plan(num_chunks: int):
+    import numpy as np
+
+    from sglang_omni.serve.transcription_chunking import ChunkPlan, ChunkSpan
+
+    chunk_samples = 1600
+    spans = [
+        ChunkSpan(
+            index=i,
+            start_sample=i * chunk_samples,
+            end_sample=(i + 1) * chunk_samples,
+            start_s=i * 0.1,
+            end_s=(i + 1) * 0.1,
+        )
+        for i in range(num_chunks)
+    ]
+    return ChunkPlan(
+        sample_rate=16000,
+        duration_s=num_chunks * 0.1,
+        spans=spans,
+        waveform=np.zeros(num_chunks * chunk_samples, dtype=np.float32),
+    )
+
+
+def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
+    from sglang_omni.serve.openai_api import _transcribe_audio_chunks
+
+    return asyncio.wait_for(
+        _transcribe_audio_chunks(
+            client,
+            plan,
+            request_id="req",
+            model="asr",
+            filename=None,
+            language=None,
+            prompt=None,
+            temperature=None,
+            max_new_tokens=None,
+            max_concurrent=max_concurrent,
+        ),
+        timeout=10.0,
+    )
+
+
+def test_chunks_run_concurrently() -> None:
+    class BarrierClient:
+        """completion() blocks until all expected chunks have arrived.
+
+        A serial implementation deadlocks here (chunk 0 waits forever for
+        peers that are never submitted); only a concurrent one passes.
+        """
+
+        def __init__(self, expected: int) -> None:
+            self.expected = expected
+            self.active = 0
+            self.max_active = 0
+            self.all_in = asyncio.Event()
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            if self.active >= self.expected:
+                self.all_in.set()
+            await self.all_in.wait()
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        barrier_client = BarrierClient(expected=3)
+        text = await _run_chunks(barrier_client, _tiny_plan(3), max_concurrent=3)
+        assert text == "part0 part1 part2"
+        assert barrier_client.max_active == 3
+
+    asyncio.run(scenario())
+
+
+def test_chunk_concurrency_respects_the_limit() -> None:
+    class CountingClient:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        counting_client = CountingClient()
+        text = await _run_chunks(counting_client, _tiny_plan(6), max_concurrent=2)
+        assert text == " ".join(f"part{i}" for i in range(6))
+        assert counting_client.max_active <= 2
+
+    asyncio.run(scenario())
+
+
+def test_chunk_texts_join_in_span_order_not_completion_order() -> None:
+    class ReversedLatencyClient:
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            index = int(request_id.rsplit("-chunk-", 1)[-1])
+            # Later chunks finish first.
+            await asyncio.sleep(0.03 * (3 - index))
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        text = await _run_chunks(ReversedLatencyClient(), _tiny_plan(3), max_concurrent=3)
+        assert text == "part0 part1 part2"
+
+    asyncio.run(scenario())
+
+
+def test_chunk_failure_aborts_the_chunks_still_running() -> None:
+    class OneFailsOthersHangClient:
+        def __init__(self) -> None:
+            self.aborted: list[str] = []
+            self.hung = asyncio.Event()
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client import ClientError
+
+            index = int(request_id.rsplit("-chunk-", 1)[-1])
+            if index == 1:
+                # Let the others reach their await first.
+                await asyncio.sleep(0.01)
+                raise ClientError("cuda out of memory")
+            self.hung.set()
+            await asyncio.Future()  # hangs until cancelled
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    async def scenario() -> None:
+        hang_client = OneFailsOthersHangClient()
+        from sglang_omni.client import ClientError
+
+        with pytest.raises(ClientError, match="chunk 1"):
+            await _run_chunks(hang_client, _tiny_plan(3), max_concurrent=3)
+        # The hanging engine requests were aborted by id.
+        assert sorted(hang_client.aborted) == ["req-chunk-0", "req-chunk-2"]
+
+    asyncio.run(scenario())
+
+
+def test_client_disconnect_aborts_all_running_chunks() -> None:
+    from sglang_omni.serve.openai_api import (
+        _await_transcription_with_disconnect_abort,
+        _transcribe_audio_chunks,
+    )
+
+    class HangingClient:
+        def __init__(self, expected: int) -> None:
+            self.expected = expected
+            self.arrived = 0
+            self.all_started = asyncio.Event()
+            self.aborted: list[str] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            self.arrived += 1
+            if self.arrived >= self.expected:
+                self.all_started.set()
+            await asyncio.Future()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    class DisconnectingRequest:
+        """Reports disconnected only once every chunk is in flight."""
+
+        def __init__(self, all_started: asyncio.Event) -> None:
+            self.all_started = all_started
+
+        async def is_disconnected(self) -> bool:
+            return self.all_started.is_set()
+
+    async def scenario() -> None:
+        hanging_client = HangingClient(expected=2)
+        work = _transcribe_audio_chunks(
+            hanging_client,
+            _tiny_plan(2),
+            request_id="req",
+            model="asr",
+            filename=None,
+            language=None,
+            prompt=None,
+            temperature=None,
+            max_new_tokens=None,
+            max_concurrent=2,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(
+                _await_transcription_with_disconnect_abort(
+                    DisconnectingRequest(hanging_client.all_started), work
+                ),
+                timeout=10.0,
+            )
+        assert sorted(hanging_client.aborted) == ["req-chunk-0", "req-chunk-1"]
+
+    asyncio.run(scenario())
 
 
 def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
