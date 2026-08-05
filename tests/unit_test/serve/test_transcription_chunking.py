@@ -80,6 +80,22 @@ class _AlwaysZeroSplitter(RMSSplitter):
         return 0
 
 
+def test_pipeline_config_leaves_chunking_off_by_default() -> None:
+    from sglang_omni.config import PipelineConfig
+
+    assert PipelineConfig.audio_chunking.allow_audio_chunking is False
+
+
+def test_qwen3_asr_pipeline_declares_chunking() -> None:
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+
+    declared = Qwen3ASRPipelineConfig.audio_chunking
+    assert declared.allow_audio_chunking is True
+    # 60s keeps ~2x margin under the ~115s context ceiling (13 tokens per
+    # audio second against a 1500-token encoder budget).
+    assert declared.max_audio_clip_s == 60.0
+
+
 def test_disabled_config_never_chunks() -> None:
     config = AudioChunkingConfig(max_audio_clip_s=60.0)
 
