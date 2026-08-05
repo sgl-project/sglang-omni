@@ -44,14 +44,27 @@ By integrating S2's Dual-AR backbone into SGLang's paged-attention engine, we in
 
 - **Paged KV cache** — SGLang manages KV cache for the Slow AR path, enabling efficient memory usage and high concurrency.
 - **Radix prefix caching** — Shared system prompt and reference audio prefixes are cached across requests, keeping TTFT (~18ms) and Time-to-First-Audio (~140ms) consistently low.
-- **CUDA Graph dual-cover of Slow AR and Fast AR** — The 9-step codebook loop is covered with CUDA graphs. Details at [Revisiting CUDA Graph: Core Mechanisms, Multi-Graph Memory Sharing, and Unified Coverage for Dual AR Models](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/torch/cuda-graph/readme-2-en.md).
-- **FlashAttention 3** — Forced FA3 backend to match training-time attention numerics, avoiding early-EOS divergence from flashinfer.
+- **Decode CUDA Graph coverage of Slow AR and Fast AR** — Bounded decode graph capture and replay have been validated on SM89 and SM120 for batch sizes 1, 2, and 4 with `torch.compile` disabled. FlashInfer-backed SM89/SM100/SM120 profiles therefore default to uncompiled Fast-AR layers while retaining CUDA Graph capture; prefill graphs, larger batches, and CUDA Graph execution with `torch.compile` remain unvalidated. SM90 retains the existing compile default. Details on the dual-AR graph design are available in [Revisiting CUDA Graph: Core Mechanisms, Multi-Graph Memory Sharing, and Unified Coverage for Dual AR Models](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/torch/cuda-graph/readme-2-en.md).
+- **Architecture-aware attention** — S2-Pro selects FA3 on SM90 and FlashInfer on SM89, SM100, and SM120 so neither attention path enters an unsupported kernel.
+
+### Attention Backend Policy
+
+S2-Pro has separate attention implementations for the SGLang-hosted Slow-AR path and the Fast-AR decoder's dense NHD KV cache:
+
+| Compute capability | Slow-AR | Fast-AR KV cache |
+|---|---|---|
+| SM89 | FlashInfer | FlashInfer |
+| SM90 | FA3 | FA3 |
+| SM100 | FlashInfer | FlashInfer |
+| SM120 | FlashInfer | FlashInfer |
+
+An explicit `attention_backend` setting overrides automatic selection only for Slow-AR. Fast-AR uses its own architecture policy because it dispatches a separate KV-cache kernel. Do not force FA3 on SM89, SM100, or SM120: FA3 has no compatible S2-Pro kernel on those architectures. Unsupported compute capabilities fail at startup with an actionable error.
 
 ## Future Optimization
 
 To further improve throughput and latency in the future:
 
-- **CUDA Graphs while torch.compile enabled.** The current implementation uses torch.compile on the Fast AR codebook loop (achieving 5x over eager), but does not capture CUDA graphs for the Slow AR path. Enabling CUDA graphs requires resolving numerical divergence from deterministic-mode constraints and adapting SGLang's graph capture to S2's interleaved VQ embedding injection, involving significant engineering that we leave for a future release.
+- **Validate CUDA Graphs with `torch.compile` enabled.** Decode CUDA Graph capture and replay are validated for batch sizes 1, 2, and 4 with `torch.compile` disabled. Their correctness, memory usage, and numerical behavior when `torch.compile` is enabled still require separate validation.
 
 - **Batched Fast AR head processing.** Currently, the Fast AR codebook decoding loop runs sequentially per request. Batching these steps across concurrent requests would improve GPU utilization at higher batch sizes potentially improving throughput.
 
@@ -75,8 +88,8 @@ def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             )
 ```
 
-### Attention Backend Divergence Causing Early Stopping
+### Historical Attention Backend Divergence Causing Early Stopping
 
-SGLang defaults to flashinfer for attention, but S2 was trained with FlashAttention. When future engineering meet early EOS token issue, this could suggest the fix.
+Historically, SGLang defaulted to FlashInfer for attention while S2 was trained with FlashAttention, and early EOS was observed during development. This observation was not a controlled or quality-qualified comparison and is retained only as historical debugging context.
 
 </details>

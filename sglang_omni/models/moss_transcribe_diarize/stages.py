@@ -144,6 +144,12 @@ def create_sglang_moss_transcribe_diarize_executor(
         dtype=dtype,
     )
 
+    # note (db-ol): an operator context_length entry in server_args_overrides
+    # must win over the model config default, and leaving the key in overrides
+    # would collide with the explicit keyword below.
+    resolved_context_length = int(
+        overrides.pop("context_length", resolved_context_length)
+    )
     server_args = build_sglang_server_args(
         model_path,
         context_length=resolved_context_length,
@@ -199,6 +205,10 @@ def create_sglang_moss_transcribe_diarize_executor(
         processor=processor,
         tokenizer=tokenizer,
         max_new_tokens=resolved_max_new_tokens,
+        # note (db-ol): the builder limit must match what the scheduler
+        # actually enforces, so read the final value back from server_args.
+        context_length=int(server_args.context_length),
+        duration_scaled_default=max_new_tokens is None,
         audio_encoder_service=audio_encoder_service,
     )
     stream_output_builder = make_moss_transcribe_diarize_stream_output_builder(

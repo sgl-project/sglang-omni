@@ -395,6 +395,9 @@ async def _run_server(
             ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
             enable_realtime=enable_realtime,
+            supports_realtime_audio_output=(
+                type(pipeline_config).code2wav_stage() is not None
+            ),
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

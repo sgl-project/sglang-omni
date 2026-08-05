@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import contextlib
 import gc
 import threading
@@ -132,6 +131,24 @@ def test_close_stops_worker() -> None:
     service.close()
 
     assert not service._thread.is_alive()
+
+
+def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(FunASRPreLMEncoderService)
+    service._stream = object()
+
+    def fail_stream(_stream):  # noqa: ANN001, ANN202
+        raise RuntimeError("stream context failed")
+
+    monkeypatch.setattr(torch.cuda, "stream", fail_stream)
+
+    assert not torch.is_inference_mode_enabled()
+    with pytest.raises(RuntimeError, match="stream context failed"):
+        with service._batch_context():
+            pass
+    assert not torch.is_inference_mode_enabled()
 
 
 def test_cache_hit_skips_reencode() -> None:
@@ -329,7 +346,7 @@ class _EncoderIntermediate:
     pass
 
 
-def test_encode_batch_commits_item_state_only_after_stream_success(
+def test_execute_batch_commits_item_state_only_after_stream_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
@@ -347,7 +364,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     features = [item.feature for item in items]
 
     with pytest.raises(torch.OutOfMemoryError, match="test encoder sync OOM"):
-        service._encode_batch(items)
+        service._execute_batch(items)
 
     for item, feature in zip(items, features):
         assert item.feature is feature
@@ -413,20 +430,17 @@ def test_non_oom_failure_is_detached_before_future_and_logging(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = _make_service()
-    service.close()
     retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
 
-    def raise_non_oom(_items: list[object]) -> list[torch.Tensor]:
+    def raise_non_oom(_items: list[object]) -> torch.Tensor:
         intermediate = _EncoderIntermediate()
         retained_intermediates.append(weakref.ref(intermediate))
         raise ValueError("unexpected encoder shape")
 
-    monkeypatch.setattr(service, "_encode_batch", raise_non_oom)
-    future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+    monkeypatch.setattr(service, "encode_batch", raise_non_oom)
+    future = service._submit(object())
 
-    service._process_batch([(object(), future, time.perf_counter())])
-
-    failure = future.exception()
+    failure = future.exception(timeout=2)
     assert isinstance(failure, ValueError)
     assert failure.__traceback__ is None
     assert failure.__cause__ is None
@@ -448,21 +462,21 @@ def test_batched_oom_recovers_before_per_item_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _make_service()
-    service.close()
-    calls: list[list[object]] = []
+    service._max_batch_wait_s = 1.0
+    calls: list[list[SimpleNamespace]] = []
     cleanup_steps: list[str] = []
     poisoned = False
-    items = [object(), object()]
+    items = [_item(None, 1), _item(None, 1)]
 
-    def encode_batch(batch: list[object]) -> list[torch.Tensor]:
+    def encode_batch(batch: list[SimpleNamespace]) -> torch.Tensor:
         nonlocal poisoned
-        calls.append(batch)
+        calls.append(list(batch))
         if len(batch) > 1:
             poisoned = True
             raise torch.OutOfMemoryError("aggregate batch is too large")
         if poisoned:
             raise RuntimeError("allocator remained poisoned after OOM")
-        return [torch.ones(1, _HIDDEN_SIZE)]
+        return torch.ones(1, _HIDDEN_SIZE)
 
     def recover(exc: Exception) -> None:
         nonlocal poisoned
@@ -470,21 +484,17 @@ def test_batched_oom_recovers_before_per_item_fallback(
         cleanup_steps.append("recover")
         poisoned = False
 
-    monkeypatch.setattr(service, "_encode_batch", encode_batch)
+    monkeypatch.setattr(service, "encode_batch", encode_batch)
     monkeypatch.setattr(service, "_recover_after_failure", recover)
-    futures = [
-        concurrent.futures.Future[torch.Tensor](),
-        concurrent.futures.Future[torch.Tensor](),
-    ]
+    futures = [service._submit(item) for item in items]
+    results = [future.result(timeout=5) for future in futures]
 
-    service._process_batch(
-        [(item, future, time.perf_counter()) for item, future in zip(items, futures)]
-    )
-
-    assert all(
-        torch.equal(future.result(), torch.ones(1, _HIDDEN_SIZE)) for future in futures
-    )
-    assert calls == [items, [items[0]], [items[1]]]
+    assert all(torch.equal(result, torch.ones(1, _HIDDEN_SIZE)) for result in results)
+    assert [len(batch) for batch in calls] == [2, 1, 1]
+    assert calls[0][0] is items[0]
+    assert calls[0][1] is items[1]
+    assert calls[1][0] is items[0]
+    assert calls[2][0] is items[1]
     assert cleanup_steps == ["recover"]
     assert service.stats()["batches"] == 2
     assert service.stats()["items"] == 2

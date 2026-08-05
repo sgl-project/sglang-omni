@@ -58,6 +58,13 @@ def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
     assert signature.parameters["enable_torch_compile"].default is False
 
 
+def test_qwen3_asr_stage_default_enables_async_decode() -> None:
+    signature = inspect.signature(create_sglang_qwen3_asr_executor)
+
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 2
+
+
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
 
@@ -132,7 +139,13 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         _fake_create_infrastructure,
     )
 
-    qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
+    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        enable_async_decode=False,
+        async_decode_min_batch_size=4,
+    )
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert scheduler.enable_async_decode is False
+    assert scheduler.async_decode_min_batch_size == 4
