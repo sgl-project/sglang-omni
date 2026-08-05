@@ -45,6 +45,7 @@ setup_omni_env() {
     local log_path="$1"
     # shellcheck source=/dev/null
     source omni/bin/activate
+    export OMNI_CI_PYTHON="$(command -v python)"
     # shellcheck source=/dev/null
     source .github/scripts/ci_env.sh
     local env_msg
@@ -87,28 +88,28 @@ echo "WER sweep started — milestones here; full log: tail -f ${LOG}"
 setup_omni_env "${LOG}"
 
 run_one mmmu_talker_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py::test_mmmu_talker_wer -v -s
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py::test_mmmu_talker_wer -v -s
 
 run_one videomme_talker_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py::test_videomme_talker_wer -v -s
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py::test_videomme_talker_wer -v -s
 
 run_one videoamme_talker_tp2_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py::test_videoamme_talker_tp2_wer -v -s
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py::test_videoamme_talker_tp2_wer -v -s
 
 run_one mmsu_talker_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py::test_mmsu_talker_wer -v -s
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py::test_mmsu_talker_wer -v -s
 
 run_one qwen3_tts_wer "${LOG}" \
-    pytest tests/test_model/test_qwen3_omni_tts_ci.py::test_voice_cloning_wer -v -s
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_qwen3_omni_tts_ci.py::test_voice_cloning_wer -v -s
 
 log_and_echo "${LOG}" "===== QWEN3 WER SECTION FINISHED $(date -Is) ====="
 
 run_one tts_nonstream_wer "${LOG}" \
-    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-1-nonstream \
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-1-nonstream \
     -k "test_voice_cloning_non_streaming or test_voice_cloning_wer" -v -s
 
 run_one tts_stream_wer "${LOG}" \
-    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-2-stream \
+    "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-2-stream \
     -k "test_voice_cloning_streaming or test_voice_cloning_streaming_wer" -v -s
 
 log_and_echo "${LOG}" "===== ALL WER CI FINISHED $(date -Is) ====="

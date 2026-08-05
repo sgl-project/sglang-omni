@@ -32,6 +32,7 @@ runs:
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
         # Keep downloaded wheels on the persistent /data/omni-ci mount.
         echo "UV_CACHE_DIR=/data/omni-ci/uv-cache" >> "${GITHUB_ENV}"
+        echo "OMNI_CI_PYTHON=${OMNI_CI_HOME}/${{ inputs.venv-name }}/bin/python" >> "${GITHUB_ENV}"
 
     - name: Restore cache
       shell: bash

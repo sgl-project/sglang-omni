@@ -40,27 +40,16 @@ uv venv --system-site-packages "${HOST}" -p /usr/bin/python3.12
 rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
+
+mapfile -t MISSING_REQUIREMENTS < <(
+  python "${SCRIPT_DIR}/omni_missing_dependencies.py" pyproject.toml
+)
+if [ "${#MISSING_REQUIREMENTS[@]}" -gt 0 ]; then
+  echo "Installing dependencies missing from the image:"
+  printf '  %s\n' "${MISSING_REQUIREMENTS[@]}"
+  python -m pip install "${MISSING_REQUIREMENTS[@]}"
+fi
 uv pip install --no-deps -e .
-
-if ! python -c "import av" 2>/dev/null; then
-  echo "PyAV native libraries corrupted in prepared venv, force-reinstalling..."
-  uv pip install --force-reinstall --no-deps --no-cache av
-fi
-
-if ! python -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-  echo "openai-whisper missing from prepared venv, installing pinned dependency..."
-  uv pip install --force-reinstall --no-deps --no-cache openai-whisper==20250625
-fi
-
-if ! python -c "import zhon.hanzi" 2>/dev/null; then
-  echo "zhon missing from prepared venv, installing pinned dependency..."
-  uv pip install --force-reinstall --no-deps --no-cache zhon==2.1.1
-fi
-
-if ! python -c "import nemo_text_processing" 2>/dev/null; then
-  echo "nemo_text_processing missing from prepared venv, installing pinned dependency..."
-  uv pip install --force-reinstall --no-deps --no-cache nemo_text_processing==1.2.0
-fi
 
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
   exit 1

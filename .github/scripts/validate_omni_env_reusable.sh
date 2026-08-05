@@ -59,6 +59,10 @@ then
   exit 1
 fi
 
+if ! "${PYTHON}" "${SCRIPT_DIR}/omni_missing_dependencies.py" --check pyproject.toml; then
+  exit 1
+fi
+
 if [ -f "${DEPS_HASH_FILE}" ]; then
   STORED_HASH="$(tr -d '[:space:]' < "${DEPS_HASH_FILE}")"
   if [ "${STORED_HASH}" != "${DEPS_HASH}" ]; then

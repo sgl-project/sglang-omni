@@ -321,7 +321,7 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_ci/test_tts_mps_dp2.py -v -s -x
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_ci/test_tts_mps_dp2.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
