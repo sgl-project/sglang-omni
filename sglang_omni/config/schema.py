@@ -235,6 +235,12 @@ class AudioChunkingConfig(BaseModel):
 
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)
 
+    # Note (Jeffro): How many chunks of one HTTP request may run in the engine at once.
+    # This is a fairness cap: to avoid a single long
+    # upload grabs every batch slot and queues out everyone else's requests.
+    # This is a pre-request cap.
+    max_concurrent_chunks: int = Field(default=8, ge=1)
+
     def model_post_init(self, __context: Any = None) -> None:
         if (
             self.max_total_audio_s is not None

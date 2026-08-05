@@ -48,6 +48,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from starlette.types import Receive, Scope, Send
+from tvm_ffi.core import String
 
 from sglang_omni.client import (
     Client,
@@ -118,6 +119,7 @@ from sglang_omni.serve.speech_ws import SpeechWebSocketSession
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
+    ChunkSpan,
     check_total_duration,
     join_transcript_parts,
     needs_chunking,
@@ -1735,16 +1737,20 @@ def _register_transcriptions(app: FastAPI) -> None:
         try:
             if plan is not None:
                 duration_s = plan.duration_s
-                text = await _transcribe_audio_chunks(
-                    client,
-                    plan,
-                    request_id=request_id,
-                    model=model or default_model,
-                    filename=file.filename,
-                    language=language,
-                    prompt=prompt,
-                    temperature=temperature,
-                    max_new_tokens=max_new_tokens,
+                text = await _await_transcription_with_disconnect_abort(
+                    request,
+                    _transcribe_audio_chunks(
+                        client,
+                        plan,
+                        request_id=request_id,
+                        model=model or default_model,
+                        filename=file.filename,
+                        language=language,
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_new_tokens=max_new_tokens,
+                        max_concurrent=chunking.max_concurrent_chunks,
+                    ),
                 )
             else:
                 gen_req = build_transcription_generate_request(
@@ -1885,51 +1891,105 @@ async def _transcribe_audio_chunks(
     prompt: str | None,
     temperature: float | None,
     max_new_tokens: int | None,
+    max_concurrent: int,
 ) -> str:
-    """Transcribe each chunk of a plan as its own engine request, in order.
+    """Transcribe the chunks of a plan as independent engine requests.
 
-    Current design:
-    1. Serial: chunk i+1 is only submitted once chunk i returned.
-    2. Any chunk failing fails the whole request -- returning a transcript
-       with a silent hole is the exact bug chunking exists to remove -- and
-       the error names the chunk and its time range so the failure is
-       diagnosable.
-    3. Chunk texts are joined by join_transcript_parts (a space only where
-       the script uses spaces).
+    Up to ``max_concurrent`` chunks run in the engine at once; ``asyncio.gather`` returns their texts in span order no
+    matter which finishes first.
 
-    TODO:
-    - Run up to N chunks concurrently (semaphore, N configurable); the engine
-      batches them, so a long upload finishes ~N times faster. Needs a raised
-      scheduler max_queued_requests to go with it.
-    - Abort all in-flight chunk requests when the client disconnects, instead
-      of letting the remaining chunks keep burning GPU.
+    Any chunk failing fails the whole request. The error names the chunk and its time range to make sure the failure is diagnosable.
     """
-    texts: list[str] = []
-    for span in plan.spans:
-        chunk_bytes = await asyncio.to_thread(plan.encode, span)
-        gen_req = build_transcription_generate_request(
-            audio_bytes=chunk_bytes,
-            filename=filename,
-            # Chunks are re-encoded WAV no matter what the upload was.
-            # (Nothing downstream reads this field; kept accurate anyway.)
-            content_type="audio/wav",
-            model=model,
-            language=language,
-            prompt=prompt,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-        )
-        try:
-            result = await client.completion(
-                gen_req, request_id=f"{request_id}-chunk-{span.index}"
+    semaphore = asyncio.Semaphore(max_concurrent)
+    in_flight: set[str] = set()
+
+    async def run_chunk(span: ChunkSpan) -> str:
+        async with semaphore:
+            # Encode inside the semaphore so at most max_concurrent chunk WAVs exist at a time.
+            chunk_bytes = await asyncio.to_thread(plan.encode, span)
+            gen_req = build_transcription_generate_request(
+                audio_bytes=chunk_bytes,
+                filename=filename,
+                # Chunks are re-encoded WAV no matter what the upload was.
+                # (Nothing downstream reads this field; just kept it anyway.)
+                content_type="audio/wav",
+                model=model,
+                language=language,
+                prompt=prompt,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
             )
-        except Exception as exc:
-            raise ClientError(
-                f"transcription failed for chunk {span.index} "
-                f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
-            ) from exc
-        texts.append(result.text)
+            chunk_request_id = f"{request_id}-chunk-{span.index}"
+            in_flight.add(chunk_request_id)
+            # A chunk leaves in_flight only when its engine request actually
+            # finished (returned or failed on its own). Local cancellation
+            # does NOT finish the engine request -- those ids must stay in
+            # the set so the cleanup below aborts them.
+            try:
+                result = await client.completion(
+                    gen_req, request_id=chunk_request_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                in_flight.discard(chunk_request_id)
+                raise ClientError(
+                    f"transcription failed for chunk {span.index} "
+                    f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
+                ) from exc
+            in_flight.discard(chunk_request_id)
+            return result.text
+
+    tasks = [asyncio.create_task(run_chunk(span)) for span in plan.spans]
+    try:
+        texts = await asyncio.gather(*tasks)
+    except BaseException:
+        # One chunk failed (or we were cancelled by a client disconnect).
+        # in_flight holds every chunk whose engine request has not finished,
+        # including chunks whose local task got cancelled above us.
+        pending_engine_requests = sorted(in_flight)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Cancelling the local task does not stop the engine; abort by id.
+        for chunk_request_id in pending_engine_requests:
+            try:
+                await client.abort(chunk_request_id)
+            except Exception:
+                logger.warning(
+                    "Failed to abort chunk request %s", chunk_request_id
+                )
+        raise
     return join_transcript_parts(texts)
+
+
+async def _await_transcription_with_disconnect_abort(
+    request: Request,
+    work: Awaitable[str],
+) -> str:
+    """Run chunked transcription while watching for client disconnect.
+
+    The non-stream handler has no response-owned disconnect watcher, so
+    without this a disconnected client would leave every chunk running to
+    completion. Cancelling the work task triggers its own cleanup path,
+    which aborts the in-flight engine requests.
+    """
+    work_task = asyncio.create_task(work)
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {work_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if work_task in done: # transcription completed first
+            return work_task.result()
+        work_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await work_task
+        raise asyncio.CancelledError
+    finally:
+        if not disconnect_task.done():
+            await _cancel_task_bounded(disconnect_task)
 
 
 def build_transcription_generate_request(
