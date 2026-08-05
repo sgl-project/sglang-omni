@@ -7,6 +7,7 @@ import collections
 import hashlib
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -129,6 +130,17 @@ class MossTTSPreprocessingContext:
 _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest] = (
     PreparedRequestQueue()
 )
+_CONTEXT_LIFECYCLE_LOCK = threading.Lock()
+
+
+def _close_moss_tts_preprocessing_context(
+    context: MossTTSPreprocessingContext | None,
+) -> None:
+    if context is None:
+        return
+    close = getattr(context.reference_encoder, "close", None)
+    if callable(close):
+        close()
 
 
 def set_moss_tts_preprocessing_context(
@@ -136,18 +148,26 @@ def set_moss_tts_preprocessing_context(
 ) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
-    _QUEUE.set_context(
-        MossTTSPreprocessingContext(
-            processor=processor,
-            reference_encoder=reference_encoder,
+    with _CONTEXT_LIFECYCLE_LOCK:
+        previous = _QUEUE.snapshot().context
+        _QUEUE.set_context(
+            MossTTSPreprocessingContext(
+                processor=processor,
+                reference_encoder=reference_encoder,
+            )
         )
-    )
+        if previous is not None and previous.reference_encoder is reference_encoder:
+            return
+        _close_moss_tts_preprocessing_context(previous)
 
 
 def clear_moss_tts_preprocessing_context() -> None:
     """Clear MOSS-TTS preprocessing globals, mainly for tests and reloads."""
 
-    _QUEUE.clear_context()
+    with _CONTEXT_LIFECYCLE_LOCK:
+        previous = _QUEUE.snapshot().context
+        _QUEUE.clear_context()
+        _close_moss_tts_preprocessing_context(previous)
 
 
 def cleanup_prepared_moss_tts_request(request_id: str) -> None:
