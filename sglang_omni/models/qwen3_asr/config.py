@@ -41,7 +41,13 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 32,
-                "max_new_tokens": 128,
+                # Note: Cap on generated tokens per request; generation just stops there, so
+                # a too-small cap silently drops the transcript tail. Speech produces
+                # ~5 output tokens per audio second: 128 only covered ~25s, and a 60s
+                # chunk needs ~300 -- 640 doubles that. Safe to raise: context_length
+                # is computed as 1500 + max_new_tokens + 8 (in stages.py), so it grows by
+                # the same amount and the audio budget is untouched.
+                "max_new_tokens": 640,
                 "request_build_max_workers": 2,
                 "request_build_max_pending": 16,
             },
