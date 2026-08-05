@@ -18,20 +18,9 @@ from sglang_omni.platforms.interface import (
     TransferPolicy,
 )
 
-_current_platform: OmniPlatform | None = None
-
 
 def resolve_current_platform(torch_module: Any = torch) -> OmniPlatform:
     return OmniPlatform.detect(torch_module)
-
-
-def __getattr__(name: str) -> OmniPlatform:
-    if name == "current_platform":
-        global _current_platform
-        if _current_platform is None:
-            _current_platform = OmniPlatform.detect()
-        return _current_platform
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
@@ -44,6 +33,5 @@ __all__ = [
     "PlatformEnum",
     "ResolvedPlatformSpec",
     "TransferPolicy",
-    "current_platform",
     "resolve_current_platform",
 ]

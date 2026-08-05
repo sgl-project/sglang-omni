@@ -40,6 +40,7 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -350,7 +351,9 @@ def test_higgs_tts_engine_enables_decode_graphs_with_eager_prefill(monkeypatch) 
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
 
-    stages.create_sglang_tts_engine_executor("bosonai/higgs-tts-3-4b")
+    stages.create_sglang_tts_engine_executor(
+        "bosonai/higgs-tts-3-4b", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert captured["checkpoint_dir"] == "bosonai/higgs-tts-3-4b"
     assert captured["context_length"] == 4096

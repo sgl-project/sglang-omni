@@ -14,6 +14,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_whisper_asr_config_uses_single_batched_stage() -> None:
@@ -104,7 +105,9 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         _fake_create_infrastructure,
     )
 
-    whisper_asr_stages.create_sglang_whisper_asr_executor("dummy")
+    whisper_asr_stages.create_sglang_whisper_asr_executor(
+        "dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert build_kwargs["cuda_graph_max_bs"] == 16
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]

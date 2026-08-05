@@ -10,6 +10,7 @@ from transformers import AutoConfig, AutoTokenizer, WhisperFeatureExtractor
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.arkasr.request_builders import make_arkasr_scheduler_adapters
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
 )
@@ -28,6 +29,7 @@ from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 def create_sglang_arkasr_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
@@ -75,6 +77,7 @@ def create_sglang_arkasr_executor(
     server_args = build_sglang_server_args(
         model_path,
         context_length=encoder_token_count + int(max_new_tokens) + 8,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(model_name="ARK-ASR", server_args=server_args)
@@ -90,6 +93,7 @@ def create_sglang_arkasr_executor(
     ) = create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         model_arch_override="ArkasrForConditionalGeneration",
     )
 

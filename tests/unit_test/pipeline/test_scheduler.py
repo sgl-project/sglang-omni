@@ -23,6 +23,7 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CPU_PLATFORM_SPEC
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
@@ -1634,6 +1635,7 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     tp_worker = SimpleNamespace(
         gpu_id=0,
         tp_rank=0,
+        platform_spec=CPU_PLATFORM_SPEC,
         model_runner=SimpleNamespace(
             max_total_num_tokens=128,
             effective_max_total_num_tokens=64,
@@ -1758,6 +1760,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
     tp_worker = SimpleNamespace(
         gpu_id=0,
         tp_rank=0,
+        platform_spec=CPU_PLATFORM_SPEC,
         model_runner=SimpleNamespace(
             max_total_num_tokens=128,
             effective_max_total_num_tokens=64,
@@ -1822,6 +1825,7 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
     tp_worker = SimpleNamespace(
         gpu_id=0,
         tp_rank=0,
+        platform_spec=CPU_PLATFORM_SPEC,
         model_runner=SimpleNamespace(
             max_total_num_tokens=128,
             effective_max_total_num_tokens=64,

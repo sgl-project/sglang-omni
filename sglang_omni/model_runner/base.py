@@ -13,7 +13,7 @@ from typing import Any
 
 import torch
 
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -101,7 +101,8 @@ class ModelRunner:
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
-        self.device = current_platform.get_device(tp_worker.gpu_id)
+        self.platform = OmniPlatform.from_spec(tp_worker.platform_spec)
+        self.device = self.platform.get_device(tp_worker.gpu_id)
         self.model = tp_worker.model_runner.model
         self._execution_bridge: Any | None = None
 
@@ -392,7 +393,7 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        current_platform.set_device(self.device)
+        self.platform.set_device(self.device)
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:

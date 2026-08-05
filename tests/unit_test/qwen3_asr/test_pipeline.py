@@ -10,6 +10,7 @@ from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
@@ -132,7 +133,9 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         _fake_create_infrastructure,
     )
 
-    qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]

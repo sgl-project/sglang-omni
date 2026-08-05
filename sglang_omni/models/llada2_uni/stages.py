@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
+from sglang_omni.platforms import ResolvedPlatformSpec
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ def create_image_encoder_executor(
 def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     thinker_max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
@@ -102,6 +104,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
+        platform_spec=platform_spec,
         dllm_algorithm=dllm_algorithm,
         dllm_algorithm_config=dllm_algorithm_config,
         **overrides,
@@ -112,7 +115,11 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.dllm_algorithm,
         server_args.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args,
+        gpu_id,
+        platform_spec=platform_spec,
+    )
 
 
 def create_decode_executor(model_path: str):

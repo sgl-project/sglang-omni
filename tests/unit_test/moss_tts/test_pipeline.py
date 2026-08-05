@@ -37,6 +37,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,9 +189,11 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         server_args,
         gpu_id,
         *,
+        platform_spec,
         model_arch_override=None,
         defer_cuda_graph_capture=False,
     ):
+        assert platform_spec == CUDA_PLATFORM_SPEC
         captured["gpu_id"] = gpu_id
         captured["model_arch_override"] = model_arch_override
         captured["defer_cuda_graph_capture"] = defer_cuda_graph_capture
@@ -253,9 +256,12 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         fake_model_runner_module,
     )
 
-    stages.create_sglang_tts_engine_executor("OpenMOSS-Team/MOSS-TTS-v1.5")
+    stages.create_sglang_tts_engine_executor(
+        "OpenMOSS-Team/MOSS-TTS-v1.5", platform_spec=CUDA_PLATFORM_SPEC
+    )
     stages.create_sglang_tts_engine_executor(
         "OpenMOSS-Team/MOSS-TTS-v1.5",
+        platform_spec=CUDA_PLATFORM_SPEC,
         server_args_overrides={
             "enable_torch_compile": True,
             "mem_fraction_static": 0.61,

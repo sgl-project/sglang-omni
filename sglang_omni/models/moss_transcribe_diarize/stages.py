@@ -21,6 +21,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     make_moss_transcribe_diarize_scheduler_adapters,
     make_moss_transcribe_diarize_stream_output_builder,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
 )
@@ -92,6 +93,7 @@ def _default_max_new_tokens(model_path: str) -> int:
 def create_sglang_moss_transcribe_diarize_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     max_running_requests: int = 16,
@@ -153,6 +155,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     server_args = build_sglang_server_args(
         model_path,
         context_length=resolved_context_length,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -171,6 +174,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     ) = create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         model_arch_override="MossTranscribeDiarizeForConditionalGeneration",
     )
 

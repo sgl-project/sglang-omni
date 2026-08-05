@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
@@ -12,6 +13,7 @@ def create_dllm_thinker_scheduler(
     server_args: Any,
     gpu_id: int = 0,
     *,
+    platform_spec: ResolvedPlatformSpec,
     tp_rank: int = 0,
     nccl_port: int | None = None,
 ):
@@ -50,6 +52,7 @@ def create_dllm_thinker_scheduler(
     ) = create_sglang_infrastructure(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="LLaDA2MoeModelLM",

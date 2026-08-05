@@ -23,7 +23,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
-from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec, current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 
@@ -383,12 +383,14 @@ def stage_process_main(
         platform = spec.platform()
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log, platform=platform)
+        # TODO: maybe platform.initialize_worker() here
         platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         _destroy_torch_distributed_process_group(log)
         _reclaim_process_accelerator_memory(
             _stage_gpu_ids(spec.stage_specs),
+            spec.platform(),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
@@ -405,6 +407,7 @@ def stage_process_main(
         _destroy_torch_distributed_process_group(log)
         _reclaim_process_accelerator_memory(
             _stage_gpu_ids(spec.stage_specs),
+            spec.platform(),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
@@ -530,6 +533,7 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
 
 def _reclaim_process_accelerator_memory(
     gpu_ids: Iterable[int],
+    platform: OmniPlatform,
     log: logging.Logger,
     *,
     reason: str,
@@ -546,8 +550,8 @@ def _reclaim_process_accelerator_memory(
         )
         for gpu_id in gpu_id_list:
             try:
-                device = current_platform.get_device(int(gpu_id))
-                current_platform.reclaim_process_memory(
+                device = platform.get_device(int(gpu_id))
+                platform.reclaim_process_memory(
                     device,
                     suppress_errors=True,
                 )
@@ -580,11 +584,12 @@ def _construct_stage(
     local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
     gpu_id = spec.gpu_id
+    platform = OmniPlatform.from_spec(spec.platform_spec)
     if gpu_id is not None:
-        current_platform.set_device(current_platform.get_device(int(gpu_id)))
+        platform.set_device(platform.get_device(int(gpu_id)))
         log.info(
             "Set current %s device to %s for stage %s",
-            current_platform.device_name,
+            platform.device_name,
             gpu_id,
             spec.stage_name,
         )
@@ -783,10 +788,12 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    factory_defaults = dict(spec.factory_arg_defaults)
+    factory_defaults["platform_spec"] = spec.platform_spec
     factory_args = resolve_factory_signature_args(
         factory,
         spec.factory_args,
-        defaults=spec.factory_arg_defaults,
+        defaults=factory_defaults,
     )
     if gpu_id is None:
         return factory(**factory_args)

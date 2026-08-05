@@ -15,17 +15,10 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
     get_stage_process_env,
 )
-from sglang_omni.platforms import CudaOmniPlatform, PlatformEnum, ResolvedPlatformSpec
+from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
-
-
-@pytest.fixture(autouse=True)
-def _cuda_platform(monkeypatch):
-    """These tests specify the established NVIDIA worker-launch contract."""
-
-    monkeypatch.setattr(stage_workers, "current_platform", CudaOmniPlatform())
 
 
 def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:

@@ -17,6 +17,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
@@ -134,6 +135,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -146,6 +148,7 @@ def create_sglang_tts_engine_executor(
         attn_implementation=attn_implementation,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,

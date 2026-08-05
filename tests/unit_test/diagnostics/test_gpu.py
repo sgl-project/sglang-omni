@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from typer.testing import CliRunner
 
 import sglang_omni.diagnostics.gpu as gpu_diagnostics
+import sglang_omni.platforms.cuda_platform as cuda_platform
 from sglang_omni.cli import app
 
 
@@ -99,6 +100,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_nvml = _FakeNVML()
     fake_torch = _FakeTorch()
     fake_torch.cuda.properties.reverse()
+    monkeypatch.setattr(cuda_platform.torch, "cuda", fake_torch.cuda)
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
@@ -142,6 +144,7 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
 
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
+    monkeypatch.setattr(cuda_platform.torch, "cuda", fake_torch.cuda)
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
@@ -168,6 +171,7 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
 
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
+    monkeypatch.setattr(cuda_platform.torch, "cuda", fake_torch.cuda)
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
@@ -201,6 +205,7 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
             uuid="MIG-instance-uuid",
         )
     ]
+    monkeypatch.setattr(cuda_platform.torch, "cuda", fake_torch.cuda)
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 

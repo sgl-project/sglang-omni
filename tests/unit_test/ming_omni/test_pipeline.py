@@ -16,6 +16,7 @@ from examples.launchers.ming_omni import (
     launch_ming_speech_server as _launch_speech_server,
 )
 from examples.launchers.ming_omni import launch_ming_text_server as _launch_text_server
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
@@ -738,7 +739,9 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         bootstrap_module,
     )
 
-    stages.create_sglang_thinker_executor_from_config(model_path="dummy")
+    stages.create_sglang_thinker_executor_from_config(
+        model_path="dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
     assert captured_server_args_kwargs["trust_remote_code"] is False

@@ -40,6 +40,7 @@ from tests.unit_test.fixtures.fish_fakes import (
     make_s2pro_payload,
     make_s2pro_state,
 )
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 @pytest.fixture(autouse=True)
@@ -725,7 +726,10 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure_defer_cuda_graph(
         server_args: SimpleNamespace,
         gpu_id: int,
+        *,
+        platform_spec,
     ) -> tuple[bool, tuple[object, object, object, object, object, object, object]]:
+        assert platform_spec == CUDA_PLATFORM_SPEC
         want_cuda_graph = not bool(server_args.disable_cuda_graph)
         if want_cuda_graph:
             server_args.disable_cuda_graph = True
@@ -777,6 +781,7 @@ def _run_s2pro_engine_with_fake_buffers(
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
+        platform_spec=CUDA_PLATFORM_SPEC,
         device="cuda:0",
         server_args_overrides=server_args_overrides,
     )

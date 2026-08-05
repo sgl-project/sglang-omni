@@ -11,6 +11,7 @@ import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def _configurator(*, total_gpu_memory_fraction: float | None):
@@ -32,9 +33,12 @@ def _configurator(*, total_gpu_memory_fraction: float | None):
 def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
     scheduler_calls: list[dict[str, object]] = []
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
+    def _fake_server_args_builder(
+        model_path, context_length, *, platform_spec, **overrides
+    ):
         assert model_path == "dummy"
         assert context_length == 8192
+        assert platform_spec == CUDA_PLATFORM_SPEC
         assert overrides["sampling_backend"] == "pytorch"
         return FakeServerArgs(
             mem_fraction_static=overrides["mem_fraction_static"],
@@ -211,6 +215,7 @@ def test_qwen_colocated_thinker_startup_threads_effective_budget(
     with caplog.at_level(logging.INFO, logger=qwen_stages.logger.name):
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
+            platform_spec=CUDA_PLATFORM_SPEC,
             total_gpu_memory_fraction=0.75,
             encoder_mem_reserve=0.05,
         )
@@ -237,6 +242,7 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     with caplog.at_level(logging.INFO, logger=qwen_stages.logger.name):
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
+            platform_spec=CUDA_PLATFORM_SPEC,
             server_args_overrides={"mem_fraction_static": 0.75},
             total_gpu_memory_fraction=0.75,
         )
@@ -269,9 +275,12 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
     validation_calls: list[tuple[str, object]] = []
     validate_generation_batch_policy = qwen_stages.validate_generation_batch_policy
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
+    def _fake_server_args_builder(
+        model_path, context_length, *, platform_spec, **overrides
+    ):
         assert model_path == "dummy"
         assert context_length == 8192
+        assert platform_spec == CUDA_PLATFORM_SPEC
         build_calls.append(dict(overrides))
         return FakeServerArgs(
             mem_fraction_static=0.85,
@@ -320,6 +329,7 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
 
     qwen_stages.create_sglang_thinker_executor_from_config(
         "dummy",
+        platform_spec=CUDA_PLATFORM_SPEC,
         server_args_overrides=server_args_overrides,
     )
 
@@ -335,9 +345,12 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
     build_calls: list[dict[str, object]] = []
     scheduler_calls: list[dict[str, object]] = []
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
+    def _fake_server_args_builder(
+        model_path, context_length, *, platform_spec, **overrides
+    ):
         assert model_path == "dummy"
         assert context_length == 4096
+        assert platform_spec == CUDA_PLATFORM_SPEC
         build_calls.append(dict(overrides))
         return FakeServerArgs(
             mem_fraction_static=0.55,
@@ -387,7 +400,9 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         lambda gpu_id: None,
     )
 
-    qwen_stages.create_talker_ar_executor_from_config("dummy")
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert build_calls == [
         {
@@ -417,7 +432,8 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
     """talker_ar default max_running_requests is 32; a config override still wins."""
     captured: list[dict[str, object]] = []
 
-    def _fake_builder(model_path, context_length, **overrides):
+    def _fake_builder(model_path, context_length, *, platform_spec, **overrides):
+        assert platform_spec == CUDA_PLATFORM_SPEC
         captured.append(dict(overrides))
         return FakeServerArgs(
             mem_fraction_static=overrides.get("mem_fraction_static"),
@@ -444,10 +460,14 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
         qwen_stages, "get_process_gpu_memory_bytes", lambda gpu_id: None
     )
 
-    qwen_stages.create_talker_ar_executor_from_config("dummy")
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
     assert captured[-1]["max_running_requests"] == 32
 
     qwen_stages.create_talker_ar_executor_from_config(
-        "dummy", server_args_overrides={"max_running_requests": 8}
+        "dummy",
+        platform_spec=CUDA_PLATFORM_SPEC,
+        server_args_overrides={"max_running_requests": 8},
     )
     assert captured[-1]["max_running_requests"] == 8

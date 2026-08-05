@@ -17,6 +17,7 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     create_sglang_moss_transcribe_diarize_executor,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
@@ -267,7 +268,9 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     calls = _stub_factory_env(monkeypatch, want_cuda_graph=True)
 
     create_sglang_moss_transcribe_diarize_executor(
-        "OpenMOSS-Team/MOSS-Transcribe-Diarize", encoder_torch_compile=True
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        platform_spec=CUDA_PLATFORM_SPEC,
+        encoder_torch_compile=True,
     )
 
     assert len(calls["compile_encoder"]) == 1
@@ -318,6 +321,7 @@ def test_factory_context_length_override_reaches_server_args(
 
     create_sglang_moss_transcribe_diarize_executor(
         "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        platform_spec=CUDA_PLATFORM_SPEC,
         server_args_overrides={"context_length": 8192},
     )
 

@@ -27,6 +27,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -935,6 +936,7 @@ def create_decode_executor(model_path: str):
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     tp_rank: int = 0,
     tp_size: int = 1,
@@ -991,6 +993,7 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -1031,6 +1034,7 @@ def create_sglang_thinker_executor_from_config(
     scheduler = create_thinker_scheduler(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         speech_enabled=speech_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
@@ -1060,6 +1064,7 @@ def create_sglang_thinker_executor_from_config(
 def create_talker_ar_executor_from_config(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     tp_rank: int = 0,
     tp_size: int = 1,
@@ -1099,6 +1104,7 @@ def create_talker_ar_executor_from_config(
     server_args = build_sglang_server_args(
         model_path,
         context_length=talker_max_seq_len,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -1119,6 +1125,7 @@ def create_talker_ar_executor_from_config(
     scheduler = create_talker_scheduler(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         weight_prefix=weight_prefix,
         speech_enabled=speech_enabled,
         feedback_enabled=feedback_enabled,

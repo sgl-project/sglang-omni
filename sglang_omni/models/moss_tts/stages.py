@@ -32,6 +32,7 @@ from sglang_omni.models.moss_tts.request_builders import (
     set_moss_tts_preprocessing_context,
 )
 from sglang_omni.models.moss_tts.streaming_vocoder import MossStreamingVocoderScheduler
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
@@ -192,6 +193,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -199,6 +201,7 @@ def create_sglang_tts_engine_executor(
 ) -> Any:
     return MossTtsEngineBuilder().build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,

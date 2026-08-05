@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+import sglang_omni.platforms.cuda_platform as cuda_platform
 from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
 from tests.unit_test.fakes import FakeServerArgs
 
@@ -128,21 +129,6 @@ def _cached_attrs_from_missing_project_modules() -> list[str]:
 def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
     importlib.import_module("sglang_omni.pipeline")
     before_import = set(sys.modules)
-    fake_torch = ModuleType("torch")
-    fake_torch.Tensor = object
-    fake_torch_nn = ModuleType("torch.nn")
-    fake_torch_nn.Module = object
-    fake_torch_distributed = ModuleType("torch.distributed")
-    fake_torch_distributed.ProcessGroup = object
-    fake_torch.distributed = fake_torch_distributed
-    fake_profiler = ModuleType("torch.profiler")
-    fake_profiler.ProfilerActivity = SimpleNamespace(CPU="cpu", CUDA="cuda")
-
-    class FakeProfile:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    fake_profiler.profile = FakeProfile
 
     class FakePretrainedConfig:
         def __init__(self, **kwargs):
@@ -191,10 +177,6 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
     fake_nixl.NixlOperation = FakeNixlOperation
     fake_nixl.NixlRelay = FakeNixlRelay
     fake_refs = (
-        fake_torch,
-        fake_torch_nn,
-        fake_torch_distributed,
-        fake_profiler,
         fake_transformers,
         fake_transformers_init,
         fake_transformers_utils,
@@ -210,10 +192,6 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
 
     try:
         with monkeypatch.context() as mp:
-            mp.setitem(sys.modules, "torch", fake_torch)
-            mp.setitem(sys.modules, "torch.nn", fake_torch_nn)
-            mp.setitem(sys.modules, "torch.distributed", fake_torch_distributed)
-            mp.setitem(sys.modules, "torch.profiler", fake_profiler)
             mp.setitem(sys.modules, "transformers", fake_transformers)
             mp.setitem(
                 sys.modules, "transformers.initialization", fake_transformers_init
@@ -277,7 +255,6 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
     finally:
         _purge_project_modules_with_fake_refs(before_import, fake_refs)
 
-    assert _project_modules_with_ref(fake_torch) == []
     assert _cached_attrs_from_missing_project_modules() == []
 
 
@@ -439,10 +416,12 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         server_args,
         gpu_id,
         *,
+        platform_spec,
         tp_rank,
         nccl_port,
         model_arch_override,
     ):
+        assert platform_spec == CUDA_PLATFORM_SPEC
         captured["server_args_tp_size"] = server_args.tp_size
         captured["gpu_id"] = gpu_id
         captured["tp_rank"] = tp_rank
@@ -503,6 +482,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     scheduler = bootstrap.create_thinker_scheduler(
         server_args,
         model_path="dummy",
+        platform_spec=CUDA_PLATFORM_SPEC,
         gpu_id=1,
         tp_rank=1,
         tp_size=2,
@@ -526,18 +506,16 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
 
     importlib.import_module("sglang_omni.pipeline")
     before_import = set(sys.modules)
-    fake_torch = ModuleType("torch")
-    fake_torch.Tensor = object
-    fake_torch.uint8 = object()
-    fake_profiler = ModuleType("torch.profiler")
-    fake_profiler.ProfilerActivity = SimpleNamespace(CPU="cpu", CUDA="cuda")
-
-    class FakeProfile:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    fake_profiler.profile = FakeProfile
-    fake_torch.profiler = fake_profiler
+    fake_cuda = SimpleNamespace(
+        device_count=lambda: 1,
+        set_device=lambda _device: None,
+        get_device_properties=lambda _device_id: SimpleNamespace(),
+        synchronize=lambda: None,
+        empty_cache=lambda: None,
+        ipc_collect=lambda: None,
+        mem_get_info=lambda _device_id: (1, 1),
+    )
+    fake_torch = SimpleNamespace(cuda=fake_cuda)
     fake_nixl = ModuleType("sglang_omni.relay.nixl")
 
     class FakeConnection:
@@ -554,8 +532,6 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
     fake_nixl.NixlOperation = FakeNixlOperation
     fake_nixl.NixlRelay = FakeNixlRelay
     fake_refs = (
-        fake_torch,
-        fake_profiler,
         fake_nixl,
         FakeConnection,
         FakeNixlOperation,
@@ -564,8 +540,7 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
 
     try:
         with pytest.MonkeyPatch.context() as mp:
-            mp.setitem(sys.modules, "torch", fake_torch)
-            mp.setitem(sys.modules, "torch.profiler", fake_profiler)
+            mp.setattr(cuda_platform, "torch", fake_torch)
             mp.setitem(sys.modules, "sglang_omni.relay.nixl", fake_nixl)
 
             from sglang_omni.pipeline.stage.runtime import Stage
@@ -612,5 +587,4 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
     finally:
         _purge_project_modules_with_fake_refs(before_import, fake_refs)
 
-    assert _project_modules_with_ref(fake_torch) == []
     assert _cached_attrs_from_missing_project_modules() == []

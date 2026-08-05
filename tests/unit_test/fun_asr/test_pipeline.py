@@ -11,6 +11,7 @@ import sglang_omni.models.fun_asr.stages as fun_asr_stages
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
@@ -67,6 +68,7 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
     with pytest.raises(ValueError, match=match):
         fun_asr_stages.create_sglang_fun_asr_executor(
             "dummy",
+            platform_spec=CUDA_PLATFORM_SPEC,
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
         )
@@ -214,7 +216,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         raising=False,
     )
 
-    scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    scheduler = fun_asr_stages.create_sglang_fun_asr_executor(
+        "dummy", platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
@@ -240,6 +244,8 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
 
     with pytest.raises(RuntimeError, match="factory failed"):
-        fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+        fun_asr_stages.create_sglang_fun_asr_executor(
+            "dummy", platform_spec=CUDA_PLATFORM_SPEC
+        )
 
     assert encoder_services[1].close_calls == 1

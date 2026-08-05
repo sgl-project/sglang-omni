@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
     gpu_architecture_for_sm,
@@ -44,6 +45,7 @@ def create_sglang_infrastructure(
     server_args: Any,
     gpu_id: int,
     *,
+    platform_spec: ResolvedPlatformSpec,
     tp_rank: int = 0,
     nccl_port: int | None = None,
     model_arch_override: str | None = None,
@@ -70,6 +72,7 @@ def create_sglang_infrastructure(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
         ),
         server_args=server_args,
+        platform_spec=platform_spec,
         gpu_id=gpu_id,
         tp_rank=tp_rank,
     )
@@ -156,6 +159,8 @@ def create_sglang_infrastructure(
 def create_sglang_infrastructure_defer_cuda_graph(
     server_args: Any,
     gpu_id: int,
+    *,
+    platform_spec: ResolvedPlatformSpec,
     **kwargs: Any,
 ):
     """Build shared SGLang infrastructure while deferring CUDA graph capture.
@@ -174,6 +179,7 @@ def create_sglang_infrastructure_defer_cuda_graph(
         infrastructure = create_sglang_infrastructure(
             server_args,
             gpu_id,
+            platform_spec=platform_spec,
             defer_cuda_graph_capture=want_cuda_graph,
             **kwargs,
         )

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
     normalize_quant_config,
@@ -48,10 +49,12 @@ class ModelWorker:
         self,
         config: ModelWorkerConfig,
         server_args: ServerArgs,
+        platform_spec: ResolvedPlatformSpec,
         gpu_id: int,
         tp_rank: int = 0,
     ):
         self.server_args = server_args
+        self.platform_spec = platform_spec
         self.model_arch_override = config.model_arch_override
         self.weight_prefix = config.weight_prefix
         self.nccl_port = config.nccl_port
@@ -206,6 +209,7 @@ class ModelWorker:
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
+            platform_spec=self.platform_spec,
             gpu_id=self.gpu_id,
             tp_rank=self.tp_rank,
             moe_ep_rank=0,

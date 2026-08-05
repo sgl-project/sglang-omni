@@ -10,6 +10,7 @@ import pytest
 from sglang_omni.model_runner import model_worker as model_worker_module
 from sglang_omni.scheduling import bootstrap, sglang_backend
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_runtime_configuration_reports_global_backend_for_each_phase(
@@ -135,7 +136,9 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         chunked_prefill_size=8,
         max_prefill_tokens=16,
     )
-    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
+    infrastructure = bootstrap.create_sglang_infrastructure(
+        server_args, 0, platform_spec=CUDA_PLATFORM_SPEC
+    )
 
     assert events == [
         "runtime_configuration",
@@ -166,6 +169,7 @@ def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
         bootstrap.create_sglang_infrastructure_defer_cuda_graph(
             server_args,
             3,
+            platform_spec=CUDA_PLATFORM_SPEC,
             model_arch_override="TestModel",
         )
     )
@@ -178,6 +182,7 @@ def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
         3,
         {
             "defer_cuda_graph_capture": True,
+            "platform_spec": CUDA_PLATFORM_SPEC,
             "model_arch_override": "TestModel",
         },
     )
@@ -201,6 +206,7 @@ def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) ->
     want_cuda_graph, _ = bootstrap.create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         0,
+        platform_spec=CUDA_PLATFORM_SPEC,
     )
 
     assert want_cuda_graph is False

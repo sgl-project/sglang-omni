@@ -20,6 +20,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -340,11 +341,8 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     """Decode should use SGLang's graph-capable forward result."""
     from sglang.srt.model_executor import forward_batch_info
 
-    import sglang_omni.model_runner.base as model_runner_base
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
     from sglang_omni.platforms import CpuOmniPlatform
-
-    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
 
     fake_forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1]),
@@ -396,6 +394,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
             }
 
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.platform = CpuOmniPlatform()
     runner.tp_worker = FakeTPWorker()
     runner.output_processor = FakeOutputProcessor()
     runner.device = torch.device("cpu")
@@ -570,7 +569,9 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    scheduler = stages.create_generation_executor("model", device="cuda:0")
+    scheduler = stages.create_generation_executor(
+        "model", platform_spec=CUDA_PLATFORM_SPEC, device="cuda:0"
+    )
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]

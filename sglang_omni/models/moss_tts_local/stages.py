@@ -35,6 +35,7 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 from sglang_omni.models.moss_tts_local.streaming_vocoder import (
     MossTTSLocalStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -602,6 +603,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -624,6 +626,7 @@ def create_sglang_tts_engine_executor(
         codec_mem_reserve=codec_mem_reserve,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,

@@ -14,6 +14,7 @@ from sglang_omni.models.ming_tts.hf_config import (
 from sglang_omni.models.ming_tts.request_builders import preprocess_ming_tts_payload
 from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 from sglang_omni.models.ming_tts.weight_loading import load_ming_tts_audio_vae_weights
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
@@ -103,6 +104,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
@@ -131,6 +133,7 @@ def create_sglang_tts_engine_executor(
         nccl_port=nccl_port,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,

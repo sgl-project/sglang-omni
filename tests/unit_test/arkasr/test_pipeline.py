@@ -19,6 +19,7 @@ from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
 from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_ids
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def _tiny_config():
@@ -116,7 +117,9 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch.setattr(stages, "OmniScheduler", lambda **k: SimpleNamespace())
 
     create_sglang_arkasr_executor(
-        "AutoArk-AI/ARK-ASR-3B", mm_attention_backend="triton_attn"
+        "AutoArk-AI/ARK-ASR-3B",
+        platform_spec=CUDA_PLATFORM_SPEC,
+        mm_attention_backend="triton_attn",
     )
 
     assert calls["init_cuda_graphs"] == (1 if want_cuda_graph else 0)

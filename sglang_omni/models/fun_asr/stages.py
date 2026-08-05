@@ -24,6 +24,7 @@ from sglang_omni.models.fun_asr.request_builders import (
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
 )
@@ -121,6 +122,7 @@ def _compile_fun_asr_audio_encoder(
 def create_sglang_fun_asr_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
@@ -194,6 +196,7 @@ def create_sglang_fun_asr_executor(
     server_args = build_sglang_server_args(
         model_path,
         context_length=context_length,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -212,6 +215,7 @@ def create_sglang_fun_asr_executor(
     ) = create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         model_arch_override="FunAsrNanoForConditionalGeneration",
     )
 

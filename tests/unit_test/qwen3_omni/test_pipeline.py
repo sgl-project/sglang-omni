@@ -52,6 +52,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 )
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -614,6 +615,7 @@ def test_qwen_builder_omits_mem_fraction_static_by_default() -> None:
     server_args = build_sglang_server_args(
         "dummy",
         context_length=8192,
+        platform_spec=CUDA_PLATFORM_SPEC,
         tp_size=2,
         random_seed=777,
     )
@@ -629,6 +631,7 @@ def test_qwen_builder_maps_legacy_cuda_graph_knobs_to_decode() -> None:
     server_args = build_sglang_server_args(
         "dummy",
         context_length=8192,
+        platform_spec=CUDA_PLATFORM_SPEC,
         cuda_graph_max_bs=16,
         cuda_graph_bs=[1, 2, 4, 8, 12, 16],
     )
@@ -643,6 +646,7 @@ def test_qwen_builder_rejects_conflicting_decode_cuda_graph_knobs() -> None:
         build_sglang_server_args(
             "dummy",
             context_length=8192,
+            platform_spec=CUDA_PLATFORM_SPEC,
             cuda_graph_max_bs=16,
             cuda_graph_max_bs_decode=32,
         )
@@ -652,6 +656,7 @@ def test_qwen_builder_forwards_explicit_mem_fraction_static() -> None:
     server_args = build_sglang_server_args(
         "dummy",
         context_length=4096,
+        platform_spec=CUDA_PLATFORM_SPEC,
         mem_fraction_static=0.82,
         dtype="bfloat16",
     )
@@ -871,7 +876,9 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
 
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled
+        server_args,
+        platform_spec=CUDA_PLATFORM_SPEC,
+        speech_enabled=speech_enabled,
     )
 
     assert infrastructure_saw_graph_disabled == [expected_infrastructure_graph_disabled]

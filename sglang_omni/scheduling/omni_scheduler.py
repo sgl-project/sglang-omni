@@ -39,7 +39,7 @@ from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -332,6 +332,7 @@ class OmniScheduler:
         # Workers
         self.tp_worker = tp_worker
         self.model_worker = tp_worker
+        self.platform = OmniPlatform.from_spec(tp_worker.platform_spec)
 
         # Cache / memory management
         self.tree_cache = tree_cache
@@ -2004,9 +2005,8 @@ class OmniScheduler:
             logger.exception("flush_cache after weight update failed")
             return False
 
-    @staticmethod
-    def _empty_torch_cache() -> None:
-        current_platform.empty_cache()
+    def _empty_torch_cache(self) -> None:
+        self.platform.empty_cache()
 
     def _mark_running_request_aborted(self, request_id: str) -> bool:
         marked = False

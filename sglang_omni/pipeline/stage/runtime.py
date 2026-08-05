@@ -26,7 +26,7 @@ from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
-from sglang_omni.platforms import ResolvedPlatformSpec, current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -111,6 +111,7 @@ class Stage:
         self.gpu_id = gpu_id
         self.endpoints = endpoints
         self.control_plane = control_plane
+        self.platform = OmniPlatform.from_spec(platform_spec)
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
         self._project_payload = project_payload or {}
@@ -171,13 +172,13 @@ class Stage:
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
-                        current_platform.set_device(
-                            current_platform.get_device(int(self.gpu_id))
+                        self.platform.set_device(
+                            self.platform.get_device(int(self.gpu_id))
                         )
                         logger.info(
                             "Scheduler thread for stage %s set %s device to %s",
                             self.name,
-                            current_platform.device_name,
+                            self.platform.device_name,
                             self.gpu_id,
                         )
                     self.scheduler.start()

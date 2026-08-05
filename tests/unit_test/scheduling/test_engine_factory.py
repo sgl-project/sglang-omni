@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -69,15 +70,13 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
 
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
-    from sglang_omni.platforms import CudaOmniPlatform
-    from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
+    from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
     infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
-    monkeypatch.setattr(engine_factory, "current_platform", CudaOmniPlatform())
 
     class FakeModel:
         pass
@@ -130,6 +129,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         assert gpu_id == 2
         assert kwargs == {
             "defer_cuda_graph_capture": True,
+            "platform_spec": CUDA_PLATFORM_SPEC,
             "model_arch_override": "TestArch",
         }
         infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
@@ -252,6 +252,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     scheduler = RecordingBuilder().build(
         "model",
+        platform_spec=CUDA_PLATFORM_SPEC,
         device="cuda:0",
         gpu_id=2,
         server_args_overrides={

@@ -41,6 +41,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 N_VQ = 12
 
@@ -745,6 +746,7 @@ def test_colocated_moss_ar_factory_threads_effective_budget(monkeypatch):
 
     stages.create_sglang_tts_engine_executor(
         "dummy",
+        platform_spec=CUDA_PLATFORM_SPEC,
         server_args_overrides={"disable_cuda_graph": True},
         total_gpu_memory_fraction=0.90,
         process_total_gpu_memory_fraction=0.95,
@@ -773,6 +775,7 @@ def test_colocated_moss_ar_factory_uses_upstream_profile_without_process_account
 
     stages.create_sglang_tts_engine_executor(
         "dummy",
+        platform_spec=CUDA_PLATFORM_SPEC,
         server_args_overrides={"disable_cuda_graph": True},
         total_gpu_memory_fraction=0.90,
         process_total_gpu_memory_fraction=0.95,

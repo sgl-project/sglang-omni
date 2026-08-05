@@ -48,6 +48,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_STREAM_STRIDE,
     HiggsStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 
 # _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
 # reset it; the underscored alias keeps this module's historical API.
@@ -460,6 +461,7 @@ def create_audio_encoder_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
@@ -491,6 +493,7 @@ def create_sglang_tts_engine_executor(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         server_args_overrides=server_args_overrides,
     )

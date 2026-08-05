@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
@@ -27,6 +27,7 @@ class TtsEngineBuilder(ABC):
         self,
         model_path: str,
         *,
+        platform_spec: ResolvedPlatformSpec,
         device: str = "cuda:0",
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
@@ -37,7 +38,7 @@ class TtsEngineBuilder(ABC):
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
         if gpu_id is not None:
-            device = str(current_platform.get_device(gpu_id))
+            device = str(OmniPlatform.from_spec(platform_spec).get_device(gpu_id))
         resolved_device = torch.device(device)
         gpu_id = resolved_device.index if resolved_device.index is not None else 0
         self.checkpoint_dir = checkpoint_dir
@@ -56,6 +57,7 @@ class TtsEngineBuilder(ABC):
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,
             context_length=self.context_length,
+            platform_spec=platform_spec,
             **overrides,
         )
         self.customize_server_args(server_args)
@@ -74,6 +76,7 @@ class TtsEngineBuilder(ABC):
         ) = scheduling_bootstrap.create_sglang_infrastructure_defer_cuda_graph(
             server_args,
             gpu_id,
+            platform_spec=platform_spec,
             **infra_kwargs,
         )
         model = model_worker.model_runner.model

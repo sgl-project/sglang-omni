@@ -13,7 +13,7 @@ from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
 
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -161,6 +161,7 @@ class SGLModelRunner(ModelRunner):
         self,
         model_config: ModelConfig,
         server_args: ServerArgs,
+        platform_spec: ResolvedPlatformSpec,
         gpu_id: int,
         tp_rank: int,
         moe_ep_rank: int,
@@ -173,6 +174,7 @@ class SGLModelRunner(ModelRunner):
         total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
+        self.platform = OmniPlatform.from_spec(platform_spec)
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
         self._model_arch_override = model_arch_override
         self._weight_share_config = None
@@ -248,9 +250,9 @@ class SGLModelRunner(ModelRunner):
         self._weight_share_record = None
         if ws is None:
             return super().load_model()
-        if not current_platform.support_same_device_weight_sharing():
+        if not self.platform.support_same_device_weight_sharing():
             raise ipc_weights.WeightShareError(
-                f"Weight sharing is not supported on {current_platform.device_name}"
+                f"Weight sharing is not supported on {self.platform.device_name}"
             )
 
         # Note (Jiaxin Deng): TP/PP ranks are separate processes inheriting the
@@ -325,7 +327,7 @@ class SGLModelRunner(ModelRunner):
         )
         # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
         # driver so KV-pool profiling and later replicas see the freed memory.
-        current_platform.empty_cache()
+        self.platform.empty_cache()
 
     def init_cuda_graphs(self, capture_decode_cuda_graph: bool = True):
         """Re-verify shared weights and finish post-capture KV sizing.

@@ -38,6 +38,7 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
+from tests.unit_test.fixtures.platform import CUDA_PLATFORM_SPEC
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1557,10 +1558,8 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Decode should use SGLang's graph-capable forward result."""
-    import sglang_omni.model_runner.base as model_runner_base
     from sglang_omni.platforms import CpuOmniPlatform
 
-    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
     install_fake_sglang(monkeypatch)
     from sglang.srt.model_executor import forward_batch_info
 
@@ -1635,6 +1634,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
             }
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.platform = CpuOmniPlatform()
     runner.tp_worker = FakeTPWorker()
     runner.output_processor = FakeOutputProcessor()
     runner.device = torch.device("cpu")
@@ -2177,6 +2177,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
+        platform_spec=CUDA_PLATFORM_SPEC,
         device="cuda:0",
         server_args_overrides={
             "cuda_graph_max_bs": 32,

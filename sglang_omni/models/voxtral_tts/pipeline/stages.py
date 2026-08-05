@@ -15,6 +15,7 @@ import torch
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -168,6 +169,7 @@ def _enable_inductor_gemm_autotune() -> None:
 def create_generation_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
@@ -181,6 +183,7 @@ def create_generation_executor(
 
     return VoxtralTtsEngineBuilder().build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         gpu_id=gpu_id,
         server_args_overrides=server_args_overrides,

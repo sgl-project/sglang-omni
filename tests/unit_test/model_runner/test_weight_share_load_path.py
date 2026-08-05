@@ -27,6 +27,7 @@ sglang_model_runner = pytest.importorskip(
 )
 from sglang.srt.model_executor.model_runner import ModelRunner  # noqa: E402
 
+from sglang_omni.platforms import CudaOmniPlatform  # noqa: E402
 from sglang_omni.utils import ipc_weights  # noqa: E402
 
 SGLModelRunner = sglang_model_runner.SGLModelRunner
@@ -43,6 +44,7 @@ class SmallModel(nn.Module):
 
 def _bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
+    runner.platform = CudaOmniPlatform()
     runner.server_args = FakeServerArgs(
         load_format=load_format,
         max_total_tokens=1000,

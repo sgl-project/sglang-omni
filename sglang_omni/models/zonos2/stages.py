@@ -27,6 +27,7 @@ from sglang_omni.models.zonos2.request_builders import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage, store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -226,6 +227,7 @@ def _device(gpu_id: int | None) -> str:
 def create_sglang_omni_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int | None = 0,
     dtype: str = "bfloat16",
     mem_fraction_static: float = 0.5,
@@ -254,6 +256,7 @@ def create_sglang_omni_tts_engine_executor(
         mem_fraction_static=mem_fraction_static,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,

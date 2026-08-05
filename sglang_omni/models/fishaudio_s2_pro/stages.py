@@ -14,6 +14,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -305,6 +306,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
@@ -322,6 +324,7 @@ def create_sglang_tts_engine_executor(
         ras_window=ras_window,
     ).build(
         model_path,
+        platform_spec=platform_spec,
         device=device,
         server_args_overrides=server_args_overrides,
     )

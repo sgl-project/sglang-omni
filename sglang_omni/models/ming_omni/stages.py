@@ -12,6 +12,7 @@ from typing import Any
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 
 
@@ -244,6 +245,7 @@ def create_audio_encoder_executor(
 def create_image_encoder_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda",
     dtype: str | None = None,
     tp_rank: int = 0,
@@ -255,6 +257,7 @@ def create_image_encoder_executor(
 
     model = MingImageEncoder(
         model_path=model_path,
+        platform_spec=platform_spec,
         device=device,
         dtype=dtype,
         tp_rank=tp_rank,
@@ -284,6 +287,7 @@ def create_image_encoder_executor(
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     tp_rank: int = 0,
     tp_size: int = 1,
@@ -307,11 +311,13 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
+        platform_spec=platform_spec,
         **overrides,
     )
     return create_thinker_scheduler(
         server_args,
         model_path=model_path,
+        platform_spec=platform_spec,
         gpu_id=gpu_id,
         tp_rank=tp_rank,
         tp_size=tp_size,

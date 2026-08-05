@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable
 
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ def create_thinker_scheduler(
     server_args: Any,
     *,
     model_path: str,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     tp_rank: int = 0,
     tp_size: int = 1,
@@ -61,6 +63,7 @@ def create_thinker_scheduler(
     ) = create_sglang_infrastructure(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="BailingMoeV2ForCausalLM",

@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni.platforms import ResolvedPlatformSpec
+
 
 def create_sglang_whisper_asr_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda:0",
     dtype: str = "float16",
     max_running_requests: int = 16,
@@ -57,6 +60,7 @@ def create_sglang_whisper_asr_executor(
     server_args = build_sglang_server_args(
         model_path,
         context_length=encoder_token_count + int(max_new_tokens) + 8,
+        platform_spec=platform_spec,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -75,6 +79,7 @@ def create_sglang_whisper_asr_executor(
     ) = create_sglang_infrastructure_defer_cuda_graph(
         server_args,
         gpu_id,
+        platform_spec=platform_spec,
         model_arch_override="WhisperForConditionalGeneration",
     )
 

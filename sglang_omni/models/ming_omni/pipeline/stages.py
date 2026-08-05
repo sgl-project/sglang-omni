@@ -31,6 +31,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
     THINKER_STAGE,
 )
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_state
+from sglang_omni.platforms import ResolvedPlatformSpec
 from sglang_omni.proto import StagePayload
 
 
@@ -90,6 +91,7 @@ def create_audio_encoder_executor(
 def create_image_encoder_executor(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     device: str = "cuda",
     dtype: str | None = None,
     tp_rank: int = 0,
@@ -101,6 +103,7 @@ def create_image_encoder_executor(
 
     model = MingImageEncoder(
         model_path=model_path,
+        platform_spec=platform_spec,
         device=device,
         dtype=dtype,
         tp_rank=tp_rank,
@@ -305,6 +308,7 @@ def _resolve_local_model_path(model_path: str) -> str:
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
+    platform_spec: ResolvedPlatformSpec,
     gpu_id: int = 0,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
@@ -322,7 +326,10 @@ def create_sglang_thinker_executor_from_config(
     overrides = {"sampling_backend": "pytorch"}
     overrides.update(server_args_overrides or {})
     server_args = build_sglang_server_args(
-        local_path, context_length=thinker_max_seq_len, **overrides
+        local_path,
+        context_length=thinker_max_seq_len,
+        platform_spec=platform_spec,
+        **overrides,
     )
     _log.getLogger(__name__).info(
         "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",

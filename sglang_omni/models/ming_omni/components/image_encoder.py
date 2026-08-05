@@ -20,7 +20,7 @@ from sglang_omni.models.ming_omni.components.common import load_ming_config
 from sglang_omni.models.ming_omni.components.projectors import VisionProjector
 from sglang_omni.models.ming_omni.components.vision_encoder import MingOmniVisionEncoder
 from sglang_omni.models.weight_loader import resolve_model_path
-from sglang_omni.platforms import current_platform
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class MingImageEncoder(nn.Module):
         self,
         model_path: str,
         *,
+        platform_spec: ResolvedPlatformSpec,
         device: str = "cuda",
         dtype: str | None = None,
         tp_rank: int = 0,
@@ -71,7 +72,12 @@ class MingImageEncoder(nn.Module):
         mlp_depth = config.mlp_depth
 
         # Need sglang TP context for VisionAttention and parallel layers
-        self._init_sglang_tp(tp_rank=tp_rank, tp_size=tp_size, nccl_port=nccl_port)
+        self._init_sglang_tp(
+            platform_spec=platform_spec,
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+            nccl_port=nccl_port,
+        )
 
         # Build vision encoder
         from transformers import PretrainedConfig
@@ -129,6 +135,7 @@ class MingImageEncoder(nn.Module):
     def _init_sglang_tp(
         cls,
         *,
+        platform_spec: ResolvedPlatformSpec,
         tp_rank: int = 0,
         tp_size: int = 1,
         nccl_port: int | None = None,
@@ -138,6 +145,8 @@ class MingImageEncoder(nn.Module):
 
         import sglang.srt.layers.dp_attention as dp
         from sglang.srt.distributed import parallel_state
+
+        platform = OmniPlatform.from_spec(platform_spec)
 
         dp_tp_ready = (
             getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0
@@ -169,7 +178,7 @@ class MingImageEncoder(nn.Module):
             set_global_server_args_for_scheduler(
                 ServerArgs(
                     model_path="dummy",
-                    device=current_platform.device_type,
+                    device=platform.device_type,
                 )
             )
         except Exception:
@@ -177,7 +186,7 @@ class MingImageEncoder(nn.Module):
 
         if not parallel_state.model_parallel_is_initialized():
             parallel_state.init_distributed_environment(
-                backend=current_platform.distributed_backend,
+                backend=platform.distributed_backend,
                 world_size=tp_size,
                 rank=tp_rank,
                 local_rank=0,
