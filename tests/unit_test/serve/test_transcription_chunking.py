@@ -91,8 +91,9 @@ def test_qwen3_asr_pipeline_declares_chunking() -> None:
 
     declared = Qwen3ASRPipelineConfig.audio_chunking
     assert declared.allow_audio_chunking is True
-    # 60s keeps ~2x margin under the ~115s context ceiling (13 tokens per
-    # audio second against a 1500-token encoder budget).
+    # 60s is a scheduling choice, not a context limit (the context is sized
+    # for the model's native 1,200s): short chunks batch well and keep one
+    # long upload from monopolizing the engine.
     assert declared.max_audio_clip_s == 60.0
 
 

@@ -225,12 +225,11 @@ class AudioChunkingConfig(BaseModel):
     # Some models can't correctly transcribe an isolated chunk (e.g. diarization needs to track speakers across the whole
     # recording), so we leave the default value of `allow_audio_chunking` = False.
     allow_audio_chunking: bool = False
-    # Longest clip(chunk length) sent to the engine in one request
-    # Bounded by the model's context: for exp Qwen3-ASR spends 13 tokens per
-    # audio second, so its structural ceiling is ~115s.
-    # prompt = 13T + 15; ctx_Len = 1500 + max_new_tokens + 8; prompt + max_new_tokens <= ctx_len - 1
-    # T <= 114.8s
-    # TODO: ^ need polish
+    # Note (Jeffro): Longest clip (chunk length) sent to the engine in one request.
+    # Must stay within what the model's context can hold (Qwen3-ASR sizes its
+    # context for the official 1,200s native limit); below that ceiling it
+    # is a scheduling trade-off: shorter chunks batch better and keep a
+    # long upload from monopolizing the engine, at the cost of more seams.
     max_audio_clip_s: float = Field(default=60.0, gt=0)
 
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)

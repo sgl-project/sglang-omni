@@ -9,6 +9,7 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_max_audio_tokens
 from sglang_omni.models.qwen3_asr.request_builders import (
     make_qwen3_asr_scheduler_adapters,
 )
@@ -52,7 +53,13 @@ def create_sglang_qwen3_asr_executor(
         model_path, trust_remote_code=True
     )
 
-    encoder_token_count = int(feature_extractor.nb_max_frames // 2)
+    # Note(Jeffro): Size the context for the longest clip the model natively accepts:
+    # 1,200s (MAX_ASR_INPUT_SECONDS, see
+    # https://github.com/QwenLM/Qwen3-ASR/blob/956766769/qwen_asr/inference/utils.py#L34)
+    # = 15,600 audio tokens, plus 64 slack for the ~15-token chat prompt
+    # skeleton. context_length caps a single request without reserving KV
+    # memory, so sizing it for the native maximum is essentially free.
+    max_prompt_tokens = qwen3_asr_max_audio_tokens() + 64
 
     defaults: dict[str, Any] = {
         "disable_cuda_graph": False,
@@ -78,7 +85,7 @@ def create_sglang_qwen3_asr_executor(
 
     server_args = build_sglang_server_args(
         model_path,
-        context_length=encoder_token_count + int(max_new_tokens) + 8,
+        context_length=max_prompt_tokens + int(max_new_tokens) + 8,
         **overrides,
     )
     validate_generation_batch_policy(

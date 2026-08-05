@@ -84,6 +84,18 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
     assert qwen3_asr_num_audio_tokens(3000) == 390
 
 
+def test_qwen3_asr_max_audio_tokens_covers_the_native_limit() -> None:
+    from sglang_omni.models.qwen3_asr.audio_lengths import (
+        QWEN3_ASR_MAX_INPUT_SECONDS,
+        qwen3_asr_max_audio_tokens,
+    )
+
+    # The official wrapper accepts up to 1,200s natively; the engine context
+    # is sized from this figure (13 audio tokens per second).
+    assert QWEN3_ASR_MAX_INPUT_SECONDS == 1200
+    assert qwen3_asr_max_audio_tokens() == 15_600
+
+
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
     num_mel_frames = 101
     num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 TARGET_SAMPLE_RATE = 16000
 
-#: Half-open ``[start, end)`` sample range of one chunk.
+# Half-open ``[start, end)`` sample range of one chunk.
 Span = tuple[int, int]
 
 
