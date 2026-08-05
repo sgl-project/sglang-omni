@@ -20,6 +20,7 @@ from sglang_omni.models.ming_omni.components.common import load_ming_config
 from sglang_omni.models.ming_omni.components.projectors import VisionProjector
 from sglang_omni.models.ming_omni.components.vision_encoder import MingOmniVisionEncoder
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +166,18 @@ class MingImageEncoder(nn.Module):
         )
 
         try:
-            set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
+            set_global_server_args_for_scheduler(
+                ServerArgs(
+                    model_path="dummy",
+                    device=current_platform.device_type,
+                )
+            )
         except Exception:
             pass  # Already set
 
         if not parallel_state.model_parallel_is_initialized():
             parallel_state.init_distributed_environment(
-                backend="nccl",
+                backend=current_platform.distributed_backend,
                 world_size=tp_size,
                 rank=tp_rank,
                 local_rank=0,

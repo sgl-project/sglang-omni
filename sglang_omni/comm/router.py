@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from sglang_omni.comm.data_ref import TransportKind
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec, TransferPolicy
 from sglang_omni.relay.base import Relay, create_relay
 
 
@@ -26,6 +27,7 @@ class CommRouter:
         placement_gpu_id: int | None = None,
         same_process_targets: set[str] | None,
         gpu_stage_names: set[str] | None,
+        platform_spec: ResolvedPlatformSpec,
         stage_gpu_ids: dict[str, tuple[int, ...]] | None = None,
         remote_stage_names: set[str] | None = None,
         comm_config: dict[str, Any] | None = None,
@@ -41,10 +43,18 @@ class CommRouter:
             for name, gpu_ids in (stage_gpu_ids or {}).items()
         }
         self.remote_stage_names = set(remote_stage_names or ())
+        self.platform_spec = platform_spec
+        platform = OmniPlatform.from_spec(platform_spec)
+        self._transfer_policy = platform.transfer_policy()
+        if self.remote_stage_names and not platform.support_cross_node_transport():
+            raise RuntimeError(
+                f"Cross-node transport is not supported on {platform.device_name}"
+            )
         self._direct_cuda_ipc_targets = frozenset(
             name
             for name, gpu_ids in self.stage_gpu_ids.items()
-            if self.gpu_id == self.placement_gpu_id
+            if self._transfer_policy is TransferPolicy.CUDA_IPC
+            and self.gpu_id == self.placement_gpu_id
             and gpu_ids == (self.placement_gpu_id,)
             and name not in self.same_process_targets
             and name not in self.remote_stage_names
@@ -76,7 +86,11 @@ class CommRouter:
         # which does not exist yet.
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
-        if self.self_is_gpu and target in self.gpu_stage_names:
+        if (
+            self._transfer_policy is TransferPolicy.CUDA_IPC
+            and self.self_is_gpu
+            and target in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
         return TransportKind.SHM
 
@@ -90,7 +104,11 @@ class CommRouter:
             return TransportKind.MOONCAKE
         if not data.is_cuda:
             return TransportKind.SHM
-        if self.self_is_gpu and target in self.gpu_stage_names:
+        if (
+            self._transfer_policy is TransferPolicy.CUDA_IPC
+            and self.self_is_gpu
+            and target in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
         raise ValueError(
             f"cuda stream chunk cannot be sent from {self.stage_name!r} to "
@@ -100,7 +118,11 @@ class CommRouter:
     def inbound(self, from_stage: str) -> TransportKind:
         if from_stage in self.remote_stage_names:
             return TransportKind.MOONCAKE
-        if self.self_is_gpu and from_stage in self.gpu_stage_names:
+        if (
+            self._transfer_policy is TransferPolicy.CUDA_IPC
+            and self.self_is_gpu
+            and from_stage in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
         return TransportKind.SHM
 
@@ -139,7 +161,11 @@ class CommRouter:
         if not devices or devices == {"cpu"}:
             return TransportKind.SHM
         if "cuda" in devices and devices <= {"cpu", "cuda"}:
-            if self.self_is_gpu and target in self.gpu_stage_names:
+            if (
+                self._transfer_policy is TransferPolicy.CUDA_IPC
+                and self.self_is_gpu
+                and target in self.gpu_stage_names
+            ):
                 return TransportKind.CUDA_IPC
             return TransportKind.SHM
         raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")

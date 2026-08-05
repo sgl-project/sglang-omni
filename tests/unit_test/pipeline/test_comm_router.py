@@ -6,12 +6,16 @@ import torch
 
 from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
+
+CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
 
 
 def test_comm_router_uses_cuda_ipc_for_same_node_gpu_payload_edges() -> None:
     router = CommRouter(
         stage_name="thinker",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         same_process_targets={"local"},
         gpu_stage_names={"decode"},
         comm_config={},
@@ -26,6 +30,7 @@ def test_comm_router_uses_mooncake_only_for_remote_edges() -> None:
     router = CommRouter(
         stage_name="thinker",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         same_process_targets=set(),
         gpu_stage_names={"decode"},
         remote_stage_names={"remote_decode"},
@@ -45,6 +50,7 @@ def test_comm_router_uses_cuda_ipc_for_mixed_gpu_payloads() -> None:
     router = CommRouter(
         stage_name="mm_aggregate",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         same_process_targets=set(),
         gpu_stage_names={"thinker"},
         comm_config={},
@@ -62,6 +68,7 @@ def test_comm_router_uses_shm_for_cuda_payloads_to_cpu_targets() -> None:
     router = CommRouter(
         stage_name="thinker",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         same_process_targets=set(),
         gpu_stage_names=set(),
         comm_config={},
@@ -75,6 +82,7 @@ def test_comm_router_admits_compatible_direct_cuda_ipc_namespace() -> None:
     router = CommRouter(
         stage_name="talker_ar",
         gpu_id=1,
+        platform_spec=CUDA_PLATFORM_SPEC,
         placement_gpu_id=1,
         same_process_targets={"local_code2wav"},
         gpu_stage_names={"same_code2wav", "cross_code2wav", "tp_decode"},
@@ -97,6 +105,7 @@ def test_comm_router_rejects_narrowed_direct_cuda_ipc_namespace() -> None:
     router = CommRouter(
         stage_name="thinker",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         placement_gpu_id=2,
         same_process_targets=set(),
         gpu_stage_names={"talker"},
@@ -112,6 +121,7 @@ def test_comm_router_uses_cuda_ipc_for_cuda_stream_chunks_only() -> None:
     router = CommRouter(
         stage_name="thinker",
         gpu_id=0,
+        platform_spec=CUDA_PLATFORM_SPEC,
         same_process_targets=set(),
         gpu_stage_names={"decode"},
         comm_config={},

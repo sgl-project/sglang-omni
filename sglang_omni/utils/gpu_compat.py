@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, Sequence
 
 from sglang_omni.utils.gpu_memory import (
     _get_device_handle,
@@ -153,18 +153,6 @@ def get_gpu_compat_env_defaults(
     if not visible_gpus_need_flashinfer_cuda_norm(source_env):
         return {}
     return {_FLASHINFER_USE_CUDA_NORM: "1"}
-
-
-def apply_gpu_compat_env_defaults(
-    env: MutableMapping[str, str] | None = None,
-) -> dict[str, str]:
-    """Apply GPU compatibility env overrides to the current process."""
-    target_env = os.environ if env is None else env
-    overrides = get_gpu_compat_env_defaults(target_env)
-    for key, value in overrides.items():
-        target_env[key] = value
-        logger.info(f"Applied GPU compatibility env override: {key}={value}")
-    return overrides
 
 
 def gpu_ids_support_p2p_mesh(

@@ -36,6 +36,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
     StageWorkerProcessSpec,
 )
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ def _build_stage_groups(
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
+    platform_spec: ResolvedPlatformSpec,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -105,6 +107,7 @@ def _build_stage_groups(
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
+            platform_spec=platform_spec,
             factory=stage_cfg.factory,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
@@ -155,6 +158,7 @@ def _build_stage_groups(
                     process_name=process_plan.tp_stage_to_processes[stage_cfg.name][
                         spec.tp_rank
                     ],
+                    platform_spec=platform_spec,
                     stage_specs=[spec],
                 )
                 for spec in specs
@@ -169,6 +173,7 @@ def _build_stage_groups(
                 [
                     StageWorkerProcessSpec(
                         process_name=group.name,
+                        platform_spec=platform_spec,
                         stage_specs=[
                             single_stage_specs[stage_name]
                             for stage_name in group.stage_names
@@ -382,6 +387,7 @@ class MultiProcessPipelineRunner:
 
     def __init__(self, config: PipelineConfig):
         self._config = config
+        self._platform_spec: ResolvedPlatformSpec | None = None
         self._coordinator: Coordinator | None = None
         self._ipc_runtime_dir: IpcRuntimeDir | None = None
         self._groups: list[StageGroup] = []
@@ -423,6 +429,7 @@ class MultiProcessPipelineRunner:
             ctx = multiprocessing.get_context("spawn")
             self._fatal_event = asyncio.Event()
             self._fatal_error = None
+            self._platform_spec = OmniPlatform.detect().to_spec()
             prep = prepare_pipeline_runtime(
                 self._config,
                 ipc_runtime_dir=self._ipc_runtime_dir,
@@ -437,6 +444,7 @@ class MultiProcessPipelineRunner:
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
+                platform_spec=self._platform_spec,
             )
 
             terminal_stages_resolver = (

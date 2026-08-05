@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,12 +15,23 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
     get_stage_process_env,
 )
+from sglang_omni.platforms import CudaOmniPlatform, PlatformEnum, ResolvedPlatformSpec
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
+
+CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
+
+
+@pytest.fixture(autouse=True)
+def _cuda_platform(monkeypatch):
+    """These tests specify the established NVIDIA worker-launch contract."""
+
+    monkeypatch.setattr(stage_workers, "current_platform", CudaOmniPlatform())
 
 
 def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
     return StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         role="leader",
         tp_rank=0,
         tp_size=2,
@@ -28,10 +40,26 @@ def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
 
 
 def _worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
+    for stage_spec in stage_specs:
+        assert stage_spec.platform_spec == CUDA_PLATFORM_SPEC
     return StageWorkerProcessSpec(
         process_name="worker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         stage_specs=list(stage_specs),
     )
+
+
+def test_worker_process_carries_one_serializable_platform_spec() -> None:
+    platform_spec = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
+    process = _worker_spec(
+        StageLaunchConfig(stage_name="encoder", platform_spec=platform_spec),
+        StageLaunchConfig(stage_name="decoder", platform_spec=platform_spec),
+    )
+
+    restored = pickle.loads(pickle.dumps(process))
+
+    assert restored.platform_spec == platform_spec
+    assert all(stage.platform_spec == platform_spec for stage in restored.stage_specs)
 
 
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
@@ -48,7 +76,14 @@ def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
 
 def test_tp_process_env_requires_gpu_id() -> None:
     with pytest.raises(ValueError, match="requires a GPU id"):
-        get_stage_process_env(StageLaunchConfig(stage_name="thinker", tp_size=2), {})
+        get_stage_process_env(
+            StageLaunchConfig(
+                stage_name="thinker",
+                platform_spec=CUDA_PLATFORM_SPEC,
+                tp_size=2,
+            ),
+            {},
+        )
 
 
 def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
@@ -57,6 +92,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         role="follower",
         tp_rank=1,
         tp_size=2,
@@ -65,7 +101,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         comm_config={"gpu_id": 1},
     )
 
-    stage_workers._prepare_cuda_environment(spec, _RecordingLog())
+    stage_workers._prepare_accelerator_environment(spec, _RecordingLog())
 
     assert spec.gpu_id == 0
     assert spec.placement_gpu_id == 1
@@ -78,6 +114,7 @@ def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> Non
     monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
 
@@ -91,6 +128,7 @@ def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:
     monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "operator")
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
 
@@ -137,6 +175,7 @@ def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
     monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("make_scheduler"),
     )
 
@@ -159,6 +198,7 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("runtime_factory"),
         factory_args={
             "model_path": "runtime-model",
@@ -201,7 +241,9 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     monkeypatch.setattr(
         torch.cuda,
         "set_device",
-        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+        lambda device: set_device_calls.append(
+            int(device.index) if isinstance(device, torch.device) else int(device)
+        ),
     )
     monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
     monkeypatch.setattr(stage_workers, "Stage", _FakeStage)
@@ -209,6 +251,7 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     specs = [
         StageLaunchConfig(
             stage_name=f"gpu_stage_{idx}",
+            platform_spec=CUDA_PLATFORM_SPEC,
             factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
             factory_arg_defaults={"gpu_id": 0},
             gpu_id=0,
@@ -230,6 +273,7 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     monkeypatch.setattr(stage_workers, "gpu_startup_lock", _unexpected_lock)
     spec = StageLaunchConfig(
         stage_name="decode",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("make_scheduler"),
     )
 

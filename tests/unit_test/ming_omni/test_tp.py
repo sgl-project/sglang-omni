@@ -10,9 +10,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
 from tests.unit_test.fakes import FakeServerArgs
 
 _PROJECT_PREFIX = "sglang_omni."
+CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
 
 
 def _ming_config_with_thinker_tp2(config_cls):
@@ -36,6 +38,7 @@ def _build_groups(config, build_stage_groups, prepare_pipeline_runtime):
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
+            platform_spec=CUDA_PLATFORM_SPEC,
         )
     finally:
         if prep.runtime_dir is not None:
@@ -585,6 +588,7 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
                     role="leader",
                     get_next=lambda _name: [],
                     gpu_id=0,
+                    platform_spec=CUDA_PLATFORM_SPEC,
                     endpoints={},
                     control_plane=MagicMock(),
                     relay=MagicMock(),

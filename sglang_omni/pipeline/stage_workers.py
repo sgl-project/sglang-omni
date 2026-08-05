@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,10 +23,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
-from sglang_omni.utils.gpu_compat import (
-    apply_gpu_compat_env_defaults,
-    get_gpu_compat_env_defaults,
-)
+from sglang_omni.platforms import OmniPlatform, ResolvedPlatformSpec, current_platform
 from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 
@@ -46,6 +44,7 @@ class StageLaunchConfig:
 
     # Identity
     stage_name: str
+    platform_spec: ResolvedPlatformSpec
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
@@ -123,7 +122,18 @@ class StageWorkerProcessSpec:
     """Everything one OS process needs to run one or more stages."""
 
     process_name: str
+    platform_spec: ResolvedPlatformSpec
     stage_specs: list[StageLaunchConfig]
+
+    def __post_init__(self) -> None:
+        if any(stage.platform_spec != self.platform_spec for stage in self.stage_specs):
+            raise ValueError(
+                f"Process {self.process_name!r} and its stages must use the same "
+                "platform spec"
+            )
+
+    def platform(self) -> OmniPlatform:
+        return OmniPlatform.from_spec(self.platform_spec)
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -161,12 +171,9 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
                 env_default_updates[key] = value
 
     worker_process_env = _get_worker_process_env(spec)
-    compat_env_defaults = get_gpu_compat_env_defaults(
-        {
-            **os.environ,
-            **env_default_updates,
-            **worker_process_env,
-        }
+    platform = spec.platform()
+    compat_env_defaults = platform.compatibility_env_defaults(
+        {**os.environ, **env_default_updates, **worker_process_env}
     )
     updates = {
         **env_default_updates,
@@ -179,8 +186,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
 
     backup = {key: os.environ.get(key) for key in updates}
     try:
-        for key, value in updates.items():
-            os.environ[key] = value
+        os.environ.update(updates)
         yield
     finally:
         for key, value in backup.items():
@@ -325,7 +331,7 @@ class StageGroup:
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
-                    f"{process_spec.process_name} " f"(pid={p.pid}, exit={p.exitcode})"
+                    f"{process_spec.process_name} (pid={p.pid}, exit={p.exitcode})"
                 )
         return ", ".join(parts) if parts else "(none)"
 
@@ -374,13 +380,14 @@ def stage_process_main(
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
+        platform = spec.platform()
         for stage_spec in spec.stage_specs:
-            _prepare_cuda_environment(stage_spec, log)
-        apply_gpu_compat_env_defaults()
+            _prepare_accelerator_environment(stage_spec, log, platform=platform)
+        platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
+        _reclaim_process_accelerator_memory(
             _stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
@@ -396,7 +403,7 @@ def stage_process_main(
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
         _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
+        _reclaim_process_accelerator_memory(
             _stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
@@ -521,7 +528,7 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         )
 
 
-def _reclaim_process_cuda_memory(
+def _reclaim_process_accelerator_memory(
     gpu_ids: Iterable[int],
     log: logging.Logger,
     *,
@@ -532,26 +539,21 @@ def _reclaim_process_cuda_memory(
         return
     gc.collect()
     try:
-        import torch
-
-        if not torch.cuda.is_available():
-            return
         log.warning(
-            "Reclaiming CUDA memory after %s on gpu_ids=%s",
+            "Reclaiming accelerator memory after %s on device_ids=%s",
             reason,
             gpu_id_list,
         )
         for gpu_id in gpu_id_list:
             try:
-                torch.cuda.set_device(int(gpu_id))
-                with suppress(Exception):
-                    torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-                with suppress(Exception):
-                    torch.cuda.ipc_collect()
+                device = current_platform.get_device(int(gpu_id))
+                current_platform.reclaim_process_memory(
+                    device,
+                    suppress_errors=True,
+                )
             except Exception as exc:
                 log.warning(
-                    "CUDA memory reclaim failed for gpu_id=%s after %s: %s",
+                    "Accelerator memory reclaim failed for device_id=%s after %s: %s",
                     gpu_id,
                     reason,
                     exc,
@@ -559,13 +561,13 @@ def _reclaim_process_cuda_memory(
                 )
         gc.collect()
         log.warning(
-            "CUDA memory reclaim complete after %s on gpu_ids=%s",
+            "Accelerator memory reclaim complete after %s on device_ids=%s",
             reason,
             gpu_id_list,
         )
     except Exception as exc:
         log.warning(
-            "CUDA memory reclaim skipped after %s: %s",
+            "Accelerator memory reclaim skipped after %s: %s",
             reason,
             exc,
             exc_info=True,
@@ -579,10 +581,13 @@ def _construct_stage(
 ) -> Stage:
     gpu_id = spec.gpu_id
     if gpu_id is not None:
-        import torch
-
-        torch.cuda.set_device(int(gpu_id))
-        log.info("Set current CUDA device to %s for stage %s", gpu_id, spec.stage_name)
+        current_platform.set_device(current_platform.get_device(int(gpu_id)))
+        log.info(
+            "Set current %s device to %s for stage %s",
+            current_platform.device_name,
+            gpu_id,
+            spec.stage_name,
+        )
 
     # --- Build scheduler via factory ---
     log.info(
@@ -677,8 +682,8 @@ def _construct_stage(
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
         allowed_stream_targets = set(_map_target_list(spec.stream_targets))
-        get_stream_done_targets = (
-            lambda request_id, output, _fn=stream_done_to_fn: _target_result(
+        get_stream_done_targets = lambda request_id, output, _fn=stream_done_to_fn: (
+            _target_result(
                 _fn(request_id, output),
                 allowed_targets=allowed_stream_targets,
                 allow_empty=True,
@@ -761,6 +766,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        platform_spec=spec.platform_spec,
     )
 
     if spec.is_stream_receiver:
@@ -799,39 +805,36 @@ def get_stage_process_env(
         return {}
 
     source_env = env if env is not None else os.environ
-    original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
     if spec.gpu_id is None:
         raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
-    if original_visible:
-        visible_devices = [item.strip() for item in original_visible.split(",")]
-        if spec.gpu_id >= len(visible_devices):
-            raise ValueError(
-                f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
-            )
-        mapped_gpu = visible_devices[spec.gpu_id]
-    else:
-        mapped_gpu = str(spec.gpu_id)
 
+    platform = OmniPlatform.from_spec(spec.platform_spec)
     return {
-        "CUDA_VISIBLE_DEVICES": mapped_gpu,
+        **platform.worker_device_env(spec.gpu_id, source_env),
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
     }
 
 
-def _prepare_cuda_environment(
+def _prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
+    *,
+    platform: OmniPlatform | None = None,
 ) -> None:
-    """Map TP rank processes to one visible CUDA device before torch init."""
+    """Map a TP rank to one visible accelerator before torch initialization."""
+    if spec.gpu_id is None:
+        return
+    platform = platform or OmniPlatform.from_spec(spec.platform_spec)
     if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
-        mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
+        mapped_device_env = platform.worker_device_env(0, os.environ)
+        visibility_env, mapped_gpu = next(iter(mapped_device_env.items()))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
-            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            "TP stage %s rank %d sees %s device=%s (local device_id=0)",
             spec.stage_name,
             spec.tp_rank,
+            visibility_env,
             mapped_gpu,
         )
         return
@@ -840,15 +843,17 @@ def _prepare_cuda_environment(
     if not env_updates:
         return
 
-    mapped_gpu = env_updates["CUDA_VISIBLE_DEVICES"]
-    for key, value in env_updates.items():
-        os.environ[key] = value
+    visibility_env = platform.device_control_env_var
+    assert visibility_env is not None
+    mapped_gpu = env_updates.get(visibility_env, str(spec.gpu_id))
+    os.environ.update(env_updates)
 
     _normalize_spec_gpu_id_to_local_device(spec)
     log.info(
-        "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+        "Mapped TP stage %s rank %d to %s=%s (local device_id=0)",
         spec.stage_name,
         spec.tp_rank,
+        visibility_env,
         mapped_gpu,
     )
 

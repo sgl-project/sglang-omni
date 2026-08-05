@@ -24,6 +24,7 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     RecordingCoordinatorControlPlane,
     RecordingStageControlPlane,
 )
+from tests.unit_test.pipeline.helpers import CUDA_PLATFORM_SPEC
 
 
 class AdminScheduler(FakeScheduler):
@@ -451,6 +452,7 @@ def test_stage_admin_dispatches_to_scheduler() -> None:
             role="single",
             get_next=lambda request_id, output: None,
             gpu_id=None,
+            platform_spec=CUDA_PLATFORM_SPEC,
             endpoints={},
             control_plane=control_plane,
             relay=FakeRelay(),

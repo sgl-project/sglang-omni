@@ -31,7 +31,9 @@ from sglang_omni.models.audar_tts.request_builders import build_audar_state
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import (
+    _build_stage_groups as _build_stage_groups_impl,
+)
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
@@ -39,6 +41,11 @@ from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
+from tests.unit_test.pipeline.helpers import CUDA_PLATFORM_SPEC
+
+
+def _build_stage_groups(*args, **kwargs):
+    return _build_stage_groups_impl(*args, platform_spec=CUDA_PLATFORM_SPEC, **kwargs)
 
 
 class FakeCodec:

@@ -35,7 +35,7 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     make_tensor_payload,
     tensor_equal,
 )
-from tests.unit_test.pipeline.helpers import make_stage
+from tests.unit_test.pipeline.helpers import CUDA_PLATFORM_SPEC, make_stage
 
 
 class _CloseAwareControlPlane(RecordingStageControlPlane):
@@ -159,6 +159,7 @@ def test_stage_routes_results_streams_and_clears_abort_state() -> None:
 def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:
     spec = StageLaunchConfig(
         stage_name="thinker",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("make_scheduler"),
         next_stages=["decode"],
         route_fn=fake_factory_path("route_to_undeclared_talker"),
@@ -188,6 +189,7 @@ def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None
 def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> None:
     spec = StageLaunchConfig(
         stage_name="aggregate",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("make_scheduler"),
         next_stages="decode",
         wait_for=["preprocess", "thinker"],
@@ -208,6 +210,7 @@ def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> No
 def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
     spec = StageLaunchConfig(
         stage_name="aggregate",
+        platform_spec=CUDA_PLATFORM_SPEC,
         factory=fake_factory_path("make_scheduler"),
         next_stages="decode",
         wait_for=["preprocess", "thinker"],
@@ -1020,6 +1023,7 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
             role="single",
             get_next=lambda request_id, output: None,
             gpu_id=0,
+            platform_spec=CUDA_PLATFORM_SPEC,
             endpoints={"code2wav": "inproc://code2wav"},
             control_plane=control_plane,
             relay=relay,
@@ -1067,6 +1071,7 @@ def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> No
             role="single",
             get_next=lambda request_id, output: None,
             gpu_id=0,
+            platform_spec=CUDA_PLATFORM_SPEC,
             endpoints={"mm_aggregate": "inproc://mm"},
             control_plane=control_plane,
             relay=relay,
@@ -1108,6 +1113,7 @@ def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
             role="single",
             get_next=lambda request_id, output: None,
             gpu_id=0,
+            platform_spec=CUDA_PLATFORM_SPEC,
             endpoints={"thinker": "inproc://thinker"},
             control_plane=control_plane,
             relay=relay,
@@ -1147,6 +1153,7 @@ def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) ->
             role="single",
             get_next=lambda request_id, output: None,
             gpu_id=0,
+            platform_spec=CUDA_PLATFORM_SPEC,
             endpoints={"talker_ar": "inproc://talker"},
             control_plane=control_plane,
             relay=relay,

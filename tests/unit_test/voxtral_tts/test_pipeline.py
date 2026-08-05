@@ -340,7 +340,11 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
     """Decode should use SGLang's graph-capable forward result."""
     from sglang.srt.model_executor import forward_batch_info
 
+    import sglang_omni.model_runner.base as model_runner_base
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+    from sglang_omni.platforms import CpuOmniPlatform
+
+    monkeypatch.setattr(model_runner_base, "current_platform", CpuOmniPlatform())
 
     fake_forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1]),

@@ -13,6 +13,7 @@ from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -247,6 +248,10 @@ class SGLModelRunner(ModelRunner):
         self._weight_share_record = None
         if ws is None:
             return super().load_model()
+        if not current_platform.support_same_device_weight_sharing():
+            raise ipc_weights.WeightShareError(
+                f"Weight sharing is not supported on {current_platform.device_name}"
+            )
 
         # Note (Jiaxin Deng): TP/PP ranks are separate processes inheriting the
         # env var, and their shards share names/shapes/dtypes across ranks, so
@@ -291,7 +296,6 @@ class SGLModelRunner(ModelRunner):
         # The exact handle file name needs the constructed model's class, so
         # this pre-wait polls for any export in the directory; follower_attach
         # below still waits on (and validates) the engine's own file.
-        import torch
 
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
         original_load_format = self.server_args.load_format
@@ -321,7 +325,7 @@ class SGLModelRunner(ModelRunner):
         )
         # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
         # driver so KV-pool profiling and later replicas see the freed memory.
-        torch.cuda.empty_cache()
+        current_platform.empty_cache()
 
     def init_cuda_graphs(self, capture_decode_cuda_graph: bool = True):
         """Re-verify shared weights and finish post-capture KV sizing.

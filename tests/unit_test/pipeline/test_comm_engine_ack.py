@@ -11,11 +11,14 @@ import torch
 from sglang_omni.comm.data_ref import DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.platforms import PlatformEnum, ResolvedPlatformSpec
 from sglang_omni.proto import DataAckMessage, DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     RecordingStageControlPlane,
     make_stage_payload,
 )
+
+CUDA_PLATFORM_SPEC = ResolvedPlatformSpec(PlatformEnum.CUDA, "cuda", "nccl")
 
 
 class _AckedOp:
@@ -101,6 +104,7 @@ def test_comm_engine_releases_sender_op_after_data_ack() -> None:
             CommRouter(
                 stage_name="sender",
                 gpu_id=None,
+                platform_spec=CUDA_PLATFORM_SPEC,
                 same_process_targets=set(),
                 gpu_stage_names=set(),
                 comm_config={"ack_timeout_s": 1.0},
@@ -146,6 +150,7 @@ def test_comm_engine_ignores_unknown_data_ack() -> None:
         CommRouter(
             stage_name="sender",
             gpu_id=None,
+            platform_spec=CUDA_PLATFORM_SPEC,
             same_process_targets=set(),
             gpu_stage_names=set(),
         )
@@ -169,6 +174,7 @@ def test_comm_engine_ignores_duplicate_data_ack() -> None:
             CommRouter(
                 stage_name="sender",
                 gpu_id=None,
+                platform_spec=CUDA_PLATFORM_SPEC,
                 same_process_targets=set(),
                 gpu_stage_names=set(),
                 comm_config={"ack_timeout_s": 1.0},

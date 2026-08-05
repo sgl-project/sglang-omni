@@ -41,11 +41,11 @@ from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
-from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
     format_bytes_gib,
@@ -492,7 +492,7 @@ def launch_server(
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
     """
-    apply_gpu_compat_env_defaults()
+    current_platform.apply_compatibility_env_defaults(os.environ)
     asyncio.run(
         _run_server(
             pipeline_config,

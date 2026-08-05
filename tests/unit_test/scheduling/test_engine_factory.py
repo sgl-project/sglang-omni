@@ -69,13 +69,15 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
 
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
-    from sglang_omni.scheduling import bootstrap, sglang_backend
+    from sglang_omni.platforms import CudaOmniPlatform
+    from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
     infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
+    monkeypatch.setattr(engine_factory, "current_platform", CudaOmniPlatform())
 
     class FakeModel:
         pass

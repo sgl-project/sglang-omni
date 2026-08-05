@@ -44,7 +44,7 @@ class _FakeCuda:
 
 class _FakeTorch:
     __version__ = "2.11.0+cu130"
-    version = SimpleNamespace(cuda="13.0")
+    version = SimpleNamespace(cuda="13.0", hip=None)
 
     def __init__(self) -> None:
         self.cuda = _FakeCuda()
@@ -100,7 +100,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_torch = _FakeTorch()
     fake_torch.cuda.properties.reverse()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "1,0"},
@@ -114,7 +114,8 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
         "GPU-uuid-b",
         "GPU-uuid-a",
     ]
-    assert report["environment"]["cuda_visible_devices"] == "1,0"
+    assert report["environment"]["device_control_env_var"] == ("CUDA_VISIBLE_DEVICES")
+    assert report["environment"]["visible_devices"] == "1,0"
     assert set(report) == {
         "schema_version",
         "environment",
@@ -142,7 +143,7 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,2"},
@@ -168,7 +169,7 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,1"},
@@ -201,7 +202,7 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
         )
     ]
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", list)
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},
@@ -327,7 +328,7 @@ def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     report = {
         "schema_version": 1,
         "environment": {
-            "cuda_available": True,
+            "accelerator_available": True,
             "logical_device_count": 1,
         },
         "gpus": [{"logical_index": 0}],
@@ -346,12 +347,12 @@ def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     assert json.loads(result.stdout) == report
 
 
-def test_check_gpu_strict_fails_without_visible_cuda_device(monkeypatch) -> None:
+def test_check_gpu_strict_fails_without_visible_accelerator(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
         "schema_version": 1,
         "environment": {
-            "cuda_available": False,
+            "accelerator_available": False,
             "logical_device_count": 0,
         },
         "gpus": [],
