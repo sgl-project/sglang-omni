@@ -215,6 +215,9 @@ Relevant model CI ownership:
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
+- `test_qwen3_omni_realtime.py` keeps the lower-cost thinker-only VAD/text
+  path covered; `test_qwen3_omni_realtime_audio.py` separately launches the
+  speech topology and verifies VAD-driven raw PCM16 response streaming.
 - `test_asr_ci_multi_speaker.py`: MOSS-Transcribe-Diarize multi-speaker
   ASR/diarization correctness + speed via the managed router at DP=2. It
   runs movies800times (non-stream + stream), aishell4_long, and googletime,
@@ -378,7 +381,8 @@ that happened to contain an older version of the test.
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
-  - pipeline config and stage factory concurrency defaults
+  - pipeline config, stage factory concurrency defaults, async-decode default,
+    and `--decode-mode async|sync` CLI overrides
   - single-source audio token length formula used by both processor and
     request builder paths
   - token-level result adapter marker handling, avoiding decode/encode
@@ -479,6 +483,8 @@ that happened to contain an older version of the test.
   - pipeline config and registry contracts
   - OmniScheduler-backed AR stage factory wiring
   - request mapping for `ref_audio` / `ref_text` and `references`
+  - incremental codec-to-vocoder ordering, priority batching, fallback parity,
+    CUDA stream handoff, and abort/failure cleanup
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation

@@ -23,9 +23,9 @@ def test_s0_graph_replay_is_deterministic():
     Exercises the same decode-frame kernel as the production v1.5 pipeline
     (MossTTSLocalTransformer + sample_seeded_branchless loop).
     """
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
     from sglang_omni.models.moss_tts_local.local_transformer import (
         MossTTSLocalTransformer,
-        sample_seeded_branchless,
     )
 
     device = torch.device("cuda")

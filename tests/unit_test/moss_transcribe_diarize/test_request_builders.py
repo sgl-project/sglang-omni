@@ -10,6 +10,8 @@ import pytest
 import torch
 
 import sglang_omni.models.moss_transcribe_diarize.request_builders as request_builders
+import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.moss_transcribe_diarize import request_builders
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
@@ -360,9 +362,9 @@ def test_request_builder_uses_default_prompt_for_bare_string_audio_source(
     processor = FakeProcessor()
     request_builder = _request_builder(processor)
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
 
     request_builder(_payload_with_inputs("/tmp/audio.wav"))

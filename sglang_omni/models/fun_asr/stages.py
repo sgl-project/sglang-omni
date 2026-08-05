@@ -55,7 +55,7 @@ def _compile_fun_asr_audio_encoder(
     compile cost at startup instead of on the first request; Dynamo guards on
     grad mode, so the warmup must run in the same mode as the serving caller —
     ``torch.inference_mode`` for the pre-LM encoder service
-    (``_encode_batch``), ambient mode for inline prefill on the scheduler
+    (``_batch_context``), ambient mode for inline prefill on the scheduler
     loop.
     """
     import contextlib

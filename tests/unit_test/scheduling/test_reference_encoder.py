@@ -67,6 +67,21 @@ class _TensorHook(TensorReferenceEncodeHook[str]):
         return torch.full((2,), value, dtype=torch.long)
 
 
+def test_service_close_delegates_to_hook() -> None:
+    class _ClosableHook(_TensorHook):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    hook = _ClosableHook()
+    service = ReferenceEncodeService(hook)
+
+    service.close()
+
+    assert hook.closed
+
+
 def test_tensor_hook_builds_key_and_owns_stored_and_loaded_tensors() -> None:
     class _CompressedHook(_TensorHook):
         storage_dtype = torch.int32

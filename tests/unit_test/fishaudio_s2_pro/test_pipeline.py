@@ -563,9 +563,13 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
 
     class _Layer:
         def forward_kvcached(
-            self, x: torch.Tensor, freqs_cis: torch.Tensor, cache_seqlens: torch.Tensor
+            self,
+            x: torch.Tensor,
+            freqs_cis: torch.Tensor,
+            cache_seqlens: torch.Tensor,
+            cache_position: int,
         ) -> torch.Tensor:
-            del freqs_cis, cache_seqlens
+            del freqs_cis, cache_seqlens, cache_position
             return x
 
     class _AudioDecoder:
@@ -799,6 +803,7 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     # note (Gaokai): the Fish migration hinges on make_adapters() saving the
     # third adapter and extra_scheduler_kwargs() passing it into OmniScheduler.
     assert callable(scheduler.stream_output_builder)
+    assert build_kwargs["attention_backend"] == "fa3"
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["max_running_requests"] == 64
     assert build_kwargs["cuda_graph_max_bs"] == 64
@@ -869,23 +874,88 @@ def test_s2pro_engine_preserves_explicit_attention_backend(
 ) -> None:
     result = _run_s2pro_engine_with_fake_buffers(
         monkeypatch,
-        sm_version=None,
-        flashinfer_available=False,
-        server_args_overrides={"attention_backend": "fa3"},
+        sm_version=89,
+        flashinfer_available=True,
+        server_args_overrides={"attention_backend": "triton"},
     )
 
-    assert result.scheduler.server_args.attention_backend == "fa3"
+    assert result.scheduler.server_args.attention_backend == "triton"
 
 
-@pytest.mark.parametrize("sm_version", [None, 80, 103])
-def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+@pytest.mark.parametrize(
+    ("sm_version", "expected_error"),
+    [
+        (None, "cannot validate Fast-AR attention.*gpu_id=0"),
+        (80, "Fast-AR does not support SM80"),
+        (103, "Fast-AR does not support SM103"),
+    ],
+)
+def test_s2pro_engine_rejects_explicit_override_on_unvalidated_fast_ar_architecture(
     monkeypatch: pytest.MonkeyPatch,
     sm_version: int | None,
+    expected_error: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=expected_error):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=sm_version,
+            server_args_overrides={"attention_backend": "fa3"},
+        )
+
+
+def test_s2pro_engine_rejects_explicit_override_without_fast_ar_flashinfer(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(
         RuntimeError,
-        match="cannot select a default attention backend",
+        match="Fast-AR requires FlashInfer.*SGLANG_IS_FLASHINFER_AVAILABLE",
     ):
+        _run_s2pro_engine_with_fake_buffers(
+            monkeypatch,
+            sm_version=89,
+            flashinfer_available=False,
+            server_args_overrides={"attention_backend": "fa3"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_compile"),
+    [(89, False), (90, True), (100, False), (120, False)],
+)
+def test_s2pro_engine_compile_default_follows_validation_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int,
+    expected_compile: bool,
+) -> None:
+    result = _run_s2pro_engine_with_fake_buffers(
+        monkeypatch,
+        sm_version=sm_version,
+    )
+
+    assert result.build_kwargs["enable_torch_compile"] is expected_compile
+    expected_compile_calls = (
+        [(result.scheduler.model_runner.args[0].model_runner.model, 64)]
+        if expected_compile
+        else []
+    )
+    assert result.compile_calls == expected_compile_calls
+    assert result.init_graph_calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_error"),
+    [
+        (None, "cannot validate Fast-AR attention.*gpu_id=0"),
+        (80, "Fast-AR does not support SM80"),
+        (103, "Fast-AR does not support SM103"),
+    ],
+)
+def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+    expected_error: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=expected_error):
         _run_s2pro_engine_with_fake_buffers(
             monkeypatch,
             sm_version=sm_version,
@@ -1258,6 +1328,85 @@ def test_fish_slow_hf_modeling_surface_is_removed() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "capability,expected",
+    [((8, 9), False), ((9, 0), True), ((10, 0), False), ((12, 0), False)],
+)
+def test_fast_ar_fa3_selection_follows_compute_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    capability: tuple[int, int],
+    expected: bool,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
+        audio_decoder,
+    )
+
+    audio_decoder._fast_ar_uses_fa3.cache_clear()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: capability)
+
+    assert audio_decoder._fast_ar_uses_fa3(0) is expected
+
+
+def test_fast_ar_rejects_unsupported_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
+        audio_decoder,
+    )
+
+    audio_decoder._fast_ar_uses_fa3.cache_clear()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: (8, 0))
+
+    with pytest.raises(RuntimeError, match="Fast-AR does not support SM80"):
+        audio_decoder._fast_ar_uses_fa3(0)
+
+
+def test_flashinfer_fast_ar_updates_kv_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import (
+        audio_decoder,
+    )
+
+    def single_prefill(
+        q: torch.Tensor,
+        _k: torch.Tensor,
+        _v: torch.Tensor,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        del kwargs
+        return q
+
+    monkeypatch.setitem(
+        sys.modules,
+        "flashinfer",
+        SimpleNamespace(single_prefill_with_kv_cache=single_prefill),
+    )
+    q = torch.randn(2, 1, 4, 8)
+    k = torch.randn(2, 1, 2, 8)
+    v = torch.randn(2, 1, 2, 8)
+    k_cache = torch.randn(2, 5, 2, 8)
+    v_cache = torch.randn(2, 5, 2, 8)
+    expected_k_cache = k_cache.clone()
+    expected_v_cache = v_cache.clone()
+    expected_k_cache[:, 2] = k[:, 0]
+    expected_v_cache[:, 2] = v[:, 0]
+
+    output = audio_decoder._flashinfer_kvcache_attention(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        causal=True,
+        cache_position=2,
+    )
+
+    assert torch.equal(output, q)
+    assert torch.equal(k_cache, expected_k_cache)
+    assert torch.equal(v_cache, expected_v_cache)
+
+
 def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
         FishQwen3AudioDecoder,
@@ -1265,9 +1414,13 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
 
     class _EagerLayer:
         def forward_kvcached(
-            self, x: torch.Tensor, freqs_cis: torch.Tensor, cache_seqlens: torch.Tensor
+            self,
+            x: torch.Tensor,
+            freqs_cis: torch.Tensor,
+            cache_seqlens: torch.Tensor,
+            cache_position: int,
         ) -> torch.Tensor:
-            del freqs_cis, cache_seqlens
+            del freqs_cis, cache_seqlens, cache_position
             seen_calls.append("eager")
             return x + 10
 
@@ -1284,9 +1437,12 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
     seen_calls: list[str] = []
 
     def compiled(
-        x: torch.Tensor, freqs_cis: torch.Tensor, cache_seqlens: torch.Tensor
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cache_position: int,
     ) -> torch.Tensor:
-        del freqs_cis, cache_seqlens
+        del freqs_cis, cache_seqlens, cache_position
         seen_calls.append("compiled")
         return x + 1
 

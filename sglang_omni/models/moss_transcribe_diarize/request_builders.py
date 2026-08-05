@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -20,10 +19,10 @@ from sglang.srt.managers.schedule_batch import (
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 
 logger = logging.getLogger(__name__)
 
@@ -75,29 +74,32 @@ def _only_audio(value: Any) -> Any:
 
 
 def _audio_source_from_payload(payload: StagePayload) -> Any:
+    """Extended source resolver: MOSS accepts more sources than the shared
+    default (``audio_data``, single-item ``audios`` lists, metadata fallbacks,
+    and ``{"data"|"path"|"url": ...}`` dict entries)."""
     inputs = payload.request.inputs
     if isinstance(inputs, dict):
         for key in ("audio_bytes", "bytes", "file", "audio_data"):
             value = inputs.get(key)
             if value is not None:
-                return value
+                return _unwrap_source_dict(value)
         value = inputs.get("audios")
         if value is not None:
-            return _only_audio(value)
+            return _unwrap_source_dict(_only_audio(value))
         for key in ("audio_path", "path", "url"):
             value = inputs.get(key)
             if value is not None:
-                return value
+                return _unwrap_source_dict(value)
 
     metadata = payload.request.metadata or {}
     value = metadata.get("audios")
     if value is not None:
-        return _only_audio(value)
+        return _unwrap_source_dict(_only_audio(value))
     for key in ("audio_data", "audio"):
         value = metadata.get(key)
         if value is not None:
-            return value
-    return inputs
+            return _unwrap_source_dict(value)
+    return _unwrap_source_dict(inputs)
 
 
 def _has_metadata_audio_source(payload: StagePayload) -> bool:
@@ -107,19 +109,15 @@ def _has_metadata_audio_source(payload: StagePayload) -> bool:
     )
 
 
-def _load_audio(source: Any) -> np.ndarray:
+def _unwrap_source_dict(source: Any) -> Any:
     if isinstance(source, dict):
         if source.get("data") is not None:
-            source = source["data"]
-        elif source.get("path") is not None:
-            source = source["path"]
-        elif source.get("url") is not None:
-            source = source["url"]
-    return load_audio(
-        source,
-        source_name="MOSS-Transcribe-Diarize",
-        target_sample_rate=_SAMPLE_RATE,
-    )
+            return source["data"]
+        if source.get("path") is not None:
+            return source["path"]
+        if source.get("url") is not None:
+            return source["url"]
+    return source
 
 
 def _explicit_generation_fields(metadata: dict[str, Any]) -> set[str]:
@@ -247,9 +245,15 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
         explicit_fields = _explicit_generation_fields(metadata)
-        audio = _load_audio(_audio_source_from_payload(payload))
-        audio_duration_s = float(len(audio) / _SAMPLE_RATE)
-        fingerprint = audio_fingerprint(audio)
+        prepared = prepare_audio(
+            payload,
+            source_name="MOSS-Transcribe-Diarize",
+            target_sample_rate=_SAMPLE_RATE,
+            source_resolver=_audio_source_from_payload,
+        )
+        audio = prepared.waveform
+        audio_duration_s = prepared.duration_s
+        fingerprint = prepared.fingerprint
         prompt = _prompt_from_payload(payload, processor)
 
         # note (db-ol): cap the processor limit at the model context. The
@@ -276,7 +280,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
-            hash=audio_fingerprint_int(fingerprint),
+            hash=prepared.fingerprint_int,
             feature=features,
             model_specific_data={
                 "audio_feature_lengths": audio_feature_lengths,
@@ -497,7 +501,6 @@ def make_moss_transcribe_diarize_stream_output_builder(
 __all__ = [
     "DEFAULT_TRANSCRIBE_DIARIZE_PROMPT",
     "MossTranscribeDiarizeRequestData",
-    "load_audio",
     "make_moss_transcribe_diarize_scheduler_adapters",
     "make_moss_transcribe_diarize_stream_output_builder",
     "postprocess_moss_transcribe_diarize_text",

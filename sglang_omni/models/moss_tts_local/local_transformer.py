@@ -8,55 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def sample_seeded_branchless(
-    logits: torch.Tensor,
-    *,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    top_k: torch.Tensor,
-    seeds: torch.Tensor,
-    positions: torch.Tensor,
-) -> torch.Tensor:
-    """Seeded temperature/top-k/top-p sampling without host control flow."""
-    from sglang.srt.layers.sampler import multinomial_with_seed
-
-    vocab = logits.shape[-1]
-    do_sample = temperature > 0
-    safe_temp = torch.where(do_sample, temperature, torch.ones_like(temperature))
-    scores = logits / safe_temp.unsqueeze(1)
-
-    k_active = (top_k > 0) & (top_k < vocab)
-    k_clamped = top_k.clamp(min=1, max=vocab)
-    sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
-    kth = sorted_scores.gather(1, (k_clamped - 1).unsqueeze(1))
-    threshold = torch.where(
-        k_active.unsqueeze(1), kth, torch.full_like(kth, float("-inf"))
-    )
-    scores = scores.masked_fill(scores < threshold, float("-inf"))
-
-    p_active = (top_p > 0.0) & (top_p < 1.0)
-    sorted_masked = sorted_scores.masked_fill(sorted_scores < threshold, float("-inf"))
-    probs_sorted = torch.softmax(sorted_masked, dim=-1)
-    cumulative = torch.cumsum(probs_sorted, dim=-1)
-    remove = cumulative > top_p.unsqueeze(1)
-    remove[..., 1:] = remove[..., :-1].clone()
-    remove[..., 0] = False
-    remove = remove & p_active.unsqueeze(1)
-    remove_scattered = torch.zeros_like(scores, dtype=torch.bool).scatter_(
-        -1, sorted_indices, remove
-    )
-    scores = scores.masked_fill(remove_scattered, float("-inf"))
-
-    probs = torch.softmax(scores, dim=-1)
-    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    # Note:(Chenchen Hong, Xuesong) post1's multinomial_with_seed is Gumbel-max and
-    # wants logits, not probs: softmax maps the top-k/top-p -inf to 0, so gumbel can
-    # pick a masked token. Match eager.
-    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
-    fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-    return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
-
-
 def _rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
     """Interleaved-pair rotation: [x0, x1, x2, x3, ...] -> [-x1, x0, -x3, x2, ...]."""
     even = x[..., ::2]
