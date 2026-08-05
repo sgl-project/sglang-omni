@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import io
 import logging
+import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -229,3 +231,40 @@ def plan_audio_chunks(
         ],
         waveform=waveform,
     )
+
+
+def _is_spaced_script(char: str) -> bool:
+    """Whether this character's writing system separates words with spaces.
+
+    Latin, Cyrillic, digits, half-width punctuation -> True. CJK characters
+    and full-width punctuation (east asian width W/F) -> False; those scripts
+    write without spaces.
+    """
+    if char.isspace():
+        return False
+    return unicodedata.east_asian_width(char) not in ("W", "F")
+
+
+def join_transcript_parts(parts: Iterable[str]) -> str:
+    """Join per-chunk transcripts into one, adding spaces only where the
+    script needs them.
+
+    A space goes in only when the characters on BOTH sides of the seam belong
+    to spaced scripts: "hello" + "world" -> "hello world", but Chinese chunks
+    join directly -- a space the reference transcript does not have counts as
+    an insertion error in CER, once per seam.
+
+    Each part is stripped first so the seam is fully controlled by this rule
+    rather than by whatever whitespace the model decoded; empty parts (an
+    all-silence chunk) are skipped.
+    """
+    joined = ""
+
+    for part in parts:
+        stripped = part.strip()
+        if not stripped:
+            continue
+        if joined and _is_spaced_script(joined[-1]) and _is_spaced_script(stripped[0]):
+            joined += " "
+        joined += stripped
+    return joined

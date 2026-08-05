@@ -119,6 +119,7 @@ from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
     check_total_duration,
+    join_transcript_parts,
     needs_chunking,
     plan_audio_chunks,
 )
@@ -1893,7 +1894,8 @@ async def _transcribe_audio_chunks(
        with a silent hole is the exact bug chunking exists to remove -- and
        the error names the chunk and its time range so the failure is
        diagnosable.
-    3. Chunk texts are joined with plain spaces.
+    3. Chunk texts are joined by join_transcript_parts (a space only where
+       the script uses spaces).
 
     TODO:
     - Run up to N chunks concurrently (semaphore, N configurable); the engine
@@ -1901,8 +1903,6 @@ async def _transcribe_audio_chunks(
       scheduler max_queued_requests to go with it.
     - Abort all in-flight chunk requests when the client disconnects, instead
       of letting the remaining chunks keep burning GPU.
-    - Script-aware joining: no space between CJK chunks, one space between
-      spaced-script words (plain spaces inflate CER on Chinese audio).
     """
     texts: list[str] = []
     for span in plan.spans:
@@ -1929,9 +1929,7 @@ async def _transcribe_audio_chunks(
                 f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
             ) from exc
         texts.append(result.text)
-    # Plain join for now; script-aware joining (no space inside CJK, one
-    # space between spaced-script words) lands with the merge step.
-    return " ".join(part.strip() for part in texts if part.strip())
+    return join_transcript_parts(texts)
 
 
 def build_transcription_generate_request(

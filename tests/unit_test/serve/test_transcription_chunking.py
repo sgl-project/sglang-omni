@@ -422,3 +422,47 @@ def test_plan_resamples_to_the_target_rate() -> None:
     assert plan.sample_rate == _SAMPLE_RATE
     assert plan.duration_s == pytest.approx(2.5)
     assert plan.spans[-1].end_sample == 40_000
+
+
+@pytest.mark.parametrize(
+    "parts, expected",
+    [
+        # Spaced scripts get one space at the seam.
+        (["hello", "world"], "hello world"),
+        # CJK joins directly; a space here would be a CER insertion error.
+        (["我们今天讨论的是", "长音频的切分"], "我们今天讨论的是长音频的切分"),
+        # Mixed seam: CJK on either side means no space.
+        (["...的是", "OpenAI 的方案"], "...的是OpenAI 的方案"),
+        (["the next is", "中文内容"], "the next is中文内容"),
+        # Full-width punctuation counts as CJK; half-width does not.
+        (["转写结束。", "下面继续"], "转写结束。下面继续"),
+        (["that is done.", "The next part"], "that is done. The next part"),
+        # Digits behave like spaced script.
+        (["chapter 1", "2 comes after"], "chapter 1 2 comes after"),
+        # Whitespace inside parts is stripped so the rule owns the seam.
+        (["  hello  ", "  world  "], "hello world"),
+        # Empty / all-whitespace parts (an all-silence chunk) are skipped.
+        (["hello", "   ", "world"], "hello world"),
+        (["hello", "", "world"], "hello world"),
+        (["  only one  "], "only one"),
+        ([], ""),
+    ],
+    ids=[
+        "english",
+        "chinese",
+        "cjk-then-latin",
+        "latin-then-cjk",
+        "fullwidth-period",
+        "halfwidth-period",
+        "digits",
+        "padded",
+        "blank-part",
+        "empty-part",
+        "single",
+        "empty-list",
+    ],
+)
+def test_join_transcript_parts(parts: list[str], expected: str) -> None:
+    from sglang_omni.serve.transcription_chunking import join_transcript_parts
+
+    assert join_transcript_parts(parts) == expected
