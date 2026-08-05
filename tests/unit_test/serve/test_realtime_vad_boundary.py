@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -231,6 +232,35 @@ async def test_silero_silence_threshold_across_appends():
     await _append(session, _pcm(16))
     assert len(commits) == 2 and reset_calls == 0
     assert second in _wav_pcm(commits[1][1])
+    await _stop(session)
+
+
+def test_tail_zero_returns_empty_bytes():
+    buf = RealtimeAudioBuffer()
+    buf.buf.extend(_pcm(2, 1000))
+    assert buf.tail(0) == b""
+    assert buf.tail(2) == bytes(buf.buf[-2:])
+
+
+@pytest.mark.asyncio
+async def test_empty_append_does_not_advance_after_partial_commit():
+    """Empty append must not re-feed retained suffix through VAD."""
+    second = _speechish(5, seed=1)
+    session, sent, commits = _session()
+    await _append(session, _speechish(5, seed=0) + _pcm(16) + second)
+
+    assert [e["type"] for e in sent] == BOUNDARY and len(commits) == 1
+    assert not session.audio_buffer.is_empty()
+    samples_before = session.vad.samples_consumed
+    origin_before = session.buffer_origin_samples
+    retained = bytes(session.audio_buffer.buf)
+
+    await _append(session, b"")
+
+    assert session.vad.samples_consumed == samples_before
+    assert session.buffer_origin_samples == origin_before
+    assert bytes(session.audio_buffer.buf) == retained
+    assert len(commits) == 1
     await _stop(session)
 
 
