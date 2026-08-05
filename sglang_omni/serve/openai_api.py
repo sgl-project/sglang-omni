@@ -116,6 +116,12 @@ from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import MAX_VOICE_UPLOAD_BYTES, SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
 from sglang_omni.serve.transcription_adapters import resolve_adapter
+from sglang_omni.serve.transcription_chunking import (
+    ChunkPlan,
+    check_total_duration,
+    needs_chunking,
+    plan_audio_chunks,
+)
 
 logger = logging.getLogger(__name__)
 STREAM_DONE_SENTINEL = "[DONE]"
@@ -1712,19 +1718,46 @@ def _register_transcriptions(app: FastAPI) -> None:
                 headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
             )
 
-        gen_req = build_transcription_generate_request(
-            audio_bytes=audio_bytes,
-            filename=file.filename,
-            content_type=file.content_type,
-            model=model or default_model,
-            language=language,
-            prompt=prompt,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-        )
+        duration_s = _probe_audio_duration(audio_bytes)
+        chunking: AudioChunkingConfig = app.state.audio_chunking
+        plan: ChunkPlan | None = None # plan=None means the decoded audio fits in one request.
+        if needs_chunking(duration_s, chunking):
+            try:
+                # Note: This is a duration check before decoding, because a small compressed file may hold hours of audio,
+                # and decoding that eats gigabytes.
+                check_total_duration(duration_s, chunking)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Decoding is blocking CPU work; keep it off the event loop.
+            plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
 
         try:
-            result = await client.completion(gen_req, request_id=request_id)
+            if plan is not None:
+                duration_s = plan.duration_s
+                text = await _transcribe_audio_chunks(
+                    client,
+                    plan,
+                    request_id=request_id,
+                    model=model or default_model,
+                    filename=file.filename,
+                    language=language,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                )
+            else:
+                gen_req = build_transcription_generate_request(
+                    audio_bytes=audio_bytes,
+                    filename=file.filename,
+                    content_type=file.content_type,
+                    model=model or default_model,
+                    language=language,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                )
+                result = await client.completion(gen_req, request_id=request_id)
+                text = result.text
         except ClientError as exc:
             if _is_bad_request_error(exc):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1735,7 +1768,6 @@ def _register_transcriptions(app: FastAPI) -> None:
             logger.exception("Error transcribing audio for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        text = result.text
         if normalized_response_format == "text":
             return PlainTextResponse(text)
         if normalized_response_format not in {"json", "verbose_json"}:
@@ -1749,7 +1781,6 @@ def _register_transcriptions(app: FastAPI) -> None:
 
         adapter = resolve_adapter(getattr(app.state, "architectures", None))
         text = adapter.postprocess_text(text)
-        duration_s = _probe_audio_duration(audio_bytes)
         usage = (
             TranscriptionUsage(seconds=math.ceil(duration_s))
             if duration_s > 0
@@ -1840,6 +1871,67 @@ def _probe_audio_duration(audio_bytes: bytes) -> float:
     except (RuntimeError, ValueError):
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
+
+
+async def _transcribe_audio_chunks(
+    client: Client,
+    plan: ChunkPlan,
+    *,
+    request_id: str,
+    model: str,
+    filename: str | None,
+    language: str | None,
+    prompt: str | None,
+    temperature: float | None,
+    max_new_tokens: int | None,
+) -> str:
+    """Transcribe each chunk of a plan as its own engine request, in order.
+
+    Current design:
+    1. Serial: chunk i+1 is only submitted once chunk i returned.
+    2. Any chunk failing fails the whole request -- returning a transcript
+       with a silent hole is the exact bug chunking exists to remove -- and
+       the error names the chunk and its time range so the failure is
+       diagnosable.
+    3. Chunk texts are joined with plain spaces.
+
+    TODO:
+    - Run up to N chunks concurrently (semaphore, N configurable); the engine
+      batches them, so a long upload finishes ~N times faster. Needs a raised
+      scheduler max_queued_requests to go with it.
+    - Abort all in-flight chunk requests when the client disconnects, instead
+      of letting the remaining chunks keep burning GPU.
+    - Script-aware joining: no space between CJK chunks, one space between
+      spaced-script words (plain spaces inflate CER on Chinese audio).
+    """
+    texts: list[str] = []
+    for span in plan.spans:
+        chunk_bytes = await asyncio.to_thread(plan.encode, span)
+        gen_req = build_transcription_generate_request(
+            audio_bytes=chunk_bytes,
+            filename=filename,
+            # Chunks are re-encoded WAV no matter what the upload was.
+            # (Nothing downstream reads this field; kept accurate anyway.)
+            content_type="audio/wav",
+            model=model,
+            language=language,
+            prompt=prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+        )
+        try:
+            result = await client.completion(
+                gen_req, request_id=f"{request_id}-chunk-{span.index}"
+            )
+        except Exception as exc:
+            raise ClientError(
+                f"transcription failed for chunk {span.index} "
+                f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
+            ) from exc
+        texts.append(result.text)
+    # Plain join for now; script-aware joining (no space inside CJK, one
+    # space between spaced-script words) lands with the merge step.
+    return " ".join(part.strip() for part in texts if part.strip())
 
 
 def build_transcription_generate_request(
