@@ -1,20 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Long-audio chunking for ``/v1/audio/transcriptions``.
 
-Chunking is opt-in per model, declared via
-:class:`~sglang_omni.config.AudioChunkingConfig`. Audio longer than
-``max_audio_clip_s`` is split into non-overlapping chunks at the quietest point near each nominal boundary.
+Chunking is opt-in per model, declared via sglang_omni.config.AudioChunkingConfig.
+Audio longer than max_audio_clip_s is split into non-overlapping chunks at the quietest point near each nominal boundary.
 """
 
 from __future__ import annotations
 
+import io
 import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.utils.audio import load_audio
 
 logger = logging.getLogger(__name__)
+
+TARGET_SAMPLE_RATE = 16000
 
 #: Half-open ``[start, end)`` sample range of one chunk.
 Span = tuple[int, int]
@@ -126,9 +130,102 @@ class RMSSplitter:
         return search_start + quietest * window + window // 2
 
 
-__all__ = [
-    "RMSSplitter",
-    "Span",
-    "check_total_duration",
-    "needs_chunking",
-]
+@dataclass(frozen=True)
+class ChunkSpan:
+    """One chunk: where it sits in the upload, in samples and in seconds."""
+
+    index: int
+    start_sample: int
+    end_sample: int
+    start_s: float
+    end_s: float
+
+    @property
+    def duration_s(self) -> float:
+        return self.end_s - self.start_s
+
+
+@dataclass
+class ChunkPlan:
+    """A decoded upload plus the chunks it was split into.
+
+    Holds the whole waveform for as long as the request runs, so chunk audio
+    is encoded on demand rather than up front: materialising every chunk at
+    once would double the resident memory of a long upload for no gain, since
+    only the chunks currently in flight are ever needed.
+    """
+
+    sample_rate: int
+    duration_s: float
+    spans: list[ChunkSpan]
+    waveform: np.ndarray = field(repr=False)
+
+    def encode(self, span: ChunkSpan) -> bytes:
+        """Encode one chunk as WAV bytes for a transcription request."""
+        return encode_wav(
+            self.waveform[span.start_sample : span.end_sample], self.sample_rate
+        )
+
+
+def encode_wav(waveform: np.ndarray, sample_rate: int) -> bytes:
+    """Encode a mono float32 waveform as a 32-bit float WAV.
+
+    Float rather than PCM_16 keeps the split lossless, and the engine-side
+    ``load_audio`` has a dependency-free parser for float WAV, so chunks decode
+    without going back through torchaudio.
+    """
+    import soundfile as sf
+
+    buffer = io.BytesIO()
+    sf.write(
+        buffer,
+        np.ascontiguousarray(waveform, dtype=np.float32),
+        int(sample_rate),
+        format="WAV",
+        subtype="FLOAT",
+    )
+    return buffer.getvalue()
+
+
+def plan_audio_chunks(
+    audio_bytes: bytes,
+    config: AudioChunkingConfig,
+    *,
+    splitter: RMSSplitter | None = None,
+    sample_rate: int = TARGET_SAMPLE_RATE,
+) -> ChunkPlan | None:
+    """Decode an upload and split it, or return None to leave it untouched.
+
+    return ``None`` means "send the original upload as one request".
+
+    Blocking: decodes the whole file, so callers on the event loop must run it
+    in a thread.
+    """
+    waveform = load_audio(
+        audio_bytes, source_name="transcription", target_sample_rate=sample_rate
+    )
+    total_samples = int(waveform.shape[-1])
+    max_chunk_samples = config.chunk_samples(sample_rate)
+    if total_samples <= max_chunk_samples:
+        logger.debug(
+            "[transcription] decoded audio is %d samples, within one chunk",
+            total_samples,
+        )
+        return None
+
+    spans = (splitter or RMSSplitter()).split(waveform, sample_rate, max_chunk_samples)
+    return ChunkPlan(
+        sample_rate=sample_rate,
+        duration_s=total_samples / sample_rate,
+        spans=[
+            ChunkSpan(
+                index=index,
+                start_sample=start,
+                end_sample=end,
+                start_s=start / sample_rate,
+                end_s=end / sample_rate,
+            )
+            for index, (start, end) in enumerate(spans)
+        ],
+        waveform=waveform,
+    )
