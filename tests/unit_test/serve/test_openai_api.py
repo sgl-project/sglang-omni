@@ -1385,6 +1385,20 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
     assert omni_req.params["max_new_tokens"] == 4096
 
 
+def test_create_app_stores_the_audio_chunking_policy() -> None:
+    from sglang_omni.config import AudioChunkingConfig
+
+    # No audio_chunking argument -> app.state still gets a config object
+    app = create_app(SuccessfulTranscriptionClient(), model_name="asr")
+    assert app.state.audio_chunking.allow_audio_chunking is False
+
+    declared = AudioChunkingConfig(allow_audio_chunking=True, max_audio_clip_s=60.0)
+    app = create_app(
+        SuccessfulTranscriptionClient(), model_name="asr", audio_chunking=declared
+    )
+    assert app.state.audio_chunking is declared
+
+
 def test_transcription_endpoint_returns_text_json() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
