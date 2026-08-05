@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
+import sglang_omni.pipeline.stage.runtime as stage_runtime
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
@@ -537,6 +539,136 @@ def test_start_profile_torch_mode_still_requires_trace_template() -> None:
         resp = client.post("/start_profile", json={"enable_torch": True})
     assert resp.status_code == 400
     assert "trace_path_template is required" in resp.json()["detail"]
+
+
+UNSUPPORTED_TRACE_TEMPLATES = [
+    "/tmp/{oops}/trace",
+    "/tmp/{0}/trace",
+    "/tmp/{/trace",
+    "/tmp/{stage:{stage}}/trace",
+    "/tmp/{stage:>20}/trace",
+    "/tmp/{run_id!r}/trace",
+    "/tmp/{run_id.__class__}/trace",
+    "/tmp/{run_id[0]}/trace",
+]
+
+
+@pytest.mark.parametrize("bad_template", UNSUPPORTED_TRACE_TEMPLATES)
+def test_start_profile_rejects_unusable_trace_template(bad_template: str) -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeProfilerControl:
+        async def broadcast_start(self, **kwargs) -> None:
+            raise AssertionError("start_profile should fail before broadcasting")
+
+    app = FastAPI()
+    launcher._mount_profiler_routes(app, FakeProfilerControl(), profiler_dir=None)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/start_profile",
+            json={"enable_torch": True, "trace_path_template": bad_template},
+        )
+    assert resp.status_code == 400
+    assert "invalid trace_path_template" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("bad_template", UNSUPPORTED_TRACE_TEMPLATES)
+def test_stage_survives_unusable_trace_template(
+    bad_template: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.pipeline.stage.runtime import Stage
+    from sglang_omni.proto.messages import ProfilerStartMessage
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        stage_runtime.TorchProfiler,
+        "is_active",
+        classmethod(lambda cls: False),
+    )
+    monkeypatch.setattr(
+        stage_runtime.TorchProfiler,
+        "start",
+        classmethod(lambda cls, template, run_id=None: started.append(template)),
+    )
+    monkeypatch.delenv("SGLANG_TORCH_PROFILER_DIR", raising=False)
+
+    stage = SimpleNamespace(name="preprocessing")
+    msg = ProfilerStartMessage(
+        run_id="run_1",
+        trace_path_template=bad_template,
+        event_dir=None,
+        enable_torch=True,
+    )
+
+    Stage._on_profiler_start(stage, msg)
+
+    assert started == [f"run_1_preprocessing_pid{os.getpid()}"]
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "/tmp/{run_id}/{stage}/trace",
+        "/tmp/{{literal}}/{run_id}/trace",
+        "/tmp/static/trace",
+    ],
+)
+def test_start_profile_accepts_supported_trace_template(template: str) -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts: list[dict] = []
+
+        async def broadcast_start(self, **kwargs) -> None:
+            self.starts.append(kwargs)
+
+    app = FastAPI()
+    ctl = FakeProfilerControl()
+    launcher._mount_profiler_routes(app, ctl, profiler_dir=None)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/start_profile",
+            json={"enable_torch": True, "trace_path_template": template},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["trace_path_template"] == template
+    assert ctl.starts[0]["trace_path_template"] == template
+
+
+def test_stage_formats_supported_trace_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.pipeline.stage.runtime import Stage
+    from sglang_omni.proto.messages import ProfilerStartMessage
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        stage_runtime.TorchProfiler,
+        "is_active",
+        classmethod(lambda cls: False),
+    )
+    monkeypatch.setattr(
+        stage_runtime.TorchProfiler,
+        "start",
+        classmethod(lambda cls, template, run_id=None: started.append(template)),
+    )
+    monkeypatch.delenv("SGLANG_TORCH_PROFILER_DIR", raising=False)
+
+    stage = SimpleNamespace(name="preprocessing")
+    msg = ProfilerStartMessage(
+        run_id="run_1",
+        trace_path_template="/tmp/{{literal}}/{run_id}/{stage}/trace",
+        event_dir=None,
+        enable_torch=True,
+    )
+
+    Stage._on_profiler_start(stage, msg)
+
+    assert started == [f"/tmp/{{literal}}/run_1/preprocessing/trace_pid{os.getpid()}"]
 
 
 @pytest.mark.asyncio

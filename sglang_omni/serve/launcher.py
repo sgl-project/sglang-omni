@@ -42,6 +42,7 @@ from sglang_omni.config import PipelineConfig
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
+from sglang_omni.profiler.path_template import validate_trace_path_template
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
@@ -228,6 +229,13 @@ def _mount_profiler_routes(
         if req.enable_torch:
             if req.trace_path_template is not None:
                 tpl = req.trace_path_template
+                try:
+                    validate_trace_path_template(tpl)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"invalid trace_path_template {tpl!r}: {exc}",
+                    ) from exc
             elif profiler_dir is not None:
                 tpl = _default_template(profiler_dir, run_id)
             else:
