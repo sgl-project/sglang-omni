@@ -1982,9 +1982,7 @@ async def _await_transcription_with_disconnect_abort(
         )
         if work_task in done:  # transcription completed first
             return work_task.result()
-        work_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await work_task
+        await _cancel_task_bounded(work_task)
         raise asyncio.CancelledError
     finally:
         if not disconnect_task.done():
