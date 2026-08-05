@@ -120,9 +120,6 @@ class OmniPlatform(DeviceMixin):
     def support_same_device_weight_sharing(self) -> bool:
         return False
 
-    def support_worker_visibility_isolation(self) -> bool:
-        return False
-
     def support_cross_node_transport(self) -> bool:
         return False
 

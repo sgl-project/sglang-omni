@@ -147,31 +147,15 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     is a placement bug.
     """
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
-    if tp_stages and (len(tp_stages) > 1 or len(spec.stage_specs) > 1):
+    if not tp_stages:
+        return {}
+    if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
         raise AssertionError(
             f"Process {spec.process_name!r} mixes a TP stage with other "
             "stages; TP stages must own their OS process exclusively. "
             f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
         )
-    accelerator_stages = [
-        stage for stage in spec.stage_specs if stage.gpu_id is not None
-    ]
-    if not accelerator_stages:
-        return {}
-    device_ids = {int(stage.gpu_id) for stage in accelerator_stages}
-    if len(device_ids) != 1:
-        raise AssertionError(
-            f"Process {spec.process_name!r} spans accelerator devices "
-            f"{sorted(device_ids)}; one process may have only one assignment"
-        )
-    platform = spec.platform()
-    if not tp_stages and not platform.support_worker_visibility_isolation():
-        return {}
-    updates = platform.worker_device_env(next(iter(device_ids)), os.environ)
-    updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
-    if tp_stages:
-        updates["SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK"] = "false"
-    return updates
+    return get_stage_process_env(tp_stages[0])
 
 
 @contextmanager
@@ -401,13 +385,7 @@ def stage_process_main(
         platform = spec.platform()
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log, platform=platform)
-        if any(stage.gpu_id is not None for stage in spec.stage_specs):
-            platform.initialize_worker()
-            if platform.device_count() < 1:
-                raise RuntimeError(
-                    f"Worker {spec.process_name!r} initialized {platform.device_name} "
-                    "but no assigned accelerator is visible"
-                )
+        platform.initialize_worker()
         platform.apply_compatibility_env_defaults(os.environ)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
