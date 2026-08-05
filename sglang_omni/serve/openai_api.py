@@ -48,7 +48,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from starlette.types import Receive, Scope, Send
-from tvm_ffi.core import String
 
 from sglang_omni.client import (
     Client,
@@ -283,7 +282,9 @@ def create_app(
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
     app.state.architectures = [a for a in (architectures or []) if a]
-    app.state.audio_chunking = audio_chunking or AudioChunkingConfig() # allow_audio_chunking default false
+    app.state.audio_chunking = (
+        audio_chunking or AudioChunkingConfig()
+    )  # allow_audio_chunking default false
     app.state.realtime_enabled = enable_realtime
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
     app.state.speaker_sample_store = SpeakerSampleStore()
@@ -1723,7 +1724,9 @@ def _register_transcriptions(app: FastAPI) -> None:
 
         duration_s = _probe_audio_duration(audio_bytes)
         chunking: AudioChunkingConfig = app.state.audio_chunking
-        plan: ChunkPlan | None = None # plan=None means the decoded audio fits in one request.
+        plan: ChunkPlan | None = (
+            None  # plan=None means the decoded audio fits in one request.
+        )
         if needs_chunking(duration_s, chunking):
             try:
                 # Note: This is a duration check before decoding, because a small compressed file may hold hours of audio,
@@ -1926,9 +1929,7 @@ async def _transcribe_audio_chunks(
             # does NOT finish the engine request -- those ids must stay in
             # the set so the cleanup below aborts them.
             try:
-                result = await client.completion(
-                    gen_req, request_id=chunk_request_id
-                )
+                result = await client.completion(gen_req, request_id=chunk_request_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1956,9 +1957,7 @@ async def _transcribe_audio_chunks(
             try:
                 await client.abort(chunk_request_id)
             except Exception:
-                logger.warning(
-                    "Failed to abort chunk request %s", chunk_request_id
-                )
+                logger.warning("Failed to abort chunk request %s", chunk_request_id)
         raise
     return join_transcript_parts(texts)
 
@@ -1981,7 +1980,7 @@ async def _await_transcription_with_disconnect_abort(
             {work_task, disconnect_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if work_task in done: # transcription completed first
+        if work_task in done:  # transcription completed first
             return work_task.result()
         work_task.cancel()
         with suppress(asyncio.CancelledError):

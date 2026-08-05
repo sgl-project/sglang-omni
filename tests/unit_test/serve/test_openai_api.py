@@ -1444,9 +1444,7 @@ def _wav_upload(duration_s: float, sample_rate: int = 16000) -> bytes:
 
     rng = np.random.default_rng(0)
     samples = int(duration_s * sample_rate)
-    return encode_wav(
-        rng.uniform(-0.5, 0.5, samples).astype(np.float32), sample_rate
-    )
+    return encode_wav(rng.uniform(-0.5, 0.5, samples).astype(np.float32), sample_rate)
 
 
 def _chunking_test_client(
@@ -1695,7 +1693,9 @@ def test_chunk_texts_join_in_span_order_not_completion_order() -> None:
             return CompletionResult(request_id=request_id, text=f"part{index}")
 
     async def scenario() -> None:
-        text = await _run_chunks(ReversedLatencyClient(), _tiny_plan(3), max_concurrent=3)
+        text = await _run_chunks(
+            ReversedLatencyClient(), _tiny_plan(3), max_concurrent=3
+        )
         assert text == "part0 part1 part2"
 
     asyncio.run(scenario())

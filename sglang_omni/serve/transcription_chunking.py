@@ -58,8 +58,7 @@ def check_total_duration(duration_s: float, config: AudioChunkingConfig) -> None
 
 
 class RMSSplitter:
-    """Split a waveform by cutting at the quietest window before each boundary.
-    """
+    """Split a waveform by cutting at the quietest window before each boundary."""
 
     def __init__(
         self,
@@ -77,8 +76,7 @@ class RMSSplitter:
     def split(
         self, waveform: np.ndarray, sample_rate: int, max_chunk_samples: int
     ) -> list[Span]:
-        """Split ``waveform`` into the spans that become chunk requests.
-        """
+        """Split ``waveform`` into the spans that become chunk requests."""
         total_samples = int(waveform.shape[-1])
         if total_samples <= 0:
             return []

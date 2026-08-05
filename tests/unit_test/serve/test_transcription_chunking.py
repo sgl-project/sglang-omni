@@ -246,9 +246,7 @@ def test_out_of_range_split_point_is_clamped_and_logged(caplog) -> None:
     waveform = _speech(40_000)
     splitter = _AlwaysZeroSplitter(search_window_s=0.25)
 
-    with caplog.at_level(
-        "WARNING", logger="sglang_omni.serve.transcription_chunking"
-    ):
+    with caplog.at_level("WARNING", logger="sglang_omni.serve.transcription_chunking"):
         spans = splitter.split(waveform, _SAMPLE_RATE, _SAMPLE_RATE)
 
     validate_spans(spans, 40_000, _SAMPLE_RATE)
@@ -294,9 +292,7 @@ def test_split_contract_holds(splitter, waveform: np.ndarray) -> None:
     ],
     ids=["gap", "empty-span", "oversized", "short-coverage"],
 )
-def test_validate_spans_rejects_broken_output(
-    spans: list[Span], message: str
-) -> None:
+def test_validate_spans_rejects_broken_output(spans: list[Span], message: str) -> None:
     # The helper is the assertion every other splitter test leans on, so it
     # needs its own coverage: a lenient checker would make them all vacuous.
     with pytest.raises(AssertionError, match=message):
