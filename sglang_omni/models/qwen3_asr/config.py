@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import AudioChunkingConfig, PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -14,6 +14,14 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Qwen3-ASR checkpoints."""
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
+
+    # The model reads the whole clip as prompt tokens (~13/audio second), so a
+    # request stops fitting the engine context past ~115s. 60s keeps ~2x
+    # margin; longer uploads are chunked at the serving layer.
+    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
+        allow_audio_chunking=True,
+        max_audio_clip_s=60.0,
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
