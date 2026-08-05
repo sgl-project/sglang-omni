@@ -12,8 +12,8 @@ tts_higgs_nonstream_wer:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -48,8 +48,8 @@ tts_higgs_nonstream_similarity:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -84,8 +84,8 @@ tts_higgs_nonstream_utmos:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -120,8 +120,8 @@ tts_higgs_nonstream_speed:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -186,8 +186,8 @@ tts_moss_nonstream_wer:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -222,8 +222,8 @@ tts_moss_nonstream_similarity:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -258,8 +258,8 @@ tts_moss_nonstream_utmos:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -294,8 +294,8 @@ tts_moss_nonstream_speed:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -360,8 +360,8 @@ tts_higgs_stream_wer:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -396,8 +396,8 @@ tts_higgs_stream_speed:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -452,8 +452,8 @@ tts_moss_stream_wer:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -488,8 +488,8 @@ tts_moss_stream_speed:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: d170f4686a2047346cb39782c69d1bd551af3cb14ef68fc770882d5e7f8b9af3
-  last_discovered_at: 2026-08-01T21:32:10Z
+  test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
+  last_discovered_at: 2026-08-03T02:04:22Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -539,7 +539,7 @@ tts_serving_closed16_speed:
   context_vars: []
   variant: "closed16"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -582,7 +582,7 @@ tts_serving_ramp_speed:
   context_vars: []
   variant: "ramp"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -625,7 +625,7 @@ tts_serving_soak_speed:
   context_vars: []
   variant: "soak"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -658,7 +658,7 @@ tts_serving_speech_normal_speed:
   context_vars: []
   variant: "speech_normal"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -701,7 +701,7 @@ tts_serving_rest_stream_speed:
   context_vars: []
   variant: "rest_stream"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -764,7 +764,7 @@ tts_serving_batch32_speed:
   context_vars: []
   variant: "batch32"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -797,7 +797,7 @@ tts_serving_ws_normal_speed:
   context_vars: []
   variant: "ws_normal"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -840,7 +840,7 @@ tts_serving_ws_stream_speed:
   context_vars: []
   variant: "ws_stream"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -903,7 +903,7 @@ tts_serving_mixed_burst_speed:
   context_vars: []
   variant: "mixed_burst"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -946,7 +946,7 @@ tts_serving_long_speed:
   context_vars: []
   variant: "long"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -1019,7 +1019,7 @@ tts_serving_long_baseline_speed:
   context_vars: []
   variant: "long_baseline"
   test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-01T21:32:10Z
+  last_discovered_at: 2026-08-03T02:04:22Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -1053,4 +1053,232 @@ tts_serving_long_baseline_speed:
         label: "Output tok/req-s"
         scale: 1
         digits: 1
+      status: OK
+tts_mps_dp2_higgs_speed:
+  test: tests/test_ci/test_tts_mps_dp2.py
+  title: "TTS MPS DP2 HIGGS Speed"
+  group: speed
+  extra_env:
+    TTS_CI_MODEL: "higgs"
+  context_vars:
+    - CANARY_REQUESTS
+  calibration_preset: "higgs"
+  gpus: 2
+  hf_model_ids:
+    - "bosonai/higgs-tts-3-4b"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
+  last_discovered_at: 2026-08-03T02:04:22Z
+  expected_samples: 1088
+  threshold_file: "tests/test_ci/tts_mps_ci_config.py"
+  threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
+  observation_validity:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "valid"
+  allowed_pytest_failure:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "threshold_assertion_failed"
+  sample_counts:
+    total:
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.total_requests"
+    ok:
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.completed_requests"
+  metrics:
+    throughput_qps:
+      source: "MPS_HIGGS_THROUGHPUT_QPS_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.throughput_qps"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    output_tok_per_req_s:
+      source: "MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.output_tok_per_req_s"
+      worst: min
+      display:
+        label: "Output tok/req-s"
+        scale: 1
+        digits: 1
+      status: OK
+    latency_mean_s:
+      source: "MPS_HIGGS_LATENCY_MEAN_S_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "MPS_HIGGS_RTF_MEAN_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
+tts_mps_dp2_higgs_similarity:
+  test: tests/test_ci/test_tts_mps_dp2.py
+  title: "TTS MPS DP2 HIGGS Similarity"
+  group: similarity
+  extra_env:
+    TTS_CI_MODEL: "higgs"
+  context_vars:
+    - CANARY_REQUESTS
+  calibration_preset: "higgs"
+  gpus: 2
+  hf_model_ids:
+    - "bosonai/higgs-tts-3-4b"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
+  last_discovered_at: 2026-08-03T02:04:22Z
+  expected_samples: 50
+  threshold_file: "tests/test_ci/tts_mps_ci_config.py"
+  threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
+  observation_validity:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "valid"
+  allowed_pytest_failure:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "threshold_assertion_failed"
+  sample_counts:
+    total:
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    similarity_mean:
+      source: "MPS_HIGGS_SIMILARITY_MEAN_MIN"
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.speaker_similarity_mean"
+      worst: min
+      display:
+        label: "Speaker sim mean"
+        scale: 1
+        digits: 4
+      status: OK
+tts_mps_dp2_moss_speed:
+  test: tests/test_ci/test_tts_mps_dp2.py
+  title: "TTS MPS DP2 MOSS Speed"
+  group: speed
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars:
+    - CANARY_REQUESTS
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
+  last_discovered_at: 2026-08-03T02:04:22Z
+  expected_samples: 1088
+  threshold_file: "tests/test_ci/tts_mps_ci_config.py"
+  threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
+  observation_validity:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "valid"
+  allowed_pytest_failure:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "threshold_assertion_failed"
+  sample_counts:
+    total:
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.total_requests"
+    ok:
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.completed_requests"
+  metrics:
+    throughput_qps:
+      source: "MPS_MOSS_THROUGHPUT_QPS_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.throughput_qps"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    output_tok_per_req_s:
+      source: "MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.output_tok_per_req_s"
+      worst: min
+      display:
+        label: "Output tok/req-s"
+        scale: 1
+        digits: 1
+      status: OK
+    latency_mean_s:
+      source: "MPS_MOSS_LATENCY_MEAN_S_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "MPS_MOSS_RTF_MEAN_REF"
+      json_file: "tts-mps-ci0/canonical/speed_results.json"
+      json_path: "summary.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
+tts_mps_dp2_moss_similarity:
+  test: tests/test_ci/test_tts_mps_dp2.py
+  title: "TTS MPS DP2 MOSS Similarity"
+  group: similarity
+  extra_env:
+    TTS_CI_MODEL: "moss"
+  context_vars:
+    - CANARY_REQUESTS
+  calibration_preset: "moss"
+  gpus: 2
+  hf_model_ids:
+    - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
+  last_discovered_at: 2026-08-03T02:04:22Z
+  expected_samples: 50
+  threshold_file: "tests/test_ci/tts_mps_ci_config.py"
+  threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
+  observation_validity:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "valid"
+  allowed_pytest_failure:
+    json_file: "tts-mps-ci0/benchmark_validation.json"
+    json_path: "threshold_assertion_failed"
+  sample_counts:
+    total:
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.evaluated"
+  metrics:
+    similarity_mean:
+      source: "MPS_MOSS_SIMILARITY_MEAN_MIN"
+      json_file: "tts-mps-ci0/canonical/similarity_results.json"
+      json_path: "summary.speaker_similarity_mean"
+      worst: min
+      display:
+        label: "Speaker sim mean"
+        scale: 1
+        digits: 4
       status: OK

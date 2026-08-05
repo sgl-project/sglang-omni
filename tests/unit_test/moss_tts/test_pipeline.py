@@ -112,6 +112,10 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     }
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert config.supports_uploaded_voice_references() is True
+    tts_engine = next(stage for stage in config.stages if stage.name == "tts_engine")
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    assert tts_engine.stream_to == ["vocoder"]
+    assert vocoder.can_accept_stream_before_payload is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
         is MossTTSPipelineConfig
@@ -190,10 +194,25 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         captured["gpu_id"] = gpu_id
         captured["model_arch_override"] = model_arch_override
         captured["defer_cuda_graph_capture"] = defer_cuda_graph_capture
-        model = object()
+
+        def init_sampling_graphs(batch_sizes, *, disable_padding):
+            captured.setdefault("sampling_graph_inits", []).append(
+                (batch_sizes, disable_padding)
+            )
+            captured.setdefault("graph_init_order", []).append("sampling")
+
+        def init_cuda_graphs():
+            captured["graph_inits"] = int(captured.get("graph_inits", 0)) + 1
+            captured.setdefault("graph_init_order", []).append("backbone")
+
+        model = SimpleNamespace(init_sampling_graphs=init_sampling_graphs)
         model_runner = SimpleNamespace(
             model=model,
-            init_cuda_graphs=lambda: captured.setdefault("graph_inits", 0) or None,
+            decode_cuda_graph_runner=SimpleNamespace(
+                capture_bs=tuple(server_args.cuda_graph_bs),
+                disable_padding=False,
+            ),
+            init_cuda_graphs=init_cuda_graphs,
         )
         model_worker = SimpleNamespace(model_runner=model_runner)
         return (
@@ -269,6 +288,18 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     assert explicit_kwargs["mem_fraction_static"] == 0.61
     assert captured["context_length"] == 8192
     assert captured["model_arch_override"] == "MossTTSDelaySGLangModel"
+    assert captured["defer_cuda_graph_capture"] is True
+    assert captured["graph_inits"] == 2
+    assert captured["sampling_graph_inits"] == [
+        ([1, 2, 4, 8, 12, 16], False),
+        ([1, 2, 4, 8, 12, 16], False),
+    ]
+    assert captured["graph_init_order"] == [
+        "backbone",
+        "sampling",
+        "backbone",
+        "sampling",
+    ]
 
 
 def test_moss_tts_talker_torch_compile_cli_override_targets_tts_engine() -> None:
@@ -695,7 +726,7 @@ def test_moss_tts_audio_tokenizer_preserves_processor_code_layout() -> None:
     assert chunk_duration == 8
 
 
-def test_moss_tts_maps_references_token_count_and_deterministic_defaults() -> None:
+def test_moss_tts_maps_references_token_count_and_checkpoint_defaults() -> None:
     payload = make_payload(
         inputs={
             "text": "${token:120}hello [pause 0.5s] ni3 hao3 /hello/",
@@ -718,9 +749,12 @@ def test_moss_tts_maps_references_token_count_and_deterministic_defaults() -> No
     assert state.generation_kwargs["max_new_tokens"] == 4096
     # Defaults follow the upstream checkpoint's generate() (sampling), not greedy.
     assert state.generation_kwargs["text_temperature"] == 1.5
+    assert state.generation_kwargs["text_top_p"] == 1.0
+    assert state.generation_kwargs["text_top_k"] == 50
     assert state.generation_kwargs["audio_temperature"] == 1.7
     assert state.generation_kwargs["audio_top_p"] == 0.8
     assert state.generation_kwargs["audio_top_k"] == 25
+    assert state.generation_kwargs["audio_repetition_penalty"] == 1.0
 
 
 def test_moss_tts_benchmark_auto_token_count_uses_openmoss_estimate() -> None:

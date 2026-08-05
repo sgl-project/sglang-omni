@@ -13,10 +13,23 @@ hf download Qwen/Qwen3-ASR-1.7B
 ## Server Configuration
 
 Qwen3-ASR runs a single ASR stage on one GPU.
+Async decode is enabled by default for decode batches of at least two requests,
+allowing the shared one-step-lookahead path to overlap host-side result
+processing with the next GPU decode forward. Use `--decode-mode sync` to disable
+it, or tune the crossover with `--async-lookahead-min-batch-size`.
 
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-ASR-1.7B \
+  --port 8000
+```
+
+For example, force synchronous decode when comparing modes:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-1.7B \
+  --decode-mode sync \
   --port 8000
 ```
 

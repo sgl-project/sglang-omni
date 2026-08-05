@@ -156,6 +156,11 @@ Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
 for a full Python raw PCM consumer.
 
+Base/reference-cloning checkpoints use true incremental codec and vocoder
+streaming for both this HTTP endpoint and `/v1/audio/speech/stream` WebSocket
+sessions with `stream_audio=true`. CustomVoice and VoiceDesign remain
+non-streaming.
+
 ## Generation Parameters
 
 | Parameter | Default | Notes |

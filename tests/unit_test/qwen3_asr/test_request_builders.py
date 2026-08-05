@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+from transformers import WhisperFeatureExtractor
 
-import sglang_omni.models.qwen3_asr.request_builders as request_builders
+import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_audio_token_lengths,
     qwen3_asr_num_audio_tokens,
@@ -91,9 +92,9 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
         attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
     )
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -115,6 +116,45 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     assert data.prompt_token_ids[start : end + 1] == (
         [audio_item.pad_value] * num_audio_tokens
     )
+
+
+def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
+    monkeypatch,
+) -> None:
+    """The request builder must not apply Whisper's default 30-second truncation."""
+    sample_rate = 16000
+    audio_duration_s = 31
+    feature_extractor = WhisperFeatureExtractor(
+        feature_size=128,
+        sampling_rate=sample_rate,
+        hop_length=160,
+        chunk_length=30,
+        n_fft=400,
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(
+            sample_rate * audio_duration_s, dtype=np.float32
+        ),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+    )
+    payload = StagePayload(
+        request_id="req-long-asr",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    audio_item = data.req.multimodal_inputs.mm_items[0]
+    assert audio_item.feature.shape == (1, 128, 3100)
+    assert int(audio_item.feature_attention_mask.sum().item()) == 3100
+    assert data.audio_duration_s == audio_duration_s
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
