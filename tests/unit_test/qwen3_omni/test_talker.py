@@ -396,6 +396,36 @@ def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
     assert sampled.tolist() == [[2, 0]]
 
 
+def test_predictor_sdpa_enable_gqa_matches_materialized_kv_repeat() -> None:
+    """Native GQA SDPA matches explicit KV head expansion on a toy GQA shape."""
+    torch.manual_seed(0)
+    batch, seq_len, num_heads, num_kv_heads, head_dim = 2, 4, 16, 8, 8
+    n_rep = num_heads // num_kv_heads
+    q = torch.randn(batch, num_heads, seq_len, head_dim)
+    k = torch.randn(batch, num_kv_heads, seq_len, head_dim)
+    v = torch.randn(batch, num_kv_heads, seq_len, head_dim)
+
+    k_expanded = (
+        k[:, :, None, :, :]
+        .expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+        .reshape(batch, num_heads, seq_len, head_dim)
+    )
+    v_expanded = (
+        v[:, :, None, :, :]
+        .expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+        .reshape(batch, num_heads, seq_len, head_dim)
+    )
+
+    out_gqa = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, is_causal=True, enable_gqa=True
+    )
+    out_expanded = torch.nn.functional.scaled_dot_product_attention(
+        q, k_expanded, v_expanded, is_causal=True
+    )
+
+    assert torch.allclose(out_gqa, out_expanded, atol=1e-5, rtol=1e-5)
+
+
 def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> None:
     """Keeps lazy predictor graph capture scoped to this thread."""
     source = (
