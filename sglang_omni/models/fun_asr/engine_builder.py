@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -19,6 +20,8 @@ from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
+logger = logging.getLogger(__name__)
+
 
 class FunASREngineBuilder(AsrEngineBuilder):
     model_name = "Fun-ASR"
@@ -33,6 +36,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
         enable_encoder_torch_compile: bool,
+        enable_encoder_cuda_graph: bool,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
@@ -53,6 +57,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
         self.enable_encoder_torch_compile = enable_encoder_torch_compile
+        self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -116,7 +121,31 @@ class FunASREngineBuilder(AsrEngineBuilder):
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del generation_cuda_graph_enabled
-        if self.enable_encoder_torch_compile:
+        if self.enable_encoder_cuda_graph:
+            # Capture needs the eager forwards; a dynamo-compiled callable
+            # cannot be captured, so the graph takes precedence over encoder
+            # compile.
+            if self.enable_encoder_torch_compile:
+                logger.warning(
+                    "enable_encoder_cuda_graph supersedes "
+                    "enable_encoder_torch_compile; the encoder runs from "
+                    "captured CUDA graphs (eager capture), not dynamo"
+                )
+            from sglang_omni.models.fun_asr.encoder_cuda_graph import (
+                FunASREncoderCudaGraphRunner,
+            )
+
+            model.encoder_cuda_graph_runner = FunASREncoderCudaGraphRunner(
+                model.audio_tower,
+                model.multi_modal_projector,
+                max_batch_size=self.pre_lm_max_batch_size,
+            )
+            logger.info(
+                "Fun-ASR encoder CUDA graphs enabled "
+                "(lazy capture per batch/length bucket, max_batch=%d)",
+                self.pre_lm_max_batch_size,
+            )
+        elif self.enable_encoder_torch_compile:
             from sglang_omni.models.fun_asr.stages import _compile_fun_asr_audio_encoder
 
             _compile_fun_asr_audio_encoder(
