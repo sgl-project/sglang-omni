@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
@@ -72,6 +72,8 @@ dependencies = [
     "torchcodec==0.11.1",     # Matches torch 2.11.x / sglang 0.5.16
     # Gradio playground
     "gradio>=4.0.0",
+    # dots.tts model operators; serving/runtime stays owned by sglang-omni
+    "dots.tts==0.2.1",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
     "x-transformers",          # Ming talker rotary embeddings

@@ -4,6 +4,9 @@ import asyncio
 import gc
 import json
 import logging
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,7 +19,8 @@ from sglang_omni_router import proxy as proxy_module
 from sglang_omni_router.app import _broadcast_admin_request, create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.worker import build_workers
+from sglang_omni_router.update_journal import JournalUnwritableError, UpdateJournal
+from sglang_omni_router.worker import build_workers, worker_id_from_url
 
 
 def _request_netloc(request: httpx.Request) -> str:
@@ -31,6 +35,7 @@ def _router_config(
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
+    router_state_dir: str | None = None,
 ) -> RouterConfig:
     return RouterConfig(
         workers=worker_configs
@@ -45,6 +50,7 @@ def _router_config(
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
+        router_state_dir=router_state_dir,
     )
 
 
@@ -469,6 +475,253 @@ def test_admin_routes_broadcast_to_live_workers_and_preserve_query() -> None:
     assert {item[0] for item in seen} == {"worker-a:8101", "worker-b:8102"}
     assert [item[1] for item in seen] == [b"action=checksum", b"action=checksum"]
     assert [item[2] for item in seen] == [b"", b""]
+
+
+def test_single_process_recovers_an_unresolved_weight_update_fail_closed(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): a single-process router that died mid weight-update must fail
+    # closed: recover the journaled target disabled and 409 a retry.
+    journal_path = str(tmp_path / "update_journal.json")
+    worker_id = worker_id_from_url("http://worker-a:8101")
+    UpdateJournal(journal_path).begin("/update_weights_from_disk", [worker_id])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/update_weights_from_disk":
+            return httpx.Response(
+                200,
+                json={"success": True, "worker": _request_netloc(request)},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    with TestClient(app) as client:
+        workers = {w["url"]: w for w in client.get("/workers").json()["workers"]}
+        assert workers["http://worker-a:8101"]["disabled"] is True
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+        assert response.status_code == 409
+        assert "did not complete" in response.json()["error"]["message"]
+
+
+def test_partial_weight_update_stays_disabled_and_journaled(tmp_path: Path) -> None:
+    journal_path = str(tmp_path / "update_journal.json")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, request=request)
+        if request.url.path == "/update_weights_from_disk":
+            success = _request_netloc(request) == "worker-a:8101"
+            return httpx.Response(
+                200 if success else 500,
+                json={"success": success},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    with TestClient(app) as client:
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+        assert response.status_code == 502
+        assert all(worker.disabled for worker in app.state.workers)
+        assert UpdateJournal(journal_path).has_pending() is True
+
+
+def test_weight_update_is_refused_when_the_journal_is_not_durable(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): a journal write that never reached the disk must not be
+    # reported as success: refuse before any target is disabled or sent, so a host crash
+    # cannot re-enable a mixed-weight pool
+    journal_path = str(tmp_path / "update_journal.json")
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, request=request)
+        if request.url.path == "/update_weights_from_disk":
+            sent.append(_request_netloc(request))
+            return httpx.Response(200, json={"success": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+
+    def _unwritable(path: str, worker_ids: list[str]) -> None:
+        raise JournalUnwritableError("no space left on device")
+
+    with TestClient(app) as client:
+        app.state.update_journal.begin = _unwritable
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+
+    assert response.status_code == 503
+    assert "could not be durably written" in response.json()["error"]["message"]
+    assert sent == []
+    assert not any(worker.disabled for worker in app.state.workers)
+
+
+def _journal_app(tmp_path: Path, journaled_ids: list[str]):
+    journal_path = str(tmp_path / "update_journal.json")
+    if journaled_ids:
+        UpdateJournal(journal_path).begin("/update_weights_from_disk", journaled_ids)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "worker"}, request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    return app, journal_path
+
+
+def test_absent_journaled_worker_survives_restart_as_a_tombstone(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): a dynamically added worker is absent after a full restart (the
+    # registry rebuilds from static config): its journal entry must survive as a
+    # tombstone, and re-registering that stable ID must create it disabled
+    dynamic_url = "http://worker-dyn:8103"
+    dynamic_id = worker_id_from_url(dynamic_url)
+    app, journal_path = _journal_app(tmp_path, [dynamic_id])
+    with TestClient(app) as client:
+        # Note (Jiaxin Deng): recovery kept the tombstone and the 409 gate stays closed
+        assert UpdateJournal(journal_path).pending() == [dynamic_id]
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+        assert response.status_code == 409
+
+        # Note (Jiaxin Deng): re-registering the journaled stable ID creates the worker
+        # disabled
+        created = client.post("/workers", json={"url": dynamic_url})
+        assert created.status_code == 200
+        assert created.json()["worker"]["disabled"] is True
+
+        # Note (Jiaxin Deng): an authenticated re-enable resolves the tombstone and
+        # unblocks updates
+        assert (
+            client.put(f"/workers/{dynamic_id}", json={"disabled": False}).status_code
+            == 200
+        )
+        assert UpdateJournal(journal_path).pending() == []
+        assert (
+            client.post("/update_weights_from_disk", json={"path": "/m"}).status_code
+            == 200
+        )
+
+
+def test_deleting_a_journaled_worker_keeps_the_tombstone_for_readd(
+    tmp_path: Path,
+) -> None:
+    worker_id = worker_id_from_url("http://worker-a:8101")
+    app, journal_path = _journal_app(tmp_path, [worker_id])
+    with TestClient(app) as client:
+        assert client.delete(f"/workers/{worker_id}").status_code == 200
+        # Note (Jiaxin Deng): deletion must not erase the tombstone
+        assert UpdateJournal(journal_path).pending() == [worker_id]
+        readded = client.post("/workers", json={"url": "http://worker-a:8101"})
+        assert readded.status_code == 200
+        assert readded.json()["worker"]["disabled"] is True
+
+
+def test_rejected_reenable_commits_no_part_of_the_staged_update(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): every fallible precondition is checked before committing: a
+    # 503 on the journal must not leave a half-applied model change for the CP keepalive
+    # to publish
+    journal_path = str(tmp_path / "update_journal.json")
+    Path(journal_path).write_bytes(b"{corrupt")
+    worker_id = worker_id_from_url("http://worker-a:8101")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "worker"}, request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    with TestClient(app) as client:
+        response = client.put(
+            f"/workers/{worker_id}",
+            json={"disabled": False, "model": "new-model"},
+        )
+        assert response.status_code == 503
+        listed = {w["url"]: w for w in client.get("/workers").json()["workers"]}
+        assert listed["http://worker-a:8101"]["model"] != "new-model"
+        assert listed["http://worker-a:8101"]["disabled"] is True
+
+
+def test_reenable_fails_when_the_journal_cannot_be_resolved(tmp_path: Path) -> None:
+    # Note (Jiaxin Deng): discard() cannot modify an unreadable journal: the re-enable
+    # must fail instead of returning 200 while every update stays blocked with 409
+    journal_path = str(tmp_path / "update_journal.json")
+    Path(journal_path).write_bytes(b"{corrupt")
+    worker_id = worker_id_from_url("http://worker-a:8101")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "worker"}, request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    with TestClient(app) as client:
+        response = client.put(f"/workers/{worker_id}", json={"disabled": False})
+        assert response.status_code == 503
+        assert "could not be durably resolved" in response.json()["error"]["message"]
+        listed = {w["url"]: w for w in client.get("/workers").json()["workers"]}
+        assert listed["http://worker-a:8101"]["disabled"] is True
+
+
+def test_journal_survives_a_host_reboot_that_wipes_the_per_run_workdir(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): remote workers outlive the router host, so an unresolved
+    # update must still be found after a reboot, not just after a process restart
+    state_dir = tmp_path / "persistent"
+    workdir = tempfile.mkdtemp(prefix="sglang-omni-router-")
+    dynamic_url = "http://worker-dyn:8103"
+    dynamic_id = worker_id_from_url(dynamic_url)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/update_weights_from_disk":
+            success = _request_netloc(request) == "worker-a:8101"
+            return httpx.Response(
+                200 if success else 500, json={"success": success}, request=request
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    config = _router_config(router_state_dir=str(state_dir))
+    before = create_app(config, client=async_client)
+    with TestClient(before) as client:
+        assert client.post("/workers", json={"url": dynamic_url}).status_code == 200
+        assert (
+            client.post("/update_weights_from_disk", json={"path": "/m"}).status_code
+            == 502
+        )
+    journal_path = Path(before.state.update_journal.path)
+    assert journal_path.is_relative_to(state_dir)
+    assert not journal_path.is_relative_to(workdir)
+
+    # Note (Jiaxin Deng): the supervisor and its per-run workdir are gone; only the
+    # state dir is carried across the reboot
+    shutil.rmtree(workdir)
+    after = create_app(
+        _router_config(router_state_dir=str(state_dir)), client=async_client
+    )
+    with TestClient(after) as client:
+        listed = {w["url"]: w for w in client.get("/workers").json()["workers"]}
+        assert listed["http://worker-a:8101"]["disabled"] is True
+        assert listed["http://worker-b:8102"]["disabled"] is True
+        assert dynamic_url not in listed  # absent, kept only as a tombstone
+        assert dynamic_id in UpdateJournal(str(journal_path)).pending()
+        assert (
+            client.post("/update_weights_from_disk", json={"path": "/m"}).status_code
+            == 409
+        )
+        readded = client.post("/workers", json={"url": dynamic_url})
+        assert readded.json()["worker"]["disabled"] is True
 
 
 def test_model_info_broadcast_exposes_sglang_compatible_weight_version() -> None:
@@ -2747,7 +3000,9 @@ def test_router_init_weights_update_group_single_replica_broadcasts() -> None:
     assert app.state.workers[0].disabled is False
 
 
-def test_router_init_weights_update_group_failure_keeps_worker_disabled() -> None:
+def test_router_init_weights_update_group_failure_keeps_worker_disabled(
+    tmp_path: Path,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
@@ -2763,6 +3018,7 @@ def test_router_init_weights_update_group_failure_keeps_worker_disabled() -> Non
     app = create_app(
         _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
         client=async_client,
+        journal_path=str(tmp_path / "update_journal.json"),
     )
     with TestClient(app) as client:
         resp = client.post("/init_weights_update_group", json=_INIT_GROUP_PAYLOAD)
@@ -2877,3 +3133,417 @@ def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
         config = RouterConfig(workers=workers)
     assert config.max_connections == 4096
     assert any("under-feed" in record.getMessage() for record in caplog.records)
+
+
+def test_route_registration_split_exposes_exact_route_sets() -> None:
+    from sglang_omni_router.app import (
+        register_admin_routes,
+        register_data_routes,
+        register_health_routes,
+        register_public_metadata_routes,
+    )
+
+    config = _router_config()
+    workers = build_workers(config.workers)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200))
+    )
+    proxy = proxy_module.ProxyHandler(
+        config=config,
+        workers=workers,
+        selector=WorkerSelector(config.policy),
+        client=client,
+    )
+
+    def _paths(register) -> set[str]:
+        app = FastAPI()
+        base = {route.path for route in app.routes}
+        register(app)
+        return {route.path for route in app.routes} - base
+
+    assert _paths(lambda app: register_health_routes(app, workers, proxy)) == {
+        "/live",
+        "/ready",
+        "/health",
+    }
+    assert _paths(
+        lambda app: register_admin_routes(app, workers, config, admin_api_key=None)
+    ) == {
+        "/workers",
+        "/workers/{worker_id:path}",
+        "/model_info",
+        "/pause_generation",
+        "/continue_generation",
+        "/update_weights_from_disk",
+        "/update_weights_from_tensor",
+        "/init_weights_update_group",
+        "/destroy_weights_update_group",
+        "/update_weights_from_distributed",
+        "/weights_checker",
+        "/weight_update_journal/resolve",
+    }
+    assert _paths(
+        lambda app: register_public_metadata_routes(app, workers, config)
+    ) == {"/v1/models"}
+    assert _paths(lambda app: register_data_routes(app, proxy)) == {
+        "/generate",
+        "/v1/chat/completions",
+        "/v1/audio/speech",
+        "/v1/audio/transcriptions",
+    }
+
+
+def test_worker_crud_stays_unauthenticated_even_with_admin_key() -> None:
+    # Note (Jiaxin Deng): current behavior, frozen: worker CRUD carries no admin auth
+    # while the weight-update/broadcast routes do; the route split must not change this.
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
+    with TestClient(app) as client:
+        created = client.post("/workers", json={"url": "http://127.0.0.1:8199"})
+        assert created.status_code == 200
+        assert client.get("/workers").status_code == 200
+        worker_id = created.json()["worker"]["worker_id"]
+        assert (
+            client.put(f"/workers/{worker_id}", json={"disabled": True}).status_code
+            == 200
+        )
+        assert client.delete(f"/workers/{worker_id}").status_code == 200
+
+
+def test_pool_timeout_is_router_local_not_a_worker_failure() -> None:
+    # Note (Jiaxin Deng): PoolTimeout means THIS router's pool is exhausted; it must
+    # shed with a retryable 503 and must not feed the worker-eviction signal
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"})
+        raise httpx.PoolTimeout("pool exhausted", request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+    with TestClient(app) as client:
+        response = client.post("/generate", json={"prompt": "x"})
+        assert response.status_code == 503
+        assert response.json()["error"]["type"] == "overloaded_error"
+        assert "Retry-After" in response.headers
+        workers = client.get("/workers").json()["workers"]
+        assert all(w["consecutive_failures"] == 0 for w in workers)
+        assert all(w["health_state"] != "unhealthy" for w in workers)
+        # Note (Jiaxin Deng): router-local exhaustion must not inflate the worker's
+        # failure count
+        assert all(w["failed_requests"] == 0 for w in workers)
+
+
+def test_worker_registration_probes_outside_the_update_lock() -> None:
+    # Note (Jiaxin Deng): the lock that CRUD shares with weight updates must cover the
+    # authoritative mutation, not an arbitrary worker's /health: a blackholed candidate
+    # would otherwise 409 every other CRUD call and stall an RL update for the full
+    # health timeout
+    import threading
+
+    health_started = threading.Event()
+    release_health = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health" and "8199" in str(request.url):
+            health_started.set()
+            release_health.wait(timeout=5.0)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"})
+        return httpx.Response(200, json={"success": True})
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+    with TestClient(app) as client:
+        result: list[int] = []
+        creator = threading.Thread(
+            target=lambda: result.append(
+                client.post(
+                    "/workers", json={"url": "http://127.0.0.1:8199"}
+                ).status_code
+            )
+        )
+        creator.start()
+        assert health_started.wait(timeout=5.0)
+        # Note (Jiaxin Deng): the staged worker is being probed: the lock is free, so a
+        # weight update or another CRUD call is not blocked behind this network call
+        assert app.state.admin_update_lock.locked() is False
+        release_health.set()
+        creator.join(timeout=5.0)
+        assert result == [200]
+        assert app.state.admin_update_lock.locked() is False
+        assert any(
+            worker.url == "http://127.0.0.1:8199" for worker in app.state.workers
+        )
+
+
+def _resolve_journal_app(tmp_path: Path, journal_bytes: bytes | None):
+    journal_path = str(tmp_path / "update_journal.json")
+    if journal_bytes is not None:
+        Path(journal_path).write_bytes(journal_bytes)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": True, "status": "worker"})
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(),
+        client=async_client,
+        journal_path=journal_path,
+        admin_api_key="secret-key",
+    )
+    return app, journal_path
+
+
+_ADMIN = {"Authorization": "Bearer secret-key"}
+
+
+def test_resolving_the_journal_requires_an_explicit_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): the record is what keeps workers with uncertain
+    # weight versions disabled, so it must not be droppable by a bare POST.
+    worker_id = worker_id_from_url("http://worker-a:8101")
+    app, journal_path = _resolve_journal_app(tmp_path, None)
+    UpdateJournal(journal_path).begin("/update_weights_from_disk", [worker_id])
+    with TestClient(app) as client:
+        for body in ({}, {"acknowledge": False}, {"acknowledge": "yes"}):
+            response = client.post(
+                "/weight_update_journal/resolve", json=body, headers=_ADMIN
+            )
+            assert response.status_code == 422
+        assert UpdateJournal(journal_path).pending() == [worker_id]
+
+
+def test_resolving_the_journal_needs_admin_auth(tmp_path: Path) -> None:
+    app, journal_path = _resolve_journal_app(tmp_path, None)
+    UpdateJournal(journal_path).begin("/x", ["w0"])
+    with TestClient(app) as client:
+        response = client.post(
+            "/weight_update_journal/resolve", json={"acknowledge": True}
+        )
+        assert response.status_code == 401
+        assert UpdateJournal(journal_path).pending() == ["w0"]
+
+
+def test_resolving_an_unreadable_journal_unblocks_weight_updates(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): discard() cannot edit a corrupt file, so without this
+    # operation the 409 gate can only be cleared from a shell on the host.
+    worker_id = worker_id_from_url("http://worker-a:8101")
+    app, journal_path = _resolve_journal_app(tmp_path, b"{corrupt")
+    with TestClient(app) as client:
+        update = {"path": "/m"}
+        assert (
+            client.post(
+                "/update_weights_from_disk", json=update, headers=_ADMIN
+            ).status_code
+            == 409
+        )
+        # re-enabling is the documented way out, and it cannot resolve a
+        # journal it cannot read
+        assert (
+            client.put(
+                f"/workers/{worker_id}", json={"disabled": False}, headers=_ADMIN
+            ).status_code
+            == 503
+        )
+
+        response = client.post(
+            "/weight_update_journal/resolve", json={"acknowledge": True}, headers=_ADMIN
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "journal_readable": False,
+            "resolved_worker_ids": [],
+        }
+        assert not Path(journal_path).exists()
+
+        assert (
+            client.put(
+                f"/workers/{worker_id}", json={"disabled": False}, headers=_ADMIN
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/update_weights_from_disk", json=update, headers=_ADMIN
+            ).status_code
+            == 200
+        )
+
+
+def test_resolving_a_readable_journal_reports_what_it_dropped(tmp_path: Path) -> None:
+    worker_id = worker_id_from_url("http://worker-a:8101")
+    app, journal_path = _resolve_journal_app(tmp_path, None)
+    UpdateJournal(journal_path).begin("/update_weights_from_disk", [worker_id])
+    with TestClient(app) as client:
+        response = client.post(
+            "/weight_update_journal/resolve", json={"acknowledge": True}, headers=_ADMIN
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["journal_readable"] is True
+        assert payload["resolved_worker_ids"] == [worker_id]
+        assert UpdateJournal(journal_path).pending() == []
+
+
+def test_resolving_the_journal_is_rejected_while_an_update_holds_the_lock(
+    tmp_path: Path,
+) -> None:
+    app, journal_path = _resolve_journal_app(tmp_path, None)
+    UpdateJournal(journal_path).begin("/x", ["w0"])
+    with TestClient(app) as client:
+        app.state.admin_update_lock = asyncio.Lock()
+
+        async def _hold() -> None:
+            await app.state.admin_update_lock.acquire()
+
+        asyncio.run(_hold())
+        response = client.post(
+            "/weight_update_journal/resolve", json={"acknowledge": True}, headers=_ADMIN
+        )
+        assert response.status_code == 409
+        assert UpdateJournal(journal_path).pending() == ["w0"]
+
+
+def test_resolving_the_journal_fails_closed_when_it_cannot_be_removed(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): reporting success on a file that survives would leave
+    # every later update blocked behind a gate the operator believes is gone.
+    app, journal_path = _resolve_journal_app(tmp_path, None)
+    UpdateJournal(journal_path).begin("/x", ["w0"])
+    with TestClient(app) as client:
+
+        def _unwritable() -> None:
+            raise JournalUnwritableError("read-only file system")
+
+        app.state.update_journal.clear = _unwritable
+        response = client.post(
+            "/weight_update_journal/resolve", json={"acknowledge": True}, headers=_ADMIN
+        )
+        assert response.status_code == 503
+        assert journal_path in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_registry_lock_rejects_while_an_update_is_queued() -> None:
+    # Note (Jiaxin Deng): release() wakes the first waiter without marking the
+    # lock held, so locked() alone would admit a caller that then runs after an
+    # update it never saw.
+    from fastapi import FastAPI as _FastAPI
+
+    from sglang_omni_router.app import _registry_lock_or_reject
+
+    app = _FastAPI()
+    app.state.admin_update_lock = asyncio.Lock()
+    lock = app.state.admin_update_lock
+    await lock.acquire()
+    queued = asyncio.create_task(lock.acquire())
+    await asyncio.sleep(0)
+    lock.release()
+
+    assert lock.locked() is False  # the window locked() alone misses
+    _, rejected = _registry_lock_or_reject(app)
+    assert rejected is not None and rejected.status_code == 409
+
+    queued.cancel()
+
+
+def test_a_journal_that_cannot_be_cleared_is_reported_on_the_success(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): the broadcast really did succeed, but a surviving
+    # entry blocks every later update, which a bare 200 hides.
+    journal_path = str(tmp_path / "update_journal.json")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": True, "status": "worker"})
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client, journal_path=journal_path)
+    with TestClient(app) as client:
+
+        def _unwritable() -> None:
+            raise JournalUnwritableError("read-only file system")
+
+        app.state.update_journal.clear = _unwritable
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert journal_path in response.json()["journal_error"]
+
+
+def test_weight_update_is_refused_without_a_durable_state_directory(
+    tmp_path: Path,
+) -> None:
+    # Note (Jiaxin Deng): startup stays up for a plain relay, but an update
+    # with nowhere to record its target set must fail closed.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, request=request)
+        sent.append(request.url.path)
+        return httpx.Response(200, json={"success": True}, request=request)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    config = _router_config(router_state_dir=str(blocker / "state"))
+    app = create_app(config, client=async_client)
+    with TestClient(app) as client:
+        response = client.post("/update_weights_from_disk", json={"path": "/m"})
+
+    assert response.status_code == 503
+    assert sent == []
+    assert not any(worker.disabled for worker in app.state.workers)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_upstream_send_returns_the_active_gauge() -> None:
+    # Note (Jiaxin Deng): a client disconnect cancels the send await, and
+    # neither httpx handler sees it; a leaked gauge keeps the worker looking
+    # busy and stops a retiring incarnation from ever draining.
+    from sglang_omni_router.route_metadata import RouteMetadata
+
+    config = _router_config()
+    workers = build_workers(config.workers)
+    worker = workers[0]
+
+    class _CancellingClient:
+        def build_request(self, *args, **kwargs):
+            return object()
+
+        async def send(self, request, **kwargs):
+            raise asyncio.CancelledError()
+
+    proxy = proxy_module.ProxyHandler(
+        config=config,
+        workers=workers,
+        selector=WorkerSelector(config.policy),
+        client=_CancellingClient(),
+    )
+    metadata = RouteMetadata(
+        request_id="r1",
+        model=None,
+        stream=False,
+        required_capabilities=set(),
+        body_exceeds_metadata_limit=False,
+        route_capabilities_header_present=False,
+    )
+    release = proxy_module._ReleaseOnce(proxy.admission)
+
+    with pytest.raises(asyncio.CancelledError):
+        await proxy._forward_relay(
+            _request_without_content_length([b"{}"]),
+            "/generate",
+            b"{}",
+            metadata,
+            worker,
+            release,
+        )
+
+    assert worker.active_requests == 0

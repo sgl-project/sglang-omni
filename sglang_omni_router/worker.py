@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,6 +36,12 @@ class Worker:
     config: WorkerConfig
     worker_id: str = field(init=False)
     display_id: str = field(init=False)
+    # Note (Jiaxin Deng): regenerated on every registration; stale reports
+    # from a previous incarnation of the same URL must not act on this one.
+    incarnation: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Note (Jiaxin Deng): bumped on every operator dead/undead transition so an
+    # in-flight probe can tell whether the state it observed still holds.
+    health_epoch: int = 0
     active_requests: int = 0
     state: WorkerState = HEALTH_STATE_UNKNOWN
     disabled: bool = False
@@ -86,6 +93,7 @@ class Worker:
     def mark_dead(self, *, error: str | None = None) -> None:
         previous_state = self.state
         self.state = HEALTH_STATE_DEAD
+        self.health_epoch += 1
         if error is not None:
             self.last_error = error
         self._log_state_transition(previous_state, self.state)
@@ -94,6 +102,7 @@ class Worker:
         previous_state = self.state
         if self.is_dead:
             self.state = HEALTH_STATE_UNKNOWN
+        self.health_epoch += 1
         self.consecutive_failures = 0
         self.consecutive_successes = 0
         self._log_state_transition(previous_state, self.state)

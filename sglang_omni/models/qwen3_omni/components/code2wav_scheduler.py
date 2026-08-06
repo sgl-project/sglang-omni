@@ -213,9 +213,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             codes,
             graph_eligible=not is_final,
         )
-        trim = context * self._total_upsample
-        if trim:
-            wav = wav[..., trim:]
+        wav = wav[..., -(end - start) * self._total_upsample :]
         audio = wav.reshape(-1).detach().cpu().float().numpy().copy()
         if profile_metadata is not None:
             _emit_event(
@@ -475,9 +473,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     f"{len(group)} requests"
                 )
             context = min(self._left_context_size, group[0][1].emitted)
-            trim = context * self._total_upsample
-            if trim:
-                wav = wav[..., trim:]
+            wav = wav[..., -(window_frames - context) * self._total_upsample :]
             host = wav.detach().cpu().float()
             for i, (rid, state) in enumerate(group):
                 audio = host[i].reshape(-1).numpy().copy()

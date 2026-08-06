@@ -23,6 +23,9 @@ from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.token_text_streaming import (
+    make_token_text_stream_output_builder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -421,81 +424,26 @@ def make_moss_transcribe_diarize_stream_output_builder(
         if eos_token_id is not None
         else (int(tokenizer_eos) if tokenizer_eos is not None else None)
     )
-
-    def _build_stream_output(
-        request_id: str, req_data: Any, req_output: Any
-    ) -> list[OutgoingMessage]:
-        if req_data.req is None or req_output.data is None:
-            return []
-        req = req_data.req
-        # note (guozhihao): while chunked prefill is still consuming prompt tokens, suppress
-        # emission — prompt-side states would masquerade as output text.
-        if req.inflight_middle_chunks > 0:
-            return []
-
-        if req_data.stage_payload is None:
-            return []
-        stage_payload = req_data.stage_payload
-        if not (stage_payload.request.params or {}).get("stream", False):
-            return []
-
-        try:
-            token_id = int(req_output.data)
-        except (TypeError, ValueError):
-            return []
-
-        try:
-            pending = req._moss_stream_pending_ids
-        except AttributeError:
-            pending = []
-            req._moss_stream_pending_ids = pending
-
-        is_eos = resolved_eos is not None and token_id == resolved_eos
-        if not is_eos:
-            pending.append(token_id)
-        if not pending:
-            return []
-
-        # note (guozhihao): rate-limit by holding tokens until the interval elapses;
-        # last_emit == 0.0 means nothing emitted yet (first delta goes out immediately),
-        # and EOS always flushes the remaining buffer.
-        now = time.perf_counter()
-        try:
-            last_emit = req._moss_stream_last_emit_t
-        except AttributeError:
-            last_emit = 0.0
-        if (
-            not is_eos
-            and min_emit_interval_s > 0.0
-            and last_emit > 0.0
-            and (now - last_emit) < min_emit_interval_s
-        ):
-            return []
-
-        delta = _decode_token_ids(tokenizer, pending, skip_special_tokens=True)
-        if delta.endswith("\ufffd"):
-            return []
-        pending.clear()
-        if not delta:
-            return []
-
-        req._moss_stream_last_emit_t = now
-
-        return [
-            OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                target=None,
-                data={
-                    "text": delta,
-                    "modality": "text",
-                    "stage_name": "asr",
-                },
-                metadata={"modality": "text", "token_id": token_id},
-            )
-        ]
-
-    return _build_stream_output
+    return make_token_text_stream_output_builder(
+        decode_fn=lambda ids: _decode_token_ids(
+            tokenizer, ids, skip_special_tokens=True
+        ),
+        build_message_data=lambda delta: {
+            "text": delta,
+            "modality": "text",
+            "stage_name": "asr",
+        },
+        build_message_metadata=lambda token_id: {
+            "modality": "text",
+            "token_id": token_id,
+        },
+        pending_ids_attr="_moss_stream_pending_ids",
+        last_emit_attr="_moss_stream_last_emit_t",
+        eos_token_id=resolved_eos,
+        min_emit_interval_s=min_emit_interval_s,
+        allow_terminal_flush=False,
+        emit_trailing_replacement_on_terminal=False,
+    )
 
 
 __all__ = [

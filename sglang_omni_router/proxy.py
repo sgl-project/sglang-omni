@@ -31,6 +31,7 @@ HOP_BY_HOP_HEADERS = {
     "keep-alive",
     "proxy-authenticate",
     "proxy-authorization",
+    "proxy-connection",
     "te",
     "trailer",
     "trailers",
@@ -225,12 +226,32 @@ class ProxyHandler:
         workers: list[Worker],
         selector: WorkerSelector,
         client: httpx.AsyncClient,
+        worker_provider: Callable[[], list[Worker]] | None = None,
+        on_worker_failure: (
+            Callable[[Worker, int | None, str | None], None] | None
+        ) = None,
+        admission: AdmissionController | None = None,
     ) -> None:
         self._config = config
         self._workers = workers
         self._selector = selector
         self._client = client
-        self._admission = AdmissionController(config.effective_max_inflight)
+        # Note (Jiaxin Deng): admission accepts any object with the
+        # AdmissionController surface, e.g. the shared-memory one.
+        self._admission = (
+            admission
+            if admission is not None
+            else AdmissionController(config.effective_max_inflight)
+        )
+        # Note (Jiaxin Deng): set only in data-plane mode; workers then come
+        # from the snapshot view and failures are reported to the CP.
+        self._worker_provider = worker_provider
+        self._on_worker_failure = on_worker_failure
+
+    def _current_workers(self) -> list[Worker]:
+        if self._worker_provider is not None:
+            return self._worker_provider()
+        return self._workers
 
     @property
     def admission(self) -> AdmissionController:
@@ -324,7 +345,9 @@ class ProxyHandler:
             )
 
         extra_capabilities, large_request_error = (
-            _large_request_extra_capabilities_or_error(self._workers, metadata)
+            _large_request_extra_capabilities_or_error(
+                self._current_workers(), metadata
+            )
         )
         if large_request_error is not None:
             self._log_route_rejection(
@@ -342,7 +365,7 @@ class ProxyHandler:
 
         try:
             worker = self._selector.select(
-                self._workers,
+                self._current_workers(),
                 required_capabilities=metadata.required_capabilities,
                 requested_model=metadata.model,
             )
@@ -384,6 +407,30 @@ class ProxyHandler:
         worker.increment_active()
         try:
             upstream = await self._client.send(upstream_request, stream=True)
+        except httpx.PoolTimeout:
+            # Note (Jiaxin Deng): router-local pool contention, not a worker
+            # fault; feed neither the eviction signal nor failed_requests, and
+            # the request never reached the worker, so it is not routed.
+            worker.decrement_active()
+            self._log_route_completion(
+                worker=worker,
+                path=path,
+                metadata=metadata,
+                status_code=503,
+                outcome="router_pool_exhausted",
+                start_time=start_time,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": "router upstream pool exhausted",
+                        "type": "overloaded_error",
+                        "code": 503,
+                    }
+                },
+                headers={"Retry-After": _OVERLOAD_RETRY_AFTER_SECS},
+            )
         except httpx.HTTPError as exc:
             worker.decrement_active()
             worker.record_routed_request()
@@ -404,6 +451,13 @@ class ProxyHandler:
                 content={"error": {"message": "upstream request failed"}},
                 headers=self._diagnostic_headers(worker, metadata),
             )
+        except BaseException:
+            # Note (Jiaxin Deng): a client disconnect cancels this await, and
+            # neither httpx handler sees it. Without returning the gauge the
+            # worker looks busy forever, and a retiring incarnation never
+            # drains, so the data plane reports it to the CP indefinitely.
+            worker.decrement_active()
+            raise
 
         worker_failure_recorded = False
 
@@ -508,6 +562,16 @@ class ProxyHandler:
         error: str | None = None,
     ) -> None:
         if worker.is_dead:
+            return
+        if self._on_worker_failure is not None:
+            # Note (Jiaxin Deng): the CP owns the health verdict; its snapshot
+            # never resets a DP-local consecutive_failures, so counting here
+            # too would let a DP evict a worker the CP still calls healthy.
+            logger.warning(
+                f"worker={worker.display_id} worker_request_failure "
+                f"status_code={status_code} error={error} reported_to=control_plane",
+            )
+            self._on_worker_failure(worker, status_code, error)
             return
         worker.record_request_failure(
             failure_threshold=self._config.health_failure_threshold,

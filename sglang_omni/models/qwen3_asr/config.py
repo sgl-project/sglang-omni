@@ -45,13 +45,18 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 # a too-small cap silently drops the transcript tail. Speech produces
                 # ~5 output tokens per audio second: 128 only covered ~25s, and a 60s
                 # chunk needs ~300 -- 640 doubles that. Safe to raise: context_length
-                # adds max_new_tokens on top of the audio budget (stages.py), so it
-                # grows by the same amount and the audio that fits is untouched.
+                # adds max_new_tokens on top of the audio budget (engine_builder.py),
+                # so it grows by the same amount and the audio that fits is untouched.
                 # If max_audio_clip_s is raised, raise this along with it
                 # (~5 tokens per audio second).
                 "max_new_tokens": 640,
-                "request_build_max_workers": 2,
-                "request_build_max_pending": 16,
+                "request_build_max_workers": 8,
+                "request_build_max_pending": 32,
+                "enable_pre_lm_encoder": True,
+                "pre_lm_cache_max_entries": 4096,
+                "pre_lm_cache_size_bytes": 2 * 1024**3,
+                "pre_lm_max_batch_size": 8,
+                "pre_lm_max_batch_wait_ms": 0,
             },
             gpu=0,
             terminal=True,
