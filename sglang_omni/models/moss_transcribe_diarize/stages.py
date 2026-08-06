@@ -86,6 +86,9 @@ def create_sglang_moss_transcribe_diarize_executor(
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
+    encoder_max_batch_size: int = 2,
+    encoder_max_batch_size: int = 2,
+    encoder_max_batch_size: int = 2,
     # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
