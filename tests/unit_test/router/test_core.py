@@ -669,6 +669,63 @@ launcher:
     assert events == ["model", "shutdown"]
 
 
+def test_shutdown_drain_defaults_to_the_request_timeout() -> None:
+    args = build_parser().parse_args(
+        ["--worker-urls", "http://127.0.0.1:8101", "--request-timeout-secs", "300"]
+    )
+    assert build_config_from_args(args).effective_shutdown_drain_secs == 300
+
+    args = build_parser().parse_args(
+        ["--worker-urls", "http://127.0.0.1:8101", "--shutdown-drain-secs", "42"]
+    )
+    assert build_config_from_args(args).effective_shutdown_drain_secs == 42
+
+
+def test_invalid_multiprocess_config_launches_no_workers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "launcher.yaml"
+    config_path.write_text(
+        """
+launcher:
+  backend: local
+  model_path: model
+  num_workers: 1
+""",
+        encoding="utf-8",
+    )
+    events: list[str] = []
+
+    class FakeLauncher:
+        def __init__(self, config) -> None:
+            events.append("init")
+
+        def launch_and_wait(self) -> list[str]:
+            events.append("launch")
+            return ["http://127.0.0.1:8011"]
+
+        def shutdown(self) -> None:
+            events.append("shutdown")
+
+    monkeypatch.setattr(serve_module, "LocalLauncher", FakeLauncher)
+    monkeypatch.setattr(serve_module.logging.config, "dictConfig", lambda config: None)
+
+    with pytest.raises(SystemExit) as exc:
+        serve_module.main(
+            [
+                "--launcher-config",
+                str(config_path),
+                "--router-processes",
+                "2",
+                "--policy",
+                "least_request",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert events == []
+
+
 def test_selector_filters_by_health_and_capability() -> None:
     workers = build_workers(
         [
@@ -841,6 +898,40 @@ def test_least_request_selects_lowest_active_request_count() -> None:
         selector.select(workers, required_capabilities={"speech"}).url
         == "http://127.0.0.1:8102"
     )
+
+
+def test_round_robin_keeps_stagger_after_candidate_pool_shrinks() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101"),
+            WorkerConfig(url="http://127.0.0.1:8102"),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+
+    selectors = [WorkerSelector("round_robin", rr_offset=index) for index in range(2)]
+
+    picks = [
+        selector.select(workers, required_capabilities={"speech"}).url
+        for selector in selectors
+    ]
+    assert picks[0] != picks[1]
+
+    workers[1].state = "unhealthy"
+    for selector in selectors:
+        assert (
+            selector.select(workers, required_capabilities={"speech"}).url
+            == "http://127.0.0.1:8101"
+        )
+    workers[1].state = "healthy"
+
+    for _ in range(4):
+        picks = [
+            selector.select(workers, required_capabilities={"speech"}).url
+            for selector in selectors
+        ]
+        assert picks[0] != picks[1]
 
 
 def test_worker_request_guard_cleans_up_count() -> None:
@@ -1135,3 +1226,176 @@ def test_nofile_check_derived_tie_recommends_max_connections(
 
     assert "lower --max-connections" in caplog.text
     assert "lower both" not in caplog.text
+
+
+def test_router_processes_defaults_to_one() -> None:
+    args = build_parser().parse_args(["--worker-urls", "http://127.0.0.1:8101"])
+    assert args.router_processes == 1
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_router_processes_rejects_non_positive(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        serve_module.main(
+            ["--worker-urls", "http://127.0.0.1:8101", "--router-processes", value]
+        )
+    assert "--router-processes must be >= 1" in capsys.readouterr().err
+
+
+def test_router_state_dir_reaches_the_router_config(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--worker-urls",
+            "http://127.0.0.1:8101",
+            "--router-state-dir",
+            str(tmp_path / "state"),
+        ]
+    )
+    assert build_config_from_args(args).router_state_dir == str(tmp_path / "state")
+
+
+def test_multiprocess_startup_fails_closed_when_the_state_dir_is_unusable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Note (Jiaxin Deng): no temp-directory fallback, and the multi-process
+    # router exists to serve weight updates, so a journal it cannot write is a
+    # startup error rather than a surprise on the first update.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    unusable = str(blocker / "state")
+
+    with pytest.raises(SystemExit):
+        serve_module.main(
+            [
+                "--worker-urls",
+                "http://127.0.0.1:8101",
+                "--router-processes",
+                "2",
+                "--router-state-dir",
+                unusable,
+            ]
+        )
+
+    assert unusable in capsys.readouterr().err
+
+
+def test_single_process_startup_survives_an_unusable_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Note (Jiaxin Deng): the single-process relay predates the journal, so a
+    # read-only or home-less container must still start; the weight update
+    # refuses instead.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    served: dict = {}
+
+    def _fake_run(app, **kwargs):
+        served["app"] = app
+
+    monkeypatch.setattr(serve_module.uvicorn, "run", _fake_run)
+    serve_module.main(
+        [
+            "--worker-urls",
+            "http://127.0.0.1:8101",
+            "--router-state-dir",
+            str(blocker / "state"),
+        ]
+    )
+
+    assert served["app"] is not None
+
+
+def test_router_processes_multiprocess_runs_the_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict = {}
+
+    class _FakeSupervisor:
+        def __init__(self, config, *, router_processes):
+            calls["config"] = config
+            calls["router_processes"] = router_processes
+
+        def start(self):
+            calls["started"] = True
+
+        def run_forever(self):
+            calls["ran"] = True
+
+        stopped_by_interrupt = False
+
+    monkeypatch.setattr(serve_module, "RouterSupervisor", _FakeSupervisor)
+    # Note (Jiaxin Deng): setenv-then-delenv makes monkeypatch own
+    # SGLANG_OMNI_ADMIN_KEY, so the key serve.main writes into os.environ is restored at
+    # teardown.
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "__owned_by_monkeypatch__")
+    monkeypatch.delenv("SGLANG_OMNI_ADMIN_KEY")
+    serve_module.main(
+        [
+            "--worker-urls",
+            "http://127.0.0.1:8101",
+            "--router-processes",
+            "2",
+            "--admin-api-key",
+            "cli-admin-key",
+        ]
+    )
+    assert calls["router_processes"] == 2
+    assert calls["config"].workers[0].url == "http://127.0.0.1:8101"
+    assert calls["started"] and calls["ran"]
+    # Note (Jiaxin Deng): a CLI-provided admin key must reach the CP child through the
+    # env
+    import os
+
+    assert os.environ["SGLANG_OMNI_ADMIN_KEY"] == "cli-admin-key"
+
+
+def test_app_factory_rebuilds_config_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni_router import app_factory
+
+    config = RouterConfig(
+        workers=[WorkerConfig(url="http://127.0.0.1:8101")],
+        max_connections=64,
+        max_inflight=128,
+    )
+    config_path = tmp_path / "router_config.json"
+    config_path.write_text(config.model_dump_json(), encoding="utf-8")
+    monkeypatch.setenv(app_factory.CONFIG_FILE_ENV, str(config_path))
+
+    loaded = app_factory.load_config_from_env()
+
+    assert loaded == config
+    assert loaded.effective_max_inflight == config.effective_max_inflight
+    assert loaded.upstream_pool_size == config.upstream_pool_size
+
+
+def test_app_factory_builds_the_same_app_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni_router import app_factory
+    from sglang_omni_router.app import create_app
+
+    config = RouterConfig(workers=[WorkerConfig(url="http://127.0.0.1:8101")])
+    config_path = tmp_path / "router_config.json"
+    config_path.write_text(config.model_dump_json(), encoding="utf-8")
+    monkeypatch.setenv(app_factory.CONFIG_FILE_ENV, str(config_path))
+
+    app = app_factory.create_app_from_env()
+    reference = create_app(config)
+
+    assert {route.path for route in app.routes} == {
+        route.path for route in reference.routes
+    }
+
+
+def test_app_factory_requires_the_config_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni_router import app_factory
+
+    monkeypatch.delenv(app_factory.CONFIG_FILE_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="SGLANG_OMNI_ROUTER_CONFIG_FILE"):
+        app_factory.load_config_from_env()
