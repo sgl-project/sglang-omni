@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,7 @@ class DotsTTSSGLangRequestData(SGLangARRequestData):
     stream_metadata: dict[str, Any] | None = None
     chunk_id: int = 0
     control_token_id: int = 0
+    engine_start_s: float = 0.0
 
 
 def build_sglang_dots_tts_request(
@@ -123,6 +125,7 @@ def build_sglang_dots_tts_request(
         max_new_tokens=generation_budget,
         input_embeds_are_projected=True,
         control_token_id=control_token_id,
+        engine_start_s=time.perf_counter(),
         stream_metadata={
             "modality": "audio_latents",
             "stream": bool(state.stream),
@@ -157,7 +160,9 @@ def apply_latent_result(data: DotsTTSSGLangRequestData) -> StagePayload:
     if not data.latent_patches:
         raise RuntimeError("dots.tts generated no payload latent patches")
     state.generated_latents = torch.cat(data.latent_patches, dim=1)
+    state.prompt_tokens = int(data.input_ids.numel())
     state.completion_tokens = len(data.latent_patches)
+    state.engine_time_s = time.perf_counter() - data.engine_start_s
     state.finish_reason = data.finish_reason
     return store_dots_tts_state(data.stage_payload, state)
 

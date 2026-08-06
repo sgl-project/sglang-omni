@@ -401,10 +401,6 @@ def create_sglang_latent_engine_executor(
     )
 
 
-def create_latent_engine_executor(*args: Any, **kwargs: Any) -> OmniScheduler:
-    return create_sglang_latent_engine_executor(*args, **kwargs)
-
-
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -423,7 +419,6 @@ def create_vocoder_executor(
 
 
 __all__ = [
-    "create_latent_engine_executor",
     "create_preprocessing_executor",
     "create_reference_encode_executor",
     "create_sglang_latent_engine_executor",

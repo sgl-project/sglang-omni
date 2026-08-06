@@ -63,6 +63,24 @@ class DotsTTSPipelineConfig(PipelineConfig):
         super().model_post_init(__context)
         if any(stage.tp_size != 1 for stage in self.stages):
             raise ValueError("dots.tts currently supports tp_size=1 only")
+        stages = {stage.name: stage for stage in self.stages}
+        preprocessing = stages["preprocessing"]
+        latent_engine = stages["latent_engine"]
+        preprocessing_overrides = self.runtime_overrides.get("preprocessing", {})
+        latent_overrides = self.runtime_overrides.get("latent_engine", {})
+        for engine_key, preprocessing_key, default in (
+            ("num_steps", "default_num_steps", 4),
+            ("max_generate_length", "max_generate_length", 500),
+        ):
+            engine_value = latent_overrides.get(
+                engine_key, latent_engine.factory_args.get(engine_key, default)
+            )
+            if preprocessing_key in preprocessing_overrides:
+                raise ValueError(
+                    f"dots.tts {preprocessing_key!r} is derived from {engine_key!r}; "
+                    "configure it on the latent_engine stage"
+                )
+            preprocessing.factory_args[preprocessing_key] = engine_value
 
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:

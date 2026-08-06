@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -32,6 +33,32 @@ def test_dots_tts_uses_framework_stage_boundaries() -> None:
         is DotsTTSPipelineConfig
     )
     assert DotsTTSState().num_steps == 4
+
+
+def test_dots_tts_syncs_acoustic_limits_from_latent_engine() -> None:
+    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
+
+    config = DotsTTSPipelineConfig(
+        model_path="model",
+        runtime_overrides={
+            "latent_engine": {"num_steps": 8, "max_generate_length": 256}
+        },
+    )
+    stages = {stage.name: stage for stage in config.stages}
+    preprocessing = resolve_stage_static_factory_args(stages["preprocessing"], config)
+
+    assert preprocessing["default_num_steps"] == 8
+    assert preprocessing["max_generate_length"] == 256
+
+
+def test_dots_tts_rejects_preprocessing_acoustic_limit_overrides() -> None:
+    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
+
+    with pytest.raises(ValueError, match="configure it on the latent_engine stage"):
+        DotsTTSPipelineConfig(
+            model_path="model",
+            runtime_overrides={"preprocessing": {"default_num_steps": 8}},
+        )
 
 
 def test_public_speech_boundary_accepts_dots_auto_detect_alias() -> None:

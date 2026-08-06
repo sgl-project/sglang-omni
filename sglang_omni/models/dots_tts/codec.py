@@ -40,7 +40,6 @@ class DotsAudioCodec:
 
     def __init__(self, checkpoint: str, *, device: str) -> None:
         from dots_tts.models.dots_tts.config import ModelConfig
-        from dots_tts.models.dots_tts.core import IOHelper
         from dots_tts.modules.speaker.encoder import SpeakerXVectorFeatures
         from dots_tts.modules.vocoder.bigvgan import AudioVAE
         from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
@@ -61,7 +60,6 @@ class DotsAudioCodec:
         self.vocoder = vocoder.to(device=torch.device(device)).eval()
         self.speaker = speaker.to(device=torch.device(device)).eval()
         self.inference = VocoderInference(self.vocoder)
-        self.io = IOHelper(root / "latent_stats.pt")
         self.patch_size = int(config.patch_size)
         self.latent_dim = int(config.latent_dim)
         self.sample_rate = int(vocoder.sample_rate)

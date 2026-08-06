@@ -111,7 +111,6 @@ class _SemanticEncoderDecodeStep(nn.Module):
     def __init__(self, encoder: nn.Module) -> None:
         super().__init__()
         self.encoder = encoder
-        self.block = int(encoder.out_ds_rate)
         attention = encoder.encoder.layers[0].attn
         self.num_heads = int(attention.num_heads)
         self.head_dim = int(attention.head_dim)

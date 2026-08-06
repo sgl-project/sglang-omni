@@ -29,7 +29,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
-| [dots.tts](https://github.com/studio-dots-ai/dots.tts) | `examples/configs/dots_tts.yaml` | 48 kHz continuous-latent TTS with reference audio and continuous batching (`max_running_requests=16` by default). The MF batch path uses engine-wide `num_steps=4` and Euler; it requires `ref_audio` + `ref_text`, and x-vector-only cloning (no `ref_text`) needs `max_running_requests=1`. TP1 only |
+| [dots.tts](https://github.com/studio-dots-ai/dots.tts) | `examples/configs/dots_tts.yaml` | 48 kHz continuous-latent TTS with reference audio and continuous batching (`max_running_requests=16` by default). The MF batch path uses engine-wide `num_steps=4` and Euler, and requires `ref_audio` + `ref_text`. TP1 only |
 
 ## Launch the Server
 

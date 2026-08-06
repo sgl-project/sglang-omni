@@ -66,7 +66,7 @@ def test_prompt_schedule_requires_a_patch_after_regeneration() -> None:
         build_sglang_dots_tts_request(_payload(state))
 
 
-def test_result_and_stream_use_pipeline_state() -> None:
+def test_result_and_stream_use_pipeline_state(monkeypatch) -> None:
     state = DotsTTSState(
         stream=True,
         generation_schedule=torch.tensor([[1, 99]]),
@@ -77,6 +77,11 @@ def test_result_and_stream_use_pipeline_state() -> None:
     patch = torch.ones(1, 4, 3)
     data.latest_latent_patch = patch
     data.latent_patches = [patch]
+    data.engine_start_s = 10.0
+    monkeypatch.setattr(
+        "sglang_omni.models.dots_tts.request_builders.time.perf_counter",
+        lambda: 12.5,
+    )
 
     [message] = list(build_stream_output("rid", data, None))
     payload = apply_latent_result(data)
@@ -88,4 +93,6 @@ def test_result_and_stream_use_pipeline_state() -> None:
     }
     restored = DotsTTSState.from_dict(payload.data)
     assert restored.generated_latents.shape == (1, 4, 3)
+    assert restored.prompt_tokens == 1
     assert restored.completion_tokens == 1
+    assert restored.engine_time_s == 2.5

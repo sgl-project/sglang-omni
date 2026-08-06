@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ class DotsFlowState:
     fm_null_g_cond: torch.Tensor
     fm_capacity: int
     g_cond: torch.Tensor | None
+    rng_state: torch.Tensor | None = None
     fm_seq_len: int = 0
     patch_encoder_state: Any = None
     dit_state: Any = None
@@ -195,8 +198,7 @@ class DotsTTSFlowHead(nn.Module):
             raise ValueError("dots.tts continuous batching currently requires euler")
         if prompt_patch_count is not None and int(prompt_patch_count) <= 0:
             raise ValueError(
-                "dots.tts continuous batching requires reference audio with its "
-                "transcript; use max_running_requests=1 for x-vector-only synthesis"
+                "dots.tts continuous batching requires reference audio with its transcript"
             )
         # The patch-encoder KV pool is the binding pool: it holds one row per
         # audio span, so prompt + generated spans must fit patch_capacity.
@@ -284,6 +286,11 @@ class DotsTTSFlowHead(nn.Module):
         if speaker_embedding is not None:
             speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
             g_cond = self.xvec_proj(speaker_embedding * float(speaker_scale))
+        rng_state = None
+        if isinstance(rng, torch.Tensor):
+            rng_state = rng.detach().cpu().clone()
+        elif rng is not None:
+            rng_state = torch.Generator(device=device).manual_seed(int(rng)).get_state()
         state = DotsFlowState(
             fm_sequence=torch.zeros(
                 (1, fm_capacity, self.fm_hidden_size), device=device, dtype=dtype
@@ -296,6 +303,7 @@ class DotsTTSFlowHead(nn.Module):
             ),
             fm_capacity=fm_capacity,
             g_cond=g_cond,
+            rng_state=rng_state,
         )
         if prompt_latents is None or prompt_latents.numel() == 0:
             return state, None
@@ -505,14 +513,19 @@ class DotsTTSFlowHead(nn.Module):
 
         if state.dit_state is None:
             state.dit_state = DiTSolverState()
+        solver = self._solver()
         dtype = state.fm_sequence.dtype
         device_type = state.fm_sequence.device.type
-        with torch.autocast(
-            device_type=device_type,
-            dtype=dtype,
-            enabled=device_type == "cuda" and dtype in {torch.float16, torch.bfloat16},
+        with (
+            self._request_rng(state),
+            torch.autocast(
+                device_type=device_type,
+                dtype=dtype,
+                enabled=device_type == "cuda"
+                and dtype in {torch.float16, torch.bfloat16},
+            ),
         ):
-            normalized_patch = self._solver().decode_next(
+            normalized_patch = solver.decode_next(
                 state.dit_state,
                 sequence=state.fm_sequence,
                 cfg_sequence=state.fm_cfg_sequence,
@@ -627,7 +640,36 @@ class DotsTTSFlowHead(nn.Module):
             rng_state = self._tail.slot_rng_state(state.slot)
             self.release_request(state)
             return rng_state
-        return None
+        return None if state.rng_state is None else state.rng_state.clone()
+
+    @contextmanager
+    def _request_rng(self, state: DotsFlowState) -> Iterator[None]:
+        if state.rng_state is None:
+            yield
+            return
+        device = state.fm_sequence.device
+        cuda_device = None
+        if device.type == "cuda":
+            cuda_device = (
+                device.index
+                if device.index is not None
+                else torch.cuda.current_device()
+            )
+        with torch.random.fork_rng(
+            devices=[] if cuda_device is None else [cuda_device]
+        ):
+            if cuda_device is None:
+                torch.set_rng_state(state.rng_state)
+            else:
+                torch.cuda.set_rng_state(state.rng_state, cuda_device)
+            try:
+                yield
+            finally:
+                state.rng_state = (
+                    torch.get_rng_state()
+                    if cuda_device is None
+                    else torch.cuda.get_rng_state(cuda_device)
+                )
 
     def _patch_encoder_input(
         self, latents: torch.Tensor, *, already_normalized: bool = False
