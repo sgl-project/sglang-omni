@@ -124,12 +124,13 @@ def make_qwen3_asr_scheduler_adapters(
     ) -> None:
         if (
             context_length is not None
-            and len(input_ids) + request_max_new_tokens > context_length
+            and len(input_ids) + request_max_new_tokens > context_length - 1
         ):
             raise ValueError(
                 "Qwen3-ASR request is longer than the model's context length "
                 f"({len(input_ids)} prompt/audio tokens + "
-                f"{request_max_new_tokens} max_new_tokens > {context_length}); "
+                f"{request_max_new_tokens} max_new_tokens > "
+                f"{context_length - 1} usable tokens); "
                 "reduce max_new_tokens or split the audio"
             )
 

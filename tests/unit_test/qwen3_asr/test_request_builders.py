@@ -159,7 +159,7 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     assert data.audio_duration_s == audio_duration_s
 
 
-def test_qwen3_asr_rejects_context_overrun_before_mel_extraction(
+def test_qwen3_asr_rejects_full_context_before_mel_extraction(
     monkeypatch,
 ) -> None:
     class _UnexpectedFeatureExtractor:
@@ -177,7 +177,9 @@ def test_qwen3_asr_rejects_context_overrun_before_mel_extraction(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=5,
         feature_extractor=_UnexpectedFeatureExtractor(),
-        context_length=10,
+        # 100 mel frames produce 13 audio tokens, so the fake prompt has
+        # 17 input tokens and exactly fills context with 5 output tokens.
+        context_length=22,
     )
     payload = StagePayload(
         request_id="req-over-context",
