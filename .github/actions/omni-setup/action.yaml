@@ -23,9 +23,26 @@ runs:
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
-        # FlashInfer does not use XDG_CACHE_HOME. Keep it on the image's
-        # architecture-specific prewarmed cache under /root/.cache/flashinfer.
-        echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
+        # FlashInfer does not use XDG_CACHE_HOME. Its JIT cache must survive
+        # the job container: on a miss it recompiles cutlass kernels for
+        # minutes at full host width, and under /root that work dies with the
+        # container, so every job on the runner pays it again (#1296). Seed
+        # the persistent CI home from the image's prewarmed cache once, then
+        # keep the workspace there. The copy and rename keep a concurrent
+        # sibling job from seeing a half-seeded cache.
+        if [ ! -d "${OMNI_CI_HOME}/.cache/flashinfer" ] && [ -d /root/.cache/flashinfer ]; then
+          mkdir -p "${OMNI_CI_HOME}/.cache"
+          # mktemp: $$ is not unique across job containers (separate PID
+          # namespaces share this mount), and a cancelled cp must never leave
+          # a staging dir a later job could republish.
+          seed="$(mktemp -d "${OMNI_CI_HOME}/.cache/.flashinfer-seed.XXXXXXXX")"
+          if cp -a /root/.cache/flashinfer/. "${seed}/" \
+              && mv -T "${seed}" "${OMNI_CI_HOME}/.cache/flashinfer" 2>/dev/null; then
+            echo "Seeded FlashInfer JIT cache into ${OMNI_CI_HOME}/.cache/flashinfer"
+          fi
+          rm -rf "${seed}"
+        fi
+        echo "FLASHINFER_WORKSPACE_BASE=${OMNI_CI_HOME}" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
