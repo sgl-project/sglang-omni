@@ -18,6 +18,9 @@ dependencies = [
   "definitely-not-installed",
   "also-not-installed; python_version < '1'",
 ]
+
+[tool.uv]
+override-dependencies = ["protobuf>=6,<7"]
 """
     )
 
@@ -25,3 +28,5 @@ dependencies = [
         "packaging>999",
         "definitely-not-installed",
     ]
+
+    assert MODULE.override_requirements(pyproject) == ["protobuf>=6,<7"]

@@ -47,7 +47,15 @@ mapfile -t MISSING_REQUIREMENTS < <(
 if [ "${#MISSING_REQUIREMENTS[@]}" -gt 0 ]; then
   echo "Installing dependencies missing from the image:"
   printf '  %s\n' "${MISSING_REQUIREMENTS[@]}"
-  python -m pip install "${MISSING_REQUIREMENTS[@]}"
+  for requirement in "${MISSING_REQUIREMENTS[@]}"; do
+    python -m pip install "${requirement}"
+  done
+fi
+mapfile -t OVERRIDE_REQUIREMENTS < <(
+  python "${SCRIPT_DIR}/omni_missing_dependencies.py" --overrides pyproject.toml
+)
+if [ "${#OVERRIDE_REQUIREMENTS[@]}" -gt 0 ]; then
+  python -m pip install --no-deps "${OVERRIDE_REQUIREMENTS[@]}"
 fi
 uv pip install --no-deps -e .
 
