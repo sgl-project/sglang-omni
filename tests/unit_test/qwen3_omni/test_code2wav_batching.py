@@ -442,3 +442,23 @@ def test_batch_events_emitted(monkeypatch) -> None:
     assert start_meta["due_bucket_count"] == 1
     assert end_meta["audio_samples"] > 0
     assert end_meta["execution_mode"] == "eager"
+
+
+def test_qwen_code2wav_run_step_emits_full_chunk_despite_output_deficit() -> None:
+    scheduler = Code2WavScheduler(
+        FakeCode2WavModel(total_upsample=2, output_deficit=1),
+        device="cpu",
+        stream_chunk_size=2,
+        left_context_size=1,
+        sample_rate=24000,
+        enable_batching=True,
+    )
+    state = Code2WavStreamState(stream_enabled=True)
+    state.chunks = [torch.tensor([c, c * 10]) for c in (1, 2, 3)]
+    state.emitted = 1
+    state.audio_parts = [np.zeros(1, dtype=np.float32)]
+    scheduler._stream_states["req-1"] = state
+
+    decoded = scheduler.run_step([("req-1", state)], [1])
+    assert decoded["req-1"].shape == (4,)
+    assert state.emitted == 3

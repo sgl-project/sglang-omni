@@ -154,12 +154,13 @@ class FakeAudioEncoderModel:
 
 
 class FakeCode2WavModel:
-    def __init__(self, *, total_upsample: int = 2) -> None:
+    def __init__(self, *, total_upsample: int = 2, output_deficit: int = 0) -> None:
         self.total_upsample = total_upsample
+        self.output_deficit = output_deficit
         self.calls: list[tuple[int, ...]] = []
 
     def __call__(self, codes: torch.Tensor) -> torch.Tensor:
         self.calls.append(tuple(codes.shape))
-        samples = int(codes.shape[-1]) * self.total_upsample
+        samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit
         base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
