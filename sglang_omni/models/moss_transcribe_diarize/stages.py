@@ -92,6 +92,9 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,
