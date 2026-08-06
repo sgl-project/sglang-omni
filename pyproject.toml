@@ -95,6 +95,11 @@ audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
 ]
+fun-cosyvoice3 = [
+    "openai-whisper",
+    "onnxruntime-gpu; sys_platform == 'linux'",
+    "onnxruntime; sys_platform != 'linux'",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
