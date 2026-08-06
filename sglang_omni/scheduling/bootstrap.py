@@ -75,18 +75,15 @@ def create_sglang_infrastructure(
     )
 
     if capture_hidden_layers:
-        from sglang_omni.model_runner._hidden_capture import (
-            install_hidden_capture_hooks,
+        model_worker.model_runner.model.configure_hidden_capture_layers(
+            capture_hidden_layers
         )
-
-        model = model_worker.model_runner.model
-        install_hidden_capture_hooks(model, capture_hidden_layers)
 
     # SGLang 0.5.15 split model loading, KV-pool allocation, attention-backend
     # (order re-verified against 0.5.16 Scheduler.init_model_worker)
     # initialization, and CUDA-graph initialization into explicit phases. Keep
     # the same order as upstream's Scheduler.init_model_worker(), while
-    # preserving Omni's pre-backend hidden-capture hook installation above.
+    # preserving Omni's pre-backend hidden-capture configuration above.
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()

@@ -56,8 +56,32 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
-        # Existing Qwen thinker runner/hook code expects model.thinker.model.
+        # Existing Qwen thinker runner code expects model.thinker.model.
         return self
+
+    def configure_hidden_capture_layers(self, capture_layers: list[int]) -> None:
+        self.model.layers_to_capture = list(capture_layers)
+
+    def process_hidden_states(
+        self,
+        input_ids: torch.Tensor,
+        hidden_states: Any,
+        forward_batch: Any,
+    ):
+        """Publish speech layers as graph-owned logits output state."""
+        aux_hidden_states = None
+        if isinstance(hidden_states, tuple):
+            hidden_states, aux_hidden_states = hidden_states
+
+        # Qwen3-Omni's talker consumes the captured thinker layers. Route only those
+        # through LogitsProcessorOutput so CUDA-graph replay returns the real-batch rows.
+        return self.logits_processor(
+            input_ids,
+            hidden_states,
+            self.lm_head,
+            forward_batch,
+            aux_hidden_states=aux_hidden_states,
+        )
 
     def forward(
         self,
@@ -81,11 +105,10 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             pp_proxy_tensors=pp_proxy_tensors,
             input_deepstack_embeds=input_deepstack_embeds,
         )
-        return self.logits_processor(
-            input_ids,
-            hidden_states,
-            self.lm_head,
-            forward_batch,
+        return self.process_hidden_states(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:

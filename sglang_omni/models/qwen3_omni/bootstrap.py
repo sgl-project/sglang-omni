@@ -77,10 +77,11 @@ def create_thinker_scheduler(
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
 
+    capture_hidden_width = model_config.hidden_size if capture_hidden else None
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
+        capture_hidden_width=capture_hidden_width,
         should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
@@ -88,6 +89,8 @@ def create_thinker_scheduler(
         model_worker,
         output_proc,
         should_capture_hidden=_should_generate_qwen_audio_output,
+        capture_hidden_layers=capture_hidden_layers,
+        capture_hidden_width=capture_hidden_width,
     )
 
     tokenizer = get_tokenizer(
