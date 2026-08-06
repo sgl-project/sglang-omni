@@ -419,6 +419,7 @@ class SGLModelRunner(ModelRunner):
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
+            "MiMoV2ASRForCausalLM": "sglang_omni.models.mimo_v25_asr.sglang_model:MiMoV2ASRForCausalLM",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")
