@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from unittest import mock
+
 import pytest
 
 from sglang_omni.config.schema import (
@@ -13,11 +16,84 @@ from sglang_omni.config.schema import (
 from sglang_omni.pipeline.mp_runner import (
     _build_stage_groups,
     _resolve_same_process_targets,
+    _resolve_torch_profiler_ownership,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
-from sglang_omni.pipeline.stage_workers import get_stage_process_env
+from sglang_omni.pipeline.stage_workers import (
+    StageGroup,
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+    get_stage_process_env,
+)
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+def _profiler_owner_group(*owners: str) -> StageGroup:
+    return StageGroup(
+        "test",
+        [
+            StageWorkerProcessSpec(
+                process_name="shared",
+                stage_specs=[
+                    StageLaunchConfig(
+                        stage_name=name,
+                        torch_profiler_owner=True,
+                    )
+                    for name in owners
+                ],
+            )
+        ],
+    )
+
+
+def _process(name: str, stages: dict[str, bool]) -> StageWorkerProcessSpec:
+    return StageWorkerProcessSpec(
+        process_name=name,
+        stage_specs=[
+            StageLaunchConfig(stage_name=stage_name, torch_profiler_owner=is_owner)
+            for stage_name, is_owner in stages.items()
+        ],
+    )
+
+
+def test_torch_profiler_owner_is_unique_per_process() -> None:
+    with pytest.raises(ValueError, match="multiple Torch profiler owners"):
+        _resolve_torch_profiler_ownership([_profiler_owner_group("a", "b")])
+
+
+def test_scheduler_thread_profiling_requires_an_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_TORCH_PROFILER_SCHEDULER_THREAD", "1")
+
+    with pytest.raises(ValueError, match="requires at least one stage"):
+        _resolve_torch_profiler_ownership([_profiler_owner_group()])
+
+
+def test_torch_profiler_ownership_is_stamped_per_process() -> None:
+    """Colocated siblings must learn that their process has an owner, while an
+    ownerless process keeps the direct path. TorchProfiler is a per-process
+    singleton, so this is the flag the Stage decision hangs on."""
+    pipeline = _process("pipeline", {"preprocessing": False, "tts_engine": True})
+    vocoder = _process("vocoder", {"vocoder": False})
+
+    _resolve_torch_profiler_ownership(
+        [StageGroup("pipeline", [pipeline]), StageGroup("vocoder", [vocoder])]
+    )
+
+    stamped = {
+        spec.stage_name: (
+            spec.torch_profiler_owner,
+            spec.torch_profiler_process_has_owner,
+        )
+        for spec in (*pipeline.stage_specs, *vocoder.stage_specs)
+    }
+    assert stamped == {
+        "preprocessing": (False, True),
+        "tts_engine": (True, True),
+        "vocoder": (False, False),
+    }
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
@@ -511,3 +587,53 @@ def test_mp_runner_keeps_cpu_stage_without_gpu_identity(tmp_path) -> None:
 
     assert group.specs[0].gpu_id is None
     assert "gpu_id" not in group.specs[0].comm_config
+
+
+def test_scheduler_thread_flag_from_stage_env_defaults_requires_an_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag can be declared in pipeline/stage env config, which is injected
+    at spawn -- after this validation runs. Reading only the launcher env would
+    let an ownerless pipeline start with the flag silently doing nothing."""
+    monkeypatch.delenv("SGLANG_TORCH_PROFILER_SCHEDULER_THREAD", raising=False)
+    group = StageGroup(
+        "test",
+        [
+            StageWorkerProcessSpec(
+                process_name="pipeline",
+                stage_specs=[
+                    StageLaunchConfig(
+                        stage_name="decode",
+                        env_defaults={"SGLANG_TORCH_PROFILER_SCHEDULER_THREAD": "1"},
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="requires at least one stage"):
+        _resolve_torch_profiler_ownership([group])
+
+
+def test_launcher_env_off_beats_stage_env_defaults() -> None:
+    """Spawn defaults only apply to keys absent from the launcher env, so an
+    explicit off must not be overridden by config."""
+    group = StageGroup(
+        "test",
+        [
+            StageWorkerProcessSpec(
+                process_name="pipeline",
+                stage_specs=[
+                    StageLaunchConfig(
+                        stage_name="decode",
+                        env_defaults={"SGLANG_TORCH_PROFILER_SCHEDULER_THREAD": "1"},
+                    )
+                ],
+            )
+        ],
+    )
+
+    with mock.patch.dict(
+        os.environ, {"SGLANG_TORCH_PROFILER_SCHEDULER_THREAD": "0"}, clear=False
+    ):
+        _resolve_torch_profiler_ownership([group])

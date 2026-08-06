@@ -15,7 +15,7 @@ import os
 import queue as _queue_mod
 import threading
 from contextlib import suppress
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
 
 import torch
 
@@ -54,6 +54,31 @@ _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
+SCHEDULER_THREAD_PROFILER_ENV = "SGLANG_TORCH_PROFILER_SCHEDULER_THREAD"
+# The scheduler thread publishes its identity as its first act, so readiness is
+# a startup-order guard, not a wait for the model to load.
+_SCHEDULER_THREAD_READY_TIMEOUT_S = 30.0
+# Matches the profiler admin timeout: a stop already handed to the scheduler
+# either exports its trace or fails on its own deadline within this window.
+_PROFILER_SHUTDOWN_DRAIN_TIMEOUT_S = 30.0
+
+# How a stage may touch the process-wide TorchProfiler singleton.
+_TORCH_PROFILER_DIRECT = "direct"
+_TORCH_PROFILER_SCHEDULER_OWNER = "scheduler_owner"
+_TORCH_PROFILER_SCHEDULER_SIBLING = "scheduler_sibling"
+
+
+@runtime_checkable
+class SchedulerThreadProfilerControl(Protocol):
+    """Scheduler capability for thread-local profiler lifecycle control."""
+
+    def start_torch_profiler(
+        self, trace_path_template: str, run_id: str | None
+    ) -> dict[str, Any]: ...
+
+    def stop_torch_profiler(self, run_id: str | None) -> dict[str, Any]: ...
+
+    def wait_until_scheduler_thread_ready(self, timeout_s: float) -> bool: ...
 
 
 def _error_text(exc: BaseException) -> str:
@@ -102,6 +127,8 @@ class Stage:
         disable_direct_cuda_ipc_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
+        torch_profiler_owner: bool = False,
+        torch_profiler_process_has_owner: bool = False,
     ):
         self.name = name
         self.role = role
@@ -120,7 +147,20 @@ class Stage:
         self._disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
         self._tp_fanout = tp_fanout
         self._is_terminal = is_terminal
+        self._torch_profiler_owner = torch_profiler_owner
+        self._torch_profiler_process_has_owner = (
+            torch_profiler_process_has_owner or torch_profiler_owner
+        )
         self._owns_external_io = role in {"single", "leader"}
+
+        if self._torch_profiler_owner and not isinstance(
+            scheduler, SchedulerThreadProfilerControl
+        ):
+            raise TypeError(
+                f"Stage {name!r} is configured as the Torch profiler owner, "
+                "but its scheduler does not implement scheduler-thread "
+                "profiler control"
+            )
 
         self._comm = CommEngine(
             CommRouter(
@@ -147,6 +187,13 @@ class Stage:
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
         self._receive_tasks: set[asyncio.Task] = set()
         self._receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
+        self._profiler_op_queue: asyncio.Queue[Callable[[], None]] | None = None
+        self._profiler_op_worker: asyncio.Task | None = None
+        # Two signals, because they fire at different points: the first stops
+        # new work being queued, the second tells work already running in the
+        # executor to bail before it touches a scheduler that is going away.
+        self._profiler_shutdown = threading.Event()
+        self._profiler_lane_abandoned = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
@@ -218,6 +265,7 @@ class Stage:
         await asyncio.gather(*receive_tasks, return_exceptions=True)
         self._receive_tasks.clear()
         self._receive_lane_tails.clear()
+        await self._shutdown_profiler_ops()
         if self.scheduler is not None:
             try:
                 self.scheduler.stop()
@@ -1583,15 +1631,149 @@ class Stage:
         self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
 
+    def _torch_profiler_mode(self) -> str:
+        """How this stage may touch the process-wide TorchProfiler singleton.
+
+        Kineto CPU operator callbacks are thread-local. The AR scheduler runs in
+        a dedicated thread that predates any control message, so starting the
+        profiler on the asyncio thread records CUDA activities but no CPU-side
+        Aten operators. The opt-in mode routes the lifecycle through the
+        scheduler admin queue instead.
+
+        The singleton is per process and a process can host several stages on
+        one asyncio loop, so the decision is per process, not per stage:
+
+        - ``scheduler_owner``: drives the singleton from its scheduler thread.
+        - ``scheduler_sibling``: colocated with an owner, so it must not touch
+          the singleton at all -- otherwise whichever stage handles the
+          broadcast first wins and the profiler runs on the wrong thread.
+        - ``direct``: mode off, or no owner in this process. Keeps the
+          pre-existing behavior so an ownerless process never loses its trace.
+        """
+
+        if os.environ.get(SCHEDULER_THREAD_PROFILER_ENV) != "1":
+            return _TORCH_PROFILER_DIRECT
+        if self._torch_profiler_owner:
+            return _TORCH_PROFILER_SCHEDULER_OWNER
+        if self._torch_profiler_process_has_owner:
+            return _TORCH_PROFILER_SCHEDULER_SIBLING
+        return _TORCH_PROFILER_DIRECT
+
+    def _profiler_control_failed(self, operation: str, detail: object) -> None:
+        """Report a profiler control failure without killing the stage.
+
+        ``ProfilerControlClient`` broadcasts start/stop as fire-and-forget PUSH
+        messages with no response channel, and an exception escaping a message
+        handler tears down every stage in this process. A missing trace must not
+        cost the serving process, so failures are logged instead of raised.
+        """
+
+        logger.error(
+            "Stage %s Torch profiler %s failed: %s", self.name, operation, detail
+        )
+
+    async def _shutdown_profiler_ops(self) -> None:
+        """Let queued profiler work finish, within a bound, then stop the lane.
+
+        A ``/stop_profile`` immediately followed by shutdown is an ordinary
+        operator sequence, and the queued stop is what exports the trace, so
+        cancelling outright would throw it away. The drain is bounded because
+        shutdown must not hang on a scheduler that is already gone.
+
+        Cancelling the worker cannot interrupt a call already running in the
+        executor -- ``Task.cancel`` does not reach into the thread. So the
+        deadline also marks the lane abandoned, and a call that was blocked in
+        its readiness wait checks that before going near the scheduler.
+        """
+
+        self._profiler_shutdown.set()
+        worker = self._profiler_op_worker
+        if worker is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._wait_for_profiler_ops(), _PROFILER_SHUTDOWN_DRAIN_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Stage %s stopped with profiler operations still pending", self.name
+            )
+        self._profiler_lane_abandoned.set()
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        self._profiler_op_worker = None
+
+    def _submit_profiler_op(self, call: Callable[[], None]) -> None:
+        """Hand a blocking profiler operation to the serialized worker.
+
+        The readiness wait and the admin handoff each block for up to
+        ``_SCHEDULER_THREAD_READY_TIMEOUT_S``. Awaiting them from a message
+        handler would keep :meth:`run` from reaching its next
+        ``control_plane.recv()``, parking this stage's submits and acks behind a
+        profiler request. Handlers therefore return immediately and the work
+        runs here. One queue with one worker preserves arrival order, so a stop
+        can never overtake the start it belongs to.
+        """
+
+        if self._profiler_shutdown.is_set():
+            logger.warning(
+                "Stage %s is shutting down, dropping profiler operation", self.name
+            )
+            return
+        if self._profiler_op_queue is None:
+            self._profiler_op_queue = asyncio.Queue()
+        if self._profiler_op_worker is None or self._profiler_op_worker.done():
+            self._profiler_op_worker = asyncio.create_task(
+                self._run_profiler_ops(), name=f"profiler-ops-{self.name}"
+            )
+            self._profiler_op_worker.add_done_callback(
+                lambda task: self._on_background_task_done(task, "profiler ops")
+            )
+        self._profiler_op_queue.put_nowait(call)
+
+    async def _run_profiler_ops(self) -> None:
+        """Run queued profiler operations one at a time, off the event loop."""
+
+        queue = self._profiler_op_queue
+        assert queue is not None
+        loop = asyncio.get_running_loop()
+        while True:
+            call = await queue.get()
+            try:
+                await loop.run_in_executor(None, call)
+            except Exception:
+                logger.warning(
+                    "Stage %s profiler control operation failed",
+                    self.name,
+                    exc_info=True,
+                )
+            finally:
+                queue.task_done()
+
+    async def _wait_for_profiler_ops(self) -> None:
+        """Block until every queued profiler operation has run."""
+
+        if self._profiler_op_queue is not None:
+            await self._profiler_op_queue.join()
+
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
-        if msg.enable_torch and not TorchProfiler.is_active():
+        mode = self._torch_profiler_mode()
+        route_to_scheduler = mode == _TORCH_PROFILER_SCHEDULER_OWNER
+        skip_torch = mode == _TORCH_PROFILER_SCHEDULER_SIBLING
+        if msg.enable_torch and not skip_torch:
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
             template = f"{base_tpl}_pid{os.getpid()}"
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
             if prof_dir and not os.path.isabs(template):
                 template = os.path.join(prof_dir, template)
-            TorchProfiler.start(template, run_id=run_id)
+            if route_to_scheduler:
+                self._submit_profiler_op(
+                    lambda: self._start_torch_profiler_on_scheduler(template, run_id)
+                )
+            else:
+                TorchProfiler.start(template, run_id=run_id)
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
@@ -1604,9 +1786,79 @@ class Stage:
                     exc_info=True,
                 )
 
+    def _scheduler_thread_ready_for_profiler(
+        self, operation: str, timeout_s: float
+    ) -> bool:
+        """Whether delegation would actually land on the scheduler thread.
+
+        ``_should_enqueue_admin`` runs an action inline whenever the scheduler
+        thread has not published its id yet, or has already exited. That is fine
+        for ordinary admin work and wrong here, so the caller must skip rather
+        than fall back: a direct call would produce a trace that looks complete
+        but has no CPU operators, which is the defect this mode exists to fix.
+        """
+
+        ready = self.scheduler.wait_until_scheduler_thread_ready(timeout_s)
+        if self._profiler_lane_abandoned.is_set():
+            # The stage stopped waiting for this call and is tearing the
+            # scheduler down. Anything issued now races that teardown.
+            self._profiler_control_failed(
+                operation, "stage shut down before the scheduler thread answered"
+            )
+            return False
+        if ready:
+            return True
+        self._profiler_control_failed(
+            operation,
+            "scheduler thread is not ready, refusing to run on the control thread",
+        )
+        return False
+
+    def _start_torch_profiler_on_scheduler(
+        self, template: str, run_id: str | None
+    ) -> None:
+        """Delegate the start to the scheduler thread, or give up loudly."""
+
+        # Stage.start does not wait for the scheduler thread, so an early start
+        # is a legitimate startup race worth waiting out.
+        if not self._scheduler_thread_ready_for_profiler(
+            "start", _SCHEDULER_THREAD_READY_TIMEOUT_S
+        ):
+            return
+        # TorchProfiler.start is idempotent per run_id, so re-issuing a start
+        # for the active run is a no-op rather than an error.
+        response = self.scheduler.start_torch_profiler(template, run_id)
+        if not response.get("success", False):
+            self._profiler_control_failed(
+                "start", response.get("error", response.get("message"))
+            )
+
+    def _stop_torch_profiler_on_scheduler(self, run_id: str | None) -> None:
+        """Delegate the stop to the same thread that started the profiler."""
+
+        # No wait here: by stop time the thread has long been up, so "not ready"
+        # means it is shutting down. Blocking the control thread on a scheduler
+        # that is going away would stall the stage for no benefit.
+        if not self._scheduler_thread_ready_for_profiler("stop", 0.0):
+            return
+        response = self.scheduler.stop_torch_profiler(run_id)
+        if not response.get("success", False):
+            self._profiler_control_failed(
+                "stop", response.get("error", response.get("message"))
+            )
+
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
         # run_id=None is a wildcard (stop whatever's active).
-        if TorchProfiler.is_active() and (
+        # Mirrors _on_profiler_start: only the process-local owner drives the
+        # singleton, siblings stay out, ownerless processes stop their own.
+        mode = self._torch_profiler_mode()
+        if mode == _TORCH_PROFILER_SCHEDULER_SIBLING:
+            pass
+        elif mode == _TORCH_PROFILER_SCHEDULER_OWNER:
+            self._submit_profiler_op(
+                lambda: self._stop_torch_profiler_on_scheduler(msg.run_id)
+            )
+        elif TorchProfiler.is_active() and (
             msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)

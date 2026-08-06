@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 import socket
 from typing import Any
 
@@ -31,6 +32,7 @@ from sglang_omni.pipeline.runtime_config import (
     build_comm_config,
     prepare_pipeline_runtime,
 )
+from sglang_omni.pipeline.stage.runtime import SCHEDULER_THREAD_PROFILER_ENV
 from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
@@ -128,6 +130,7 @@ def _build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
+            torch_profiler_owner=stage_cfg.runtime.torch_profiler_owner,
             name_map=name_map,
         )
         if tp_size == 1:
@@ -178,9 +181,75 @@ def _build_stage_groups(
             )
         )
     groups.extend(tp_groups)
+    _resolve_torch_profiler_ownership(groups)
     _attach_process_memory_fraction_defaults(groups)
 
     return groups
+
+
+def _resolve_torch_profiler_ownership(groups: list[StageGroup]) -> None:
+    """Resolve profiler ownership per OS process and stamp it on each stage.
+
+    ``TorchProfiler`` is a process-wide singleton, but one OS process can host
+    several stages sharing a single asyncio loop (see ``_run_process``). So
+    ownership is a property of the process, not of a stage:
+
+    - a process with an owner: only that owner drives the singleton, through
+      its scheduler thread. Its colocated siblings must keep their hands off,
+      otherwise whoever handles the broadcast first wins the race and the
+      profiler ends up started (or stopped) on the wrong thread.
+    - a process without an owner: every stage keeps the pre-existing direct
+      path, so a partial rollout never silently drops that process's trace.
+
+    A globally ownerless pipeline with scheduler-thread profiling requested is
+    rejected, since the flag would then be a no-op.
+    """
+
+    owners: list[str] = []
+    for group in groups:
+        for process_spec in group.process_specs:
+            process_owners = [
+                stage.stage_name
+                for stage in process_spec.stage_specs
+                if stage.torch_profiler_owner
+            ]
+            if len(process_owners) > 1:
+                raise ValueError(
+                    f"Process {process_spec.process_name!r} has multiple Torch "
+                    f"profiler owners: {process_owners}"
+                )
+            for stage_spec in process_spec.stage_specs:
+                stage_spec.torch_profiler_process_has_owner = bool(process_owners)
+            owners.extend(process_owners)
+
+    if _scheduler_thread_profiling_requested(groups) and not owners:
+        raise ValueError(
+            f"{SCHEDULER_THREAD_PROFILER_ENV}=1 requires at least one "
+            "stage with runtime.torch_profiler_owner=true"
+        )
+
+
+def _scheduler_thread_profiling_requested(groups: list[StageGroup]) -> bool:
+    """Whether any worker will see the scheduler-thread flag set.
+
+    Checking ``os.environ`` alone only covers the launcher's own environment.
+    The flag can also be declared in pipeline or stage ``env`` config, which
+    ``_patched_spawn_env`` injects at spawn time -- after this validation runs.
+    Reading only the launcher env would let an ownerless pipeline start with the
+    flag on, where it silently degrades to the pre-existing direct path.
+    """
+
+    launcher_value = os.environ.get(SCHEDULER_THREAD_PROFILER_ENV)
+    if launcher_value is not None:
+        # Spawn defaults only apply to keys absent from the launcher env, so
+        # this value is what every worker ends up seeing.
+        return launcher_value == "1"
+    return any(
+        stage_spec.env_defaults.get(SCHEDULER_THREAD_PROFILER_ENV) == "1"
+        for group in groups
+        for process_spec in group.process_specs
+        for stage_spec in process_spec.stage_specs
+    )
 
 
 def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:

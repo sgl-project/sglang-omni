@@ -98,6 +98,7 @@ class StageRuntimeConfig(BaseModel):
     resources: StageResourceConfig = Field(default_factory=StageResourceConfig)
     max_seq_len: int | None = None
     video_fps: float | None = None
+    torch_profiler_owner: bool = False
     sglang_server_args: SGLangServerArgsConfig = Field(
         default_factory=SGLangServerArgsConfig
     )

@@ -70,6 +70,12 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
+_ADMIN_TORCH_PROFILER_START = "torch_profiler_start"
+_ADMIN_TORCH_PROFILER_STOP = "torch_profiler_stop"
+# The scheduler drains its admin queue every loop iteration, so a profiler
+# handoff costs about one step. Far below the 300s generic admin default, which
+# would pin a stage's control thread if the scheduler loop went away.
+_PROFILER_ADMIN_TIMEOUT_S = 30.0
 
 
 class _PendingStreamIngress:
@@ -1624,6 +1630,101 @@ class OmniScheduler:
             return self._enqueue_admin(action, payload)
         return self._run_admin_action(action, payload)
 
+    def wait_until_scheduler_thread_ready(self, timeout_s: float) -> bool:
+        """Block until admin actions would actually reach the scheduler thread.
+
+        ``Stage.start`` spawns the scheduler thread and returns without waiting,
+        so a control message can arrive before :meth:`start` has published the
+        thread id. ``_should_enqueue_admin`` would then run the action inline on
+        the caller's thread -- fine for ordinary admin work, wrong for the
+        thread-local profiler.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self._running and self._scheduler_thread_id is not None:
+                return True
+            time.sleep(0.01)
+        return self._running and self._scheduler_thread_id is not None
+
+    def _expired_profiler_admin(
+        self, action: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Drop a profiler action the caller has already given up on.
+
+        ``_enqueue_admin`` reports a timeout but leaves the request queued, so a
+        scheduler that was busy past the deadline would still run it afterwards.
+        For a profiler start that means an orphan: the caller was told it failed
+        and will never stop it, while full CPU profiling keeps costing the
+        serving path until someone notices.
+        """
+
+        deadline = payload.get("_deadline")
+        if deadline is None or time.monotonic() <= float(deadline):
+            return None
+        logger.warning(
+            "Skipping expired profiler admin action %s (run_id=%s): the caller "
+            "timed out before the scheduler thread reached it",
+            action,
+            payload.get("run_id"),
+        )
+        message = "profiler request expired before the scheduler thread ran it"
+        return {"success": False, "error": message, "message": message}
+
+    def _run_profiler_admin(
+        self, action: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run a profiler action on the scheduler thread, or not at all.
+
+        :meth:`admin` falls back to running inline whenever the scheduler thread
+        is unavailable. That is right for ordinary admin work and wrong here:
+        Kineto CPU callbacks are thread-local, so an inline run silently
+        produces the very trace this mode exists to prevent.
+
+        The caller's readiness check cannot close this on its own. ``start``
+        clears ``_scheduler_thread_id`` in its ``finally`` but leaves
+        ``_running`` set until :meth:`stop` runs, so a scheduler loop that has
+        exited leaves a window where ``_should_enqueue_admin`` reports inline.
+        Re-checking here, on the values ``admin`` would itself use, turns that
+        window into a failed request instead of a wrong-thread run.
+        """
+
+        scheduler_thread_id = self._scheduler_thread_id
+        if not self._running or scheduler_thread_id is None:
+            return {
+                "success": False,
+                "error": "scheduler thread is not running",
+                "message": "scheduler thread is not running",
+            }
+        if threading.get_ident() == scheduler_thread_id:
+            return self._run_admin_action(action, payload)
+        # Bounded: if the loop dies between the check above and the handoff, the
+        # response never arrives and this would otherwise block the caller's
+        # control thread for the 300s default. The deadline travels with the
+        # request so a scheduler that drains it late drops it instead of acting
+        # on a result the caller has already written off.
+        payload = {
+            **payload,
+            "_admin_timeout_s": _PROFILER_ADMIN_TIMEOUT_S,
+            "_deadline": time.monotonic() + _PROFILER_ADMIN_TIMEOUT_S,
+        }
+        return self._enqueue_admin(action, payload)
+
+    def start_torch_profiler(
+        self, trace_path_template: str, run_id: str | None
+    ) -> dict[str, Any]:
+        """Start TorchProfiler on the scheduler's model-execution thread."""
+
+        return self._run_profiler_admin(
+            _ADMIN_TORCH_PROFILER_START,
+            {"trace_path_template": trace_path_template, "run_id": run_id},
+        )
+
+    def stop_torch_profiler(self, run_id: str | None) -> dict[str, Any]:
+        """Stop TorchProfiler on the same model-execution thread."""
+
+        return self._run_profiler_admin(_ADMIN_TORCH_PROFILER_STOP, {"run_id": run_id})
+
     def _should_enqueue_admin(self) -> bool:
         scheduler_thread_id = self._scheduler_thread_id
         return (
@@ -1671,6 +1772,22 @@ class OmniScheduler:
         self, action: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         payload = dict(payload or {})
+        if action in (_ADMIN_TORCH_PROFILER_START, _ADMIN_TORCH_PROFILER_STOP):
+            expired = self._expired_profiler_admin(action, payload)
+            if expired is not None:
+                return expired
+        if action == _ADMIN_TORCH_PROFILER_START:
+            from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+            trace = TorchProfiler.start(
+                str(payload["trace_path_template"]), run_id=payload.get("run_id")
+            )
+            return {"success": True, "trace": trace}
+        if action == _ADMIN_TORCH_PROFILER_STOP:
+            from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+            result = TorchProfiler.stop(run_id=payload.get("run_id"))
+            return {"success": True, "result": result}
         if action == ADMIN_MODEL_INFO:
             return self._admin_model_info()
         if action == ADMIN_PAUSE_GENERATION:

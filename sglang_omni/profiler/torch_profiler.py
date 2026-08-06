@@ -44,9 +44,14 @@ class TorchProfiler(ProfilerBase):
         """
         with cls._lock:
 
+            # Resolve rank before the cleanup branch below: both the idempotent
+            # early return and the restart warning reference it.
+            rank = cls._get_rank()
+
             # 1. Cleanup any existing profiler
             if cls._profiler is not None:
                 if run_id is not None and cls._active_run_id == run_id:
+                    # Idempotent start: the same run is already recording.
                     return f"{cls._trace_template}_rank{rank}.trace.json.gz"
 
                 logger.warning(
@@ -64,8 +69,6 @@ class TorchProfiler(ProfilerBase):
                 cls._profiler = None
                 cls._active_run_id = None
                 cls._trace_template = ""
-
-            rank = cls._get_rank()
 
             # 2. Make path absolute
             trace_path_template = os.path.abspath(trace_path_template)

@@ -201,6 +201,44 @@ With all four off (the default), a typical 10-sample MMMU run produces a
 trace in the tens of MB. With all four on, the same workload can produce a
 multi-GB trace — only opt in when you need that specific information.
 
+### Capturing CPU operators from the scheduler thread
+
+Kineto's CPU operator callbacks are thread-local. The profiler is started from
+the stage control thread, while AR model execution runs on a separate scheduler
+thread — so by default a trace carries CUDA activity but no CPU-side Aten
+operators from that execution path.
+
+| Env var | Effect |
+|---|---|
+| `SGLANG_TORCH_PROFILER_SCHEDULER_THREAD=1` | Start/stop the profiler on the scheduler thread, so CPU operators from model execution are recorded |
+
+This flag needs a stage to own the process-wide profiler singleton, declared in
+pipeline config:
+
+```yaml
+stages:
+  - name: tts_engine
+    runtime:
+      torch_profiler_owner: true
+```
+
+Ownership is per OS process, because one process can host several stages on a
+single event loop:
+
+| Process | Behavior |
+|---|---|
+| has an owner | the owner drives the profiler from its scheduler thread; colocated stages leave the singleton alone |
+| has no owner | every stage keeps the default direct start/stop, so it still exports a trace |
+
+Startup fails if one process declares more than one owner, or if the flag is set
+with no owner declared anywhere (it would silently do nothing). The flag is read
+from both the launcher environment and pipeline/stage `env` config.
+
+Full CPU profiling is expensive and is not meant to be left on during normal
+serving. A failed start or stop is reported in the owning stage's logs rather
+than in the HTTP response — the profiler control plane broadcasts without a
+reply channel.
+
 ## HTTP surface
 
 | Method | Path | Body | Notes |
