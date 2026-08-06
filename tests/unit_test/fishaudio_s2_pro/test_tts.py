@@ -658,6 +658,7 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length() -> None:
     scheduler._request_finished_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = result_adapter
     scheduler._model_runner = None
     scheduler._stream_output_builder = None

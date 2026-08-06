@@ -11,9 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 class RealtimeSessionManager:
-    def __init__(self, *, client: Client, model_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: Client,
+        model_name: str,
+        supports_audio_output: bool = False,
+    ) -> None:
         self.client = client
         self.model_name = model_name
+        self.supports_audio_output = supports_audio_output
         self.sessions: dict[str, RealtimeSession] = {}
 
     def open(self, websocket: WebSocket) -> RealtimeSession:
@@ -21,6 +28,7 @@ class RealtimeSessionManager:
             websocket,
             client=self.client,
             model_name=self.model_name,
+            supports_audio_output=self.supports_audio_output,
         )
         self.sessions[session.session_id] = session
         logger.info(f"Realtime session opened: {session.session_id}")

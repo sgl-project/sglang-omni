@@ -45,7 +45,7 @@ Supported Models
      - Text-to-speech and zero-shot voice cloning
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
-     - Audio transcription through ``/v1/audio/transcriptions``
+     - Multilingual audio transcription with 30 language hints
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
      - Experimental Whisper transcription route; response schema is served, correctness is not yet validated
@@ -117,4 +117,5 @@ Supported Models
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
+   developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md

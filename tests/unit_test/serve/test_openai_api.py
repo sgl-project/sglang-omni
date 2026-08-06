@@ -111,8 +111,11 @@ def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
 
 
 class SuccessfulSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -146,6 +149,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -554,7 +558,7 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    speech_client = SuccessfulSpeechClient()
+    speech_client = SuccessfulSpeechClient(finish_reason="length")
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
@@ -568,6 +572,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
@@ -1351,6 +1356,22 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.stream is False
 
 
+def test_transcription_request_preserves_explicit_empty_language() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="Qwen/Qwen3-ASR-1.7B",
+        language="",
+        prompt=None,
+        temperature=None,
+    )
+
+    assert gen_req.extra_params["language"] == ""
+    omni_req = Client._build_omni_request(gen_req)
+    assert omni_req.params["language"] == ""
+
+
 def test_transcription_request_passes_explicit_temperature() -> None:
     gen_req = build_transcription_generate_request(
         audio_bytes=b"RIFF",
@@ -1448,6 +1469,29 @@ def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
 
     assert response.status_code == 400
     assert "max_new_tokens must be" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None:
+    bad_request_error = (
+        "Unsupported language: 'Klingon'. Use a supported language code "
+        "(ar, en, zh) or canonical name."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni", "language": "Klingon"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported language:" in response.json()["detail"]
+    assert "Use a supported language code" in response.json()["detail"]
 
 
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:

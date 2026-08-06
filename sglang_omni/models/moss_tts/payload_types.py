@@ -9,6 +9,20 @@ from typing import Any
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 
+@dataclass(frozen=True)
+class ChannelSampling:
+    """Sampling defaults for one MOSS-TTS channel group."""
+
+    temperature: float
+    top_p: float
+    top_k: int
+
+
+TEXT_SAMPLING = ChannelSampling(temperature=1.5, top_p=1.0, top_k=50)
+AUDIO_SAMPLING = ChannelSampling(temperature=1.7, top_p=0.8, top_k=25)
+AUDIO_REPETITION_PENALTY = 1.0
+
+
 def moss_tts_special_token_defaults(
     audio_vocab_size: int = 1024,
 ) -> tuple[tuple[str, int], ...]:

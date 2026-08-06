@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 _BAD_REQUEST_MARKERS = (
+    "Unsupported language:",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",
