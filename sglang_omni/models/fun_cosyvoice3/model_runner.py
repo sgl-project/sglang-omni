@@ -12,7 +12,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
-from .sglang_model import EOS_ID
+from .sglang_model import VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,26 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> None:
         self._collect_tokens(result, forward_batch, schedule_batch, requests)
 
+    def sample_before_post_prefill(
+        self,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> bool:
+        """Sample the first speech token before collecting prefill output."""
+        del forward_batch, schedule_batch, requests
+        return True
+
+    def sample_before_post_decode(
+        self,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> bool:
+        """Sample each speech token before collecting decode output."""
+        del forward_batch, schedule_batch, requests
+        return True
+
     def _collect_tokens(
         self,
         result: Any,
@@ -62,16 +82,21 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             token_ids = token_ids.reshape(-1)
         for idx, sched_req in enumerate(requests):
             token_id = int(token_ids[idx].item())
+            if token_id >= VOCAB_SIZE:
+                continue
             sched_req.data.output_codes.append(
                 torch.tensor([token_id], dtype=torch.long)
             )
-        if len(sched_req.data.output_codes) <= 3 or len(sched_req.data.output_codes) % 50 == 0:
-            logger.info(
-                "CosyVoice3 decode step=%d token=%d eos=%d",
-                len(sched_req.data.output_codes),
-                token_id,
-                EOS_ID,
-            )
+            if (
+                len(sched_req.data.output_codes) <= 3
+                or len(sched_req.data.output_codes) % 50 == 0
+            ):
+                logger.info(
+                    "CosyVoice3 decode step=%d token=%d control_start=%d",
+                    len(sched_req.data.output_codes),
+                    token_id,
+                    VOCAB_SIZE,
+                )
 
     def _build_prefill_input_embeds(
         self,

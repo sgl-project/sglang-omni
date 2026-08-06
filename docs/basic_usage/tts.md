@@ -42,7 +42,7 @@ for details.
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
-| [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `examples/configs/fun_cosyvoice3_0_5b.yaml` | Requires reference audio via `ref_audio`. Supports zero-shot cloning, cross-lingual, instruct mode, speed control, and streaming |
+| [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `examples/configs/fun_cosyvoice3_0_5b.yaml` | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, and buffered speed control |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |

@@ -4,8 +4,8 @@
 lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
 It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens),
 conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
-speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis,
-instruction-based style control, and voice conversion. The model streams 24 kHz speech at a
+speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and
+instruction-based style control. The model produces 24 kHz speech at a
 25 Hz token frame rate through the `preprocessing → tts_engine → vocoder` pipeline and the
 OpenAI-compatible `/v1/audio/speech` endpoint.
 
@@ -18,15 +18,19 @@ audio-processing libraries:
 
 ```bash
 apt-get update && apt-get install -y sox
-uv pip install sox onnxruntime whisper
+uv pip install sox onnxruntime openai-whisper
 ```
 
-Clone the cosyvoice repository and add it to `PYTHONPATH`:
+Clone the CosyVoice repository with its Matcha-TTS submodule and add both
+packages to `PYTHONPATH`:
 
 ```bash
-git clone https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice
-export PYTHONPATH="/opt/CosyVoice:$PYTHONPATH"
+git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice
+export PYTHONPATH="/opt/CosyVoice:/opt/CosyVoice/third_party/Matcha-TTS:$PYTHONPATH"
 ```
+
+If CosyVoice was cloned without submodules, initialize Matcha-TTS with
+`git -C /opt/CosyVoice submodule update --init --recursive` before starting the server.
 
 The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, so
 `onnxruntime` is required.
@@ -104,25 +108,6 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-### Language Hint
-
-`language` biases the model toward a target language. It defaults to `auto` (let the model
-detect). CosyVoice3 supports Chinese, English, Japanese, Korean, Cantonese, and several
-Chinese dialects.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "今天天气不错，就该出去晒晒太阳。",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "language": "Chinese"
-  }' \
-  --output output.wav
-```
-
 ### Instruction-based Style Control
 
 Pass `instructions` to guide prosody, emotion, or speaking style:
@@ -155,27 +140,27 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-### Streaming
+### Streaming (Planned)
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio chunks in
-real time:
+Incremental Flow + HiFT decoding is planned but is not enabled in the current implementation.
+The current vocoder buffers the generated speech tokens and returns one complete waveform.
+Do not rely on `stream=true` for time-to-first-audio until the streaming decoder is wired.
 
 ```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
+curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true,
-    "response_format": "pcm"
+    "response_format": "wav"
   }' \
-  --output output.pcm
+  --output output.wav
 ```
 
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in the
-response headers.
+The request above uses the supported buffered response path. A future streaming implementation
+will use `response_format="pcm"` and emit audio before speech-token generation completes.
 
 ## Generation Parameters
 
@@ -185,7 +170,6 @@ response headers.
 | `input` | (required) | Text to synthesize |
 | `ref_audio` | `null` | Reference audio for voice cloning (path / URL / data URL) |
 | `ref_text` | `null` | Transcript of the reference audio. Improves cloning quality; omit for cross-lingual mode |
-| `language` | `auto` | Target-language hint (Chinese, English, Japanese, Korean, Cantonese, dialects) |
 | `instructions` | `null` | Instruction text for style/prosody/emotion guidance |
 | `speed` | `1.0` | Playback speed multiplier |
 | `temperature` | `0.7` | Sampling temperature |
@@ -194,7 +178,7 @@ response headers.
 | `repetition_penalty` | `1.1` | Repetition penalty |
 | `max_new_tokens` | `2048` | Maximum number of generated speech tokens |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream raw PCM audio chunks |
+| `stream` | `false` | Reserved for the planned incremental decoder; current decode is buffered |
 
 ## Model Architecture
 
@@ -215,8 +199,18 @@ response headers.
   extraction.
 - **Speaker similarity.** Providing `ref_text` (the transcript) yields better voice
   similarity than omitting it (cross-lingual mode).
+- **Reference shape.** The endpoint accepts either `ref_audio` plus optional `ref_text`,
+  or one item in `references`; multiple references are rejected for this checkpoint.
+- **Prompt modes.** Provide either `ref_text` or `instructions` for the reference prompt,
+  not both. `instructions` selects CosyVoice3 `instruct2` conditioning.
+- **Reference conditioning cache.** Local files, data URLs, and byte payloads are cached
+  by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded
+  on every request instead of being cached by URL alone.
 - **Speed control.** Non-streaming mode only: speed changes interpolate the mel
   spectrogram and are not available during streaming inference.
+- **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
+- **Streaming decode.** The current implementation buffers all speech tokens before Flow + HiFT
+  decoding. Incremental PCM output is planned but is not yet available.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be
-  installed from GitHub. Its full dependency chain (Matcha-TTS, WeNet, FunCodec) is
-  heavy; only the flow and HiFT modules are needed at serving time.
+  installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
+  only the CosyVoice Flow and HiFT paths are used by the buffered decoder.

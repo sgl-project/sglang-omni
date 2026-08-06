@@ -8,7 +8,9 @@ from . import config
 CAPABILITIES = ModelCapabilities(
     supports_reference_audio=True,
     supports_batch_vocoder=True,
-    supports_streaming_vocoder=True,
+    # Flow + HiFT currently run after the complete LLM result is available.
+    # Keep this false until incremental decoder wiring is implemented.
+    supports_streaming_vocoder=False,
     supports_cuda_graph=True,
     supports_torch_compile=True,
 )

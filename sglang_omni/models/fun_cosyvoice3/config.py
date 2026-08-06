@@ -14,6 +14,10 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
     architecture: ClassVar[str] = "FunCosyVoice3SGLangModel"
+    # This checkpoint has no built-in speaker presets, so public requests need
+    # one reference clip for speaker conditioning.
+    required_speech_reference_count: ClassVar[int | None] = 1
+    speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:

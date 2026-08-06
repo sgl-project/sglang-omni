@@ -4,17 +4,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
-from torch import nn
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
-from sglang.srt.utils import add_prefix
-
-logger = logging.getLogger(__name__)
+from torch import nn
 
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
@@ -78,9 +74,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             extend_seq_lens = forward_batch.extend_seq_lens
             if extend_seq_lens is not None:
                 last_indices = (
-                    torch.cumsum(
-                        extend_seq_lens.to(device=hidden_states.device), dim=0
-                    )
+                    torch.cumsum(extend_seq_lens.to(device=hidden_states.device), dim=0)
                     - 1
                 )
             else:
@@ -111,7 +105,11 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             if name == "llm.model.lm_head.weight":
                 continue
 
-            if name in ("speech_embedding.weight", "llm_decoder.weight", "llm_decoder.bias"):
+            if name in (
+                "speech_embedding.weight",
+                "llm_decoder.weight",
+                "llm_decoder.bias",
+            ):
                 param = self._cached_params_dict.get(name)
                 if param is not None:
                     loader = getattr(param, "weight_loader", default_weight_loader)
@@ -129,7 +127,7 @@ def _map_cosyvoice3_weight_key(name: str) -> str | None:
     # llm.model.model.* → model.* (Qwen2 backbone inside CosyVoice3LM)
     backbone_prefix = "llm.model.model."
     if name.startswith(backbone_prefix):
-        return "model." + name[len(backbone_prefix):]
+        return "model." + name[len(backbone_prefix) :]
 
     # llm.model.lm_head.weight → skip (unused Qwen2 text head)
     if name == "llm.model.lm_head.weight":

@@ -78,6 +78,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         # Qwen2 text). CosyVoice3 outputs speech tokens (vocab=6761). Patch
         # the model config so sampling penalty tensors match our logit dim.
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
+
         model_worker.model_runner.model_config.vocab_size = TOTAL_VOCAB_SIZE
 
         # Load fine-tuned CosyVoice3 LLM weights from llm.pt (backbone +
@@ -103,6 +104,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             tokenizer=tokenizer,
             speech_tokenizer=speech_tokenizer,
             speaker_encoder=speaker_encoder,
+            model_revision=root,
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

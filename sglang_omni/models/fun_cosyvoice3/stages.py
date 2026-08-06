@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
-from sglang_omni.models.fun_cosyvoice3.sglang_model import FILL_ID
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
@@ -110,7 +108,9 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             raise RuntimeError(
                 "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
             )
-        codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
+        # The AR runner stores one-element tensors per step, which serialize as
+        # ``[num_tokens, 1]``. Flow consumes one unbatched token sequence here.
+        codes = torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
         return state, codes
 
     async def decode_batch(
@@ -119,13 +119,13 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         results = []
         for state, codes in items:
             prompt_token = (
-                torch.as_tensor(state.prompt_speech_token, dtype=torch.int32)
-                if state.prompt_speech_token is not None
+                torch.as_tensor(state.flow_prompt_speech_token, dtype=torch.int32)
+                if state.flow_prompt_speech_token is not None
                 else torch.zeros(1, 0, dtype=torch.int32)
             )
             prompt_feat = (
-                torch.as_tensor(state.prompt_speech_feat)
-                if state.prompt_speech_feat is not None
+                torch.as_tensor(state.flow_prompt_speech_feat)
+                if state.flow_prompt_speech_feat is not None
                 else torch.zeros(1, 0, 80)
             )
             embedding = (
@@ -161,7 +161,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             pad = torch.zeros(1, pad_len, dtype=token.dtype, device=token.device)
             token = torch.cat([token, pad], dim=1)
 
-        with torch.cuda.amp.autocast(self._fp16):
+        with torch.autocast(device_type="cuda", enabled=self._fp16):
             tts_mel, _ = self._flow.inference(
                 token=token.to(device, dtype=torch.int32),
                 token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(device),
@@ -183,9 +183,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                 size=int(tts_mel.shape[2] / speed),
                 mode="linear",
             )
-        tts_speech, _ = self._hift.inference(
-            speech_feat=tts_mel, finalize=True
-        )
+        tts_speech, _ = self._hift.inference(speech_feat=tts_mel, finalize=True)
         return tts_speech.detach().cpu()
 
     def store_result(
@@ -196,12 +194,8 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         sample_rate: int,
     ) -> StagePayload:
         if wav is None:
-            raise RuntimeError(
-                "Fun-CosyVoice3 vocoder did not return audio"
-            )
-        audio_payload = audio_waveform_payload(
-            wav, source_hint="Fun-CosyVoice3"
-        )
+            raise RuntimeError("Fun-CosyVoice3 vocoder did not return audio")
+        audio_payload = audio_waveform_payload(wav, source_hint="Fun-CosyVoice3")
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
