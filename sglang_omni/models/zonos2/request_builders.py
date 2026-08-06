@@ -26,9 +26,15 @@ from sglang_omni.models.zonos2.components.text_frontend import (
 )
 from sglang_omni.models.zonos2.payload_types import Zonos2State
 from sglang_omni.models.zonos2.radix_hash import RADIX_HASH_SPACE, poly_row_hash
+from sglang_omni.models.zonos2.streaming_contract import (
+    DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
+from sglang_omni.scheduling.streaming_vocoder import (
+    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+    resolve_initial_codec_chunk_frames,
+)
 
 _DATA_URI_RE = re.compile(r"^data:[^;,]*;base64,(?P<data>.+)$", re.DOTALL)
 
@@ -141,9 +147,11 @@ def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
         "modality": "audio_codes",
         "n_codebooks": int(n_codebooks),
     }
-    initial = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
-    if initial is not None:
-        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial
+    if params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = resolve_initial_codec_chunk_frames(
+            params,
+            steady_chunk_frames=DEFAULT_ZONOS2_STREAM_STEADY_CHUNK_FRAMES,
+        )
     return metadata
 
 

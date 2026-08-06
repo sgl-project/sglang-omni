@@ -9,10 +9,12 @@ import pytest
 import torch
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
+import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.utils.audio import audio_fingerprint
 
 _AUDIO_PAD = "<|object_ref_start|>"
 _AUDIO_PAD_ID = 42  # arbitrary sentinel distinct from vocabulary ids below
@@ -92,9 +94,9 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
     assert num_audio_tokens == 3
 
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(1600 * 3, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600 * 3, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -138,7 +140,7 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) ->
 
 def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) -> None:
     audio = np.zeros(1600, dtype=np.float32)
-    monkeypatch.setattr(request_builders, "_load_audio", lambda source: audio)
+    monkeypatch.setattr(transcription, "load_audio", lambda source, **kwargs: audio)
     observed: dict[str, object] = {}
 
     class _EncoderService:
@@ -166,7 +168,7 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
     item = data.req.multimodal_inputs.mm_items[0]
     assert observed["offsets"] == item.offsets
     assert observed["num_audio_tokens"] == 3
-    assert observed["audio_fingerprint"] == request_builders.audio_fingerprint(audio)
+    assert observed["audio_fingerprint"] == audio_fingerprint(audio)
     assert item.feature is None
     assert item.precomputed_embeddings.shape[0] == 3
 
@@ -174,9 +176,9 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
 def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:
 
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
     captured = {}
 
@@ -250,11 +252,21 @@ def test_fun_asr_load_audio_uses_shared_audio_utility(monkeypatch) -> None:
         calls.append((source, kwargs))
         return expected
 
-    monkeypatch.setattr(request_builders, "_shared_load_audio", _shared)
+    monkeypatch.setattr(transcription, "load_audio", _shared)
 
-    actual = request_builders._load_audio(b"wav")
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-shared-load",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
 
-    assert actual is expected
+    request_builder(payload)
+
     assert calls == [
         (
             b"wav",
@@ -265,9 +277,9 @@ def test_fun_asr_load_audio_uses_shared_audio_utility(monkeypatch) -> None:
 
 def test_fun_asr_request_builder_scales_default_token_budget(monkeypatch) -> None:
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000 * 3, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000 * 3, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -288,9 +300,9 @@ def test_fun_asr_request_builder_scales_default_token_budget(monkeypatch) -> Non
 
 def test_fun_asr_request_builder_rejects_audio_over_vad_limit(monkeypatch) -> None:
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000 * 30 + 1, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000 * 30 + 1, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -311,9 +323,9 @@ def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -339,9 +351,9 @@ def test_fun_asr_request_builder_wraps_string_hotword_as_single_entry(
 ) -> None:
     # A bare string must stay one hotword, not be split into characters.
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(1600, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
     captured = {}
 
@@ -375,9 +387,9 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
     # With context_length=10 and max_new_tokens=5, 12 + 5 > 10 must raise a
     # clear bad-request error (caught by _BAD_REQUEST_MARKERS -> HTTP 400).
     monkeypatch.setattr(
-        request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),

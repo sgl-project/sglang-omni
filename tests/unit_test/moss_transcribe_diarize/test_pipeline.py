@@ -9,6 +9,7 @@ import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
+from sglang_omni.models.moss_transcribe_diarize import stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -33,6 +34,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 16
+    assert config.stages[0].factory_args["encoder_max_batch_size"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
@@ -49,6 +51,63 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("runtime_overrides", "expected_workers"),
+    [
+        ({}, 8),
+        ({"asr": {"request_build_max_workers": 4}}, 4),
+    ],
+)
+def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_overrides: dict[str, dict[str, int]],
+    expected_workers: int,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize import config as config_module
+
+    calls: list[tuple[int, int]] = []
+
+    def _bounded_threads(*, worker_count: int, max_threads: int) -> int:
+        calls.append((worker_count, max_threads))
+        return 3
+
+    monkeypatch.setattr(
+        config_module,
+        "bounded_intraop_threads",
+        _bounded_threads,
+    )
+
+    config = config_module.MossTranscribeDiarizePipelineConfig(
+        model_path="dummy",
+        runtime_overrides=runtime_overrides,
+    )
+
+    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+    assert calls == [(expected_workers, 8)]
+
+
+def test_moss_transcribe_diarize_preserves_explicit_omp_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize import config as config_module
+
+    def _unexpected_call(**_kwargs) -> int:
+        raise AssertionError("explicit OMP_NUM_THREADS must bypass auto sizing")
+
+    monkeypatch.setattr(
+        config_module,
+        "bounded_intraop_threads",
+        _unexpected_call,
+    )
+
+    config = config_module.MossTranscribeDiarizePipelineConfig(
+        model_path="dummy",
+        env_defaults={"OMP_NUM_THREADS": "3"},
+    )
+
+    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+
+
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
 
@@ -56,6 +115,7 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["encoder_max_batch_size"].default == 2
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
     assert signature.parameters["encoder_chunk_buckets"].default is None
     assert signature.parameters["encoder_torch_compile"].default is False
@@ -132,12 +192,24 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
 def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
     from types import SimpleNamespace
 
-    from sglang_omni.models.moss_transcribe_diarize import stages
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.moss_transcribe_diarize import (
+        engine_builder,
+        request_builders,
+    )
+    from sglang_omni.scheduling import (
+        bootstrap,
+        engine_factory,
+        omni_scheduler,
+        sglang_backend,
+    )
 
     calls = {
-        "init_device_graphs": 0,
+        "init_cuda_graphs": 0,
         "compile_encoder": [],
         "init_encoder_graphs": [],
+        "encoder_services": [],
     }
     model = SimpleNamespace(
         compile_encoder=lambda buckets, feat_len: calls["compile_encoder"].append(
@@ -149,13 +221,11 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         init_encoder_cache=lambda n: None,
     )
 
-    def _bump_init_device_graphs() -> None:
-        calls["init_device_graphs"] += 1
+    def _bump_init_cuda_graphs() -> None:
+        calls["init_cuda_graphs"] += 1
 
-    model_runner = SimpleNamespace(
-        model=model, init_device_graphs=_bump_init_device_graphs
-    )
-    model_worker = SimpleNamespace(model_runner=model_runner)
+    model_runner = SimpleNamespace(model=model, init_cuda_graphs=_bump_init_cuda_graphs)
+    model_worker = SimpleNamespace(gpu_id=0, model_runner=model_runner)
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
     processor = SimpleNamespace(
@@ -164,33 +234,49 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     )
 
     monkeypatch.setattr(
-        stages,
-        "AutoProcessor",
-        SimpleNamespace(from_pretrained=lambda *a, **k: processor),
+        AutoProcessor,
+        "from_pretrained",
+        lambda *a, **k: processor,
     )
     monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
     monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
-    monkeypatch.setattr(stages, "build_generation_batch_overrides", lambda **k: {})
-    monkeypatch.setattr(stages, "build_sglang_server_args", lambda *a, **k: object())
-    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **k: None)
     monkeypatch.setattr(
-        stages, "create_sglang_infrastructure_defer_cuda_graph", lambda *a, **k: infra
+        engine_factory, "build_generation_batch_overrides", lambda **k: {}
     )
-    monkeypatch.setattr(stages, "init_mm_embedding_cache", lambda n: None)
-    monkeypatch.setattr(stages, "BatchedAudioEncoderService", lambda model: object())
     monkeypatch.setattr(
-        stages,
+        sglang_backend,
+        "build_sglang_server_args",
+        lambda *a, **k: SimpleNamespace(context_length=4096),
+    )
+    monkeypatch.setattr(
+        engine_factory, "validate_generation_batch_policy", lambda **k: None
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        lambda *a, **k: infra,
+    )
+    monkeypatch.setattr(engine_builder, "init_mm_embedding_cache", lambda n: None)
+
+    def _make_encoder_service(model, *, max_batch_size):
+        calls["encoder_services"].append((model, max_batch_size))
+        return object()
+
+    monkeypatch.setattr(
+        engine_builder, "BatchedAudioEncoderService", _make_encoder_service
+    )
+    monkeypatch.setattr(
+        request_builders,
         "make_moss_transcribe_diarize_scheduler_adapters",
         lambda **k: (object(), object()),
     )
     monkeypatch.setattr(
-        stages,
+        request_builders,
         "make_moss_transcribe_diarize_stream_output_builder",
         lambda **k: object(),
     )
-    monkeypatch.setattr(stages, "SGLangOutputProcessor", lambda **k: object())
-    monkeypatch.setattr(stages, "ModelRunner", lambda *a, **k: object())
-    monkeypatch.setattr(stages, "OmniScheduler", lambda **k: SimpleNamespace())
+    monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", lambda **k: SimpleNamespace())
     return calls
 
 
@@ -205,7 +291,59 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
 
     assert len(calls["compile_encoder"]) == 1
     assert calls["init_encoder_graphs"] == []
-    assert calls["init_device_graphs"] == 1
+    assert calls["init_cuda_graphs"] == 1
+    assert len(calls["encoder_services"]) == 1
+    assert calls["encoder_services"][0][1] == 2
+
+
+def test_factory_context_length_override_uses_final_server_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_transcribe_diarize import request_builders
+    from sglang_omni.scheduling import engine_factory, sglang_backend
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_generation_batch_overrides,
+    )
+
+    _stub_factory_env(monkeypatch, want_cuda_graph=False)
+    # The shared stub swallows server_args_overrides, but this regression
+    # needs the real merge so a context_length key retained in overrides
+    # would collide with the explicit keyword and raise TypeError.
+    monkeypatch.setattr(
+        engine_factory,
+        "build_generation_batch_overrides",
+        build_generation_batch_overrides,
+    )
+
+    server_args_kwargs: dict[str, object] = {}
+    adapter_kwargs: dict[str, object] = {}
+    final_context_length = 8193
+
+    def capture_server_args(model_path, **kwargs):
+        del model_path
+        server_args_kwargs.update(kwargs)
+        return SimpleNamespace(context_length=final_context_length)
+
+    def capture_adapters(**kwargs):
+        adapter_kwargs.update(kwargs)
+        return (object(), object())
+
+    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", capture_server_args)
+    monkeypatch.setattr(
+        request_builders,
+        "make_moss_transcribe_diarize_scheduler_adapters",
+        capture_adapters,
+    )
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        server_args_overrides={"context_length": 8192},
+    )
+
+    assert server_args_kwargs["context_length"] == 8192
+    assert adapter_kwargs["context_length"] == final_context_length
 
 
 def _repo_not_found(url: str) -> RepositoryNotFoundError:

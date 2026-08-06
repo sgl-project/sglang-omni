@@ -40,7 +40,7 @@ class _ByteTokenizer:
         return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def _make_req_data(*, stream: bool = True, is_chunked: int = 0) -> Any:
+def _make_req_data(*, stream: bool = True, inflight_middle_chunks: int = 0) -> Any:
     """Minimal req_data as OmniScheduler passes to stream_output_builder."""
     stage_payload = StagePayload(
         request_id="r",
@@ -51,7 +51,7 @@ def _make_req_data(*, stream: bool = True, is_chunked: int = 0) -> Any:
         ),
         data={},
     )
-    req = SimpleNamespace(is_chunked=is_chunked)
+    req = SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks)
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
@@ -90,11 +90,11 @@ def test_silent_when_not_streaming():
 
 def test_silent_during_chunked_prefill():
     builder = _builder({1: b"A"})
-    rd = _make_req_data(stream=True, is_chunked=1)
+    rd = _make_req_data(stream=True, inflight_middle_chunks=1)
 
     assert builder("req-1", rd, _make_req_output(1)) == []
 
-    rd.req.is_chunked = 0
+    rd.req.inflight_middle_chunks = 0
     msgs = builder("req-1", rd, _make_req_output(1))
     assert [m.data["text"] for m in msgs] == ["A"]
 
@@ -112,7 +112,9 @@ def test_silent_when_req_or_payload_missing():
     no_req = SimpleNamespace(req=None, stage_payload=None)
     assert builder("req-1", no_req, _make_req_output(1)) == []
 
-    no_payload = SimpleNamespace(req=SimpleNamespace(is_chunked=0), stage_payload=None)
+    no_payload = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0), stage_payload=None
+    )
     assert builder("req-1", no_payload, _make_req_output(1)) == []
 
 

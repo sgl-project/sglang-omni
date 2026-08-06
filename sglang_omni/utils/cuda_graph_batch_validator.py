@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_max_bs
+
 logger = logging.getLogger(__name__)
 
 
@@ -199,11 +201,12 @@ def evaluate_cuda_graph_batch_sizing(
 def read_captured_bs(model_runner: object) -> list[int] | None:
     """Read the actually-captured CUDA graph batch sizes, or None if absent."""
     try:
-        captured = model_runner.graph_runner.capture_bs
+        captured = model_runner.decode_cuda_graph_runner.capture_bs
     except AttributeError:
         logger.debug(
-            "cuda_graph_batch_validator: model_runner.graph_runner.capture_bs "
-            "missing (CUDA graphs disabled)."
+            "cuda_graph_batch_validator: "
+            "model_runner.decode_cuda_graph_runner.capture_bs missing "
+            "(decode CUDA graphs disabled)."
         )
         return None
     try:
@@ -269,14 +272,9 @@ def validate_stage(
     buffer_capacity: int | None = None,
 ) -> CudaGraphBatchReport:
     """Validate one SGLang-backed stage's batch sizing from its live runner."""
-    try:
-        server_args = model_runner.server_args
-        max_running_requests = server_args.max_running_requests
-        cuda_graph_max_bs = server_args.cuda_graph_max_bs
-    except AttributeError:
-        server_args = None
-        max_running_requests = None
-        cuda_graph_max_bs = None
+    server_args = model_runner.server_args
+    max_running_requests = server_args.max_running_requests
+    cuda_graph_max_bs = get_decode_cuda_graph_max_bs(server_args)
 
     try:
         model = model_runner.model

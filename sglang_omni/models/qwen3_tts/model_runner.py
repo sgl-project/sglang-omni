@@ -9,6 +9,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.types import RequestOutput
 
@@ -133,7 +134,6 @@ class Qwen3TTSModelRunner(ModelRunner):
             hidden,
             semantic_positions=semantic_positions,
         )
-        schedule_batch.output_ids = result.next_token_ids
         self._has_pending_code_step = True
 
     def post_process_outputs(
@@ -154,6 +154,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             code_chunk = self.model._output_codes[row_idx].detach().clone()
             feedback = self.model._output_embeds[row_idx].detach().clone()
             sched_req.data.output_codes.append(code_chunk)
+            sched_req.data.latest_stream_code_chunk = code_chunk
             sched_req.data.pending_feedback_queue.append(feedback)
 
     def _sample_positions(
@@ -231,7 +232,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
             prompt_embeds = data.prompt_input_embeds
             if prompt_embeds is None:
@@ -258,13 +259,14 @@ class Qwen3TTSModelRunner(ModelRunner):
             device=forward_batch.input_ids.device,
             dtype=model_dtype,
         )
-        logits_output = self.model(
-            input_ids=forward_batch.input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            input_embeds_are_projected=True,
-        )
+        with attn_forward_context(model_runner.attn_backend):
+            logits_output = self.model(
+                input_ids=forward_batch.input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                input_embeds_are_projected=True,
+            )
         return GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=False,

@@ -3,17 +3,19 @@
 # CI DAG:
 #   stage-1-multi-speaker (MOSS-Transcribe-Diarize on movies800time +
 #   AISHELL4 long + googletime)
-#   -> stage-2-seedtts (Fun-ASR-Nano on SeedTTS EN and ZH)
+#   -> stage-2-seedtts (SeedTTS EN and ZH; ASR model preset selected via
+#      ASR_CI_MODEL, see tests/test_model/asr_ci_config.py)
 #
 # All stages use the managed router with 2 single-GPU workers (DP=2).
 name: asr
-description: "ASR CI (MOSS-TD multi-speaker + Fun-ASR SeedTTS)"
+description: "ASR CI (MOSS-TD multi-speaker + SeedTTS ASR)"
 hf_model_id: "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 hf_model_ids_by_test:
   test_asr_ci_multi_speaker.py:
     - "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-  test_asr_ci_fun_asr.py:
+  test_asr_ci_seedtts.py:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+    - "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
   - "zhaochenyang20/movies800time"
   - "zhaochenyang20/AISHELL4"
@@ -39,10 +41,10 @@ auto_env:
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 gpus_per_test:
   test_asr_ci_multi_speaker.py: 2
-  test_asr_ci_fun_asr.py: 2
+  test_asr_ci_seedtts.py: 2
 test_globs:
   - "tests/test_model/test_asr_ci_multi_speaker.py"
-  - "tests/test_model/test_asr_ci_fun_asr.py"
+  - "tests/test_model/test_asr_ci_seedtts.py"
 extra_env: {}
 pytest_extra_args: {}
 stage_base_strip_prefix: "test_asr_ci_"
@@ -163,13 +165,31 @@ metric_sources:
           rtf_p95: "speed.rtf_p95"
           text_ttft_p95_s: "speed.text_ttft_p95_s"
           inter_chunk_p95_s: "speed.inter_chunk_p95_s"
-  test_asr_ci_fun_asr.py:
+  test_asr_ci_seedtts.py:
+    threshold_file: "tests/test_model/asr_ci_config.py"
+    calibration_presets:
+      fun:
+        extra_env:
+          ASR_CI_MODEL: "fun"
+        gpus: 2
+        # discover: only FUN_ASR_* constants (never QWEN3_ASR_*)
+        constant_filter: "^FUN_ASR_"
+        hf_model_ids:
+          - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+      qwen3:
+        extra_env:
+          ASR_CI_MODEL: "qwen3"
+        gpus: 2
+        # discover: only QWEN3_ASR_* constants (never FUN_ASR_*)
+        constant_filter: "^QWEN3_ASR_"
+        hf_model_ids:
+          - "Qwen/Qwen3-ASR-1.7B"
     variants:
       en:
-        constant_filter: "^FUN_ASR_(?!ZH_).*"
+        constant_filter: "^FUN_ASR_(?!ZH_).*|^QWEN3_ASR_(?!ZH_).*"
         context_vars:
-          - SEEDTTS_FUN_ASR_EN_SAMPLES
-        json_file: "fun_asr_results.json"
+          - SEEDTTS_ASR_EN_SAMPLES
+        json_file: "asr_seedtts_en_results.json"
         sample_counts:
           total: "summary.total_samples"
           ok: "summary.evaluated"
@@ -182,10 +202,10 @@ metric_sources:
           rtf_mean: "speed.rtf_mean"
           rtf_p95: "speed.rtf_p95"
       zh:
-        constant_filter: "^FUN_ASR_ZH_"
+        constant_filter: "^FUN_ASR_ZH_|^QWEN3_ASR_ZH_"
         context_vars:
-          - SEEDTTS_FUN_ASR_ZH_SAMPLES
-        json_file: "fun_asr_zh_results.json"
+          - SEEDTTS_ASR_ZH_SAMPLES
+        json_file: "asr_seedtts_zh_results.json"
         sample_counts:
           total: "summary.total_samples"
           ok: "summary.evaluated"

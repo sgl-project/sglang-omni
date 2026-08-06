@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    PipelineConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 from sglang_omni.pipeline.mp_runner import (
     _build_stage_groups,
     _resolve_same_process_targets,
@@ -218,6 +223,72 @@ def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
 
     assert specs["a"].same_process_targets == {"b"}
     assert specs["b"].same_process_targets == set()
+
+
+@pytest.mark.parametrize(
+    ("vocoder_process", "expected_fractions"),
+    [
+        ("vocoder", [0.15, 0.82, 0.18]),
+        ("pipeline", [0.15, 0.82, 1.0]),
+    ],
+    ids=["isolated-vocoder", "merged-vocoder"],
+)
+def test_runner_specs_expose_process_total_in_construction_order(
+    vocoder_process: str,
+    expected_fractions: list[float],
+) -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage(
+                "preprocess",
+                next="engine",
+                process="pipeline",
+                gpu=0,
+                runtime=StageRuntimeConfig(
+                    resources=StageResourceConfig(total_gpu_memory_fraction=0.15)
+                ),
+            ),
+            stage(
+                "engine",
+                next="vocoder",
+                process="pipeline",
+                gpu=0,
+                runtime=StageRuntimeConfig(
+                    resources=StageResourceConfig(total_gpu_memory_fraction=0.67)
+                ),
+            ),
+            stage(
+                "vocoder",
+                terminal=True,
+                process=vocoder_process,
+                gpu=0,
+                runtime=StageRuntimeConfig(
+                    resources=StageResourceConfig(total_gpu_memory_fraction=0.18)
+                ),
+            ),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    try:
+        groups = _build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            name_map=prep.name_map,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+    finally:
+        assert prep.runtime_dir is not None
+        prep.runtime_dir.close()
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert [
+        specs[stage_name].factory_arg_defaults["process_total_gpu_memory_fraction"]
+        for stage_name in ("preprocess", "engine", "vocoder")
+    ] == pytest.approx(expected_fractions)
 
 
 def test_fused_stages_compile_to_same_process_local_edges() -> None:

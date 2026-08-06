@@ -7,10 +7,9 @@ import logging
 from collections import deque
 from typing import Any
 
-from sglang.srt.managers.scheduler import Scheduler as _Upstream
-
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +26,15 @@ def configure_talker_server_args(
     """
 
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
+    overrides = {
+        "disable_radix_cache": True,
+        "chunked_prefill_size": 0,
+    }
     if feedback_enabled:
-        server_args.disable_overlap_schedule = True
+        overrides["disable_overlap_schedule"] = True
         if want_cuda_graph:
-            server_args.disable_cuda_graph = True
-    server_args.disable_radix_cache = True
-    server_args.chunked_prefill_size = 0
+            overrides["disable_cuda_graph"] = True
+    override_server_args(server_args, "qwen3_omni.talker", **overrides)
     return want_cuda_graph
 
 
@@ -108,7 +110,9 @@ class QwenTalkerScheduler(OmniScheduler):
         return True
 
     def get_next_batch_to_run(self) -> Any | None:
-        batch = _Upstream.get_next_batch_to_run(self)
+        # Via OmniScheduler, which supplies running_batch/last_batch and unpacks
+        # the 0.5.16 NextBatchPlan.
+        batch = super().get_next_batch_to_run()
         if batch is not None and not self._is_batch_ready_to_run(batch):
             self._rollback_decode_prep_after_skip(batch)
             return None
@@ -117,29 +121,23 @@ class QwenTalkerScheduler(OmniScheduler):
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully
         # invert prepare_for_decode; talker disables overlap/spec/Mamba/hisparse,
-        # and its SamplingParams defaults keep the upstream penalizer branch
-        # inactive. Also zero the req_to_token_pool cell that alloc_for_decode
-        # wrote at (req_pool_indices, pre-increment seq_lens).
+        # and the penalizer's cumulate scatter_ is idempotent under the talker's
+        # own SamplingBatchInfo. Zero the req_to_token_pool cell that
+        # alloc_for_decode wrote at (req_pool_indices, pre-increment seq_lens);
+        # seq_lens_sum stays untouched (always None after prepare_for_decode,
+        # recomputed at the next forward).
         if not batch.forward_mode.is_decode():
             return
-        if not isinstance(batch.seq_lens_sum, int):
-            raise TypeError(
-                f"seq_lens_sum is {type(batch.seq_lens_sum).__name__}, expected int; "
-                "sglang upstream prepare_for_decode changed; update rollback."
-            )
         if batch.out_cache_loc is not None:
             self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
             batch.out_cache_loc = None
-        if batch.output_ids is None:
-            batch.output_ids = batch.input_ids
         for req in batch.reqs:
             req.decode_batch_idx -= 1
             req.kv_committed_len -= 1
-            req.kv_allocated_len -= 1
+            req.kv.kv_allocated_len -= 1
         batch.seq_lens.sub_(1)
         batch.seq_lens_cpu.sub_(1)
         batch.orig_seq_lens.sub_(1)
-        batch.seq_lens_sum -= len(batch.reqs)
         batch.req_to_token_pool.req_to_token[batch.req_pool_indices, batch.seq_lens] = 0
 
     def self_check_during_idle(self) -> None:

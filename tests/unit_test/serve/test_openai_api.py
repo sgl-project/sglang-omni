@@ -24,7 +24,10 @@ from sglang_omni.serve.openai_api import (
     _await_speech_response,
     _build_chat_generate_request,
     _chat_stream,
+    _ClosableStreamingResponse,
+    _first_transcription_chunk,
     _speech_audio_response,
+    _transcription_stream,
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
@@ -55,9 +58,17 @@ class FaultInjectingCoordinator(Coordinator):
         self.register_stage("preprocess", "inproc://preprocess")
 
     async def _submit_request(
-        self, request_id: str, request: OmniRequest | Any
+        self,
+        request_id: str,
+        request: OmniRequest | Any,
+        *,
+        stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] | None = None,
     ) -> None:
-        await super()._submit_request(request_id, request)
+        await super()._submit_request(
+            request_id,
+            request,
+            stream_queue=stream_queue,
+        )
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
         if bool(request.params.get("stream", False)):
@@ -98,8 +109,11 @@ def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
 
 
 class SuccessfulSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -133,6 +147,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -267,6 +282,107 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        del request_id
+        self.requests.append(request)
+        yield GenerateChunk(request_id="transcription-1", text="hello ")
+        yield GenerateChunk(request_id="transcription-1", text="world")
+        yield GenerateChunk(
+            request_id="transcription-1",
+            text="hello world",
+            finish_reason="stop",
+        )
+
+
+class FailingTranscriptionClient:
+    def __init__(self, message: str, exc_type: type[Exception] | None = None) -> None:
+        self.message = message
+        self.exc_type = exc_type
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        from sglang_omni.client import ClientError
+
+        del request, request_id, audio_format
+        raise (self.exc_type or ClientError)(self.message)
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        from sglang_omni.client import ClientError
+
+        del request, request_id
+        raise (self.exc_type or ClientError)(self.message)
+        yield  # unreachable, makes this an async generator
+
+
+class _IdentityTranscriptionAdapter:
+    def postprocess_text(self, text: str) -> str:
+        return text
+
+
+class _BlockingAbortControlPlane(RecordingCoordinatorControlPlane):
+    def __init__(self) -> None:
+        super().__init__()
+        self.abort_started = asyncio.Event()
+        self.release_abort = asyncio.Event()
+        self.abort_cancelled = False
+
+    async def broadcast_abort(self, msg: Any) -> None:
+        self.aborts.append(msg)
+        self.abort_started.set()
+        try:
+            await self.release_abort.wait()
+        except asyncio.CancelledError:
+            self.abort_cancelled = True
+            raise
+
+
+def _streaming_client(
+    control_plane: RecordingCoordinatorControlPlane | None = None,
+) -> tuple[Client, Coordinator, RecordingCoordinatorControlPlane]:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        terminal_stages=["decode"],
+    )
+    control_plane = control_plane or RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("preprocess", "inproc://preprocess")
+    return Client(coordinator), coordinator, control_plane
+
+
+def _http_scope(*, path: str, spec_version: str) -> dict[str, Any]:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+    }
 
 
 class AdminClient:
@@ -440,7 +556,7 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    speech_client = SuccessfulSpeechClient()
+    speech_client = SuccessfulSpeechClient(finish_reason="length")
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
@@ -454,6 +570,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
@@ -645,6 +762,282 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
     assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
 
 
+def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-asgi-disconnect"
+        request = ChatCompletionRequest(
+            model="qwen3-omni",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+        response = _ClosableStreamingResponse(
+            _chat_stream(
+                client=client,
+                gen_req=GenerateRequest(
+                    model="qwen3-omni", prompt="hello", stream=True
+                ),
+                request_id=request_id,
+                response_id=f"chatcmpl-{request_id}",
+                created=0,
+                model="qwen3-omni",
+                req=request,
+                audio_format="wav",
+            ),
+            media_type="text/event-stream",
+        )
+
+        body_ready = asyncio.Event()
+
+        async def send(message: dict[str, Any]) -> None:
+            if message["type"] != "http.response.body":
+                return
+            body_ready.set()
+            raise RuntimeError("client vanished during body send")
+
+        async def receive() -> dict[str, Any]:
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        scope = _http_scope(path="/v1/chat/completions", spec_version="2.4")
+        response_task = asyncio.create_task(response(scope, receive, send))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+
+        await body_ready.wait()
+        with pytest.raises(RuntimeError, match="client vanished during body send"):
+            await response_task
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_chat_asgi_receive_disconnect_aborts_backend_and_cleans_state() -> None:
+    async def _run() -> None:
+        blocking_control_plane = _BlockingAbortControlPlane()
+        client, coordinator, control_plane = _streaming_client(blocking_control_plane)
+        request_id = "req-asgi-receive-disconnect"
+        request = ChatCompletionRequest(
+            model="qwen3-omni",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+        response = _ClosableStreamingResponse(
+            _chat_stream(
+                client=client,
+                gen_req=GenerateRequest(
+                    model="qwen3-omni", prompt="hello", stream=True
+                ),
+                request_id=request_id,
+                response_id=f"chatcmpl-{request_id}",
+                created=0,
+                model="qwen3-omni",
+                req=request,
+                audio_format="wav",
+            ),
+            media_type="text/event-stream",
+        )
+
+        first_body_sent = asyncio.Event()
+        disconnected = asyncio.Event()
+
+        async def send(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.body" and message.get("body"):
+                first_body_sent.set()
+
+        async def receive() -> dict[str, Any]:
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        response_task = asyncio.create_task(
+            response(
+                _http_scope(
+                    path="/v1/chat/completions",
+                    spec_version="2.3",
+                ),
+                receive,
+                send,
+            )
+        )
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+
+        await first_body_sent.wait()
+        disconnected.set()
+        await blocking_control_plane.abort_started.wait()
+        await asyncio.wait_for(response_task, timeout=1)
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert blocking_control_plane.abort_cancelled is False
+        abort_task = coordinator._abort_tasks[request_id]
+        assert request_id in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+        blocking_control_plane.release_abort.set()
+        assert await asyncio.wait_for(asyncio.shield(abort_task), timeout=1) is True
+        await asyncio.sleep(0)
+
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+        assert request_id not in coordinator._abort_tasks
+
+    asyncio.run(_run())
+
+
+def test_chat_asgi_task_cancellation_aborts_backend_and_stays_cancelled() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-asgi-cancelled"
+        request = ChatCompletionRequest(
+            model="qwen3-omni",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+        response = _ClosableStreamingResponse(
+            _chat_stream(
+                client=client,
+                gen_req=GenerateRequest(
+                    model="qwen3-omni", prompt="hello", stream=True
+                ),
+                request_id=request_id,
+                response_id=f"chatcmpl-{request_id}",
+                created=0,
+                model="qwen3-omni",
+                req=request,
+                audio_format="wav",
+            ),
+            media_type="text/event-stream",
+        )
+
+        async def send(_message: dict[str, Any]) -> None:
+            return
+
+        async def receive() -> dict[str, Any]:
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        response_task = asyncio.create_task(
+            response(
+                _http_scope(
+                    path="/v1/chat/completions",
+                    spec_version="2.4",
+                ),
+                receive,
+                send,
+            )
+        )
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+
+        response_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await response_task
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_client_completion_stream_close_reaches_coordinator_owner() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-client-close"
+        stream = client.completion_stream(
+            GenerateRequest(model="qwen3-omni", prompt="hello", stream=True),
+            request_id=request_id,
+        )
+        first_chunk = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+        await first_chunk
+        await stream.aclose()
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_transcription_stream_close_reaches_coordinator_owner() -> None:
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        request_id = "req-transcription-close"
+        stream = _transcription_stream(
+            client.generate(
+                GenerateRequest(model="whisper", prompt="hello", stream=True),
+                request_id=request_id,
+            ),
+            first_chunk=None,
+            request_id=request_id,
+            adapter=_IdentityTranscriptionAdapter(),
+            duration_s=1.0,
+        )
+        first_event = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if request_id in coordinator._stream_queues:
+                break
+            await asyncio.sleep(0)
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id=request_id,
+                from_stage="decode",
+                chunk={"text": "hello", "modality": "text"},
+                modality="text",
+            )
+        )
+        await first_event
+        await stream.aclose()
+
+        assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+        assert request_id not in coordinator._requests
+        assert request_id not in coordinator._stream_queues
+        assert request_id not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
 def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
     req = ChatCompletionRequest(
         model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -823,7 +1216,7 @@ def test_speech_request_carries_initial_codec_chunk_frames() -> None:
     assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
 
 
-def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
+def test_raw_pcm_speech_request_defers_initial_chunk_to_model() -> None:
     req = CreateSpeechRequest(
         input="hello",
         stream=True,
@@ -834,7 +1227,7 @@ def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
         default_model="higgs-audio-v2"
     ).build_generate_request(req)
 
-    assert gen_req.extra_params["initial_codec_chunk_frames"] == 1
+    assert "initial_codec_chunk_frames" not in gen_req.extra_params
 
 
 def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:
@@ -1107,6 +1500,200 @@ def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     assert request.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert request.sampling.max_new_tokens == 4096
     assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
+
+
+def test_transcription_endpoint_maps_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens). Use a shorter input or enable --allow-auto-truncate."
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_runtime_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens).",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_transcription_endpoint_maps_processor_max_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Prompt/audio sequence exceeds max_length=132096"
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds max_length" in response.json()["detail"]
+
+
+def test_transcription_endpoint_keeps_500_for_server_errors() -> None:
+    transcription_client = FailingTranscriptionClient("scheduler worker crashed")
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
+
+
+def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    first_delta = body.index('"transcript.text.delta"')
+    done_index = body.index('"transcript.text.done"')
+    sentinel_index = body.index("data: [DONE]")
+    assert first_delta < done_index < sentinel_index
+    assert '"delta":"hello "' in body
+    assert '"delta":"world"' in body
+    assert '"text":"hello world"' in body
+
+
+def test_transcription_stream_maps_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens).",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
+    async def _drive() -> None:
+        aborts: list[str] = []
+        stream_closed = asyncio.Event()
+
+        class _AbortRecordingClient:
+            async def abort(self, request_id: str) -> None:
+                aborts.append(request_id)
+
+        async def _never_first_chunk():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stream_closed.set()
+            yield  # unreachable, makes this an async generator
+
+        request = DisconnectingRequest()
+        request.disconnected.set()
+        with pytest.raises(asyncio.CancelledError):
+            await _first_transcription_chunk(
+                request,
+                _AbortRecordingClient(),
+                _never_first_chunk(),
+                "transcription-1",
+            )
+        assert aborts == ["transcription-1"]
+        assert stream_closed.is_set()
+
+    asyncio.run(_drive())
+
+
+def test_transcription_stream_keeps_500_for_server_errors() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "scheduler worker crashed",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
 
 
 def test_transcription_endpoint_uses_openai_temperature_default() -> None:

@@ -15,6 +15,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,14 @@ class ThinkerModelRunner(ModelRunner):
         omni_result = self._inject_multimodal_embeds(forward_batch, schedule_batch)
         if omni_result is not None and omni_result[0] is not None:
             input_embeds, ds_embeds, vis_masks = omni_result
+            # Publish ordinary multimodal embeddings through SGLang's
+            # ForwardBatch contract so its runner remains the sole owner of
+            # attention metadata and eager/CUDA-graph dispatch. Visual
+            # deepstack still needs the model-specific forward below because
+            # ForwardBatch has no field for those residual embeddings.
+            if ds_embeds is None:
+                forward_batch.input_embeds = input_embeds
+                return None
             return self._forward_with_omni_embeds(
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
@@ -242,7 +251,7 @@ class ThinkerModelRunner(ModelRunner):
                     deepstack_visual_embeds_list.append(ds_embeds)
                     visual_pos_masks_list.append(global_mask)
 
-            if req.is_chunked == 0:
+            if req.inflight_middle_chunks == 0:
                 req.omni_model_inputs = None
                 req._omni_consumed = None
 
@@ -305,20 +314,21 @@ class ThinkerModelRunner(ModelRunner):
             full_ds[visual_pos_masks] = ds_input
             ds_input = full_ds
 
-        hidden_states = outer.model(
-            input_ids=None,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            input_deepstack_embeds=ds_input,
-        )
+        with attn_forward_context(model_runner.attn_backend):
+            hidden_states = outer.model(
+                input_ids=None,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                input_deepstack_embeds=ds_input,
+            )
 
-        logits_output = outer.logits_processor(
-            forward_batch.input_ids,
-            hidden_states,
-            outer.lm_head,
-            forward_batch,
-        )
+            logits_output = outer.logits_processor(
+                forward_batch.input_ids,
+                hidden_states,
+                outer.lm_head,
+                forward_batch,
+            )
 
         return GenerationBatchResult(
             logits_output=logits_output, can_run_cuda_graph=False

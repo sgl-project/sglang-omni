@@ -57,7 +57,6 @@ _TTS_TASK_TYPE_ALIASES = {
 MAX_SPEECH_INPUT_CHARS = 4096
 MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
-RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES = 1
 _ReferenceCacheKey = tuple[Any, ...]
 
 
@@ -460,6 +459,7 @@ class SpeechRequestValidator:
             audio_data=base64.b64encode(result.audio_bytes).decode("ascii"),
             format=result.format,
             media_type=result.mime_type,
+            finish_reason=result.finish_reason,
         )
 
     async def _prepare_batch_item_request(
@@ -811,11 +811,10 @@ def _build_speech_prompt(
 
 def _build_extra_params(request: CreateSpeechRequest) -> dict[str, Any]:
     extra_params: dict[str, Any] = {}
-    initial_codec_chunk_frames = request.initial_codec_chunk_frames
-    if initial_codec_chunk_frames is None and request.stream:
-        initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
-    if initial_codec_chunk_frames is not None:
-        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
+    if request.initial_codec_chunk_frames is not None:
+        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
+            request.initial_codec_chunk_frames
+        )
     return extra_params
 
 

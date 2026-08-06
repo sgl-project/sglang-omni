@@ -173,22 +173,26 @@ config differences (excluding those, corpus is EN ~1.3% / ZH ~1.4–1.7%). All E
 |---|---|---|---|
 | non-streaming | 1.7% | 0.69 | 6.2 |
 | streaming, `stream_emit_chunk_frames=1` | 1.4% | 0.92 | 4.6 |
-| **streaming, adaptive `24→32` (default)** | 1.3% | **0.77** | **5.6** |
+| streaming, adaptive `24→32` (historical benchmark) | 1.3% | **0.77** | **5.6** |
 | streaming, 2-GPU (`multi_gpu`) | 1.5% | 0.69 | 6.2 |
 
 ### Streaming throughput (`stream_emit_chunk_frames`)
 
 In streaming mode the AR engine pushes sampled frames to the vocoder over an in-process queue.
-By default the engine **coalesces `stream_emit_chunk_frames=32` frames into one message** instead
-of one `put()` per frame; the per-frame puts run on the resolve host loop and serialize against
-the next decode launch, so batching them gives **−17% streaming RTF and +21% throughput,
-WER-neutral**, vs the per-frame path (inter-chunk latency also improves, 0.37 s → 0.28 s). To keep
-first-audio latency low, the default also emits a **smaller first chunk**
-(`stream_emit_first_chunk_frames=24`), so time-to-first-chunk stays at the per-frame level
-(~0.30 s) instead of waiting for a full 32-frame batch (which would add ~0.09 s). Set
-`stream_emit_first_chunk_frames=0` to disable the adaptive first chunk, or
-`stream_emit_chunk_frames=1` for the lowest-latency per-frame streaming. The 2-GPU `multi_gpu`
-pipeline (codec + speaker encoder on `cuda:1`) stacks on top for the best streaming RTF (~0.69).
+In steady state the engine **coalesces `stream_emit_chunk_frames=32` frames into one message**
+instead of one `put()` per frame; the per-frame puts run on the resolve host loop and serialize
+against the next decode launch, so batching them gives **−17% streaming RTF and +21% throughput,
+WER-neutral**, vs the per-frame path (inter-chunk latency also improves, 0.37 s → 0.28 s). Those
+measurements used the historical `24→32` producer cadence shown above.
+
+The current continuity-safe default sends 58 delayed-code rows in the first producer message:
+the vocoder's 40-frame initial chunk plus its shared 18-row de-shear/EOS lookahead. Later
+producer messages return to 32 rows. An explicit request-level `initial_codec_chunk_frames`
+override recalculates the first producer boundary; request value `0` selects the vocoder's
+steady 40-frame chunk. The independent `stream_emit_first_chunk_frames=0` pipeline setting
+disables the adaptive producer boundary and uses the steady 32-row message size from the start.
+Set `stream_emit_chunk_frames=1` for per-frame streaming. The 2-GPU `multi_gpu` pipeline
+(codec + speaker encoder on `cuda:1`) stacks on top for the best measured streaming RTF (~0.69).
 
 > ZH (`--lang zh`, full 2020) — Qwen3-ASR corpus CER 1.8–3.0% (median 0%; the corpus reflects a
 > 9–16/2020 catastrophic-sample tail, not config differences — excluding those, ~1.4–1.7%).

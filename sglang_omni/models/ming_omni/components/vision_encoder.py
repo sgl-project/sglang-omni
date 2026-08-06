@@ -19,7 +19,6 @@ Skips (can be added later):
 
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 from functools import partial
@@ -77,7 +76,6 @@ def _remap_ming_vision_weight(name: str) -> str:
 
 
 def _build_qwen3_vision_block_kwargs(
-    block_cls,
     *,
     dim: int,
     num_heads: int,
@@ -88,18 +86,16 @@ def _build_qwen3_vision_block_kwargs(
     quant_config: Optional[object],
     prefix: str,
 ) -> dict:
-    kwargs = {
+    return {
         "dim": dim,
         "num_heads": num_heads,
+        "head_size": head_size,
         "intermediate_dim": intermediate_dim,
         "hidden_act": hidden_act,
         "norm_layer": norm_layer,
         "quant_config": quant_config,
         "prefix": prefix,
     }
-    if "head_size" in inspect.signature(block_cls.__init__).parameters:
-        kwargs["head_size"] = head_size
-    return kwargs
 
 
 def _linear_patch_embed(
@@ -199,7 +195,6 @@ class MingOmniVisionEncoder(nn.Module):
             [
                 Qwen3_VisionBlock(
                     **_build_qwen3_vision_block_kwargs(
-                        Qwen3_VisionBlock,
                         dim=self.hidden_size,
                         num_heads=self.num_heads,
                         head_size=head_dim,

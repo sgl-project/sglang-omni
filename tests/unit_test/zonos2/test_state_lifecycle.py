@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from queue import Queue
 from types import SimpleNamespace
@@ -110,16 +111,24 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> No
         vocab_size=2,
     )
     req._omni_data = data
+    req._omni_terminal_claimed = False
     req.output_ids.append(1)
-    req.check_finished()
+    req.update_finish_state()
     assert req.finished_reason.to_json()["type"] == "length"
 
     scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
     scheduler.outbox = Queue()
     scheduler._aborted_request_ids = set()
+    scheduler._completed_request_ids = {}
+    scheduler._pending_stream_ingress = {}
+    scheduler._request_finished_callback = None
     scheduler._first_emit_done = {request_id}
     scheduler._prefill_start_done = {request_id}
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = result_adapter
+    scheduler._model_runner = None
+    scheduler._stream_output_builder = None
     scheduler.server_args = SimpleNamespace(weight_version=None)
 
     scheduler.stream_output([req])

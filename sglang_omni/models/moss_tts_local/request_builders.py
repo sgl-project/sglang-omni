@@ -62,6 +62,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
+    stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
+    stream_first_batch_sent: bool = False
 
 
 @dataclass
@@ -84,6 +86,7 @@ class _PreprocessingContext:
 _QUEUE: PreparedRequestQueue[_PreprocessingContext, MossTTSLocalPreparedRequest] = (
     PreparedRequestQueue()
 )
+MOSS_STREAM_TRANSPORT_BATCH_FRAMES = 5
 
 
 def set_moss_tts_local_preprocessing_context(

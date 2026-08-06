@@ -7,34 +7,19 @@ from typing import Any
 
 import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.layers.utils.hash import murmur_hash32
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
+from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
+from sglang_omni.models.moss_tts.sampling_kernels import (
+    multinomial_with_seed_and_token_ids,
+)
 from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
 _UINT64_MASK = (1 << 64) - 1
 _INT64_SEED_MASK = (1 << 63) - 1
-
-
-@torch.compile(dynamic=True)
-def _multinomial_with_seed_and_token_ids(
-    logprobs: torch.Tensor,
-    seed: torch.Tensor,
-    positions: torch.Tensor,
-    token_ids: torch.Tensor,
-) -> torch.Tensor:
-    """Seeded Gumbel-max using original vocabulary ids as RNG columns."""
-
-    seed = seed.to(torch.uint64)
-    hashed = murmur_hash32(seed, positions, token_ids)
-    noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
-    noise.log_().clamp_(min=torch.finfo(noise.dtype).min).neg_()
-    noise.log_().neg_()
-    noise.add_(logprobs.to(torch.float64))
-    return torch.argmax(noise, dim=1)
 
 
 class MossTTSModelRunner(ModelRunner):
@@ -76,7 +61,7 @@ class MossTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        if bool(getattr(schedule_batch, "is_prefill_only", False)):
+        if schedule_batch.is_prefill_only:
             return
         self._collect_moss_step(result, forward_batch, schedule_batch, requests)
 
@@ -101,7 +86,7 @@ class MossTTSModelRunner(ModelRunner):
             rows = data.prompt_rows
             if rows is None:
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
-            req_len = int(req.extend_input_len)
+            req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
             current_rows = rows[prefix_len : prefix_len + req_len]
             embeds = self.model._prepare_multi_modal_inputs(
@@ -179,21 +164,90 @@ class MossTTSModelRunner(ModelRunner):
         if not requests:
             return
 
-        rows = self._sample_rows(
-            channel_logits,
-            datas,
-            n_vq=n_vq,
-            is_audio=is_audio,
-        )
+        if self._can_use_sampling_cuda_graph(datas, is_audio=is_audio):
+            rows = self._sample_rows_graphed(channel_logits, datas)
+        else:
+            rows = self._sample_rows(
+                channel_logits,
+                datas,
+                n_vq=n_vq,
+                is_audio=is_audio,
+            )
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
         embeds = self.model._prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
         )
         self._pending_rows = rows
         self._pending_embeds = embeds.detach()
+
+    def _can_use_sampling_cuda_graph(
+        self,
+        datas: list,
+        *,
+        is_audio: bool,
+    ) -> bool:
+        if not is_audio or not datas:
+            return False
+        is_compatible = getattr(
+            self.model,
+            "is_sampling_cuda_graph_compatible",
+            None,
+        )
+        if not callable(is_compatible):
+            return False
+        return all(
+            is_compatible(data) for data in datas
+        ) and self._sampling_graph_available(len(datas))
+
+    def _sampling_graph_available(self, batch_size: int) -> bool:
+        available = getattr(self.model, "sampling_graph_available", None)
+        return bool(callable(available) and available(batch_size))
+
+    def _sample_rows_graphed(
+        self,
+        channel_logits: list[torch.Tensor],
+        datas: list,
+    ) -> torch.Tensor:
+        device = channel_logits[0].device
+        batch_size = len(datas)
+        n_vq = len(channel_logits) - 1
+        delay_state = torch.stack(
+            [self._delay_state_tensor(data, device) for data in datas], dim=0
+        )
+        seeds = torch.tensor(
+            [int(data.sampling_seed) for data in datas],
+            dtype=torch.long,
+            device=device,
+        )
+        generation_steps = torch.tensor(
+            [int(data.generation_steps) for data in datas],
+            dtype=torch.long,
+            device=device,
+        )
+        audio_logits = torch.stack(
+            [logits.to(torch.float32) for logits in channel_logits[1:]], dim=1
+        )
+        if tuple(audio_logits.shape[:2]) != (batch_size, n_vq):
+            raise RuntimeError(
+                "MOSS-TTS Delay sampling graph audio-logits shape mismatch: "
+                f"got {tuple(audio_logits.shape)}"
+            )
+        sampled = self.model.sample_delay_graphed(
+            channel_logits[0].to(torch.float32),
+            audio_logits,
+            DelayGraphBatch(
+                delay_state=delay_state,
+                seeds=seeds,
+                generation_steps=generation_steps,
+            ),
+        )
+        rows = sampled.rows[:batch_size].clone()
+        next_state = sampled.next_delay_state[:batch_size].clone()
+        for index, data in enumerate(datas):
+            data.delay_state = next_state[index]
+        return rows
 
     def _channel_logits_from_result(
         self,
@@ -203,7 +257,7 @@ class MossTTSModelRunner(ModelRunner):
         is_audio: bool = False,
     ) -> list[torch.Tensor]:
         logits_output = result.logits_output
-        customized = getattr(logits_output, "customized_info", None)
+        customized = logits_output.customized_info
         if isinstance(customized, dict):
             values = customized.get("moss_tts_channel_logits")
             if isinstance(values, list) and values:
@@ -213,7 +267,7 @@ class MossTTSModelRunner(ModelRunner):
                     )
                     return [values[0].index_select(-1, token_ids), *values[1:]]
                 return values
-        hidden_states = getattr(logits_output, "hidden_states", None)
+        hidden_states = logits_output.hidden_states
         if isinstance(hidden_states, torch.Tensor):
             if hidden_states.ndim == 3:
                 hidden_states = hidden_states[:, -1, :]
@@ -531,7 +585,7 @@ class MossTTSModelRunner(ModelRunner):
                     positions_row,
                 )
             else:
-                candidate_sampled = _multinomial_with_seed_and_token_ids(
+                candidate_sampled = multinomial_with_seed_and_token_ids(
                     scores,
                     seeds_row,
                     positions_row,

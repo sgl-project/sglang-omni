@@ -12,6 +12,7 @@ from sglang_omni.quantization import (
     normalize_quant_config,
     resolve_quant_config,
 )
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -159,14 +160,21 @@ class ModelWorker:
 
     def get_worker_info(self):
         max_total_num_tokens = self.model_runner.max_total_num_tokens
-        max_req_len = min(self.server_args.context_length - 1, max_total_num_tokens - 1)
+        effective_max_total_num_tokens = (
+            self.model_runner.effective_max_total_num_tokens
+        )
+        max_req_len = min(
+            self.server_args.context_length - 1,
+            effective_max_total_num_tokens - 1,
+        )
         max_req_input_len = max_req_len - 1
         req_pool = self.model_runner.req_to_token_pool
         kv_pool = self.model_runner.token_to_kv_pool_allocator
+        max_running_requests = self.model_runner.max_running_requests
         return (
             max_total_num_tokens,
             self.server_args.max_prefill_tokens,
-            self.server_args.max_running_requests,
+            max_running_requests,
             self.server_args.max_queued_requests,
             max_req_len,
             max_req_input_len,
@@ -222,16 +230,32 @@ class ModelWorker:
     def forward_batch_generation(
         self,
         forward_batch,
+        *,
+        batch=None,
     ):
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         if self.dllm_algorithm is not None:
-            logits_output, next_token_ids, can_run_cuda_graph = self.dllm_algorithm.run(
-                self.model_runner, forward_batch
+            algo_states = None
+            if self.dllm_algorithm.fdfo and batch is not None:
+                algo_states = [req.dllm_algo_state for req in batch.reqs]
+
+            (
+                logits_output,
+                next_token_ids,
+                accept_length_per_req_cpu,
+                dllm_algo_state,
+                can_run_cuda_graph,
+            ) = self.dllm_algorithm.run(
+                self.model_runner,
+                forward_batch,
+                algo_states,
             )
             return GenerationBatchResult(
                 logits_output=logits_output,
                 next_token_ids=next_token_ids,
+                accept_length_per_req_cpu=accept_length_per_req_cpu,
+                dllm_algo_state=dllm_algo_state,
                 can_run_cuda_graph=can_run_cuda_graph,
             )
 
@@ -262,9 +286,7 @@ class ModelWorker:
         model_path = payload.get("model_path")
         if not model_path:
             return False, "model_path is required"
-        update = getattr(self.model_runner, "update_weights_from_disk", None)
-        if update is None:
-            return False, "model runner does not support update_weights_from_disk"
+        update = self.model_runner.update_weights_from_disk
         load_format = payload.get("load_format") or self.server_args.load_format
         success, message = update(
             model_path,
@@ -272,21 +294,28 @@ class ModelWorker:
             recapture_cuda_graph=bool(payload.get("recapture_cuda_graph", False)),
         )
         if success:
-            runner_args = getattr(self.model_runner, "server_args", None)
-            setattr(self.server_args, "model_path", model_path)
-            setattr(self.server_args, "load_format", load_format)
-            if runner_args is not None:
-                setattr(runner_args, "model_path", model_path)
-                setattr(runner_args, "load_format", load_format)
-            model_config = getattr(self.model_runner, "model_config", None)
-            if model_config is not None:
-                setattr(model_config, "model_path", model_path)
-
+            runner_args = self.model_runner.server_args
+            updated_fields = {
+                "model_path": model_path,
+                "load_format": load_format,
+            }
             weight_version = payload.get("weight_version")
             if weight_version is not None:
-                setattr(self.server_args, "weight_version", weight_version)
-                if runner_args is not None:
-                    setattr(runner_args, "weight_version", weight_version)
+                updated_fields["weight_version"] = weight_version
+
+            override_server_args(
+                self.server_args,
+                "sglang-omni-weight-update-disk",
+                **updated_fields,
+            )
+            if runner_args is not self.server_args:
+                override_server_args(
+                    runner_args,
+                    "sglang-omni-weight-update-disk",
+                    **updated_fields,
+                )
+
+            self.model_runner.model_config.model_path = model_path
         return bool(success), str(message)
 
     def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
@@ -299,9 +328,7 @@ class ModelWorker:
         return self._call_optional_weight_method("update_weights_from_tensor", payload)
 
     def init_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
-        init = getattr(self.model_runner, "init_weights_update_group", None)
-        if init is None:
-            return False, "model runner does not support init_weights_update_group"
+        init = self.model_runner.init_weights_update_group
         master_address = payload.get("master_address")
         master_port = payload.get("master_port")
         world_size = payload.get("world_size")
@@ -324,21 +351,14 @@ class ModelWorker:
         return bool(success), str(message)
 
     def destroy_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
-        destroy = getattr(self.model_runner, "destroy_weights_update_group", None)
-        if destroy is None:
-            return False, "model runner does not support destroy_weights_update_group"
+        destroy = self.model_runner.destroy_weights_update_group
         success, message = destroy(payload.get("group_name") or "weight_update_group")
         return bool(success), str(message)
 
     def update_weights_from_distributed(
         self, payload: dict[str, Any]
     ) -> tuple[bool, str]:
-        update = getattr(self.model_runner, "update_weights_from_distributed", None)
-        if update is None:
-            return (
-                False,
-                "model runner does not support update_weights_from_distributed",
-            )
+        update = self.model_runner.update_weights_from_distributed
         names = payload.get("names")
         dtypes = payload.get("dtypes")
         shapes = payload.get("shapes")
@@ -364,10 +384,18 @@ class ModelWorker:
         if success:
             weight_version = payload.get("weight_version")
             if weight_version is not None:
-                setattr(self.server_args, "weight_version", weight_version)
-                runner_args = getattr(self.model_runner, "server_args", None)
-                if runner_args is not None:
-                    setattr(runner_args, "weight_version", weight_version)
+                override_server_args(
+                    self.server_args,
+                    "sglang-omni-weight-update-distributed",
+                    weight_version=weight_version,
+                )
+                runner_args = self.model_runner.server_args
+                if runner_args is not self.server_args:
+                    override_server_args(
+                        runner_args,
+                        "sglang-omni-weight-update-distributed",
+                        weight_version=weight_version,
+                    )
         return bool(success), str(message)
 
     def weights_checker(self, action: str) -> dict[str, Any]:
@@ -384,9 +412,7 @@ class ModelWorker:
         method_name: str,
         payload: dict[str, Any],
     ) -> tuple[bool, str]:
-        method = getattr(self.model_runner, method_name, None)
-        if method is None:
-            return False, f"model runner does not support {method_name}"
+        method = getattr(self.model_runner, method_name)
         recv_req = SimpleNamespace(**payload)
         success, message = method(recv_req)
         return bool(success), str(message)
@@ -419,9 +445,7 @@ def _apply_model_worker_backend_policy(
 ) -> str | None:
     """Apply Omni backend policy after checkpoint quantization is known."""
 
-    effective_quantization = _normalize_quantization(
-        getattr(model_config, "quantization", None)
-    )
+    effective_quantization = _normalize_quantization(model_config.quantization)
     server_quantization = _normalize_quantization(server_args.quantization)
     if server_quantization is not None:
         effective_quantization = server_quantization
@@ -446,8 +470,10 @@ def _apply_model_worker_backend_policy(
     ):
         # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
         # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
-        server_args.moe_runner_backend = (
-            "triton" if _is_h20_device() else "flashinfer_cutlass"
+        override_server_args(
+            server_args,
+            "sglang-omni-qwen3-backend-policy",
+            moe_runner_backend=("triton" if _is_h20_device() else "flashinfer_cutlass"),
         )
         moe_runner_backend = server_args.moe_runner_backend
 
@@ -459,7 +485,11 @@ def _apply_model_worker_backend_policy(
         and has_native_fp8_block_quant
         and _is_fp8_cutlass_moe_supported()
     ):
-        server_args.moe_runner_backend = "cutlass"
+        override_server_args(
+            server_args,
+            "sglang-omni-qwen3-backend-policy",
+            moe_runner_backend="cutlass",
+        )
         moe_runner_backend = server_args.moe_runner_backend
 
     if (
@@ -494,7 +524,11 @@ def _apply_model_worker_backend_policy(
     ):
         # Projected talker prefill has request-dependent FP8 dense GEMM shapes
         # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
-        server_args.fp8_gemm_runner_backend = "triton"
+        override_server_args(
+            server_args,
+            "sglang-omni-qwen3-backend-policy",
+            fp8_gemm_runner_backend="triton",
+        )
         fp8_gemm_backend = server_args.fp8_gemm_runner_backend
 
     server_quantization = server_args.quantization
@@ -515,15 +549,11 @@ def _normalize_quantization(value: object) -> str | None:
 
 
 def _model_config_has_moe(model_config: ModelConfig) -> bool:
-    config_to_check = getattr(model_config, "hf_text_config", None)
-    if config_to_check is None:
-        hf_config = getattr(model_config, "hf_config", None)
-        config_to_check = getattr(hf_config, "text_config", hf_config)
-    return hasattr(config_to_check, "num_experts_per_tok")
+    return hasattr(model_config.hf_text_config, "num_experts_per_tok")
 
 
 def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
-    quant_dict = resolve_quant_config(getattr(model_config, "hf_config", None))
+    quant_dict = resolve_quant_config(model_config.hf_config)
     if quant_dict is None:
         return False
     return (
@@ -547,15 +577,17 @@ def _is_h20_device() -> bool:
 
 
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror pinned SGLang 0.5.12.post1 FP8 CUTLASS MoE assertions."""
-    try:
-        from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
-        from sglang.srt.utils import is_sm90_supported, is_sm100_supported
-    except ImportError:
-        return False
+    """Mirror SGLang 0.5.16's CUTLASS FP8 MoE assertions."""
+    from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
+    from sglang.srt.utils import (
+        is_sm90_supported,
+        is_sm100_supported,
+        is_sm120_supported,
+    )
 
     return bool(
-        cutlass_fp8_supported() and (is_sm90_supported() or is_sm100_supported())
+        cutlass_fp8_supported()
+        and (is_sm90_supported() or is_sm100_supported() or is_sm120_supported())
     )
 
 
@@ -567,7 +599,7 @@ def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     name normalization for methods whose per-block quant names are matched
     against runtime module names, currently AutoRound.
     """
-    quant_dict = resolve_quant_config(getattr(model_config, "hf_config", None))
+    quant_dict = resolve_quant_config(model_config.hf_config)
     if quant_dict is None:
         return
 

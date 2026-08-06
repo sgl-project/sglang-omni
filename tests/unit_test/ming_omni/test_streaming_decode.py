@@ -535,7 +535,7 @@ def _make_req_data(*, stream: bool) -> Any:
     """Minimal req_data as OmniScheduler would pass to stream_output_builder."""
     payload = OmniRequest(inputs={"text": "hi"}, params={"stream": stream})
     stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(is_chunked=0)
+    req = SimpleNamespace(inflight_middle_chunks=0)
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     return rd
 
@@ -563,7 +563,7 @@ def test_text_stream_builder_silent_during_chunked_prefill():
     builder = make_text_stream_output_builder()
     payload = OmniRequest(inputs={"text": "hi"}, params={"stream": True})
     stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(is_chunked=1)  # chunked prefill in progress
+    req = SimpleNamespace(inflight_middle_chunks=1)  # chunked prefill in progress
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     msgs = builder("req-1", rd, _make_req_output(42))
     assert msgs == []
@@ -578,7 +578,7 @@ def test_text_stream_builder_silent_when_audio_only_modality():
         metadata={"output_modalities": ["audio"]},
     )
     stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(is_chunked=0)
+    req = SimpleNamespace(inflight_middle_chunks=0)
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     msgs = builder("req-1", rd, _make_req_output(42))
     assert msgs == [], "Should not emit text chunks when only audio is requested"
@@ -593,7 +593,7 @@ def test_text_stream_builder_emits_when_text_in_modalities():
         metadata={"output_modalities": ["text", "audio"]},
     )
     stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(is_chunked=0)
+    req = SimpleNamespace(inflight_middle_chunks=0)
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     msgs = builder("req-1", rd, _make_req_output(42))
     assert len(msgs) == 1

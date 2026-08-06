@@ -7,13 +7,31 @@ import inspect
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from tests.unit_test.fakes import FakeServerArgs
+
 TEST_MAX_TOTAL_TOKENS = 82000
 
 
-def test_tts_engine_builder_import_is_cpu_only() -> None:
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+def test_engine_builder_import_is_cpu_only() -> None:
+    from sglang_omni.scheduling.engine_factory import (
+        AsrEngineBuilder,
+        SGLangGenerationEngineBuilder,
+        TtsEngineBuilder,
+    )
 
+    assert SGLangGenerationEngineBuilder.__name__ == "SGLangGenerationEngineBuilder"
+    assert AsrEngineBuilder.__name__ == "AsrEngineBuilder"
     assert TtsEngineBuilder.__name__ == "TtsEngineBuilder"
+    assert issubclass(AsrEngineBuilder, SGLangGenerationEngineBuilder)
+    assert issubclass(TtsEngineBuilder, SGLangGenerationEngineBuilder)
+
+
+def test_asr_engine_builder_preserves_model_path() -> None:
+    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+
+    assert AsrEngineBuilder.resolve_checkpoint(object(), "repo/id") == "repo/id"
 
 
 def test_legacy_tts_engine_factory_paths_remain_importable() -> None:
@@ -83,7 +101,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             self.server_args = server_args
             self.model = FakeModel()
 
-        def init_device_graphs(self) -> None:
+        def init_cuda_graphs(self) -> None:
             events.append("init_graphs")
             init_graph_calls.append(True)
 
@@ -99,11 +117,17 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> Any:
         events.append("build_server_args")
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
+        return FakeServerArgs(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=kwargs["cuda_graph_max_bs"],
+                    bs=kwargs["cuda_graph_bs"],
+                )
+            ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             max_running_requests=kwargs["max_running_requests"],
@@ -118,7 +142,10 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
         assert gpu_id == 2
-        assert kwargs == {"model_arch_override": "TestArch"}
+        assert kwargs == {
+            "defer_cuda_graph_capture": True,
+            "model_arch_override": "TestArch",
+        }
         infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),
@@ -227,11 +254,38 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             assert isinstance(model, FakeModel)
             return "request_builder", "result_adapter"
 
-        def make_scheduler(self, **kwargs: Any) -> Any:
+        def make_scheduler(
+            self,
+            *,
+            model_worker: Any,
+            tree_cache: Any,
+            req_to_token_pool: Any,
+            token_to_kv_pool_allocator: Any,
+            server_args: Any,
+            model_config: Any,
+            prefill_manager: Any,
+            decode_manager: Any,
+            model_runner: Any,
+            request_builder: Any,
+            result_adapter: Any,
+        ) -> Any:
             events.append("make_scheduler")
-            assert kwargs["request_builder"] == "request_builder"
-            assert kwargs["result_adapter"] == "result_adapter"
-            return SimpleNamespace(outbox="outbox", kwargs=kwargs)
+            assert request_builder == "request_builder"
+            assert result_adapter == "result_adapter"
+            return SimpleNamespace(
+                outbox="outbox",
+                kwargs={
+                    "model_worker": model_worker,
+                    "tree_cache": tree_cache,
+                    "req_to_token_pool": req_to_token_pool,
+                    "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
+                    "server_args": server_args,
+                    "model_config": model_config,
+                    "prefill_manager": prefill_manager,
+                    "decode_manager": decode_manager,
+                    "model_runner": model_runner,
+                },
+            )
 
         def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
             events.append("post_scheduler_setup")
@@ -278,6 +332,144 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
+
+
+def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:
+    from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
+    from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+
+    events: list[str] = []
+
+    class FakeModel:
+        pass
+
+    class FakeSGLangRunner:
+        def __init__(self) -> None:
+            self.model = FakeModel()
+
+        def init_cuda_graphs(self) -> None:
+            events.append("init_cuda_graphs")
+
+    model_worker = SimpleNamespace(model_runner=FakeSGLangRunner())
+
+    def fake_server_args(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        events.append("server_args")
+        return SimpleNamespace()
+
+    def fake_validate(**kwargs: Any) -> None:
+        assert kwargs["model_name"] == "Test ASR"
+        events.append("validate")
+
+    def fake_infrastructure(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        del args, kwargs
+        events.append("infrastructure")
+        return True, (
+            model_worker,
+            "tree_cache",
+            "req_pool",
+            "kv_pool",
+            "prefill",
+            "decode",
+            "model_config",
+        )
+
+    def fake_output_processor(**kwargs: Any) -> Any:
+        assert isinstance(kwargs["model"], FakeModel)
+        events.append("output_processor")
+        return object()
+
+    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", fake_server_args)
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        fake_infrastructure,
+    )
+    monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", fake_output_processor)
+    monkeypatch.setattr(
+        engine_factory, "validate_generation_batch_policy", fake_validate
+    )
+
+    class RecordingBuilder(AsrEngineBuilder):
+        model_name = "Test ASR"
+        context_length = 256
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            events.append("generation_defaults")
+            return {"max_running_requests": 4, "dtype": dtype}
+
+        def setup_model(self, **kwargs: Any) -> None:
+            del kwargs
+            events.append("setup_model")
+
+        def compile_model(self, model: Any, server_args: Any) -> None:
+            del model, server_args
+            events.append("compile_model")
+
+        def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+            del model, server_args
+            events.append("post_cuda_graph_setup")
+
+        def setup_model_resources(
+            self,
+            model: Any,
+            server_args: Any,
+            *,
+            generation_cuda_graph_enabled: bool,
+        ) -> None:
+            del model, server_args
+            assert generation_cuda_graph_enabled is True
+            events.append("setup_model_resources")
+
+        def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
+            del model, server_args
+            events.append("setup_runtime_resources")
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            del model
+            events.append("make_adapters")
+            return "request_builder", "result_adapter"
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            del model_worker, output_proc
+            events.append("make_model_runner")
+            return "model_runner"
+
+        def extra_scheduler_kwargs(self) -> dict[str, Any]:
+            events.append("extra_scheduler_kwargs")
+            return {"stream_output_builder": "stream_builder"}
+
+        def _make_scheduler(self, **kwargs: Any) -> Any:
+            assert kwargs["extra_scheduler_kwargs"] == {
+                "stream_output_builder": "stream_builder"
+            }
+            events.append("make_scheduler")
+            raise RuntimeError("scheduler failed")
+
+        def cleanup_build_failure(self) -> None:
+            events.append("cleanup_build_failure")
+
+    with pytest.raises(RuntimeError, match="scheduler failed"):
+        RecordingBuilder().build("repo/id")
+
+    assert events == [
+        "generation_defaults",
+        "server_args",
+        "validate",
+        "infrastructure",
+        "setup_model",
+        "compile_model",
+        "init_cuda_graphs",
+        "post_cuda_graph_setup",
+        "setup_model_resources",
+        "output_processor",
+        "setup_runtime_resources",
+        "make_adapters",
+        "extra_scheduler_kwargs",
+        "make_model_runner",
+        "make_scheduler",
+        "cleanup_build_failure",
+    ]
 
 
 def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(

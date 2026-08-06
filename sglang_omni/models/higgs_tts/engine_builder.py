@@ -10,10 +10,12 @@ from typing import Any
 from sglang_omni.models.higgs_tts import request_builders
 from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
+    DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
 )
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         async_decode_min_batch_size: int,
         stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
         stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
+        initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None = None,
@@ -50,6 +53,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.stream_stride = stream_stride
         self.stream_followup_stride = stream_followup_stride
+        self.initial_chunk_frames = initial_chunk_frames
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
@@ -95,7 +99,18 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def customize_server_args(self, server_args: Any) -> None:
-        server_args.disable_overlap_schedule = True
+        prefill_backend = server_args.cuda_graph_config.prefill.backend
+        if prefill_backend != "disabled":
+            raise RuntimeError(
+                "Higgs prefill CUDA graphs are disabled because padded prefill "
+                "changes model outputs; keep cuda_graph_config.prefill.backend="
+                f"'disabled', got {prefill_backend!r}"
+            )
+        override_server_args(
+            server_args,
+            "sglang_omni.higgs_tts.disable_overlap_schedule",
+            disable_overlap_schedule=True,
+        )
 
     def setup_model(
         self,
@@ -121,14 +136,19 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.HiggsTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
+        del model
         return request_builders.make_higgs_scheduler_adapters(
-            model,
             max_new_tokens_cap=self.max_new_tokens,
             stream_stride=self.stream_stride,
             stream_followup_stride=self.stream_followup_stride,
+            initial_chunk_frames=self.initial_chunk_frames,
         )
 
     def make_abort_callback(self) -> Any | None:
+        assert self.model is not None
+        return self.model.reset_request
+
+    def make_request_finished_callback(self) -> Any | None:
         assert self.model is not None
         return self.model.reset_request
 

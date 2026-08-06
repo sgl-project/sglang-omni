@@ -26,7 +26,7 @@ import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import Any, AsyncIterator
 
 from fastapi import (
@@ -46,11 +46,13 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from starlette.types import Receive, Scope, Send
 
 from sglang_omni.client import (
     Client,
     ClientError,
     CompletionResult,
+    GenerateChunk,
     GenerateRequest,
     Message,
     SamplingParams,
@@ -128,6 +130,8 @@ _BAD_REQUEST_MARKERS = (
     "Request requires more tokens than the thinker KV cache can hold",
     "accepts audio up to",
     "max_new_tokens must be",
+    "exceeds the maximum allowed length",
+    "sequence exceeds max_length",
     "multimodal_train_inputs",
 )
 
@@ -139,6 +143,29 @@ def _is_bad_request_error(exc: Exception) -> bool:
 
 class _RequestBodyTooLarge(Exception):
     pass
+
+
+class _ClosableStreamingResponse(StreamingResponse):
+    """Close the response body iterator at the ASGI ownership boundary."""
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._close_body_iterator()
+
+    async def _close_body_iterator(self) -> None:
+        try:
+            await _close_async_iterator_if_supported(self.body_iterator)
+        except asyncio.CancelledError:
+            logger.warning("Cancelled while closing streaming response body")
+        except Exception:
+            logger.warning("Failed to close streaming response body", exc_info=True)
 
 
 class VoiceUploadBodyLimitMiddleware:
@@ -190,6 +217,7 @@ def create_app(
     speech_reference_text_required: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
+    supports_realtime_audio_output: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
@@ -212,6 +240,8 @@ def create_app(
         additional_speech_languages: Pipeline-specific accepted languages.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
+        supports_realtime_audio_output: Whether the mounted realtime endpoint
+            can request streamed audio from the configured pipeline.
         allowed_local_media_path: Directory allowed for ``file://`` TTS
             reference audio.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
@@ -241,6 +271,7 @@ def create_app(
     app.state.model_name = model_name or "sglang-omni"
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.realtime_enabled = enable_realtime
+    app.state.supports_realtime_audio_output = supports_realtime_audio_output
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
@@ -651,7 +682,7 @@ def _register_chat_completions(app: FastAPI) -> None:
             audio_format = req.audio.get("format", "wav")
 
         if req.stream:
-            return StreamingResponse(
+            return _ClosableStreamingResponse(
                 _chat_stream(
                     client,
                     gen_req,
@@ -757,87 +788,93 @@ async def _chat_stream(
     model: str,
     req: ChatCompletionRequest,
     audio_format: str,
-):
+) -> AsyncIterator[str]:
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
     requested_modalities = req.modalities or ["text"]
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
 
-    async for chunk in client.completion_stream(
+    chunk_stream = client.completion_stream(
         gen_req,
         request_id=request_id,
         audio_format=audio_format,
-    ):
-        # Capture finish info for the dedicated finish chunk after the loop.
-        # Some pipelines only emit a final aggregate chunk; do not drop its
-        # text/audio just because it already carries a finish reason.
-        if chunk.finish_reason is not None:
-            finish_reason = chunk.finish_reason
-            if chunk.usage is not None:
-                final_usage = UsageResponse(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
+    )
+    async with aclosing(chunk_stream):
+        async for chunk in chunk_stream:
+            # Capture finish info for the dedicated finish chunk after the loop.
+            # Some pipelines only emit a final aggregate chunk; do not drop its
+            # text/audio just because it already carries a finish reason.
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    final_usage = UsageResponse(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                    )
+                has_payload = (
+                    chunk.modality == "text"
+                    and bool(chunk.text)
+                    and "text" in requested_modalities
+                ) or (
+                    chunk.modality == "audio"
+                    and chunk.audio_b64 is not None
+                    and "audio" in requested_modalities
                 )
-            has_payload = (
+                if not has_payload:
+                    continue
+
+            delta = ChatCompletionStreamDelta()
+            emit = False
+
+            # Send role on first chunk
+            if not role_sent:
+                delta.role = "assistant"
+                role_sent = True
+                emit = True
+
+            # Text chunk
+            if (
                 chunk.modality == "text"
-                and bool(chunk.text)
+                and chunk.text
                 and "text" in requested_modalities
-            ) or (
+            ):
+                delta.content = chunk.text
+                emit = True
+
+            # Audio chunk
+            if (
                 chunk.modality == "audio"
                 and chunk.audio_b64 is not None
                 and "audio" in requested_modalities
-            )
-            if not has_payload:
+            ):
+                delta.audio = ChatCompletionAudio(
+                    id=f"audio-{request_id}",
+                    data=chunk.audio_b64,
+                )
+                emit = True
+
+            if not emit:
                 continue
 
-        delta = ChatCompletionStreamDelta()
-        emit = False
-
-        # Send role on first chunk
-        if not role_sent:
-            delta.role = "assistant"
-            role_sent = True
-            emit = True
-
-        # Text chunk
-        if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
-            delta.content = chunk.text
-            emit = True
-
-        # Audio chunk
-        if (
-            chunk.modality == "audio"
-            and chunk.audio_b64 is not None
-            and "audio" in requested_modalities
-        ):
-            delta.audio = ChatCompletionAudio(
-                id=f"audio-{request_id}",
-                data=chunk.audio_b64,
+            stream_resp = ChatCompletionStreamResponse(
+                id=response_id,
+                created=created,
+                model=model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=delta,
+                        finish_reason=None,
+                    )
+                ],
             )
-            emit = True
 
-        if not emit:
-            continue
-
-        stream_resp = ChatCompletionStreamResponse(
-            id=response_id,
-            created=created,
-            model=model,
-            choices=[
-                ChatCompletionStreamChoice(
-                    index=0,
-                    delta=delta,
-                    finish_reason=None,
-                )
-            ],
-        )
-
-        data = stream_resp.model_dump(exclude_none=True)
-        for choice in data.get("choices", []):
-            choice.setdefault("finish_reason", None)
-        yield f"data: {json.dumps(data)}\n\n"
+            data = stream_resp.model_dump(exclude_none=True)
+            for choice in data.get("choices", []):
+                choice.setdefault("finish_reason", None)
+            yield f"data: {json.dumps(data)}\n\n"
 
     # Finish chunk: empty delta + finish_reason.
     finish_resp = ChatCompletionStreamResponse(
@@ -1174,7 +1211,11 @@ def _register_realtime(app: FastAPI) -> None:
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
-    manager = RealtimeSessionManager(client=client, model_name=model_name)
+    manager = RealtimeSessionManager(
+        client=client,
+        model_name=model_name,
+        supports_audio_output=app.state.supports_realtime_audio_output,
+    )
     app.state.realtime_manager = manager
 
     @app.websocket("/v1/realtime")
@@ -1249,6 +1290,10 @@ def _register_speech(app: FastAPI) -> None:
         headers = {
             "Content-Disposition": f'attachment; filename="speech.{result.format}"',
         }
+        if result.finish_reason is not None:
+            # note (Junnan Li): the body is binary audio, so the terminal state
+            # travels in the same X- header channel as usage.
+            headers["X-Finish-Reason"] = str(result.finish_reason)
         if result.usage is not None:
             if result.usage.prompt_tokens is not None:
                 headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
@@ -1555,9 +1600,37 @@ async def _abort_and_close_speech_stream(
         await _close_async_iterator_if_supported(stream)
 
 
+async def _first_transcription_chunk(
+    request: Request,
+    client: Client,
+    chunk_stream: AsyncIterator[GenerateChunk],
+    request_id: str,
+) -> GenerateChunk | None:
+    """Wait for the first stream chunk while watching for client disconnect."""
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    first_chunk_task = asyncio.create_task(anext(chunk_stream))
+    try:
+        done, _ = await asyncio.wait(
+            {first_chunk_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if disconnect_task in done:
+            await _cancel_task_bounded(first_chunk_task)
+            await _abort_and_close_speech_stream(client, request_id, chunk_stream)
+            raise asyncio.CancelledError
+        try:
+            return first_chunk_task.result()
+        except StopAsyncIteration:
+            return None
+    finally:
+        if not disconnect_task.done():
+            await _cancel_task_bounded(disconnect_task)
+
+
 def _register_transcriptions(app: FastAPI) -> None:
     @app.post("/v1/audio/transcriptions")
     async def create_transcription(
+        request: Request,
         file: UploadFile = File(...),
         model: str | None = Form(default=None),
         language: str | None = Form(default=None),
@@ -1600,10 +1673,36 @@ def _register_transcriptions(app: FastAPI) -> None:
             )
             adapter = resolve_adapter(getattr(app.state, "architectures", None))
             duration_s = _probe_audio_duration(audio_bytes)
-            return StreamingResponse(
+            chunk_stream = client.generate(gen_req, request_id=request_id)
+            # note (db-ol): pull the first chunk before sending response
+            # headers. Admission rejections such as audio past the context
+            # limit arrive as the first stream event, and once headers go out
+            # the response is locked to 200 and errors can only degrade into
+            # SSE payloads. The wait races against client disconnect because
+            # the response owned disconnect watcher is not running yet and
+            # long audio prefill happens exactly during this wait.
+            try:
+                first_chunk = await _first_transcription_chunk(
+                    request, client, chunk_stream, request_id
+                )
+            except ClientError as exc:
+                await _close_async_iterator_if_supported(chunk_stream)
+                if _is_bad_request_error(exc):
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            except Exception as exc:
+                await _close_async_iterator_if_supported(chunk_stream)
+                if _is_bad_request_error(exc):
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                logger.exception(
+                    "Error starting transcription stream for request %s",
+                    request_id,
+                )
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            return _ClosableStreamingResponse(
                 _transcription_stream(
-                    client,
-                    gen_req,
+                    chunk_stream,
+                    first_chunk=first_chunk,
                     request_id=request_id,
                     adapter=adapter,
                     duration_s=duration_s,
@@ -1671,9 +1770,9 @@ def _register_transcriptions(app: FastAPI) -> None:
 
 
 async def _transcription_stream(
-    client: Client,
-    gen_req: GenerateRequest,
+    chunk_stream: AsyncIterator[GenerateChunk],
     *,
+    first_chunk: GenerateChunk | None,
     request_id: str,
     adapter: Any,
     duration_s: float,
@@ -1682,18 +1781,33 @@ async def _transcription_stream(
 
     Emits OpenAI-style transcript.text.delta events for each partial text
     chunk, then a terminal transcript.text.done event carrying the full
-    post-processed transcript.
+    post-processed transcript. The caller already pulled first_chunk from
+    chunk_stream so admission failures map to HTTP statuses before response
+    headers go out.
     """
     final_text: str | None = None
+
+    def _event_for(chunk: GenerateChunk) -> str | None:
+        nonlocal final_text
+        if chunk.finish_reason is not None:
+            if isinstance(chunk.text, str) and chunk.text:
+                final_text = chunk.text
+            return None
+        if chunk.modality == "text" and chunk.text:
+            event = TranscriptionTextDeltaEvent(delta=chunk.text)
+            return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        return None
+
     try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
-            if chunk.finish_reason is not None:
-                if isinstance(chunk.text, str) and chunk.text:
-                    final_text = chunk.text
-                continue
-            if chunk.modality == "text" and chunk.text:
-                event = TranscriptionTextDeltaEvent(delta=chunk.text)
-                yield f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        async with aclosing(chunk_stream):
+            if first_chunk is not None:
+                line = _event_for(first_chunk)
+                if line is not None:
+                    yield line
+            async for chunk in chunk_stream:
+                line = _event_for(chunk)
+                if line is not None:
+                    yield line
     except Exception as exc:
         logger.exception("Error streaming transcription for request %s", request_id)
         payload = {"type": "error", "error": {"message": str(exc)}}

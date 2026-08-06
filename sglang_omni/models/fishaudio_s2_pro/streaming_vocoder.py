@@ -282,8 +282,8 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         codec: Any,
         *,
         device: str,
-        stream_stride: int = 10,
-        stream_followup_stride: int = 90,
+        stream_stride: int = 40,
+        stream_followup_stride: int = 45,
         stream_overlap_tokens: int | None = 20,
         stream_crossfade_samples: int = 512,
         max_batch_size: int = 8,
@@ -362,6 +362,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         if state is None:
             return []
 
+        had_streamed_audio = state.last_vocode_tokens > 0
         output = flush_stream_vocoder_chunk(
             state,
             codec=self._codec,
@@ -381,12 +382,40 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             )
 
         payload = self._payloads[request_id]
-        result = self._vocode_payload(payload)
+        if output is None and not had_streamed_audio:
+            result = self._vocode_payload(payload)
+            messages.append(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="stream",
+                    data={
+                        key: value
+                        for key, value in result.data.items()
+                        if key in {"audio_data", "sample_rate", "modality"}
+                    },
+                    metadata={"modality": "audio"},
+                )
+            )
+
+        final_state = S2ProState.from_dict(payload.data)
+        final_data: dict[str, Any] = {
+            "modality": "audio",
+            "sample_rate": self._codec.sample_rate,
+        }
+        usage = payload.data.get("usage") or build_usage(final_state)
+        if usage is not None:
+            final_data["usage"] = usage
+        if final_state.finish_reason is not None:
+            final_data["finish_reason"] = final_state.finish_reason
         messages.append(
             OutgoingMessage(
                 request_id=request_id,
                 type="result",
-                data=result,
+                data=StagePayload(
+                    request_id=payload.request_id,
+                    request=payload.request,
+                    data=final_data,
+                ),
             )
         )
         return messages

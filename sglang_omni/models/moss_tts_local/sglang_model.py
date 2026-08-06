@@ -30,10 +30,8 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
-from sglang_omni.models.moss_tts_local.local_transformer import (
-    MossTTSLocalTransformer,
-    sample_seeded_branchless,
-)
+from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
@@ -363,7 +361,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def _ensure_frame_compile_config(self) -> None:
         if self._frame_compile_configured:
             return
-        from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+        from sglang.srt.compilation.torch_compile_decoration import (
+            set_torch_compile_config,
+        )
 
         set_torch_compile_config()
         self._frame_compile_configured = True

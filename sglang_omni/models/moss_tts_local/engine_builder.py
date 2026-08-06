@@ -23,10 +23,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         async_decode_min_batch_size: int,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
+        process_total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
+        self.process_total_gpu_memory_fraction = process_total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
         self.memory_budget = moss_local_stages._ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
@@ -62,9 +64,14 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
             codec_mem_reserve=self.codec_mem_reserve,
         )
-        self.profile_total_gpu_memory_fraction = (
-            self.memory_budget.effective_total_gpu_memory_fraction
-        )
+        self.profile_total_gpu_memory_fraction = self.process_total_gpu_memory_fraction
+        if (
+            self.profile_total_gpu_memory_fraction is None
+            and self.memory_budget.effective_total_gpu_memory_fraction is not None
+        ):
+            self.profile_total_gpu_memory_fraction = (
+                self.memory_budget.effective_total_gpu_memory_fraction
+            )
         if self.profile_total_gpu_memory_fraction is None:
             return
 
@@ -85,6 +92,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction} "
             f"effective_total_gpu_memory_fraction="
             f"{self.memory_budget.effective_total_gpu_memory_fraction} "
+            f"process_total_gpu_memory_fraction="
+            f"{self.process_total_gpu_memory_fraction} "
             f"codec_mem_reserve={self.memory_budget.applied_codec_mem_reserve:.3f} "
             f"mem_fraction_static={server_args.mem_fraction_static} "
             f"profile_total_gpu_memory_fraction="
@@ -109,11 +118,15 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self.model = model_worker.model_runner.model
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+        from sglang_omni.scheduling.generation_batch_policy import (
+            get_decode_cuda_graph_bs,
+        )
+
         # note (luojiaxuan): Also graph the per-frame local-transformer decode
         # (1 + n_vq micro-steps and 13 seeded sampling passes per frame):
         # eager it is kernel-launch-bound at ~22 ms/frame independent of batch
         # size.
-        model.init_frame_decode_graphs(list(server_args.cuda_graph_bs))
+        model.init_frame_decode_graphs(list(get_decode_cuda_graph_bs(server_args)))
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

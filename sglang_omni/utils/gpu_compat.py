@@ -20,13 +20,30 @@ logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
 
+_GPU_ARCHITECTURES = {
+    89: "ada",
+    90: "hopper",
+    100: "blackwell",
+    103: "blackwell",
+    120: "blackwell",
+}
+
+
+def gpu_architecture_for_sm(sm_version: int | None) -> str:
+    """Return the CUDA architecture family for a detected SM version."""
+    if sm_version is None:
+        return "unknown"
+    return _GPU_ARCHITECTURES.get(sm_version, f"sm{sm_version}")
+
 
 def _get_compute_capability(
     logical_gpu_id: int,
     env: Mapping[str, str] | None = None,
 ) -> tuple[int, int] | None:
     source_env = os.environ if env is None else env
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    visible_devices = parse_cuda_visible_devices(
+        source_env.get("CUDA_VISIBLE_DEVICES") or ""
+    )
     try:
         device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
     except Exception:
@@ -90,7 +107,9 @@ def _get_cuda_device_count() -> int | None:
 
 def _visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
     source_env = os.environ if env is None else env
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    visible_devices = parse_cuda_visible_devices(
+        source_env.get("CUDA_VISIBLE_DEVICES") or ""
+    )
     if visible_devices:
         return list(range(len(visible_devices)))
     device_count = _get_cuda_device_count()
@@ -183,7 +202,9 @@ def gpu_ids_support_p2p_mesh(
         read_index = read_index[0]
 
     source_env = os.environ if env is None else env
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    visible_devices = parse_cuda_visible_devices(
+        source_env.get("CUDA_VISIBLE_DEVICES") or ""
+    )
 
     try:
         pynvml.nvmlInit()

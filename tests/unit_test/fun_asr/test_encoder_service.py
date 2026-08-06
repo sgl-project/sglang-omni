@@ -125,6 +125,24 @@ def test_close_stops_worker() -> None:
     assert not service._thread.is_alive()
 
 
+def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(FunASRPreLMEncoderService)
+    service._stream = object()
+
+    def fail_stream(_stream):  # noqa: ANN001, ANN202
+        raise RuntimeError("stream context failed")
+
+    monkeypatch.setattr(torch.cuda, "stream", fail_stream)
+
+    assert not torch.is_inference_mode_enabled()
+    with pytest.raises(RuntimeError, match="stream context failed"):
+        with service._batch_context():
+            pass
+    assert not torch.is_inference_mode_enabled()
+
+
 def test_cache_hit_skips_reencode() -> None:
     model = _StubModel()
     service = _make_service(model)

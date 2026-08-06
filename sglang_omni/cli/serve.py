@@ -6,7 +6,11 @@ from typing import Annotated, Literal, NoReturn
 import typer
 import yaml
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    apply_stage_process_overrides,
+)
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -29,10 +33,11 @@ _ASYNC_DECODE_FACTORIES = frozenset(
         "sglang_omni.models.moss_transcribe_diarize.stages."
         "create_sglang_moss_transcribe_diarize_executor",
         "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
+        "sglang_omni.models.qwen3_asr.stages.create_sglang_qwen3_asr_executor",
     }
 )
 _ASYNC_DECODE_SUPPORTED_MODELS = (
-    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, and Fun-ASR"
+    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, and Qwen3-ASR"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -924,6 +929,30 @@ def serve(
             help="Run Qwen speech with GPU stages colocated on one GPU.",
         ),
     ] = False,
+    isolate_stage: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--isolate-stage",
+            help=(
+                "Run this model-supported stage in a dedicated process. Repeat "
+                "the flag to isolate multiple stages. When omitted, preserve "
+                "the model's declared process topology. Shorthand for "
+                "--stage-process STAGE=STAGE."
+            ),
+        ),
+    ] = None,
+    stage_process: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--stage-process",
+            metavar="STAGE=PROCESS",
+            help=(
+                "Read left to right: place STAGE in PROCESS. Repeat the flag "
+                "with one process name to colocate several stages in it. Use "
+                "this instead of --isolate-stage for grouped topologies."
+            ),
+        ),
+    ] = None,
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -1154,7 +1183,7 @@ def serve(
                 "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
                 "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
-                "MOSS-Transcribe-Diarize, and Fun-ASR."
+                "MOSS-Transcribe-Diarize, Fun-ASR, and Qwen3-ASR."
             ),
         ),
     ] = None,
@@ -1276,6 +1305,11 @@ def serve(
         image_encoder_gpus=image_encoder_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
+    )
+    merged_config = apply_stage_process_overrides(
+        merged_config,
+        isolate_stages=isolate_stage,
+        stage_processes=stage_process,
     )
     merged_config = apply_cuda_graph_cli_overrides(
         merged_config,

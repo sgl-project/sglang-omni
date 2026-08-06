@@ -383,7 +383,9 @@ class WhisperForConditionalGeneration(nn.Module):
         **kwargs: Any,
     ) -> Any:
         del kwargs
-        from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
+        from sglang.srt.model_executor.runner_utils.capture_mode import (
+            get_is_capture_mode,
+        )
 
         audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
         cross_attention_states = None

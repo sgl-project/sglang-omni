@@ -13,6 +13,7 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.runtime_context import get_forward
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
@@ -392,18 +393,13 @@ class MingBailingMoeMLP(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         if self.tp_size == 1 and hidden_states.shape[0] == 0:
             return hidden_states
 
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
-        hidden_states, _ = self.down_proj(
-            hidden_states,
-            skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
-        )
+        hidden_states, _ = self.down_proj(hidden_states)
         return hidden_states
 
 
@@ -485,8 +481,6 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         original_shape = hidden_states.shape
         hidden_states = hidden_states.view(-1, original_shape[-1])
@@ -502,8 +496,6 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
 
         if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
             is_tp_path=True,
-            use_reduce_scatter=use_reduce_scatter,
-            should_allreduce_fusion=should_allreduce_fusion,
         ):
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
         return hidden_states.view(original_shape)
@@ -591,22 +583,21 @@ class MingBailingMoeDecoderLayer(nn.Module):
             residual=residual,
             forward_batch=forward_batch,
         )
-        should_allreduce_fusion = (
+        fuse_mlp_allreduce = (
             self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
                 forward_batch
             )
         )
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
+        mlp_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
         )
-        hidden_states = self.mlp(
-            hidden_states,
-            forward_batch=forward_batch,
-            should_allreduce_fusion=should_allreduce_fusion,
-            use_reduce_scatter=use_reduce_scatter,
-        )
+        with get_forward().scoped(
+            fuse_mlp_allreduce=fuse_mlp_allreduce,
+            mlp_reduce_scatter=mlp_reduce_scatter,
+        ):
+            hidden_states = self.mlp(hidden_states, forward_batch)
 
-        if should_allreduce_fusion:
+        if fuse_mlp_allreduce:
             hidden_states._sglang_needs_allreduce_fusion = True
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
@@ -775,14 +766,18 @@ class MingTTSSGLangModel(nn.Module):
         max_batch_size = 1
         try:
             server_args = get_global_server_args()
-        except (AssertionError, RuntimeError):
+        except ValueError:
             server_args = None
         if server_args is not None:
+            from sglang_omni.scheduling.generation_batch_policy import (
+                get_decode_cuda_graph_max_bs,
+            )
+
             max_batch_size = int(server_args.max_running_requests)
-            if not bool(getattr(server_args, "disable_cuda_graph", True)):
+            if not bool(server_args.disable_cuda_graph):
                 max_batch_size = max(
                     max_batch_size,
-                    int(getattr(server_args, "cuda_graph_max_bs", 1) or 1),
+                    int(get_decode_cuda_graph_max_bs(server_args) or 1),
                 )
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 

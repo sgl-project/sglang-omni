@@ -57,7 +57,7 @@ def _configure_preprocessing_threads(worker_count: int) -> int:
 
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
-    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
@@ -334,8 +334,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    stream_stride: int = 10,
-    stream_followup_stride: int = 90,
+    stream_stride: int = 40,
+    stream_followup_stride: int = 45,
     stream_overlap_tokens: int | None = 20,
     stream_crossfade_samples: int = 512,
 ):

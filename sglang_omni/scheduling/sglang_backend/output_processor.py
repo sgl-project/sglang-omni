@@ -30,12 +30,12 @@ class SGLangOutputProcessor:
         self,
         model_output: Any,
         scheduler_output: SchedulerOutput,
+        host_token_ids: torch.Tensor | None = None,
     ) -> dict[str, RequestOutput]:
-        token_list = (
-            model_output.next_token_ids.tolist()
-            if model_output.next_token_ids is not None
-            else []
-        )
+        ids = host_token_ids
+        if ids is None:
+            ids = model_output.next_token_ids
+        token_list = ids.tolist() if ids is not None else []
 
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
         if self._capture_hidden:
@@ -202,7 +202,7 @@ class SGLangOutputProcessor:
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
 
-        lengths = [req.extend_input_len for req in reqs]
+        lengths = [req.extend_range.length for req in reqs]
         total_tokens = sum(lengths)
         if tensor.shape[0] == total_tokens:
             start = sum(lengths[:request_index])

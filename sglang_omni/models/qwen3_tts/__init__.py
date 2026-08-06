@@ -8,7 +8,7 @@ from . import config
 CAPABILITIES = ModelCapabilities(
     supports_reference_audio=True,
     supports_batch_vocoder=True,
-    supports_streaming_vocoder=False,
+    supports_streaming_vocoder=True,
     supports_cuda_graph=True,
     supports_torch_compile=True,
 )

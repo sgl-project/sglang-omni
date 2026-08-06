@@ -57,18 +57,16 @@ def resolve_initial_codec_chunk_frames(
     params: Mapping[str, Any] | None,
     *,
     steady_chunk_frames: int,
+    default_frames: int = 0,
 ) -> int:
-    """Return the request-level first codec chunk size, clamped to steady size."""
+    """Resolve the model default or request override, clamped to steady size."""
     if steady_chunk_frames <= 0:
         raise ValueError(
             f"steady_chunk_frames must be positive, got {steady_chunk_frames}"
         )
-    if params is None:
-        return 0
-
-    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
+    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) if params is not None else None
     if value is None:
-        return 0
+        value = default_frames
 
     try:
         frames = int(value)
@@ -312,10 +310,10 @@ class StreamingVocoderBase(
                 f"{self._stream_source_hint} stream chunk modality must be "
                 f"audio_codes, got {metadata.get('modality')!r}"
             )
-        if metadata.get("stream") is not True:
+        if not isinstance(metadata.get("stream"), bool):
             raise RuntimeError(
                 f"{self._stream_source_hint} stream chunk for {request_id!r} must "
-                "include metadata['stream'] == True"
+                "include a bool metadata['stream']"
             )
         self.latch_stream_contract(
             request_id, state, metadata, origin="stream metadata"

@@ -37,7 +37,7 @@ def _build_runner(
     codes_BN,
     was_done,
     active_generation_done,
-    is_chunked,
+    inflight_middle_chunks,
     finished,
     async_enabled=False,
     n_codebooks=3,
@@ -80,7 +80,9 @@ def _build_runner(
     )
     reqs = [
         SimpleNamespace(
-            is_chunked=is_chunked[i], finished_reason=None, finished=finished[i]
+            inflight_middle_chunks=inflight_middle_chunks[i],
+            finished_reason=None,
+            finished=finished[i],
         )
         for i in range(n)
     ]
@@ -122,7 +124,7 @@ _MIXED = dict(
     codes_BN=[[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]],
     was_done=[False, True, False, False],
     active_generation_done=[False, True, False, True],
-    is_chunked=[1, 0, 0, 0],
+    inflight_middle_chunks=[1, 0, 0, 0],
     finished=[lambda: False, lambda: False, lambda: False, lambda: False],
 )
 
@@ -184,7 +186,7 @@ def test_async_next_token_ids_published_at_launch(monkeypatch):
         codes_BN=[[5, 1, 2], [-1, 3, 4]],  # row1 cb0 = -1 (STOP) -> clamp to 0
         was_done=[False, False],
         active_generation_done=[False, True],
-        is_chunked=[0, 0],
+        inflight_middle_chunks=[0, 0],
         finished=[lambda: False, lambda: False],
     )
     runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=True, **kw)
@@ -205,7 +207,7 @@ def test_async_resolve_overrun_guard_skips_finished_row(monkeypatch):
         codes_BN=[[11, 1, 2], [22, 3, 4]],
         was_done=[False, False],
         active_generation_done=[False, False],
-        is_chunked=[0, 0],
+        inflight_middle_chunks=[0, 0],
         finished=[lambda: False, lambda: True],
     )
     sync = _run_sync(**kw)
@@ -225,7 +227,7 @@ def test_async_matches_sync_bs1_active(monkeypatch):
         codes_BN=[[9, 8, 7]],
         was_done=[False],
         active_generation_done=[False],
-        is_chunked=[0],
+        inflight_middle_chunks=[0],
         finished=[lambda: False],
     )
     sync = _run_sync(**kw)
@@ -242,7 +244,7 @@ def test_async_matches_sync_bs1_eoc(monkeypatch):
         codes_BN=[[EOC_ID, 1, 2]],
         was_done=[False],
         active_generation_done=[True],
-        is_chunked=[0],
+        inflight_middle_chunks=[0],
         finished=[lambda: False],
     )
     sync = _run_sync(**kw)
@@ -265,6 +267,29 @@ def _pick_free_cuda_device(min_free_mib: int = 512) -> str | None:
         if free // (1024 * 1024) >= min_free_mib:
             return f"cuda:{i}"
     return None
+
+
+def test_rollout_logprob_host_staging_grows_with_async_batch(
+    monkeypatch,
+) -> None:
+    original_empty = torch.empty
+
+    def cpu_empty(*args, **kwargs):
+        kwargs.pop("pin_memory", None)
+        return original_empty(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "empty", cpu_empty)
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner._logprob_host_buffers = None
+    runner._logprob_slot = 0
+
+    first = runner._next_logprob_host_staging(torch.empty((1, 8)))
+    grown = runner._next_logprob_host_staging(torch.empty((2, 8)))
+    smaller = runner._next_logprob_host_staging(torch.empty((1, 8)))
+
+    assert first.shape == (1, 8)
+    assert grown.shape == (2, 8)
+    assert smaller.shape == (2, 8)
 
 
 def test_async_real_pinned_path_matches_sync():
@@ -316,7 +341,9 @@ def test_async_real_pinned_path_matches_sync():
             ),
         )
         reqs = [
-            SimpleNamespace(is_chunked=c, finished_reason=None, finished=lambda: False)
+            SimpleNamespace(
+                inflight_middle_chunks=c, finished_reason=None, finished=lambda: False
+            )
             for c in (1, 0, 0, 0)
         ]
         datas = [
