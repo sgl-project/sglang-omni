@@ -241,6 +241,7 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stopped = False
+    util_stopped = False
 
     class FakeMonitor:
         def __init__(self, **_kwargs) -> None:
@@ -254,10 +255,27 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
             stopped = True
             return {}
 
+    class FakeUtilizationSampler:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self):
+            nonlocal util_stopped
+            util_stopped = True
+            return SimpleNamespace(to_dict=lambda: {})
+
     async def fail_request(*_args, **_kwargs):
         raise RuntimeError("request failed")
 
     monkeypatch.setattr(benchmark_asr_seedtts, "ResourceMonitor", FakeMonitor)
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "UtilizationSampler",
+        FakeUtilizationSampler,
+    )
     monkeypatch.setattr(
         benchmark_asr_seedtts,
         "run_asr_seedtts_once",
@@ -268,6 +286,10 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
         gpu_index=0,
         monitor_interval_s=0.2,
         gpu_process_pids=None,
+        sample_util=True,
+        util_gpu_ids="",
+        util_interval=0.2,
+        save_raw_dir="",
         host="127.0.0.1",
         port=8000,
         model_path="model",
@@ -279,3 +301,4 @@ async def test_asr_repeat_stops_resource_monitor_when_request_fails(
         await benchmark_asr_seedtts._run_repeat(args, [], 1, 1)
 
     assert stopped is True
+    assert util_stopped is True

@@ -185,3 +185,50 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
         "skip_special_tokens": True,
         "clean_up_tokenization_spaces": False,
     }
+
+
+def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
+    monkeypatch,
+) -> None:
+    num_mel_frames = 101
+    num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    observed: dict[str, object] = {}
+
+    class _EncoderService:
+        def encode_item(self, item) -> None:
+            observed["offsets"] = item.offsets
+            observed["num_audio_tokens"] = item.num_audio_tokens
+            observed["audio_fingerprint"] = item.audio_fingerprint
+            item.precomputed_embeddings = torch.zeros(item.num_audio_tokens, 4)
+            item.feature = None
+
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+        audio_encoder_service=_EncoderService(),
+    )
+    payload = StagePayload(
+        request_id="req-asr-pre-lm",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert observed["offsets"] == item.offsets
+    assert observed["num_audio_tokens"] == num_audio_tokens
+    assert isinstance(observed["audio_fingerprint"], str)
+    assert observed["audio_fingerprint"] == data.req.extra_key
+    assert item.feature is None
+    assert item.precomputed_embeddings.shape[0] == num_audio_tokens

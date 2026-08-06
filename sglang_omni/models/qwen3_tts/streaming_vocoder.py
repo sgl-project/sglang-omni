@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -22,6 +23,8 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
 DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE = 8
@@ -59,6 +62,85 @@ class _Qwen3TTSDecodePlan:
 _ASYNC_STOP = None
 
 
+class _Qwen3TTSInitialDecodeGraphs:
+    """CUDA graphs for the fixed-size first streaming decode."""
+
+    def __init__(
+        self,
+        decoder: Any,
+        *,
+        device: torch.device,
+        num_quantizers: int,
+        input_frames: int,
+        batch_sizes: tuple[int, ...] = (1, 2, 4, 8),
+        enabled: bool = True,
+    ) -> None:
+        self._decoder = decoder
+        self._device = device
+        self._num_quantizers = int(num_quantizers)
+        self._input_frames = int(input_frames)
+        self._batch_sizes = tuple(sorted(set(int(size) for size in batch_sizes)))
+        self._enabled = bool(enabled and device.type == "cuda")
+        self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self._inputs: dict[int, torch.Tensor] = {}
+        self._outputs: dict[int, torch.Tensor] = {}
+
+    def capture(self) -> None:
+        if not self._enabled or self._graphs:
+            return
+        capture_stream = torch.cuda.Stream(device=self._device)
+        graph_pool = torch.cuda.graph_pool_handle()
+        for batch_size in self._batch_sizes:
+            try:
+                static_input = torch.zeros(
+                    (batch_size, self._num_quantizers, self._input_frames),
+                    dtype=torch.long,
+                    device=self._device,
+                )
+                with torch.inference_mode(), torch.cuda.stream(capture_stream):
+                    for _ in range(2):
+                        self._decoder(static_input)
+                capture_stream.synchronize()
+                graph = torch.cuda.CUDAGraph()
+                with (
+                    torch.inference_mode(),
+                    torch.cuda.graph(
+                        graph,
+                        pool=graph_pool,
+                        stream=capture_stream,
+                    ),
+                ):
+                    static_output = self._decoder(static_input)
+            except Exception:
+                logger.warning(
+                    "Qwen3-TTS initial decoder graph capture failed for batch=%d",
+                    batch_size,
+                    exc_info=True,
+                )
+                continue
+            self._graphs[batch_size] = graph
+            self._inputs[batch_size] = static_input
+            self._outputs[batch_size] = static_output
+
+    def decode(self, codes: torch.Tensor) -> torch.Tensor | None:
+        if (
+            not self._graphs
+            or codes.ndim != 3
+            or int(codes.shape[1]) != self._num_quantizers
+            or int(codes.shape[2]) != self._input_frames
+        ):
+            return None
+        batch_size = int(codes.shape[0])
+        bucket = next((size for size in self._batch_sizes if size >= batch_size), None)
+        if bucket is None or bucket not in self._graphs:
+            return None
+        static_input = self._inputs[bucket]
+        static_input.zero_()
+        static_input[:batch_size].copy_(codes)
+        self._graphs[bucket].replay()
+        return self._outputs[bucket][:batch_size].clone()
+
+
 class Qwen3TTSStreamingVocoderScheduler(
     StreamingVocoderBase[_Qwen3TTSStreamState, None]
 ):
@@ -81,6 +163,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         initial_batch_wait_ms: int = 2,
         followup_max_batch_size: int = 8,
         followup_batch_wait_ms: int = 1,
+        initial_cuda_graph: bool = True,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -100,6 +183,16 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._tokenizer = tokenizer
         self._device = torch.device(device)
         self._decoder = tokenizer.model.decoder
+        tokenizer_config = getattr(tokenizer.model, "config", None)
+        decoder_config = getattr(tokenizer_config, "decoder_config", tokenizer_config)
+        num_quantizers = int(getattr(decoder_config, "num_quantizers", 0) or 0)
+        self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
+            self._decoder,
+            device=self._device,
+            num_quantizers=num_quantizers,
+            input_frames=int(stream_left_context_frames) + int(initial_chunk_frames),
+            enabled=bool(initial_cuda_graph and num_quantizers > 0),
+        )
         self._samples_per_frame = int(self._decoder.total_upsample)
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
@@ -125,7 +218,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             followup_priority = min(least_priority, greatest_priority + 1)
             self._decode_stream = torch.cuda.Stream(
                 device=self._device,
-                priority=greatest_priority,
+                priority=followup_priority,
             )
             self._followup_decode_stream = (
                 torch.cuda.Stream(
@@ -173,6 +266,7 @@ class Qwen3TTSStreamingVocoderScheduler(
     def on_serving_start(self) -> None:
         if not self._async_decode:
             return
+        self._initial_decode_graphs.capture()
         self._initial_queue = queue.Queue()
         self._followup_queue = queue.PriorityQueue()
         self._followup_sequence = count()
@@ -401,9 +495,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 stream.wait_stream(torch.cuda.current_stream(self._device))
                 with torch.cuda.stream(stream):
-                    waveform = self._decoder.chunked_decode(
-                        decoder_input.to(self._device)
+                    decoder_input = decoder_input.to(self._device)
+                    waveform = (
+                        self._initial_decode_graphs.decode(decoder_input)
+                        if stream is self._decode_stream
+                        else None
                     )
+                    if waveform is None:
+                        waveform = self._decoder.chunked_decode(decoder_input)
                 stream.synchronize()
         if waveform.ndim == 3:
             if waveform.shape[0] != len(plans):

@@ -89,11 +89,20 @@ import hashlib
 import json
 import os
 import statistics
+import time
 
 import requests
 
 from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.eval.asr_profiling import (
+    UtilizationSampler,
+    build_stage_breakdown,
+    collect_environment_fingerprint,
+    collect_server_identity,
+    start_request_profile,
+    stop_request_profile,
+)
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
@@ -217,6 +226,16 @@ async def run_asr_seedtts_once(
     return benchmark_result
 
 
+def _save_raw_per_sample(
+    raw_dir: str, concurrency: int, label: str, per_sample: list[dict]
+) -> None:
+    os.makedirs(raw_dir, exist_ok=True)
+    path = os.path.join(raw_dir, f"conc{concurrency}_{label}.jsonl")
+    with open(path, "w", encoding="utf-8") as handle:
+        for record in per_sample:
+            handle.write(json.dumps(record) + "\n")
+
+
 async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
     monitor = (
         None
@@ -227,7 +246,12 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             gpu_process_pids=args.gpu_process_pids,
         ).start()
     )
+    sampler = None
     try:
+        if args.sample_util:
+            gpu_ids = [int(g) for g in args.util_gpu_ids.split(",") if g.strip()]
+            sampler = UtilizationSampler(gpu_ids=gpu_ids, interval_s=args.util_interval)
+            sampler.start()
         benchmark_result = await run_asr_seedtts_once(
             samples,
             host=args.host,
@@ -246,6 +270,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
                 "error": "resource monitoring disabled",
             }
         )
+        util_summary = sampler.stop().to_dict() if sampler is not None else None
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
     has_evaluated_samples = summary["evaluated"] > 0
@@ -264,6 +289,9 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "rtfx": speed["rtfx"],
         "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
+        "latency_median_s": (
+            speed["latency_median_s"] if has_evaluated_samples else None
+        ),
         "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
         "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
         "rtf_mean": speed["rtf_mean"] if has_rtf else None,
@@ -271,6 +299,15 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "worker": benchmark_result["worker"],
         "resources": resources,
     }
+    if util_summary is not None:
+        result["utilization"] = util_summary
+    if args.save_raw_dir:
+        _save_raw_per_sample(
+            args.save_raw_dir,
+            concurrency,
+            f"rep{repeat}",
+            benchmark_result["per_sample"],
+        )
     for key in (
         "text_ttft_mean_s",
         "text_ttft_median_s",
@@ -337,6 +374,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         "throughput_samples_per_s": _stat("throughput_samples_per_s"),
         "rtfx": _stat("rtfx"),
         "latency_mean_s": _stat("latency_mean_s"),
+        "latency_median_s": _stat("latency_median_s"),
         "latency_p95_s": _stat("latency_p95_s"),
         "latency_p99_s": _stat("latency_p99_s"),
         "rtf_mean": _stat("rtf_mean"),
@@ -385,12 +423,12 @@ def _print_table(aggregates: list[dict]) -> None:
     header = (
         "| conc | valid reps (lat/RTF/WER) | evaluated/requests | "
         "wall(s) mean | req/s mean | req/s best | RTFx mean | lat mean(s) | "
-        "lat p95(s) | RTF mean | RTF p95 | "
+        "lat p50(s) | lat p95(s) | RTF mean | RTF p95 | "
     )
     if include_ttft:
         header += "TTFT mean(s) | TTFT p95(s) | ITL mean(s) | "
     header += "corpus WER | max WER |"
-    sep = "|---:" * (16 if include_ttft else 13) + "|"
+    sep = "|---:" * (17 if include_ttft else 14) + "|"
     print("\n" + header)
     print(sep)
     for agg in aggregates:
@@ -405,6 +443,7 @@ def _print_table(aggregates: list[dict]) -> None:
             f"| {_format_metric(agg['throughput_samples_per_s']['max'], 3)} "
             f"| {_format_metric(agg['rtfx']['mean'], 3)} "
             f"| {_format_metric(agg['latency_mean_s']['mean'], 3)} "
+            f"| {_format_metric(agg['latency_median_s']['mean'], 3)} "
             f"| {_format_metric(agg['latency_p95_s']['mean'], 3)} "
             f"| {_format_metric(agg['rtf_mean']['mean'], 4)} "
             f"| {_format_metric(agg['rtf_p95']['mean'], 4)} "
@@ -564,7 +603,120 @@ def parse_args() -> argparse.Namespace:
         default="asr_seedtts_results.json",
         help="Where to write the full JSON results.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--save-raw-dir",
+        default="",
+        help=(
+            "Directory for raw per-request JSONL (one file per concurrency "
+            "and repeat). Empty disables raw preservation."
+        ),
+    )
+    parser.add_argument(
+        "--profile-events",
+        action="store_true",
+        help=(
+            "After the measured repeats of each concurrency, run one extra "
+            "profiled pass with request-level event recording and attach the "
+            "stage/hop breakdown. Requires running on the server host."
+        ),
+    )
+    parser.add_argument(
+        "--profile-urls",
+        default="",
+        help=(
+            "Comma-separated serve base URLs exposing /start_request_profile "
+            "(the serve port for DP=1, each worker base URL behind a router). "
+            "Defaults to http://<host>:<port>."
+        ),
+    )
+    parser.add_argument(
+        "--profile-event-dir",
+        default="/tmp/asr_bench_profile",
+        help="Server-side base directory for profiler event JSONL.",
+    )
+    parser.add_argument(
+        "--sample-util",
+        action="store_true",
+        help=(
+            "Sample host CPU and GPU utilization during each measured repeat "
+            "and attach mean/max summaries to the results."
+        ),
+    )
+    parser.add_argument(
+        "--util-gpu-ids",
+        default="",
+        help="Comma-separated GPU indices to sample (empty = all visible).",
+    )
+    parser.add_argument(
+        "--util-interval",
+        type=float,
+        default=1.0,
+        help="Utilization sampling interval in seconds.",
+    )
+    parser.add_argument(
+        "--fingerprint",
+        action="store_true",
+        help=(
+            "Record an environment fingerprint (git state, package versions, "
+            "dependency freeze hash, GPUs, cached model revision) in the "
+            "output JSON."
+        ),
+    )
+    args = parser.parse_args()
+    if not args.profile_urls:
+        args.profile_urls = f"http://{args.host}:{args.port}"
+    return args
+
+
+async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
+    """One extra profiled pass, excluded from measured aggregates.
+
+    Request-event profiling adds server-side JSONL writes, so the measured
+    repeats stay clean and one dedicated pass captures the stage breakdown.
+    The event dir is a server-side path; building the report assumes the
+    benchmark runs on the same host as the server.
+    """
+    run_id = f"asrbench-c{concurrency}-{int(time.time())}"
+    event_dir = os.path.join(args.profile_event_dir, run_id)
+    profile_urls = [u.strip() for u in args.profile_urls.split(",") if u.strip()]
+    started: list[str] = []
+    try:
+        for url in profile_urls:
+            start_request_profile(url, run_id, event_dir)
+            started.append(url)
+    except requests.RequestException as exc:
+        for url in started:
+            try:
+                stop_request_profile(url, run_id)
+            except requests.RequestException as stop_exc:
+                print(
+                    f"[conc={concurrency}] failed to stop profiling on "
+                    f"{url}: {stop_exc}"
+                )
+        print(f"[conc={concurrency}] profiling unavailable, skipping: {exc}")
+        return None
+    try:
+        result = await _run_repeat(args, samples, concurrency, repeat=0)
+    finally:
+        for url in started:
+            try:
+                stop_request_profile(url, run_id)
+            except requests.RequestException as stop_exc:
+                # The pass metrics remain valid; profiling just keeps
+                # recording on that worker until the next explicit stop.
+                print(
+                    f"[conc={concurrency}] failed to stop profiling on "
+                    f"{url}: {stop_exc}"
+                )
+    report = build_stage_breakdown(event_dir)
+    return {
+        "run_id": run_id,
+        "event_dir": event_dir,
+        "pass_metrics": result,
+        "request_count": report.get("request_count"),
+        "stage_breakdown": report.get("stage_breakdown"),
+        "hop_breakdown": report.get("hop_breakdown"),
+    }
 
 
 async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
@@ -606,7 +758,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
             print(line)
             if result["worker"].get("per_worker_routed"):
                 print(f"    routed per worker: {result['worker']['per_worker_routed']}")
-        aggregates.append(_aggregate(repeats))
+        aggregate = _aggregate(repeats)
+        if args.profile_events:
+            print(f"[conc={concurrency}] profiled pass ...")
+            aggregate["profile"] = await _run_profiled_pass(args, samples, concurrency)
+        aggregates.append(aggregate)
     return aggregates
 
 
@@ -684,9 +840,18 @@ def main() -> None:
                 "interval_s": args.monitor_interval_s,
                 "gpu_process_pids": args.gpu_process_pids or [],
             },
+            "profile_events": args.profile_events,
+            "sample_util": args.sample_util,
         },
         "results": aggregates,
     }
+    if args.fingerprint:
+        # The client fingerprint equals the server's only when both share one
+        # host and checkout; the server block records what the server reports.
+        payload["environment_fingerprint"] = {
+            "client": collect_environment_fingerprint(args.model_path),
+            "server": collect_server_identity(f"http://{args.host}:{args.port}"),
+        }
     output_path = os.path.abspath(args.output)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)

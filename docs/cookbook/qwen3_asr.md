@@ -122,6 +122,54 @@ The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (`tests/test_model/test_asr_ci_seedtts.py`). Qwen3-ASR remains
 the transcriber for the TTS and talker WER stages.
 
+For the current-main concurrency baseline, the fixed-baseline comparison, and
+the per-stage bottleneck decomposition (issue #1324), see
+[Qwen3-ASR concurrency profile](../developer_reference/qwen3_asr_concurrency_profile.md).
+The benchmark's `--profile-events`, `--sample-util`, `--save-raw-dir`, and
+`--fingerprint` flags capture the telemetry that report uses.
+
+## Concurrency tuning
+
+The request-build, admission, and CUDA-graph policy defaults come from a
+measured sweep (issue #1324 Q-PR5): `request_build_max_workers` {2, 4, 8} ×
+`request_build_max_pending` {16, 32, 64} × `max_running_requests` {16, 32, 64}
+with matching CUDA-graph coverage, each configuration a full SeedTTS EN
+concurrency sweep (1–64, three repeats plus warmup) on one 141 GB GPU with the
+pre-LM encoder enabled and its embedding cache disabled (unique-input regime).
+Requests/s by client concurrency:
+
+| config (workers/pending/running) | c=8 | c=16 | c=32 | c=64 | shed at c=64 |
+|---|---:|---:|---:|---:|---:|
+| 2 / 16 / 32 | 39.1 | 47.5 | 52.3 | 51.0 | 704/3264 |
+| 4 / 16 / 32 | 47.6 | 60.3 | 70.4 | 55.4 | 301/3264 |
+| 8 / 16 / 32 | 48.5 | 75.6 | 89.7 | 64.6 | 173/3264 |
+| 8 / 16 / 16 | 57.6 | 75.4 | 42.2 | 46.7 | 250/3264 |
+| **8 / 32 / 32 (default)** | 57.7 | 76.5 | 87.1 | 65.1 | 0 |
+| 8 / 64 / 32 | 55.2 | 76.6 | 87.9 | 64.7 | 0 |
+| 8 / 32 / 64 | 57.4 | 77.0 | 90.2 | 96.8 | 0 |
+| 8 / 64 / 64 | 57.0 | 74.3 | 88.8 | 100.3 | 0 |
+
+Reading, and the resulting defaults:
+
+- **Build workers scale monotonically to 8** at every concurrency ≥ 8 and cost
+  nothing at concurrency 1 (0.099–0.101 s mean everywhere), so 8 is the
+  default (it is also what lets the pre-LM encoder form real batches).
+- **Pending 16 → 32 removes all concurrency-64 shedding** and lifts
+  concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.
+- **`max_running_requests` 16 collapses concurrency 32** (queue-bound) with no
+  light-load latency benefit, so there is no latency-first case for lowering
+  it. 32 (the default) is memory-conservative for 80 GB GPUs; raising it to
+  **64 unlocks the concurrency-64 regime** (+~50 % requests/s, zero shedding)
+  at the price of larger CUDA-graph and KV memory — the throughput-first
+  override:
+
+```bash
+sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
+  --max-running-requests 64   # throughput-first; needs the extra GPU memory
+```
+
+- Corpus WER stayed 0.0122 for every configuration at every level.
+
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
