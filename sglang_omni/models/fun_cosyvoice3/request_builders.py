@@ -35,7 +35,7 @@ from sglang_omni.utils.audio import (
 from sglang_omni.utils.audio import load_audio as _shared_load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
-from .sglang_model import SOS_ID, TASK_ID, TOTAL_VOCAB_SIZE, VOCAB_SIZE
+from .sglang_model import EOS_ID, SOS_ID, TASK_ID, TOTAL_VOCAB_SIZE
 from .utils import (
     CosyVoice3Tokenizer,
     SpeakerEncoder,
@@ -722,7 +722,7 @@ def build_sglang_cosyvoice3_request(
         top_p=float(gen_kwargs.get("top_p", 0.8)),
         top_k=int(gen_kwargs.get("top_k", 20)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.1)),
-        stop_token_ids=list(range(VOCAB_SIZE, TOTAL_VOCAB_SIZE)),
+        stop_token_ids=[EOS_ID],
         sampling_seed=state.seed,
     )
     sampling_params.normalize(None)

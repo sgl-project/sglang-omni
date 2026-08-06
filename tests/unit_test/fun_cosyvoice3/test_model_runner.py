@@ -12,22 +12,8 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
     EOS_ID,
     VOCAB_SIZE,
     FunCosyVoice3SGLangModel,
-    _map_cosyvoice3_weight_key,
 )
 
-
-def test_cosyvoice3_weight_key_mapping_handles_checkpoint_prefixes() -> None:
-    assert (
-        _map_cosyvoice3_weight_key("llm.model.model.layers.0.weight")
-        == "model.layers.0.weight"
-    )
-    assert _map_cosyvoice3_weight_key("llm.model.lm_head.weight") is None
-    assert (
-        _map_cosyvoice3_weight_key("speech_embedding.weight")
-        == "speech_embedding.weight"
-    )
-    assert _map_cosyvoice3_weight_key("llm_decoder.weight") == "llm_decoder.weight"
-    assert _map_cosyvoice3_weight_key("model.norm.weight") == "model.norm.weight"
 
 
 def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:

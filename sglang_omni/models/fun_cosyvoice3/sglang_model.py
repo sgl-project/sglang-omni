@@ -123,25 +123,5 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             super().load_weights(backbone_weights)
 
 
-def _map_cosyvoice3_weight_key(name: str) -> str | None:
-    # llm.model.model.* → model.* (Qwen2 backbone inside CosyVoice3LM)
-    backbone_prefix = "llm.model.model."
-    if name.startswith(backbone_prefix):
-        return "model." + name[len(backbone_prefix) :]
-
-    # llm.model.lm_head.weight → skip (unused Qwen2 text head)
-    if name == "llm.model.lm_head.weight":
-        return None
-
-    if name == "speech_embedding.weight":
-        return "speech_embedding.weight"
-
-    if name == "llm_decoder.weight":
-        return "llm_decoder.weight"
-    if name == "llm_decoder.bias":
-        return "llm_decoder.bias"
-
-    return name
-
 
 EntryClass = FunCosyVoice3SGLangModel

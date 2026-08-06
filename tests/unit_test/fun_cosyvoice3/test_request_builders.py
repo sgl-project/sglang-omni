@@ -411,9 +411,9 @@ def test_preprocess_and_build_request_share_prepared_state(
     assert request_data.max_new_tokens == 5
     assert request_data.temperature == 0.0
     assert request_data.req.sampling_params.sampling_seed == 7
-    assert request_data.req.sampling_params.stop_token_ids == set(
-        range(request_builders.VOCAB_SIZE, request_builders.TOTAL_VOCAB_SIZE)
-    )
+    assert request_data.req.sampling_params.stop_token_ids == {
+        request_builders.EOS_ID
+    }
     assert request_data.req._input_embeds_are_projected is True
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
