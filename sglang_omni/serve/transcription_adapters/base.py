@@ -51,8 +51,7 @@ class TranscriptionAdapter(ABC):
         language: str | None,
         audio_duration_s: float,
     ) -> TranscriptionVerboseResponse:
-        """verbose_json for chunked long audio: one segment per chunk.
-        """
+        """verbose_json for chunked long audio: one segment per chunk."""
         segments: list[TranscriptionSegment] = []
         for start_s, end_s, chunk_text in chunks:
             stripped = self.postprocess_text(chunk_text).strip()
