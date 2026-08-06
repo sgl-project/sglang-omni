@@ -23,6 +23,13 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_cuda_graph=False,
         supports_torch_compile=False,
     ),
+    "DotsTTSForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=False,
+        supports_torch_compile=False,
+    ),
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,

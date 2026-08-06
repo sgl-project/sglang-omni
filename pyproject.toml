@@ -77,6 +77,8 @@ dependencies = [
     "x-transformers",          # Ming talker rotary embeddings
     # ZONOS2 written->spoken text normalization; pulls pynini + sacremoses.
     "nemo_text_processing==1.2.0",
+    # dots.tts flow-matching / mean-flow ODE solver.
+    "torchdiffeq>=0.2.5",
 ]
 
 [project.optional-dependencies]

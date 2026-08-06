@@ -1,0 +1,57 @@
+config_cls: DotsTtsPipelineConfig
+model_path: /data/chenyang/models/dots.tts-mf
+name: dots-tts-mf
+stages:
+  - name: preprocessing
+    process: pipeline
+    factory: sglang_omni.models.dots_tts.stages.create_preprocessing_executor
+    next: reference_encode
+
+  - name: reference_encode
+    process: pipeline
+    factory: sglang_omni.models.dots_tts.stages.create_reference_encode_executor
+    factory_args:
+      max_sequence_length: 2048
+      max_concurrency: 1
+    gpu: 0
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.04
+    next: tts_engine
+
+  - name: tts_engine
+    process: pipeline
+    factory: sglang_omni.models.dots_tts.stages.create_sglang_tts_engine_executor
+    factory_args:
+      dtype: bfloat16
+      context_length: 2048
+      num_steps: 4
+      eos_threshold: 0.8
+      max_audio_patches: 500
+      max_running_requests: 16
+      server_args_overrides:
+        chunked_prefill_size: 0
+        disable_cuda_graph: true
+        disable_overlap_schedule: true
+        disable_radix_cache: true
+        enable_torch_compile: false
+        max_prefill_tokens: 2048
+        sampling_backend: pytorch
+        trust_remote_code: false
+    gpu: 0
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.84
+    next: audio_decode
+
+  - name: audio_decode
+    process: pipeline
+    factory: sglang_omni.models.dots_tts.stages.create_audio_decode_executor
+    factory_args:
+      max_batch_size: 1
+      max_batch_wait_ms: 0
+    gpu: 0
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.04
+    terminal: true

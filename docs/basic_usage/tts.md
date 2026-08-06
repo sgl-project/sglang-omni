@@ -29,6 +29,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
+| dots.tts | `examples/configs/dots_tts.yaml` | Continuation cloning only: exactly one local reference clip plus its transcript. `tts_engine` runs on the OmniScheduler (single GPU). `speaker_scale` / `seed` go through `extra_body`; `num_steps` and `max_audio_patches` are fixed by the stage. 48 kHz output, non-streaming |
 
 ## Launch the Server
 

@@ -96,6 +96,7 @@ fractions would not make that split correct.
 | MOSS-TTS Delay | `tts_engine -> vocoder` | `tts_engine -> vocoder` | `preprocessing -> tts_engine` — same process-local `PreparedRequestQueue` handoff |
 | Audar-TTS | `preprocessing -> reference_encoder`, `reference_encoder -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
 | Zonos2 | `preprocessing -> speaker_encode`, `speaker_encode -> tts_engine`, `tts_engine -> vocoder` | none yet — declare fractions before splitting | — |
+| dots.tts | `preprocessing -> reference_encode`, `reference_encode -> tts_engine`, `tts_engine -> audio_decode` | none yet — declare fractions before splitting | — |
 
 Higgs-TTS already groups `preprocessing` and `audio_encoder` in a
 `tts_frontend` process and places `vocoder` in its own process by default.

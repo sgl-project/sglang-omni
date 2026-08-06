@@ -87,6 +87,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     import dataclasses
 
     from sglang_omni.models.audar_tts.payload_types import AudarTTSState
+    from sglang_omni.models.dots_tts.payload_types import DotsTtsState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -99,6 +100,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
         AudarTTSState,
+        DotsTtsState,
         S2ProState,
         HiggsTtsState,
         MingTTSState,
@@ -182,6 +184,7 @@ def _assert_restored_fields(
 
 def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.audar_tts.payload_types import AudarTTSState
+    from sglang_omni.models.dots_tts.payload_types import DotsTtsState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -213,6 +216,32 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 prompt_tokens=4,
                 completion_tokens=6,
                 engine_time_s=0.125,
+            ),
+            {},
+        ),
+        (
+            DotsTtsState(
+                text="target",
+                prompt_text="reference",
+                ref_audio_path="ref.wav",
+                num_steps=4,
+                guidance_scale=1.2,
+                speaker_scale=1.5,
+                seed=11,
+                max_audio_patches=500,
+                generation_schedule_ids=[1, 2, 3],
+                prompt_audio=torch.tensor([[0.1, 0.2]], dtype=torch.float32),
+                generated_latents=torch.tensor(
+                    [[[0.5, -1.25], [2.0, 0.0]]],
+                    dtype=torch.float32,
+                ),
+                finish_reason="stop",
+                waveform=torch.tensor([0.3, 0.4], dtype=torch.float32),
+                prompt_tokens=3,
+                completion_tokens=2,
+                engine_time_s=0.125,
+                duration_s=0.5,
+                audio_decode_time_s=0.25,
             ),
             {},
         ),
