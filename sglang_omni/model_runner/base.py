@@ -767,7 +767,6 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
         self._install_sampling_seeds(forward_batch, requests)
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
