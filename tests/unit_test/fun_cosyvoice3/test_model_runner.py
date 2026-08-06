@@ -15,7 +15,6 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
 )
 
 
-
 def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
     requests = [

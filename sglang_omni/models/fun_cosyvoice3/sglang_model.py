@@ -123,5 +123,4 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             super().load_weights(backbone_weights)
 
 
-
 EntryClass = FunCosyVoice3SGLangModel

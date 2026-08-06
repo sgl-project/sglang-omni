@@ -29,9 +29,7 @@ from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeService,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.utils.audio import (
-    decode_audio_data_uri as _decode_audio_data_uri,
-)
+from sglang_omni.utils.audio import decode_audio_data_uri as _decode_audio_data_uri
 from sglang_omni.utils.audio import load_audio as _shared_load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
