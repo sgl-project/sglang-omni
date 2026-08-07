@@ -155,10 +155,11 @@ def _reference_meanflow(
     return latent
 
 
-def test_kv_cached_tail_matches_full_recompute() -> None:
+@pytest.mark.parametrize("slots", [1, 2])
+def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     torch.manual_seed(1234)
     model = _TailModel().eval()
-    acoustic_tail = _build_tail(model, slots=1)
+    acoustic_tail = _build_tail(model, slots=slots)
     unit = acoustic_tail.spec.unit_len
     g_cond = torch.randn(1, FM_HIDDEN)
     grid = torch.linspace(0.0, 1.0, NFE + 1)
@@ -187,6 +188,7 @@ def test_kv_cached_tail_matches_full_recompute() -> None:
     actual = acoustic_tail.sample_patches([slot], fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
+    assert acoustic_tail._dit_contiguous_view_steps == (NFE if slots == 1 else 0)
 
 
 def test_tail_slots_are_bounded_and_reusable() -> None:
@@ -201,6 +203,42 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
         raise AssertionError("slot exhaustion must fail")
     acoustic_tail.release_slot(first)
     assert acoustic_tail.acquire_slot() == first
+
+
+def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
+    torch.manual_seed(1234)
+    direct = _build_tail(_TailModel().eval(), slots=2)
+    torch.manual_seed(1234)
+    fallback = _build_tail(_TailModel().eval(), slots=3)
+    direct_slots = [direct.acquire_slot(), direct.acquire_slot()][::-1]
+    fallback_slots = [
+        fallback.acquire_slot(),
+        fallback.acquire_slot(),
+        fallback.acquire_slot(),
+    ]
+    fallback.release_slot(fallback_slots.pop(1))
+
+    grid = torch.linspace(0.0, 1.0, NFE + 1)
+    for row, units in enumerate((3, 2)):
+        g_cond = torch.randn(1, FM_HIDDEN)
+        mods = direct.dit.build_mods(
+            grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+        )
+        history = torch.randn(units * direct.spec.unit_len, FM_HIDDEN)
+        for acoustic_tail, slot in (
+            (direct, direct_slots[row]),
+            (fallback, fallback_slots[row]),
+        ):
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + row)
+
+    hidden = torch.randn(2, FM_HIDDEN)
+    actual = direct.sample_patches(direct_slots, fm_hidden_rows=hidden)
+    expected = fallback.sample_patches(fallback_slots, fm_hidden_rows=hidden)
+
+    torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
+    assert direct._dit_contiguous_view_steps == NFE
+    assert fallback._dit_contiguous_view_steps == 0
 
 
 def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
@@ -284,3 +322,4 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
     assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph._graph_misses
+    assert graph._dit_contiguous_view_steps == NFE
