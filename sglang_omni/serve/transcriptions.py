@@ -509,18 +509,19 @@ async def _await_transcription_with_disconnect_abort(
 
 def _probe_audio_duration(audio_bytes: bytes) -> float:
     """Best-effort audio duration (seconds) from raw upload bytes.
-
-    Uses ``soundfile.info`` (metadata only, no full decode; torchaudio removed
-    its ``info`` API in 2.x). Returns 0.0 if the duration cannot be
-    determined; callers treat 0.0 as "unknown".
     """
     try:
-        import soundfile as sf
+        import av
 
-        info = sf.info(io.BytesIO(audio_bytes))
-        if info.samplerate:
-            return max(info.frames / float(info.samplerate), 0.0)
-    except (RuntimeError, ValueError):
+        with av.open(io.BytesIO(audio_bytes), metadata_errors="ignore") as container:
+            if container.duration:  # in av.time_base units (microseconds)
+                return max(container.duration / 1_000_000, 0.0)
+            for audio_stream in container.streams.audio:
+                if audio_stream.duration and audio_stream.time_base:
+                    return max(
+                        float(audio_stream.duration * audio_stream.time_base), 0.0
+                    )
+    except Exception:
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
 

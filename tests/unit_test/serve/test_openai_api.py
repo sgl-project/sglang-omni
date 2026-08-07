@@ -1890,6 +1890,53 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
     asyncio.run(scenario())
 
 
+def _m4a_upload(duration_s: float, sample_rate: int = 16000) -> bytes:
+    """Loud AAC/M4A clip -- a format libsndfile cannot inspect."""
+    import io as io_module
+
+    import av
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    wave = rng.uniform(-0.5, 0.5, int(duration_s * sample_rate)).astype(np.float32)
+    buffer = io_module.BytesIO()
+    container = av.open(buffer, mode="w", format="mp4")
+    audio_stream = container.add_stream("aac", rate=sample_rate)
+    audio_stream.layout = "mono"
+    frame = av.AudioFrame.from_ndarray(
+        wave.reshape(1, -1), format="fltp", layout="mono"
+    )
+    frame.sample_rate = sample_rate
+    for packet in audio_stream.encode(frame):
+        container.mux(packet)
+    for packet in audio_stream.encode():
+        container.mux(packet)
+    container.close()
+    return buffer.getvalue()
+
+
+def test_long_m4a_is_probed_and_chunked() -> None:
+    # libsndfile cannot inspect M4A, but load_audio (torchaudio/FFmpeg) can
+    # decode it. The probe must cover everything the decoder covers --
+    # otherwise a long M4A bypasses chunking and the total-duration guard,
+    # runs as one request, and gets silently truncated at the output budget.
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("long.m4a", _m4a_upload(2.5), "audio/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert len(transcription_client.requests) > 1
+    assert all(
+        "-chunk-" in request_id
+        for request_id, _ in transcription_client.requests
+    )
+
+
 def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
     # soundfile cannot read these bytes, so the duration probe returns 0.0 and
     # the upload keeps today's behaviour instead of paying a decode.
