@@ -100,6 +100,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
 
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if "context_length" in overrides:
+            self.context_length = int(overrides.pop("context_length"))
+
+    def customize_server_args(self, server_args: Any) -> None:
+        self.context_length = int(server_args.context_length)
+
     def setup_model_resources(
         self,
         model: Any,
@@ -135,6 +142,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             tokenizer=self.tokenizer,
             feature_extractor=self.feature_extractor,
             max_new_tokens=self.max_new_tokens,
+            context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
         )
 

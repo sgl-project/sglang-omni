@@ -93,6 +93,7 @@ def make_qwen3_asr_scheduler_adapters(
     tokenizer: Any,
     max_new_tokens: int,
     feature_extractor: Any = None,
+    context_length: int | None = None,
     audio_encoder_service: Any = None,
 ) -> tuple[
     Callable[[StagePayload], Qwen3ASRRequestData], Callable[[Any], StagePayload]
@@ -119,6 +120,21 @@ def make_qwen3_asr_scheduler_adapters(
         prompt = prompt + f"language {language}<asr_text>"
         return tokenizer(prompt, add_special_tokens=False).input_ids
 
+    def _validate_context_budget(
+        input_ids: list[int], request_max_new_tokens: int
+    ) -> None:
+        if (
+            context_length is not None
+            and len(input_ids) + request_max_new_tokens > context_length - 1
+        ):
+            raise ValueError(
+                "Qwen3-ASR request is longer than the model's context length "
+                f"({len(input_ids)} prompt/audio tokens + "
+                f"{request_max_new_tokens} max_new_tokens > "
+                f"{context_length - 1} usable tokens); "
+                "reduce max_new_tokens or split the audio"
+            )
+
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
         language = params.get("language")
@@ -130,6 +146,24 @@ def make_qwen3_asr_scheduler_adapters(
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
+        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+
+        if context_length is not None:
+            hop_length = int(getattr(feature_extractor, "hop_length", 0))
+            if hop_length <= 0:
+                raise ValueError(
+                    "Qwen3-ASR feature extractor has an invalid hop length"
+                )
+            # WhisperFeatureExtractor emits floor(samples / hop_length) frames.
+            # Check the resulting prompt before the mel FFT so requests that
+            # cannot fit the configured context do not consume preprocessing
+            # memory and CPU.
+            estimated_mel_frames = len(audio) // hop_length
+            estimated_audio_tokens = qwen3_asr_num_audio_tokens(estimated_mel_frames)
+            estimated_input_ids = _build_prompt_ids(
+                estimated_audio_tokens, forced_language
+            )
+            _validate_context_budget(estimated_input_ids, request_max_new_tokens)
 
         # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
         # WhisperFeatureExtractor defaults to padding="max_length", padding every clip to nb_max_frames=3000 (~30s),
@@ -166,6 +200,7 @@ def make_qwen3_asr_scheduler_adapters(
         )
 
         input_ids = _build_prompt_ids(num_audio_tokens, forced_language)
+        _validate_context_budget(input_ids, request_max_new_tokens)
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -207,11 +242,6 @@ def make_qwen3_asr_scheduler_adapters(
         mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
 
         temperature = float(params.get("temperature") or 0.0)
-        if temperature == 0.0:
-            # Qwen3-ASR degenerates under pure-greedy (emits only the language
-            # tag then EOS); upstream uses 0.01 near-greedy.
-            temperature = 0.01
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"

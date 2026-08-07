@@ -11,6 +11,7 @@ export UV_INDEX_URL="${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 export UV_CACHE_DIR=/github/home/.cache/uv
 export TORCHINDUCTOR_CACHE_DIR="${OMNI_CI_HOME}/.torchinductor"
 export FLASHINFER_DISABLE_VERSION_CHECK=1
+export FLASHINFER_JIT_DEBUG=0
 export SEEDTTS_SIM_CACHE_DIR="${SEEDTTS_SIM_CACHE_DIR:-/github/home/seedtts-wavlm-sim}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 set +a

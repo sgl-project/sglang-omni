@@ -231,6 +231,52 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "params",
+        "expected_temperature",
+        "expected_sampling_temperature",
+        "expected_top_k",
+    ),
+    [
+        ({}, 0.0, 1.0, 1),
+        ({"temperature": 0.1}, 0.1, 0.1, 1 << 30),
+    ],
+)
+def test_qwen3_asr_request_builder_preserves_sampling_mode(
+    monkeypatch,
+    params: dict[str, float],
+    expected_temperature: float,
+    expected_sampling_temperature: float,
+    expected_top_k: int,
+) -> None:
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, 101), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+    )
+    payload = StagePayload(
+        request_id="req-asr-sampling",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.temperature == expected_temperature
+    assert data.req.sampling_params.temperature == expected_sampling_temperature
+    assert data.req.sampling_params.top_k == expected_top_k
+
+
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     monkeypatch,
 ) -> None:
@@ -255,6 +301,7 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=32,
         feature_extractor=feature_extractor,
+        context_length=512,
     )
     payload = StagePayload(
         request_id="req-long-asr",
@@ -268,6 +315,38 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     assert audio_item.feature.shape == (1, 128, 3100)
     assert int(audio_item.feature_attention_mask.sum().item()) == 3100
     assert data.audio_duration_s == audio_duration_s
+
+
+def test_qwen3_asr_rejects_full_context_before_mel_extraction(
+    monkeypatch,
+) -> None:
+    class _UnexpectedFeatureExtractor:
+        hop_length = 160
+
+        def __call__(self, *args, **kwargs):
+            raise AssertionError("feature extractor should not be called")
+
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=5,
+        feature_extractor=_UnexpectedFeatureExtractor(),
+        # 100 mel frames produce 13 audio tokens, so the fake prompt has
+        # 17 input tokens and exactly fills context with 5 output tokens.
+        context_length=22,
+    )
+    payload = StagePayload(
+        request_id="req-over-context",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="longer than the model's context length"):
+        request_builder(payload)
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:

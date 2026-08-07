@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -19,6 +20,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 logger = logging.getLogger(__name__)
 
 _TAIL_SDPA_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+_GRAPH_BATCH_BUCKETS = (8, 16)
+_GRAPH_CONTEXT_PATCH_BUCKETS = (16, 32, 64, 128)
 
 
 def _project_attention(
@@ -183,6 +186,13 @@ class DotsTtsTailSpec:
         return self.patch_capacity * self.unit_len
 
 
+@dataclass
+class _CapturedTailGraph:
+    graph: torch.cuda.CUDAGraph
+    inputs: dict[str, torch.Tensor]
+    output: torch.Tensor
+
+
 def batched_causal_update_mask(
     *,
     capacity_tokens: int,
@@ -223,16 +233,19 @@ class DotsTtsAcousticTail:
         *,
         dit: nn.Module,
         coordinate_proj: nn.Module,
+        latent_proj: nn.Module,
         patch_encoder: nn.Module,
         spec: DotsTtsTailSpec,
         device: torch.device,
         dtype: torch.dtype,
+        optimize: bool = False,
     ) -> None:
         self.spec = spec
         self.device = device
         self.dtype = dtype
         self.dit = dit
         self._coordinate_proj = coordinate_proj
+        self._latent_proj = latent_proj
         self._encoder = patch_encoder
         for layer in patch_encoder.encoder.layers:
             fuse_qkv_projection(layer.attn)
@@ -260,6 +273,14 @@ class DotsTtsAcousticTail:
         self._encoder_seq_len = [0] * spec.num_slots
         self._generators: list[torch.Generator | None] = [None] * spec.num_slots
         self._free_slots = list(reversed(range(spec.num_slots)))
+        self._meanflow_graphs: dict[tuple[int, int], _CapturedTailGraph] = {}
+        self._encoder_graphs: dict[tuple[int, int], _CapturedTailGraph] = {}
+        self._graph_pool: Any | None = None
+        self._capture_stream: torch.cuda.Stream | None = None
+        self._graph_replays: Counter[str] = Counter()
+        self._graph_misses: Counter[str] = Counter()
+        if optimize and device.type == "cuda":
+            self._capture_cuda_graphs()
 
     def _allocate_pools(self, mods_width: int) -> None:
         spec = self.spec
@@ -470,45 +491,79 @@ class DotsTtsAcousticTail:
         slots: list[int],
         *,
         fm_hidden_rows: torch.Tensor,
-        latent_proj: nn.Module,
     ) -> torch.Tensor:
         spec = self.spec
         slot_index = torch.tensor(slots, device=self.device, dtype=torch.long)
         for slot in slots:
             self._fm_seq_len[slot] += spec.hidden_patch_size
-        self._window[slot_index, spec.unit_len :] = fm_hidden_rows.unsqueeze(1).to(
-            self.dtype
-        )
         persistent = [self._fm_seq_len[slot] - spec.window_len for slot in slots]
         if min(persistent) < 0:
             raise RuntimeError("dots.tts tail ran before prompt history was seeded")
         capacity = max(persistent)
         if capacity + spec.unit_len > spec.dit_cache_tokens:
             raise RuntimeError("dots.tts flow history exceeded the DiT cache")
-        latent = self._run_meanflow(
-            slots,
-            slot_index,
-            torch.tensor(persistent, device=self.device, dtype=torch.long),
-            capacity,
+        persistent_index = torch.tensor(
+            persistent, device=self.device, dtype=torch.long
         )
-        carry = self._window[slot_index, spec.unit_len :]
-        self._window[slot_index, : spec.hidden_patch_size] = carry
-        self._window[slot_index, spec.hidden_patch_size : spec.unit_len] = latent_proj(
-            latent
-        ).to(self.dtype)
+        noise = self._sample_noise(slots)
+        graph = self._select_graph(self._meanflow_graphs, len(slots), capacity)
+        if graph is None:
+            self._graph_misses["meanflow"] += 1
+            latent = self._sample_patches_core(
+                slot_index,
+                persistent_index,
+                capacity,
+                fm_hidden_rows,
+                noise,
+            )
+        else:
+            graph.inputs["slots"].copy_(slot_index)
+            graph.inputs["starts"].copy_(persistent_index)
+            graph.inputs["hidden"].copy_(fm_hidden_rows)
+            graph.inputs["noise"].copy_(noise)
+            graph.graph.replay()
+            latent = graph.output.clone()
+            self._graph_replays["meanflow"] += 1
+            if self._graph_replays["meanflow"] == 1:
+                logger.info("dots.tts batched MeanFlow CUDA graph replay is active")
         for slot in slots:
             self._fm_seq_len[slot] += spec.latent_patch_size
         return latent
 
-    def _run_meanflow(
+    def _sample_patches_core(
         self,
-        slots: list[int],
         slot_index: torch.Tensor,
         persistent_index: torch.Tensor,
         capacity: int,
+        fm_hidden_rows: torch.Tensor,
+        noise: torch.Tensor,
     ) -> torch.Tensor:
         spec = self.spec
-        rows = len(slots)
+        self._window[slot_index, spec.unit_len :] = fm_hidden_rows.unsqueeze(1).to(
+            self.dtype
+        )
+        latent = self._run_meanflow(
+            slot_index,
+            persistent_index,
+            capacity,
+            noise,
+        )
+        carry = self._window[slot_index, spec.unit_len :]
+        self._window[slot_index, : spec.hidden_patch_size] = carry
+        self._window[slot_index, spec.hidden_patch_size : spec.unit_len] = (
+            self._latent_proj(latent).to(self.dtype)
+        )
+        return latent
+
+    def _run_meanflow(
+        self,
+        slot_index: torch.Tensor,
+        persistent_index: torch.Tensor,
+        capacity: int,
+        latent: torch.Tensor,
+    ) -> torch.Tensor:
+        spec = self.spec
+        rows = int(slot_index.numel())
         unit = spec.unit_len
         query_len = 2 * unit
         previous = self._window[slot_index, :unit]
@@ -527,7 +582,6 @@ class DotsTtsAcousticTail:
         layer_index = self._dit_layer_index.reshape(self._dit_layers, 1, 1)
         batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + unit)
-        latent = self._sample_noise(slots)
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             for ode_index in range(spec.nfe):
                 keys = self._dit_scratch_k[:, :rows, :, : capacity + query_len]
@@ -630,6 +684,39 @@ class DotsTtsAcousticTail:
         if capacity + block > int(self._encoder_k.size(3)):
             raise RuntimeError("dots.tts patch-encoder cache overflow")
         start_index = torch.tensor(starts, device=self.device, dtype=torch.long)
+        graph = self._select_graph(self._encoder_graphs, rows, capacity)
+        if graph is None:
+            self._graph_misses["semantic_encoder"] += 1
+            embeddings = self._encode_feedback_core(
+                slot_index,
+                start_index,
+                capacity,
+                latent_patches,
+            )
+        else:
+            graph.inputs["slots"].copy_(slot_index)
+            graph.inputs["starts"].copy_(start_index)
+            graph.inputs["latent"].copy_(latent_patches)
+            graph.graph.replay()
+            embeddings = graph.output.clone()
+            self._graph_replays["semantic_encoder"] += 1
+            if self._graph_replays["semantic_encoder"] == 1:
+                logger.info(
+                    "dots.tts batched semantic-encoder CUDA graph replay is active"
+                )
+        for slot in slots:
+            self._encoder_seq_len[slot] += block
+        return embeddings
+
+    def _encode_feedback_core(
+        self,
+        slot_index: torch.Tensor,
+        start_index: torch.Tensor,
+        capacity: int,
+        latent_patches: torch.Tensor,
+    ) -> torch.Tensor:
+        rows = int(slot_index.numel())
+        block = self._encoder_block
         mask = self._encoder_mask[:rows, :, :, : capacity + block]
         self._fill_mask(mask, capacity, start_index, block, 0)
         if self._encoder_rotary is None:
@@ -673,9 +760,157 @@ class DotsTtsAcousticTail:
             :, :, :, promote
         ].permute(0, 1, 3, 2, 4)
         self._encoder_conv_tail[slot_index] = conv_tail
-        for slot in slots:
-            self._encoder_seq_len[slot] += block
         return embeddings.reshape(rows, -1)
+
+    @staticmethod
+    def _select_graph(
+        graphs: dict[tuple[int, int], _CapturedTailGraph],
+        rows: int,
+        capacity: int,
+    ) -> _CapturedTailGraph | None:
+        bucket = min(
+            (
+                bucket_capacity
+                for batch_size, bucket_capacity in graphs
+                if batch_size == rows and bucket_capacity >= capacity
+            ),
+            default=None,
+        )
+        return None if bucket is None else graphs[(rows, bucket)]
+
+    @torch.no_grad()
+    def _capture_cuda_graphs(self) -> None:
+        batch_buckets = tuple(
+            batch for batch in _GRAPH_BATCH_BUCKETS if batch <= self.spec.num_slots
+        )
+        context_buckets = tuple(
+            patches
+            for patches in _GRAPH_CONTEXT_PATCH_BUCKETS
+            if patches < self.spec.patch_capacity
+        )
+        if not batch_buckets or not context_buckets:
+            return
+
+        current_stream = torch.cuda.current_stream(self.device)
+        self._capture_stream = torch.cuda.Stream(device=self.device)
+        self._capture_stream.wait_stream(current_stream)
+        self._graph_pool = torch.cuda.graph_pool_handle()
+        with torch.cuda.stream(self._capture_stream):
+            for batch_size in reversed(batch_buckets):
+                for patches in reversed(context_buckets):
+                    self._capture_graph(
+                        self._meanflow_graphs,
+                        batch_size,
+                        patches * self.spec.unit_len,
+                        kind="meanflow",
+                    )
+                    self._capture_graph(
+                        self._encoder_graphs,
+                        batch_size,
+                        patches * self._encoder_block,
+                        kind="semantic_encoder",
+                    )
+        current_stream.wait_stream(self._capture_stream)
+        torch.cuda.synchronize(self.device)
+        logger.info(
+            "dots.tts acoustic-tail CUDA graphs: meanflow=%d semantic_encoder=%d "
+            "batch_buckets=%s context_patch_buckets=%s",
+            len(self._meanflow_graphs),
+            len(self._encoder_graphs),
+            batch_buckets,
+            context_buckets,
+        )
+
+    def _capture_graph(
+        self,
+        destination: dict[tuple[int, int], _CapturedTailGraph],
+        batch_size: int,
+        capacity: int,
+        *,
+        kind: str,
+    ) -> None:
+        key = (batch_size, capacity)
+        slots = torch.arange(batch_size, device=self.device, dtype=torch.long)
+        starts = torch.full(
+            (batch_size,), capacity, device=self.device, dtype=torch.long
+        )
+        if kind == "meanflow":
+            inputs = {
+                "slots": slots,
+                "starts": starts,
+                "hidden": torch.zeros(
+                    batch_size,
+                    self.spec.fm_hidden_size,
+                    device=self.device,
+                    dtype=self.dtype,
+                ),
+                "noise": torch.zeros(
+                    batch_size,
+                    self.spec.latent_patch_size,
+                    self.spec.latent_dim,
+                    device=self.device,
+                    dtype=self.dtype,
+                ),
+            }
+            run = lambda: self._sample_patches_core(
+                inputs["slots"],
+                inputs["starts"],
+                capacity,
+                inputs["hidden"],
+                inputs["noise"],
+            )
+        else:
+            inputs = {
+                "slots": slots,
+                "starts": starts,
+                "latent": torch.zeros(
+                    batch_size,
+                    self.spec.latent_patch_size,
+                    self.spec.latent_dim,
+                    device=self.device,
+                    dtype=self.dtype,
+                ),
+            }
+            run = lambda: self._encode_feedback_core(
+                inputs["slots"],
+                inputs["starts"],
+                capacity,
+                inputs["latent"],
+            )
+
+        graph = torch.cuda.CUDAGraph()
+        try:
+            for _ in range(2):
+                run()
+            self._capture_stream.synchronize()
+            with torch.cuda.graph(
+                graph,
+                pool=self._graph_pool,
+                stream=self._capture_stream,
+                capture_error_mode="thread_local",
+            ):
+                output = run()
+            destination[key] = _CapturedTailGraph(graph, inputs, output)
+        except Exception as exc:
+            graph.reset()
+            logger.warning(
+                "dots.tts %s CUDA graph capture failed for batch=%d capacity=%d: "
+                "%s; using eager fallback",
+                kind,
+                batch_size,
+                capacity,
+                exc,
+            )
+
+    @property
+    def backend(self) -> str:
+        if self._meanflow_graphs and self._encoder_graphs:
+            return (
+                "CUDA graph batched tail with eager fallback "
+                f"(meanflow={len(self._meanflow_graphs)}, "
+                f"semantic_encoder={len(self._encoder_graphs)})"
+            )
+        return "fused eager batched tail"
 
 
 __all__ = [
