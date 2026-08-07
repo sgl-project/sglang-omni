@@ -78,6 +78,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             raise ValueError(
                 "dots.tts uses its DiT compile path; SGLang backbone compile is disabled"
             )
+        if not bool(overrides.get("disable_cuda_graph", True)):
+            # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
+            # its can_run gate requires an exact hidden-mode match with the
+            # acoustic tail's per-step request.
+            overrides["enable_return_hidden_states"] = True
 
     def setup_model(
         self,
@@ -91,6 +96,22 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         del checkpoint_dir, device, gpu_id
         model = model_worker.model_runner.model
         max_running_requests = int(server_args.max_running_requests)
+        if not bool(server_args.disable_cuda_graph):
+            from sglang_omni.scheduling.generation_batch_policy import (
+                get_decode_cuda_graph_max_bs,
+            )
+
+            # note (luojiaxuan): installed before init_cuda_graphs so capture bakes the buffer
+            # address into the decode graph. Generously sized: rows are tiny
+            # (hidden_size elements) and capture may pad above
+            # max_running_requests.
+            model.enable_graph_feedback(
+                max(
+                    max_running_requests,
+                    int(get_decode_cuda_graph_max_bs(server_args) or 0),
+                    256,
+                )
+            )
         model.flow.optimize = self.optimize and max_running_requests == 1
         if self.optimize and max_running_requests > 1:
             logger.info(
@@ -114,6 +135,14 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             self.optimize,
             max_running_requests,
             self.num_steps,
+        )
+        logger.info(
+            "dots.tts backbone decode: %s",
+            (
+                "SGLang CUDA graph with model-owned feedback buffer"
+                if not bool(server_args.disable_cuda_graph)
+                else "eager"
+            ),
         )
         if max_running_requests > 1:
             model.flow.init_batched_tail(
