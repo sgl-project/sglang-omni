@@ -1,0 +1,2 @@
+config_cls: MossTTSRealtimePipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-Realtime

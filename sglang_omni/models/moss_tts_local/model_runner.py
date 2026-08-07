@@ -370,10 +370,23 @@ class MossTTSLocalModelRunner(ModelRunner):
             frame_graph_max_bs = int(self.model.frame_graph_max_bs)
         except AttributeError:
             frame_graph_max_bs = 0
-        use_graph = (
-            not has_audio_repetition_penalty and batch_size <= frame_graph_max_bs
+        graph_handles_repetition = bool(
+            getattr(
+                self.model,
+                "frame_graph_supports_repetition_penalty",
+                False,
+            )
+        )
+        use_graph = batch_size <= frame_graph_max_bs and (
+            not has_audio_repetition_penalty or graph_handles_repetition
         )
         if use_graph:
+            graph_kwargs: dict[str, Any] = {}
+            if graph_handles_repetition:
+                graph_kwargs = {
+                    "audio_token_presence": pool.audio_token_presence[row_t],
+                    "audio_repetition_penalty": rep_penalties,
+                }
             stop_choice, codes, feedback = self.model.decode_frame_graphed(
                 hidden_states,
                 text_temperature=text_temp,
@@ -384,6 +397,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 audio_top_k=audio_top_k,
                 seeds=sampling_seeds,
                 base_positions=gen_steps * num_channels,
+                **graph_kwargs,
             )
             # The graph outputs are static buffers that the next replay (any
             # later prefill or decode step) overwrites; snapshot what we keep.
@@ -397,19 +411,16 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
             embeds = None
 
-        slot_id = int(cfg.audio_assistant_slot_token_id)
-        end_id = int(cfg.audio_end_token_id)
-        next_text = torch.where(
-            stop_choice == 0,
-            torch.full((batch_size,), slot_id, dtype=torch.long, device=device),
-            torch.full((batch_size,), end_id, dtype=torch.long, device=device),
+        rows, next_text, end_id = self._compose_frame_rows(
+            codes=codes,
+            stop_choice=stop_choice,
+            requests=requests,
+            device=device,
         )
 
-        rows = torch.empty((batch_size, num_channels), dtype=torch.long, device=device)
-        rows[:, 0] = next_text
-        rows[:, 1:] = codes
-
-        if embeds is None:
+        if embeds is None or bool(
+            getattr(self.model, "rebuild_frame_feedback_from_rows", False)
+        ):
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
@@ -455,6 +466,34 @@ class MossTTSLocalModelRunner(ModelRunner):
         # Always return rows so both the sync inline path and the async launch
         # publish next_token_ids; an all-chunked batch just attaches no journal.
         return rows, end_id
+
+    def _compose_frame_rows(
+        self,
+        *,
+        codes: torch.Tensor,
+        stop_choice: torch.Tensor,
+        requests: list,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Build the next backbone rows and the scheduler stop token."""
+        del requests
+        cfg = self.model.config
+        batch_size = int(codes.shape[0])
+        slot_id = int(cfg.audio_assistant_slot_token_id)
+        end_id = int(cfg.audio_end_token_id)
+        next_text = torch.where(
+            stop_choice == 0,
+            torch.full((batch_size,), slot_id, dtype=torch.long, device=device),
+            torch.full((batch_size,), end_id, dtype=torch.long, device=device),
+        )
+        rows = torch.empty(
+            (batch_size, int(cfg.n_vq) + 1),
+            dtype=torch.long,
+            device=device,
+        )
+        rows[:, 0] = next_text
+        rows[:, 1:] = codes
+        return rows, next_text, end_id
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
         """Async-decode GPU half of ``post_decode``: run the frame micro-decode

@@ -40,6 +40,9 @@ Supported Models
    * - `OpenMOSS-Team/MOSS-TTS-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5>`_
      - TTS
      - Voice cloning, streaming, 31 languages
+   * - `OpenMOSS-Team/MOSS-TTS-Realtime <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Realtime>`_
+     - TTS
+     - Low-latency streaming, voice cloning, 20 languages
    * - `inclusionAI/Ming-omni-tts-16.8B-A3B <https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B>`_
      - TTS
      - Text-to-speech and zero-shot voice cloning
@@ -78,6 +81,7 @@ Supported Models
    cookbook/ming_tts.md
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
+   cookbook/moss_tts_realtime.md
    cookbook/zonos2.md
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md

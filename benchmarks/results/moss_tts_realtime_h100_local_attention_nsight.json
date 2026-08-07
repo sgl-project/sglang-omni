@@ -1,0 +1,166 @@
+{
+  "sdpa-b1-eager-kernel": {
+    "kernel_launches": 3839,
+    "profiled_gpu_us": 16293.856000000003,
+    "categories": {
+      "copy": {
+        "launches": 832,
+        "gpu_us": 3238.080000000004,
+        "gpu_pct": 19.87301225688998
+      },
+      "elementwise": {
+        "launches": 2128,
+        "gpu_us": 6997.792000000001,
+        "gpu_pct": 42.94742754569575
+      },
+      "embedding": {
+        "launches": 15,
+        "gpu_us": 53.79200000000001,
+        "gpu_pct": 0.33013670919885385
+      },
+      "fa3": {
+        "launches": 4,
+        "gpu_us": 28.288,
+        "gpu_pct": 0.17361145207125922
+      },
+      "gemm": {
+        "launches": 448,
+        "gpu_us": 4311.423999999998,
+        "gpu_pct": 26.46042778333132
+      },
+      "norm_reduce": {
+        "launches": 336,
+        "gpu_us": 1282.8479999999997,
+        "gpu_pct": 7.873200794213472
+      },
+      "other": {
+        "launches": 16,
+        "gpu_us": 93.44000000000001,
+        "gpu_pct": 0.5734676923620781
+      },
+      "sdpa": {
+        "launches": 60,
+        "gpu_us": 288.1919999999999,
+        "gpu_pct": 1.768715766237285
+      }
+    }
+  },
+  "fa3-b1-final-kernel": {
+    "kernel_launches": 3039,
+    "profiled_gpu_us": 13882.399999999994,
+    "categories": {
+      "copy": {
+        "launches": 544,
+        "gpu_us": 2117.9520000000025,
+        "gpu_pct": 15.25638218175534
+      },
+      "elementwise": {
+        "launches": 1680,
+        "gpu_us": 5035.903999999991,
+        "gpu_pct": 36.2754566933671
+      },
+      "embedding": {
+        "launches": 15,
+        "gpu_us": 55.93600000000001,
+        "gpu_pct": 0.4029274477035673
+      },
+      "fa3": {
+        "launches": 128,
+        "gpu_us": 1767.2000000000005,
+        "gpu_pct": 12.729787356653038
+      },
+      "gemm": {
+        "launches": 320,
+        "gpu_us": 3541.376000000003,
+        "gpu_pct": 25.509825390422435
+      },
+      "norm_reduce": {
+        "launches": 336,
+        "gpu_us": 1270.6559999999972,
+        "gpu_pct": 9.152999481357673
+      },
+      "other": {
+        "launches": 16,
+        "gpu_us": 93.376,
+        "gpu_pct": 0.6726214487408521
+      }
+    }
+  },
+  "sdpa-b16-eager-kernel": {
+    "kernel_launches": 3855,
+    "profiled_gpu_us": 18599.90399999999,
+    "categories": {
+      "copy": {
+        "launches": 832,
+        "gpu_us": 3479.7120000000023,
+        "gpu_pct": 18.70822559084178
+      },
+      "elementwise": {
+        "launches": 2128,
+        "gpu_us": 7687.423999999994,
+        "gpu_pct": 41.33044987759075
+      },
+      "embedding": {
+        "launches": 15,
+        "gpu_us": 285.44,
+        "gpu_pct": 1.5346315765930842
+      },
+      "fa3": {
+        "launches": 4,
+        "gpu_us": 33.024,
+        "gpu_pct": 0.17754930348027612
+      },
+      "gemm": {
+        "launches": 464,
+        "gpu_us": 4521.631999999995,
+        "gpu_pct": 24.30997493320394
+      },
+      "norm_reduce": {
+        "launches": 352,
+        "gpu_us": 2265.215999999999,
+        "gpu_pct": 12.178643502676142
+      },
+      "sdpa": {
+        "launches": 60,
+        "gpu_us": 327.4559999999999,
+        "gpu_pct": 1.7605252156140163
+      }
+    }
+  },
+  "fa3-b16-final-kernel": {
+    "kernel_launches": 3055,
+    "profiled_gpu_us": 15915.840000000011,
+    "categories": {
+      "copy": {
+        "launches": 544,
+        "gpu_us": 2306.2400000000016,
+        "gpu_pct": 14.490218549570743
+      },
+      "elementwise": {
+        "launches": 1680,
+        "gpu_us": 5564.064,
+        "gpu_pct": 34.95928584353698
+      },
+      "embedding": {
+        "launches": 15,
+        "gpu_us": 289.34399999999994,
+        "gpu_pct": 1.8179624826587837
+      },
+      "fa3": {
+        "launches": 128,
+        "gpu_us": 1735.8720000000012,
+        "gpu_pct": 10.906568550576031
+      },
+      "gemm": {
+        "launches": 336,
+        "gpu_us": 3764.6400000000062,
+        "gpu_pct": 23.653416973279473
+      },
+      "norm_reduce": {
+        "launches": 352,
+        "gpu_us": 2255.680000000002,
+        "gpu_pct": 14.17254760037799
+      }
+    }
+  }
+}
