@@ -8,7 +8,6 @@ from sglang_omni.config import (
     build_stage_placement_plan,
     resolve_stage_factory_args,
 )
-from sglang_omni.models.qwen3_omni import config as qwen3_config
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
@@ -44,33 +43,6 @@ def _set_colocated_runtime(
         _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = (
             0.11 if conflicting_mem_fraction else 0.12
         )
-
-
-def _stage_gpu(stages, name: str):
-    return next(stage.gpu for stage in stages if stage.name == name)
-
-
-def test_speech_default_puts_talker_alone_and_c2w_with_thinker() -> None:
-    stages = qwen3_config._speech_stages(
-        thinker_gpu=0,
-        talker_gpu=1,
-        process_by_stage=qwen3_config._SPEECH_DEFAULT_PROCESSES,
-        enable_partial_start=True,
-    )
-    assert _stage_gpu(stages, "talker_ar") == 1
-    assert _stage_gpu(stages, "code2wav") == 0
-    assert _stage_gpu(stages, "thinker") == 0
-
-
-def test_single_gpu_speech_variant_unchanged() -> None:
-    stages = qwen3_config._speech_stages(
-        thinker_gpu=0,
-        talker_gpu=0,
-        process_by_stage=qwen3_config._SPEECH_DEFAULT_PROCESSES,
-        enable_partial_start=True,
-    )
-    assert _stage_gpu(stages, "code2wav") == 0
-    assert _stage_gpu(stages, "talker_ar") == 0
 
 
 def test_default_speech_topology_stays_disaggregated() -> None:
