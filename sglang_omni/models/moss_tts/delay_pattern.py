@@ -7,8 +7,6 @@ from typing import Any
 
 import torch
 
-from sglang_omni.utils.codec_delay import reverse_delay_pattern
-
 
 def split_moss_audio_segments(
     delayed_audio_codes: Any,
@@ -23,10 +21,25 @@ def split_moss_audio_segments(
     if not isinstance(delayed_audio_codes, torch.Tensor):
         delayed_audio_codes = torch.as_tensor(delayed_audio_codes, dtype=torch.long)
     delayed_audio_codes = delayed_audio_codes.to(dtype=torch.long)
+    if delayed_audio_codes.ndim != 2:
+        raise ValueError(
+            "delayed codes must be 2-D [L, N], got shape "
+            f"{tuple(delayed_audio_codes.shape)}"
+        )
     if delayed_audio_codes.numel() == 0:
         return []
+    length, num_codebooks = delayed_audio_codes.shape
+    rows = length - (num_codebooks - 1)
+    if rows <= 0 or num_codebooks == 0:
+        return []
 
-    audio_codes = reverse_delay_pattern(delayed_audio_codes, allow_short=True)
+    # out[t, c] = delayed[t + c, c]. A strided view performs the inverse
+    # delay without 32 per-codebook slice copies on the normal MOSS checkpoint.
+    delayed_audio_codes = delayed_audio_codes.contiguous()
+    audio_codes = delayed_audio_codes.as_strided(
+        size=(rows, num_codebooks),
+        stride=(num_codebooks, num_codebooks + 1),
+    )
     if audio_codes.numel() == 0:
         return []
 
