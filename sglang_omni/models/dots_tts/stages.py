@@ -408,6 +408,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     optimize: bool = False,
     vocoder_merge_steps: int = 4,
+    max_batch_size: int = 4,
+    max_batch_wait_ms: int = 2,
     **_: Any,
 ) -> DotsTTSStreamingVocoder:
     codec = load_dots_audio_codec(model_path, device=_device(device, gpu_id))
@@ -415,6 +417,8 @@ def create_vocoder_executor(
         codec,
         optimize=optimize,
         merge_steps=vocoder_merge_steps,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
     )
 
 

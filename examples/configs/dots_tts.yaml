@@ -10,3 +10,5 @@ runtime_overrides:
       max_running_requests: 16
   vocoder:
     optimize: true
+    max_batch_size: 4
+    max_batch_wait_ms: 2

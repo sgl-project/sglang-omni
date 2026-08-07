@@ -31,6 +31,20 @@ class BatchVocoderBase:
     ) -> StagePayload:
         raise NotImplementedError
 
+    async def decode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
+        items = [self.prepare_item(payload) for payload in payloads]
+        results = await self.decode_batch(items)
+        if len(results) != len(items):
+            raise RuntimeError(
+                f"decode_batch returned {len(results)} results for {len(items)} inputs"
+            )
+        return [
+            self.store_result(payload, state, wav, sample_rate)
+            for payload, (state, _), (wav, sample_rate) in zip(
+                payloads, items, results, strict=True
+            )
+        ]
+
     def build_scheduler(
         self, *, max_batch_size: int = 8, max_batch_wait_ms: int = 2
     ) -> SimpleScheduler:
@@ -45,16 +59,7 @@ class BatchVocoderBase:
             return self.store_result(payload, state, wav, sr)
 
         async def _batch(payloads):
-            items = [self.prepare_item(p) for p in payloads]
-            results = await self.decode_batch(items)
-            if len(results) != len(items):
-                raise RuntimeError(
-                    f"decode_batch returned {len(results)} results for {len(items)} inputs"
-                )
-            return [
-                self.store_result(p, s, wav, sr)
-                for p, (s, _), (wav, sr) in zip(payloads, items, results)
-            ]
+            return await self.decode_payloads(payloads)
 
         return SimpleScheduler(
             _single,
