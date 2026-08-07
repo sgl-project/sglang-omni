@@ -52,13 +52,17 @@ class SGLangGenerationEngineBuilder(ABC):
         dtype: str = "bfloat16",
         server_args_overrides: dict[str, Any] | None = None,
     ) -> Any:
+        import torch
+
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
+        from sglang_omni.utils.device import remap_accelerator_spec
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        if gpu_id is not None:
-            device = f"cuda:{gpu_id}"
-        gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+        # Retarget the literal "cuda:0" default at the live backend; gpu_id wins
+        # when given, else device's own index is kept.
+        device = remap_accelerator_spec(device, gpu_id)
+        gpu_id = torch.device(device).index or 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
         self.gpu_id = gpu_id

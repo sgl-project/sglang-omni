@@ -71,6 +71,27 @@ def test_comm_router_uses_shm_for_cuda_payloads_to_cpu_targets() -> None:
     assert router.outbound_payload("decode", payload) is TransportKind.SHM
 
 
+@pytest.mark.skipif(
+    not (hasattr(torch, "xpu") and torch.xpu.is_available()), reason="requires XPU"
+)
+def test_comm_router_uses_shm_for_xpu_payloads() -> None:
+    """XPU payloads relay over SHM even to a GPU peer: cuda_ipc is CUDA-only,
+    and _pack_tensors copies to the shm relay's cpu buffer."""
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"decode"},
+        comm_config={},
+    )
+    payload = {
+        "hidden": torch.empty(1, device="xpu:0"),
+        "lengths": torch.empty(1),
+    }
+
+    assert router.outbound_payload("decode", payload) is TransportKind.SHM
+
+
 def test_comm_router_admits_compatible_direct_cuda_ipc_namespace() -> None:
     router = CommRouter(
         stage_name="talker_ar",

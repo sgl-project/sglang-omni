@@ -7,6 +7,13 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+try:
+    from sgl_kernel import fused_qk_norm_rope
+except Exception:  # noqa: BLE001 - optional kernel; fall back to pure-PyTorch
+    fused_qk_norm_rope = None
+
+from sglang.srt.utils import is_cuda
+
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.platforms import current_platform
@@ -309,8 +316,10 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
             )
+            # Gate on CUDA first: enable_fused_set_kv_buffer raises off CUDA.
             use_fused_set_kv_buffer = (
-                enable_fused_set_kv_buffer(forward_batch)
+                is_cuda()
+                and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
             )
             q, k = self.rotary_emb(

@@ -139,6 +139,34 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     assert scheduler._cuda_graph_runner is None
 
 
+def test_qwen_code2wav_factory_disables_cuda_graph_off_cuda(monkeypatch) -> None:
+    """The CUDA-graph runner is CUDA-only, so a non-CUDA device must fall back to
+    eager instead of calling torch.cuda.* on it (config.py hardcodes
+    enable_cuda_graph=True for this stage)."""
+    model = _FactoryModel()
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model
+    )
+
+    def _unexpected_build(*args, **kwargs):
+        raise AssertionError("CUDA graphs must not be built off cuda")
+
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner,
+        "build",
+        staticmethod(_unexpected_build),
+    )
+
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cpu",
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    assert scheduler._cuda_graph_runner is None
+
+
 def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     monkeypatch,
 ) -> None:
@@ -227,6 +255,11 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     )
     load_call: dict = {}
     build_call: dict = {}
+    # CUDA-path assertions: make cuda the resolved backend, else a non-CUDA host
+    # retargets the "cuda:3" spec onto its own accelerator.
+    from sglang_omni.utils import device as _omni_device
+
+    monkeypatch.setattr(_omni_device, "_accel_available", lambda t: t == "cuda")
     monkeypatch.setattr(
         code2wav_scheduler.torch.cuda,
         "current_device",
@@ -301,6 +334,11 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
         "build",
         staticmethod(lambda *args, **kwargs: runner),
     )
+    # The CUDA-graph runner is CUDA-only, so resolve gpu_id to a cuda device
+    # regardless of the test host's real backend.
+    import sglang.srt.utils as _sgl_utils
+
+    monkeypatch.setattr(_sgl_utils, "get_device", lambda index=0: f"cuda:{index}")
 
     with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
         scheduler = code2wav_scheduler.create_code2wav_scheduler(

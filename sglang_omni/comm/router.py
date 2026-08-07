@@ -220,6 +220,10 @@ class CommRouter:
                     return TransportKind.SHM
                 return current_platform.get_intra_node_transport()
             return TransportKind.SHM
+        # XPU relays over shm: cuda_ipc is CUDA-only, and _pack_tensors copies to
+        # the relay's device ("cpu"), as for a CUDA payload bound for a CPU target.
+        if "xpu" in devices and devices <= {"cpu", "xpu"}:
+            return TransportKind.SHM
         raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")
 
     def relay_for_stream(

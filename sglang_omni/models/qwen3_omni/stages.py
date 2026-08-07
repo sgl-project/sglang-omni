@@ -5,6 +5,7 @@ Each factory returns either:
 - A callable (compute_fn) for simple stages
 - An OmniScheduler for AR stages
 """
+
 from __future__ import annotations
 
 import logging
@@ -790,7 +791,9 @@ def create_image_encoder_executor(
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils.device import remap_accelerator_spec
 
+    device = remap_accelerator_spec(device)
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
@@ -862,7 +865,9 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils.device import remap_accelerator_spec
 
+    device = remap_accelerator_spec(device)
     model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,

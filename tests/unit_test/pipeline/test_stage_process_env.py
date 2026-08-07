@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import torch
 
+import sglang_omni.platforms as platforms
 from sglang_omni.pipeline import stage_workers
 from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
@@ -17,6 +19,18 @@ from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
+
+
+@pytest.fixture(autouse=True)
+def _force_cuda_device(monkeypatch):
+    """These tests assert the CUDA TP env/device contract (CUDA_VISIBLE_DEVICES,
+    torch.cuda.set_device). Pin the device layer to CUDA so they exercise that
+    path regardless of the test host's real accelerator; otherwise an XPU host
+    takes the ZE_AFFINITY_MASK / all-cards-visible branch and the assertions fail.
+    """
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
 
 
 def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
@@ -59,8 +73,33 @@ def test_tp_process_env_requires_gpu_id() -> None:
         )
 
 
+def test_xpu_tp_process_env_emits_no_visibility_variable() -> None:
+    """XPU TP must keep every card visible: ZE_AFFINITY_MASK isolation hides peers
+    and hangs XCCL discovery, unlike CUDA_VISIBLE_DEVICES with NCCL. So the hook
+    emits no visibility variable at all, and ranks address their card by gpu_id."""
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    env = XPUOmniPlatform().get_stage_process_env(_tp_spec(gpu_id=1), {})
+
+    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert "ZE_AFFINITY_MASK" not in env
+    assert env == {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"}
+
+
+def test_xpu_tp_process_env_requires_gpu_id() -> None:
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    with pytest.raises(ValueError, match="requires a GPU id"):
+        XPUOmniPlatform().get_stage_process_env(
+            StageLaunchConfig(stage_name="thinker", tp_size=2), {}
+        )
+
+
 def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     """Child startup normalizes the already-mapped TP device to local cuda:0."""
+    # CUDA-path assertion: pin the platform, else an XPU host takes the
+    # all-cards-visible branch that never remaps gpu_id.
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     spec = StageLaunchConfig(
@@ -193,7 +232,6 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     monkeypatch,
 ) -> None:
     """Placement-owned gpu_id must drive device setup and startup lock."""
-    import torch
 
     class _FakeStage:
         def __init__(self, **kwargs):
@@ -207,8 +245,11 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
         seen_gpu_ids.append(gpu_id)
         yield Path("/tmp/test.lock")
 
+    # _construct_stage pins the device on the resolved platform's module, so
+    # patch set_device there rather than on a hardcoded backend.
+
     monkeypatch.setattr(
-        torch.cuda,
+        torch.get_device_module(platforms.current_platform.device_type),
         "set_device",
         lambda gpu_id: set_device_calls.append(int(gpu_id)),
     )

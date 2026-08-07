@@ -10,9 +10,18 @@ from types import SimpleNamespace
 class FakeExecutionBridge:
     """SGLangExecutionBridge double for scheduler-owned ModelRunner tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, device: object | None = None) -> None:
+        import torch
+
         self.published: list[tuple[object, object]] = []
         self.isolate_sampling_calls: list[bool] = []
+        # Mirror the real bridge: hold a device and take Event from its module, so
+        # the double works on any backend (a CUDA-only torch.cuda.Event raises on
+        # an +xpu build, and torch.cpu.Event is a working event too).
+        self.device = (
+            torch.device(device) if device is not None else torch.device("cpu")
+        )
+        self.device_module = torch.get_device_module(self.device)
 
     @contextlib.contextmanager
     def forward_context(self, batch: object, *, isolate_sampling: bool = False):
@@ -24,9 +33,7 @@ class FakeExecutionBridge:
         self.published.append((batch, next_token_ids))
 
     def record_completion(self):
-        import torch
-
-        return torch.cuda.Event()
+        return self.device_module.Event()
 
 
 class FakeServerArgs(SimpleNamespace):

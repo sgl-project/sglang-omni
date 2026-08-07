@@ -357,6 +357,11 @@ def test_model_worker_backend_policy_precedence(
     case: BackendPolicyCase,
 ) -> None:
     """Covers quantization, architecture, MoE, hardware, and explicit override precedence."""
+    # CUDA-path assertions: pin the device type, else a non-CUDA host takes the
+    # bf16 'triton' fallback and pre-empts them.
+    monkeypatch.setattr(
+        model_worker, "current_platform", SimpleNamespace(device_type="cuda")
+    )
     monkeypatch.setattr(
         cuda,
         "_is_fp8_cutlass_moe_supported",
@@ -448,6 +453,69 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
             {"fp8_gemm_runner_backend": "triton"},
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("cap_fp8", "expected_moe_backend"),
+    [
+        # SM90 (or any CUDA host) WITHOUT FP8 CUTLASS: a bf16 talker must still
+        # resolve to the CUDA-only bf16 'flashinfer_cutlass' MoE, NOT be silently
+        # downgraded to 'triton'. The old gate keyed the downgrade on `not
+        # FP8 support, conflating "FP8 CUTLASS usable" with "no CUTLASS MoE kernel
+        # at all" and demoting this case.
+        pytest.param(False, "flashinfer_cutlass", id="cuda_sm90_no_fp8_bf16"),
+        # CUDA WITH FP8 CUTLASS: unchanged, bf16 talker -> flashinfer_cutlass.
+        pytest.param(True, "flashinfer_cutlass", id="cuda_with_fp8_bf16"),
+    ],
+)
+def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
+    monkeypatch: pytest.MonkeyPatch,
+    cap_fp8: bool,
+    expected_moe_backend: str,
+) -> None:
+    """A bf16 talker's flashinfer_cutlass->triton downgrade must never be gated on
+    FP8 CUTLASS availability. Off-CUDA is structural now that the policy hangs off
+    CUDAOmniPlatform, so a non-CUDA platform never reaches this kernel choice.
+    """
+    # FP8 is driven through the _is_fp8_cutlass_moe_supported hook.
+    monkeypatch.setattr(cuda, "_is_fp8_cutlass_moe_supported", lambda: cap_fp8)
+    monkeypatch.setattr(cuda, "_is_h20_device", lambda: False)
+
+    server_args = _server_args(moe_runner_backend="auto")
+    model_config = _model_config(quantization=None, has_moe=True)
+
+    effective_quantization = cuda_platform.apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert effective_quantization is None
+    assert server_args.moe_runner_backend == expected_moe_backend
+
+
+def test_xpu_talker_pins_the_triton_moe_runner(monkeypatch) -> None:
+    """XPU has no CUTLASS MoE kernel and SGLang's XPU MoE path asserts 'triton',
+    so the XPU hook must pin it rather than inherit a CUDA kernel choice."""
+    from sglang_omni.platforms import xpu as xpu_platform
+
+    # The hook imports this lazily, so patch it at the source module.
+    monkeypatch.setattr(
+        "sglang_omni.utils.xpu_sglang_compat.patch_available_gpu_memory_for_xpu",
+        lambda: None,
+    )
+    server_args = _server_args(moe_runner_backend="auto")
+    model_config = _model_config(quantization=None, has_moe=True)
+
+    platform = xpu_platform.XPUOmniPlatform()
+    effective_quantization = platform.apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert effective_quantization is None
+    assert server_args.moe_runner_backend == "triton"
 
 
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
@@ -730,6 +798,12 @@ def test_configure_backend_policy_fp8_gemm_ordering(
 
     # Patch _is_h20_device so we get deterministic BF16 policy.
     monkeypatch.setattr(cuda, "_is_h20_device", lambda: False)
+
+    # CUDA-path assertions: pin the device type, else a non-CUDA host takes the
+    # bf16 'triton' fallback and pre-empts them.
+    monkeypatch.setattr(
+        model_worker, "current_platform", SimpleNamespace(device_type="cuda")
+    )
 
     # Build mock model config matching the shape ModelConfig expects.
     quant_config_in = (

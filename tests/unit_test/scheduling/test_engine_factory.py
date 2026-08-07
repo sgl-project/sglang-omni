@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import sglang_omni.platforms as platforms
 from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
@@ -87,6 +88,16 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    # Asserts the CUDA device-string contract (device == "cuda:2"); pin device
+    # resolution to CUDA so gpu_id maps to "cuda:N" regardless of the test host's
+    # real accelerator (an XPU host would otherwise give "xpu:N").
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
+    )
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
