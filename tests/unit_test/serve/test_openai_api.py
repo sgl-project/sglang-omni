@@ -1932,8 +1932,7 @@ def test_long_m4a_is_probed_and_chunked() -> None:
     assert response.status_code == 200
     assert len(transcription_client.requests) > 1
     assert all(
-        "-chunk-" in request_id
-        for request_id, _ in transcription_client.requests
+        "-chunk-" in request_id for request_id, _ in transcription_client.requests
     )
 
 

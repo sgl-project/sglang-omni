@@ -440,9 +440,7 @@ async def _transcribe_audio_chunks(
             # request itself errored); a cancelled chunk stays listed, and
             # the cleanup below aborts it by id.
             try:
-                result = await client.completion(
-                    gen_req, request_id=chunk_request_id
-                )
+                result = await client.completion(gen_req, request_id=chunk_request_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -470,9 +468,7 @@ async def _transcribe_audio_chunks(
             try:
                 await client.abort(chunk_request_id)
             except Exception:
-                logger.warning(
-                    "Failed to abort chunk request %s", chunk_request_id
-                )
+                logger.warning("Failed to abort chunk request %s", chunk_request_id)
         raise
     return texts
 
@@ -508,8 +504,7 @@ async def _await_transcription_with_disconnect_abort(
 
 
 def _probe_audio_duration(audio_bytes: bytes) -> float:
-    """Best-effort audio duration (seconds) from raw upload bytes.
-    """
+    """Best-effort audio duration (seconds) from raw upload bytes."""
     try:
         import av
 
