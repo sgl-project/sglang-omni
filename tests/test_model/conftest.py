@@ -47,7 +47,9 @@ QWEN3_OMNI_FP8_TEST_MODEL_PATH = os.environ.get(
 )
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
 QWEN3_OMNI_TP2_THINKER_MEM_FRACTION = "0.55"
-QWEN3_OMNI_TP2_TALKER_MEM_FRACTION = "0.20"
+# note (db-ol): SGLang 0.5.16 counts draft weights in the KV budget and
+# the talker needs at least 0.2008, so 0.20 crashes intermittently.
+QWEN3_OMNI_TP2_TALKER_MEM_FRACTION = "0.21"
 QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN = 32768
 QWEN3_OMNI_FP8_COLOCATED_CONFIG = "examples/configs/qwen3_omni_colocated_h100_fp8.yaml"
 QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS = (

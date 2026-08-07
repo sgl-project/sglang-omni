@@ -6,6 +6,7 @@ from __future__ import annotations
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import DefaultTranscriptionAdapter
 from sglang_omni.serve.transcription_adapters.moss_transcribe_diarize import (
+    _TIMESTAMP_TOLERANCE_S,
     MossTranscribeDiarizeAdapter,
 )
 
@@ -91,3 +92,28 @@ def test_default_adapter_single_segment() -> None:
     assert len(resp.segments) == 1
     assert resp.segments[0].text == "hello world"
     assert resp.segments[0].end == 1.5
+
+
+def test_sanitize_clamps_timestamp_beyond_audio_duration() -> None:
+    adapter = _moss_adapter()
+    duration_s = 4601.3
+    text = "[0.00][S01] Hello.[1.20][3797.61][S02] Trade in phones.[4809.84]"
+    resp = adapter.build_verbose_response(
+        text=text, language=None, audio_duration_s=duration_s
+    )
+    assert len(resp.segments) == 2
+    assert resp.segments[0].start == 0.0
+    assert resp.segments[0].end == 1.2
+    assert resp.segments[1].start == 3797.61
+    assert resp.segments[1].end == round(duration_s + _TIMESTAMP_TOLERANCE_S, 2)
+
+
+def test_sanitize_keeps_end_within_tolerance_of_duration() -> None:
+    adapter = _moss_adapter()
+    duration_s = 10.0
+    end = duration_s + _TIMESTAMP_TOLERANCE_S / 2
+    text = f"[0.00][S01] Hello.[{end:.2f}]"
+    resp = adapter.build_verbose_response(
+        text=text, language=None, audio_duration_s=duration_s
+    )
+    assert resp.segments[0].end == round(end, 2)

@@ -375,7 +375,17 @@ def test_stage_breakdown_uses_prefill_start_not_queue_enter(
         ].total_ms
         == 5.0
     )
-    assert all("scheduler_queue_enter->" not in r.interval_name for r in rows)
+    # note (luojiaxuan): queue wait is now its own interval (issue #1324
+    # Q-PR2); TTFT-style intervals must still open at prefill_start only.
+    assert (
+        by_key[("thinker", "scheduler_queue_enter->scheduler_prefill_start")].total_ms
+        == 5.0
+    )
+    assert all(
+        not r.interval_name.startswith("scheduler_queue_enter->")
+        or r.interval_name == "scheduler_queue_enter->scheduler_prefill_start"
+        for r in rows
+    )
 
 
 def test_build_report_returns_all_three_views(tmp_path: Path) -> None:

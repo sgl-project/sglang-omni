@@ -25,6 +25,11 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
+if [ "$1" = "pytest" ]; then
+  shift
+  set -- "${OMNI_CI_PYTHON:?OMNI_CI_PYTHON is not set}" -m pytest "$@"
+fi
+
 slug="$(printf '%s' "${stage_label}" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//')"
 if [ -z "${slug}" ]; then
   slug="pytest-stage"

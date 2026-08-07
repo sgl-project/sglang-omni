@@ -195,8 +195,11 @@ The table below lists the router command-line arguments.
 | `--health-check-timeout-secs` | `5` | Timeout for one worker health-check request. |
 | `--health-check-interval-secs` | `10` | Interval between background worker health checks. |
 | `--health-check-endpoint` | `/health` | Worker endpoint used by background health checks. |
+| `--router-state-dir` | `$SGLANG_OMNI_ROUTER_STATE_DIR`, else `$XDG_STATE_HOME/sglang-omni-router`, else `~/.local/state/sglang-omni-router` | Directory for [durable router state](#durable-router-state) (the weight-update journal), which must survive a host reboot. Mount it on a persistent volume in a container. |
 | `--log-level` | `info` | Router and Uvicorn log level. |
 | `--strict-limits` | off | Fail startup instead of warning when the `nofile` soft limit is too low for the resolved upstream pool size (`max(--max-connections, --max-inflight)`). |
+| `--router-processes` | `1` | Number of data-plane relay processes. `1` keeps the single-process router below; `N >= 2` enables the [multi-process router](#multi-process-router-controldata-plane-split) (x86-64 Linux only, and rejected at startup together with an explicit `--policy least_request`). |
+| `--shutdown-drain-secs` | `--request-timeout-secs` | Multi-process only: how long a stopping data-plane process waits for in-flight requests before cancelling them. The default matches the request timeout, so a routine shutdown never truncates a request its own timeout would have allowed. |
 
 Routing policies:
 
@@ -456,6 +459,127 @@ point with:
 ```bash
 python -m sglang_omni_router.serve --help
 ```
+
+## Durable Router State
+
+`--router-state-dir` holds the control-plane state that must outlive both a
+router restart and a reboot of the router host. Today that is the weight-update
+journal: when an update is interrupted after some workers were already updated,
+the journal keeps the affected workers disabled until an operator verifies
+their weight versions and re-enables them
+(`PUT /workers/{worker_id} {"disabled": false}`). Workers run on their own
+hosts and outlive the router, so losing the journal would let a fresh router
+re-enable a pool whose weights no longer match.
+
+Resolution order:
+
+1. `--router-state-dir`
+2. `SGLANG_OMNI_ROUTER_STATE_DIR`
+3. `$XDG_STATE_HOME/sglang-omni-router`
+4. `~/.local/state/sglang-omni-router`
+
+The directory is created owner-only (`0700`, journal file `0600`) and is keyed
+by the router's `host:port`, so several routers on one machine keep separate
+journals. If the directory cannot be created or written, the failure mode
+depends on the mode: with `--router-processes >= 2` startup fails; the
+single-process default still starts, logs a warning, and refuses weight
+updates (`503`) until `--router-state-dir` points at a writable persistent
+path. In neither mode is there a temp-directory fallback, which would look
+durable while a reboot silently dropped the record.
+
+If the journal itself becomes unreadable, re-enabling cannot resolve it and
+every weight update stays blocked with `409`. Verify the pool's weight
+versions, then drop the record explicitly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/weight_update_journal/resolve \
+  -H "Authorization: Bearer $SGLANG_OMNI_ADMIN_KEY" \
+  -d '{"acknowledge": true}'
+```
+
+The call is admin-authenticated, requires `acknowledge` so the record cannot be
+dropped by accident, reports the worker ids it dropped, and fails with `503` if
+the file could not be removed. The affected workers stay disabled until they
+are re-enabled one by one.
+
+In a container, mount it on a persistent volume:
+
+```bash
+docker run -v /srv/sglang-omni-router:/var/lib/sglang-omni-router ... \
+  python -m sglang_omni_router.serve \
+    --router-state-dir /var/lib/sglang-omni-router \
+    --worker-urls http://127.0.0.1:8011
+```
+
+What this directory does **not** manage:
+
+- Per-run runtime files (serialized config, internal socket, worker snapshot,
+  admission shared memory) stay in a temporary per-run workdir. They are
+  rebuilt at startup and are meant to disappear with the process tree.
+- Logs. The router writes to stdout/stderr; persist them with your container
+  runtime, systemd, or log collector.
+
+## Multi-Process Router (Control/Data-Plane Split)
+
+> x86-64 Linux only: the shared admission seqlock relies on x86-64 store
+> ordering, and any other machine is refused at startup. Enabled with
+> `--router-processes N`; the default `1` keeps the
+> single-process router described above. The one behavioral addition at
+> `N = 1` is the weight-update journal: recovery at startup can keep workers
+> from an earlier interrupted update disabled until an operator re-enables
+> them.
+
+At `N >= 2` the router runs as a small process tree:
+
+- A **supervisor** binds the public port once and passes the listening socket
+  to `N` **data-plane (DP)** processes, which accept from the shared queue and
+  relay the model routes (`/generate`, `/v1/chat/completions`,
+  `/v1/audio/speech`, `/v1/audio/transcriptions`).
+- One **control plane (CP)** owns the worker registry, health checks, and the
+  admin surface. DPs learn the routable-worker set from a snapshot file the CP
+  republishes on every state change and on a fixed keepalive cadence. Admin
+  requests sent to the public port are forwarded to the CP, which enforces the
+  admin key; `/v1/models`, `/live`, and `/ready` are answered by the DP
+  itself, `/health` is the CP's aggregate view.
+- The supervisor restarts crashed children (with a fail-closed budget for
+  rapid crash loops), fences replaced processes by generation, and tears the
+  tree down in order on SIGTERM. A stopping DP drains in-flight requests for
+  up to `--shutdown-drain-secs` (default: `--request-timeout-secs`) before
+  remaining tasks are cancelled, and the supervisor waits out that drain
+  before escalating to SIGKILL.
+
+Behavior differences to know about:
+
+- **The admission bound is shared and soft.** The in-flight bound spans all
+  DPs through a shared-memory counter array. Concurrent admission checks can
+  overshoot the bound by at most `N - 1` requests. In `/health`, `inflight` is
+  an instantaneous sum (not a linearizable value) and `peak_inflight` is
+  best-effort. `rejected_total` is exact while every live slot stays readable;
+  a DP killed mid-write loses the counters it had not yet published, so the
+  total is best-effort across a crash and reclaim window.
+- **`least_request` requires a single process.** It reads per-process
+  counters, so `--router-processes >= 2` combined with an explicit
+  `--policy least_request` fails at startup; use `round_robin` (DPs stagger
+  their starting offsets to avoid herding) or `random`.
+- **CP unavailability degrades before it fails.** DPs keep serving from their
+  last snapshot for the stale timeout, then shed new requests with fast `503`s
+  and flip `/ready`; one republish restores service. `/health` reports
+  `degraded` while some DPs are missing and `503` only when nothing can serve.
+- **Worker weight updates wait for the data planes.** Before broadcasting, the
+  CP publishes the disabled-worker snapshot and waits until every live DP has
+  acknowledged it; on timeout the update fails closed and nothing is sent.
+- **Counters are aggregated.** `/workers` totals are summed across DPs and
+  stay monotonic across DP restarts; `active_requests` is a best-effort gauge
+  over live DPs. Counters reset with the CP, matching single-process restarts.
+- **File descriptors scale with `N`.** Each DP holds a full-size upstream pool
+  (a skewed keep-alive client mix can pin the whole bound onto one DP, which
+  must still carry it) with keep-alives split `pool / N`; the startup log
+  prints the per-process and cluster fd budget for the nofile check.
+
+CPU affinity guidance for dense deployments: pin the `N` DP processes to `N`
+dedicated cores on one NUMA node; the CP and supervisor are near-idle and can
+share one core; keep model workers and benchmark clients on other cores (or
+the other NUMA node) so relay throughput is not contended.
 
 ## Troubleshooting
 

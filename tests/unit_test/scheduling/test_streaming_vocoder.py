@@ -463,6 +463,19 @@ def test_chunk_scaffold_errors_name_subclass() -> None:
         )
 
 
+def test_chunk_scaffold_accepts_configured_input_modality() -> None:
+    scheduler = _FakeStreamingVocoder(stream_input_modality="audio_latents")
+    scheduler.on_stream_chunk(
+        "r",
+        _item([1], {"stream": True, "modality": "audio_latents"}),
+    )
+    with pytest.raises(ValueError, match="modality must be audio_latents"):
+        scheduler.on_stream_chunk(
+            "r",
+            _item([2], {"stream": True, "modality": "audio_codes"}),
+        )
+
+
 def test_scaffold_errors_use_stream_source_hint() -> None:
     # note (Gaokai): client-visible scaffold errors carry the display hint
     # (e.g. moss passes "MOSS-TTS Local"), keeping migrated error text

@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -18,9 +17,9 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import GenerationConfig
 
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 
 _WHISPER_SAMPLE_RATE = 16000
 _LANGUAGE_ALIASES = {
@@ -37,28 +36,6 @@ class WhisperASRRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     language: str = "en"
     engine_start_s: float = 0.0
-
-
-def _audio_source_from_payload(payload: StagePayload) -> Any:
-    inputs = payload.request.inputs
-    if isinstance(inputs, dict):
-        for key in ("audio_bytes", "bytes", "file"):
-            value = inputs.get(key)
-            if value is not None:
-                return value
-        for key in ("audio_path", "path", "url"):
-            value = inputs.get(key)
-            if value is not None:
-                return value
-    return inputs
-
-
-def _load_audio(source: Any) -> np.ndarray:
-    return load_audio(
-        source,
-        source_name="Whisper ASR",
-        target_sample_rate=_WHISPER_SAMPLE_RATE,
-    )
 
 
 def _resolve_language(value: Any) -> str:
@@ -103,9 +80,12 @@ def make_whisper_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
-        audio = _load_audio(_audio_source_from_payload(payload))
-        audio_duration_s = float(len(audio) / _WHISPER_SAMPLE_RATE)
-        fingerprint = audio_fingerprint(audio)
+        prepared = prepare_audio(
+            payload, source_name="Whisper ASR", target_sample_rate=_WHISPER_SAMPLE_RATE
+        )
+        audio = prepared.waveform
+        audio_duration_s = prepared.duration_s
+        fingerprint = prepared.fingerprint
 
         language = _resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
@@ -125,7 +105,7 @@ def make_whisper_scheduler_adapters(
             mm_items=[
                 MultimodalDataItem(
                     modality=Modality.AUDIO,
-                    hash=audio_fingerprint_int(fingerprint),
+                    hash=prepared.fingerprint_int,
                     feature=features,
                 )
             ],
@@ -191,6 +171,5 @@ def make_whisper_scheduler_adapters(
 
 __all__ = [
     "WhisperASRRequestData",
-    "load_audio",
     "make_whisper_scheduler_adapters",
 ]

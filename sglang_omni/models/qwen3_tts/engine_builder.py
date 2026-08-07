@@ -20,6 +20,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def __init__(self, *, attn_implementation: str | None = None) -> None:
         self.attn_implementation = attn_implementation
         self.wrapper: Any | None = None
+        self._stream_output_builder: Any | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -107,10 +108,16 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.Qwen3TTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
-        return request_builders.make_qwen3_tts_scheduler_adapters(
-            model=model,
-            wrapper=self.wrapper,
+        request_builder, result_adapter, self._stream_output_builder = (
+            request_builders.make_qwen3_tts_scheduler_adapters(
+                model=model,
+                wrapper=self.wrapper,
+            )
         )
+        return request_builder, result_adapter
+
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        return {"stream_output_builder": self._stream_output_builder}
 
     def make_abort_callback(self) -> Any | None:
         return request_builders.cleanup_prepared_qwen3_tts_request

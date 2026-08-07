@@ -38,6 +38,7 @@ class RecordingBatchSpeechClient:
             audio_bytes=f"audio:{request.prompt}".encode(),
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason="length" if request.prompt == "third" else "stop",
         )
 
 
@@ -148,11 +149,13 @@ def test_batch_speech_preserves_order_and_item_errors() -> None:
     assert body["failed"] == 3
     assert [item["index"] for item in body["results"]] == [0, 1, 2, 3, 4]
     assert body["results"][0]["status"] == "success"
+    assert body["results"][0]["finish_reason"] == "stop"
     assert "success" not in body["results"][0]
     assert body["results"][1]["status"] == "error"
     assert "success" not in body["results"][1]
     assert body["results"][1]["error"]["param"] == "items.1.input"
     assert body["results"][2]["media_type"] == "audio/pcm"
+    assert body["results"][2]["finish_reason"] == "length"
     assert body["results"][3]["error"]["param"] == "items.3.input"
     assert body["results"][4]["error"]["param"] == "items.4.input"
     assert [request.prompt for request in client_impl.requests] == ["first", "third"]

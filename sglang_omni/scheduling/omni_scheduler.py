@@ -489,6 +489,7 @@ class OmniScheduler:
         self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
+        self._prefill_end_done: set[str] = set()
 
     def bind_model_runner(self, model_runner: Any) -> None:
         """Attach a custom runner and its SGLang execution-contract bridge.
@@ -1194,6 +1195,7 @@ class OmniScheduler:
         batch.forward_iter = self.forward_ct
         sched_output = self._build_sched_output(batch)
         mr_output = self._model_runner.execute(sched_output)
+        self._emit_prefill_end_for_batch(batch)
         self._emit_stream_output(sched_output, mr_output)
         return self._make_batch_result(mr_output)
 
@@ -1328,6 +1330,37 @@ class OmniScheduler:
                 request_id=rid,
                 stage=None,
                 event_name="scheduler_prefill_start",
+                metadata=metadata,
+            )
+
+    def _emit_prefill_end_for_batch(self, batch: ScheduleBatch) -> None:
+        """Emit once after a request's first executed batch returns.
+
+        Paired with ``scheduler_prefill_start`` this frames the request's
+        first model forward — for multimodal models that is encoder plus
+        prefill — for streaming and non-streaming requests alike. The
+        metadata carries the realized batch size (issue #1324 Q-PR2).
+        """
+        # note (luojiaxuan): steady-state decode reaches here after every
+        # step. _prefill_end_done only ever holds rids present in
+        # _prefill_start_done and both are discarded together, so equal sizes
+        # mean every started request already emitted -- skip before building
+        # metadata or scanning the batch.
+        if len(self._prefill_end_done) == len(self._prefill_start_done):
+            return
+        metadata = {
+            "batch_size": len(batch.reqs),
+            "is_extend_in_batch": bool(batch.is_extend_in_batch),
+        }
+        for req in batch.reqs:
+            rid = req.rid
+            if rid in self._prefill_end_done or rid not in self._prefill_start_done:
+                continue
+            self._prefill_end_done.add(rid)
+            _emit_event(
+                request_id=rid,
+                stage=None,
+                event_name="scheduler_prefill_end",
                 metadata=metadata,
             )
 
@@ -1574,6 +1607,7 @@ class OmniScheduler:
         # later prefill_start for the same id.
         self._emit_model_path_end_once(request_id, status="aborted")
         self._prefill_start_done.discard(request_id)
+        self._prefill_end_done.discard(request_id)
         if not running_abort:
             self._release_immediate_request_resources(request_id)
             _remove_from_batch(self.running_batch, request_id)
@@ -2437,6 +2471,7 @@ class OmniScheduler:
             abort_cleanup_needed = request_id in self._aborted_request_ids
         self._first_emit_done.discard(request_id)
         self._prefill_start_done.discard(request_id)
+        self._prefill_end_done.discard(request_id)
         return abort_cleanup_needed
 
     def _find_request_data(self, request_id: str) -> Any | None:

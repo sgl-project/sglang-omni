@@ -31,7 +31,7 @@ _link_workspace_venv() {
 
 _refresh_editable_install() {
   _link_workspace_venv
-  uv pip install --upgrade -e .
+  uv pip install --upgrade --no-deps -e .
 }
 
 _record_deps_hash_if_missing() {
