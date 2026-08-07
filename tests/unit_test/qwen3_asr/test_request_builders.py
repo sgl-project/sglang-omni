@@ -10,6 +10,7 @@ import torch
 from transformers import WhisperFeatureExtractor
 
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_audio_token_lengths,
     qwen3_asr_num_audio_tokens,
@@ -100,15 +101,12 @@ def test_qwen3_asr_max_audio_tokens_covers_the_native_limit() -> None:
     from sglang_omni.models.qwen3_asr.audio_lengths import (
         QWEN3_ASR_MAX_INPUT_SECONDS,
         qwen3_asr_max_audio_tokens,
-        qwen3_asr_max_output_tokens,
     )
 
     # The official wrapper accepts up to 1,200s natively; the engine context
-    # is sized from this figure (13 audio tokens per second) plus the
-    # duration-scaled output budget that clip would get.
+    # is sized from this figure (13 audio tokens per second).
     assert QWEN3_ASR_MAX_INPUT_SECONDS == 1200
     assert qwen3_asr_max_audio_tokens() == 15_600
-    assert qwen3_asr_max_output_tokens() == 12_000
 
 
 def _budget_test_builder(monkeypatch, num_samples: int):
@@ -123,7 +121,7 @@ def _budget_test_builder(monkeypatch, num_samples: int):
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
-        max_new_tokens=128,
+        max_new_tokens=4096,
         feature_extractor=feature_extractor,
     )
     return request_builder
@@ -436,6 +434,37 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     assert data.temperature == expected_temperature
     assert data.req.sampling_params.temperature == expected_sampling_temperature
     assert data.req.sampling_params.top_k == expected_top_k
+
+
+@pytest.mark.parametrize(
+    ("duration_s", "expected"),
+    [
+        (0.0, 128),
+        (1.5, 128),
+        (60.0, 600),
+        (1200.0, 4096),
+    ],
+)
+def test_qwen3_asr_default_output_budget_scales_with_duration(
+    duration_s: float,
+    expected: int,
+) -> None:
+    assert (
+        request_builders._request_output_token_budget({}, duration_s, 4096) == expected
+    )
+
+
+@pytest.mark.parametrize("explicit", [0, 4097])
+def test_qwen3_asr_explicit_output_budget_must_fit_capacity(explicit: int) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"max_new_tokens must be between 1 and 4096, got {explicit}",
+    ):
+        request_builders._request_output_token_budget(
+            {"max_new_tokens": explicit},
+            60.0,
+            4096,
+        )
 
 
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(

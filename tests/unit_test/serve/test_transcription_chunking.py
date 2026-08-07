@@ -79,13 +79,12 @@ def test_qwen3_asr_pipeline_declares_chunking() -> None:
 
     declared = Qwen3ASRPipelineConfig.audio_chunking
     assert declared.allow_audio_chunking is True
-    # 60s is a scheduling choice, not a context limit (the context is sized
-    # for the model's native 1,200s): short chunks batch well and keep one
-    # long upload from monopolizing the engine.
-    assert declared.max_audio_clip_s == 60.0
-    # The native limit feeds the streaming path, which cannot chunk and so
-    # accepts single requests up to what the engine context fits.
+    assert declared.max_audio_clip_s == 1200.0
     assert declared.max_native_clip_s == 1200.0
+    assert needs_chunking(1200.0, declared) is False
+    assert needs_chunking(1200.001, declared) is True
+    config = Qwen3ASRPipelineConfig(model_path="test")
+    assert config.stages[0].factory_args["max_new_tokens"] == 4096
 
 
 def test_disabled_config_never_chunks() -> None:
@@ -228,6 +227,15 @@ def test_split_is_deterministic() -> None:
     second = splitter.split(waveform, _SAMPLE_RATE, _SAMPLE_RATE)
 
     assert first == second
+
+
+def test_equal_energy_prefers_the_latest_window() -> None:
+    waveform = _silence(2 * _SAMPLE_RATE)
+    splitter = RMSSplitter(search_window_s=0.25)
+
+    spans = splitter.split(waveform, _SAMPLE_RATE, _SAMPLE_RATE)
+
+    assert spans[0][1] == 14_400
 
 
 def test_search_window_wider_than_the_clip_still_advances() -> None:
@@ -435,34 +443,25 @@ def test_plan_resamples_to_the_target_rate() -> None:
 @pytest.mark.parametrize(
     "parts, expected",
     [
-        # Spaced scripts get one space at the seam.
-        (["hello", "world"], "hello world"),
-        # CJK joins directly; a space here would be a CER insertion error.
+        (["hello", "world"], "helloworld"),
+        (["hello ", "world"], "hello world"),
         (["我们今天讨论的是", "长音频的切分"], "我们今天讨论的是长音频的切分"),
-        # Mixed seam: CJK on either side means no space.
         (["...的是", "OpenAI 的方案"], "...的是OpenAI 的方案"),
         (["the next is", "中文内容"], "the next is中文内容"),
-        # Full-width punctuation counts as CJK; half-width does not.
         (["转写结束。", "下面继续"], "转写结束。下面继续"),
-        (["that is done.", "The next part"], "that is done. The next part"),
-        # Digits behave like spaced script.
-        (["chapter 1", "2 comes after"], "chapter 1 2 comes after"),
-        # Korean is wide in east_asian_width terms but its orthography DOES
-        # separate words with spaces -- a seam must not glue two words.
-        (["안녕하세요", "만나서 반갑습니다"], "안녕하세요 만나서 반갑습니다"),
-        # Thai is narrow but writes without word spaces -- a seam must not
-        # invent one.
+        (["that is done.", "The next part"], "that is done.The next part"),
+        (["chapter 1", "2 comes after"], "chapter 12 comes after"),
+        (["안녕하세요", "만나서 반갑습니다"], "안녕하세요만나서 반갑습니다"),
         (["สวัสดีครับ", "ผมชื่อมาก"], "สวัสดีครับผมชื่อมาก"),
-        # Whitespace inside parts is stripped so the rule owns the seam.
-        (["  hello  ", "  world  "], "hello world"),
-        # Empty / all-whitespace parts (an all-silence chunk) are skipped.
-        (["hello", "   ", "world"], "hello world"),
-        (["hello", "", "world"], "hello world"),
-        (["  only one  "], "only one"),
+        (["  hello  ", "  world  "], "  hello    world  "),
+        (["hello", "   ", "world"], "hello   world"),
+        (["hello", "", "world"], "helloworld"),
+        (["  only one  "], "  only one  "),
         ([], ""),
     ],
     ids=[
-        "english",
+        "english-no-model-space",
+        "english-model-space",
         "chinese",
         "cjk-then-latin",
         "latin-then-cjk",

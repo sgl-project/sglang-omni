@@ -48,16 +48,10 @@ def qwen3_asr_max_audio_tokens() -> int:
 QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND = 10
 
 
-def qwen3_asr_max_output_tokens() -> int:
-    """Output-token budget of the longest natively supported clip (12,000)."""
-    return QWEN3_ASR_MAX_INPUT_SECONDS * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND
-
-
 __all__ = [
     "QWEN3_ASR_MAX_INPUT_SECONDS",
     "QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND",
     "qwen3_asr_audio_token_lengths",
     "qwen3_asr_max_audio_tokens",
-    "qwen3_asr_max_output_tokens",
     "qwen3_asr_num_audio_tokens",
 ]

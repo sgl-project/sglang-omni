@@ -51,6 +51,8 @@ _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_END = "<|audio_end|>"
 _ASR_TEXT = "<asr_text>"
 
+_MIN_GENERATION_TOKENS = 128
+
 
 @dataclass
 class Qwen3ASRRequestData(SGLangARRequestData):
@@ -93,6 +95,29 @@ def _encode_literal(tokenizer: Any, text: str) -> list[int]:
     else:
         input_ids = encoded["input_ids"]
     return list(input_ids)
+
+
+def _request_output_token_budget(
+    params: dict[str, Any],
+    audio_duration_s: float,
+    max_new_tokens: int,
+) -> int:
+    explicit = params.get("max_new_tokens")
+    if explicit is not None:
+        try:
+            requested = int(explicit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_new_tokens must be an integer") from exc
+        if requested < 1 or requested > max_new_tokens:
+            raise ValueError(
+                f"max_new_tokens must be between 1 and {max_new_tokens}, "
+                f"got {requested}"
+            )
+        return requested
+    duration_budget = math.ceil(
+        max(audio_duration_s, 0.0) * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND
+    )
+    return min(max_new_tokens, max(_MIN_GENERATION_TOKENS, duration_budget))
 
 
 def make_qwen3_asr_scheduler_adapters(
@@ -182,13 +207,11 @@ def make_qwen3_asr_scheduler_adapters(
         fingerprint = prepared.fingerprint
 
         explicit_max_new_tokens = params.get("max_new_tokens")
-        if explicit_max_new_tokens is not None:
-            request_max_new_tokens = int(explicit_max_new_tokens)
-        else:
-            request_max_new_tokens = max(
-                int(max_new_tokens),
-                math.ceil(audio_duration_s * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND),
-            )
+        request_max_new_tokens = _request_output_token_budget(
+            params,
+            audio_duration_s,
+            max_new_tokens,
+        )
 
         estimated_audio_tokens = None
         if context_length is not None or audio_encoder_service is not None:
@@ -225,7 +248,7 @@ def make_qwen3_asr_scheduler_adapters(
 
             if explicit_max_new_tokens is None:
                 remaining = context_length - 1 - len(estimated_input_ids)
-                if remaining >= int(max_new_tokens):
+                if remaining >= _MIN_GENERATION_TOKENS:
                     request_max_new_tokens = min(request_max_new_tokens, remaining)
 
             _validate_context_budget(estimated_input_ids, request_max_new_tokens)

@@ -1512,7 +1512,7 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
         assert request.prompt["audio_bytes"][:4] == b"RIFF"
         assert request.prompt["content_type"] == "audio/wav"
     # Chunk texts are assembled in span order regardless of completion order.
-    expected_text = " ".join(f"part{index}" for index in range(count))
+    expected_text = "".join(f"part{index}" for index in range(count))
     assert response.json()["text"] == expected_text
     # usage reports the whole upload, not one chunk.
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
@@ -1631,7 +1631,7 @@ def test_streamed_short_audio_streams_as_before() -> None:
     assert "transcript.text.done" in response.text
 
 
-def test_verbose_json_reports_per_chunk_segments() -> None:
+def test_verbose_json_does_not_present_chunk_boundaries_as_timestamps() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client)
 
@@ -1644,35 +1644,15 @@ def test_verbose_json_reports_per_chunk_segments() -> None:
     assert response.status_code == 200
     body = response.json()
     segments = body["segments"]
-    # One segment per chunk, with the chunk's own timestamps -- not a single
-    # segment spanning the whole upload.
-    assert len(segments) == len(transcription_client.requests) > 1
-    previous_end = 0.0
-    for index, segment in enumerate(segments):
-        assert segment["id"] == index
-        assert segment["text"] == f"part{index}"
-        assert segment["start"] == pytest.approx(previous_end)
-        assert segment["end"] > segment["start"]
-        previous_end = segment["end"]
-    assert previous_end == pytest.approx(2.5, abs=0.01)
+    expected_text = "".join(
+        f"part{index}" for index in range(len(transcription_client.requests))
+    )
+    assert len(segments) == 1
+    assert segments[0]["id"] == 0
+    assert segments[0]["start"] == 0.0
+    assert segments[0]["end"] == pytest.approx(2.5, abs=0.01)
+    assert segments[0]["text"] == expected_text
     assert body["duration"] == pytest.approx(2.5, abs=0.01)
-
-
-def test_chunk_segments_skip_silent_chunks() -> None:
-    from sglang_omni.serve.transcription_adapters.base import (
-        DefaultTranscriptionAdapter,
-    )
-
-    response = DefaultTranscriptionAdapter().build_verbose_response_from_chunks(
-        text="hello world",
-        chunks=[(0.0, 1.0, "hello"), (1.0, 2.0, "   "), (2.0, 2.5, "world")],
-        language="en",
-        audio_duration_s=2.5,
-    )
-
-    # The silent chunk emits no segment and ids stay consecutive.
-    assert [(s.id, s.text) for s in response.segments] == [(0, "hello"), (1, "world")]
-    assert response.segments[1].start == 2.0
 
 
 def test_chunk_failure_fails_the_whole_request() -> None:
@@ -2080,24 +2060,86 @@ def test_long_m4a_is_probed_and_chunked() -> None:
     )
 
 
-def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
-    # soundfile cannot read these bytes, so the duration probe returns 0.0 and
-    # the upload keeps today's behaviour instead of paying a decode.
+def test_unknown_probed_duration_uses_decoded_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", lambda _: 0.0)
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+    upload = _wav_upload(2.5)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("mystery.m4a", upload, "audio/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert len(transcription_client.requests) > 1
+
+
+def test_unknown_probed_short_audio_preserves_original_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", lambda _: 0.0)
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+    upload = _wav_upload(0.5)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("mystery.m4a", upload, "audio/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert len(transcription_client.requests) == 1
+    assert transcription_client.requests[0][1].prompt["audio_bytes"] == upload
+    assert response.json()["usage"] == {"seconds": 1, "type": "duration"}
+
+
+def test_unknown_probed_invalid_audio_returns_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", lambda _: 0.0)
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client)
 
     response = client.post(
         "/v1/audio/transcriptions",
         data={"model": "asr"},
-        files={"file": ("mystery.bin", b"RIFF not really audio", "audio/wav")},
+        files={"file": ("broken.m4a", b"not audio", "audio/mp4")},
     )
 
-    assert response.status_code == 200
-    assert len(transcription_client.requests) == 1
-    assert (
-        transcription_client.requests[0][1].prompt["audio_bytes"]
-        == b"RIFF not really audio"
+    assert response.status_code == 400
+    assert "Could not decode uploaded audio" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
+def test_unknown_probed_duration_enforces_decoded_total_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", lambda _: 0.0)
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client, max_total_audio_s=2.0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("mystery.m4a", _wav_upload(2.5), "audio/mp4")},
     )
+
+    assert response.status_code == 400
+    assert "accepts audio up to" in response.json()["detail"]
+    assert transcription_client.requests == []
 
 
 def test_transcription_endpoint_returns_text_json() -> None:

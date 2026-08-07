@@ -17,6 +17,7 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.qwen3_asr import request_builders
+from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_max_audio_tokens
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -101,6 +102,7 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert config.stages[0].factory.endswith("create_sglang_qwen3_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 64
+    assert config.stages[0].factory_args["max_new_tokens"] == 4096
     assert config.stages[0].factory_args["enable_torch_compile"] is True
     assert config.stages[0].factory_args["torch_compile_max_bs"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
@@ -136,6 +138,7 @@ def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
     assert signature.parameters["max_running_requests"].default == 64
+    assert signature.parameters["max_new_tokens"].default == 4096
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 32
     assert signature.parameters["prefill_coalesce_requests"].default == 16
@@ -213,6 +216,43 @@ def test_qwen3_asr_stage_default_enables_async_decode() -> None:
     assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
+def test_qwen3_asr_default_context_covers_native_audio_and_output_capacity(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.AutoFeatureExtractor,
+        "from_pretrained",
+        lambda *args, **kwargs: object(),
+    )
+    builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
+        max_running_requests=64,
+        max_new_tokens=4096,
+        enable_async_decode=True,
+        async_decode_min_batch_size=2,
+        mem_fraction_static=None,
+        mm_embedding_cache_size_bytes=0,
+        enable_torch_compile=False,
+        torch_compile_max_bs=1,
+        mm_attention_backend=None,
+        request_build_max_workers=8,
+        request_build_max_pending=32,
+        prefill_coalesce_requests=16,
+        prefill_coalesce_wait_ms=24.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
+        prefill_coalesce_after_builds_during_decode=True,
+    )
+
+    builder.pre_infra_setup("dummy")
+
+    assert builder.context_length == qwen3_asr_max_audio_tokens() + 4096 + 72
+
+
 def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     config = ConfigManager.from_file(
@@ -286,6 +326,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
+        build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         normalized_overrides = {
             key: value
@@ -356,6 +397,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]" in caplog.text
     assert "mm_attention_backend" not in build_kwargs
     assert memory_queries == [0, 0, 0]
+    assert build_kwargs["context_length"] == 2048
     assert adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4

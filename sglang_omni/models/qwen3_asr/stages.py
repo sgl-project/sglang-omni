@@ -12,7 +12,7 @@ def create_sglang_qwen3_asr_executor(
     device: str = "cuda:0",
     dtype: str = "auto",
     max_running_requests: int = 64,
-    max_new_tokens: int = 256,
+    max_new_tokens: int = 4096,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,

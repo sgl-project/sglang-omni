@@ -17,7 +17,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
         allow_audio_chunking=True,
-        max_audio_clip_s=60.0,
+        max_audio_clip_s=float(QWEN3_ASR_MAX_INPUT_SECONDS),
         max_native_clip_s=float(QWEN3_ASR_MAX_INPUT_SECONDS),
     )
 
@@ -39,9 +39,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 64,
-                # Note (Jeffro): This is the floor for the per-request output budget.
-                # The request builder will scale the actual budget with audio duration.
-                "max_new_tokens": 128,
+                "max_new_tokens": 4096,
                 "enable_torch_compile": True,
                 "torch_compile_max_bs": 2,
                 "request_build_max_workers": 8,
