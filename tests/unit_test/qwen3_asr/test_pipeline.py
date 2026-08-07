@@ -109,6 +109,7 @@ def test_qwen3_asr_stage_default_enables_async_decode() -> None:
 
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
+    adapter_kwargs: dict[str, object] = {}
 
     monkeypatch.setattr(
         qwen3_asr_builder.AutoTokenizer,
@@ -140,7 +141,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
         "make_qwen3_asr_scheduler_adapters",
-        lambda **kwargs: (object(), object()),
+        lambda **kwargs: (adapter_kwargs.update(kwargs) or object(), object()),
     )
     monkeypatch.setattr(
         sglang_backend,
@@ -155,7 +156,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
-        server_args = FakeServerArgs(**overrides)
+        server_args = FakeServerArgs(context_length=context_length, **overrides)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -194,10 +195,12 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         "dummy",
         enable_async_decode=False,
         async_decode_min_batch_size=4,
+        server_args_overrides={"context_length": 2048},
     )
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
     assert scheduler.shutdown_callback is fake_encoder_service.close

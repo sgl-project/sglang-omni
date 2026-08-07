@@ -28,6 +28,7 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "moss_tts_delay": "MossTTSDelayModel",
     "moss_tts_delay_with_codec": "MossTTSDelayWithCodec",
     "moss_tts_local": "MossTTSLocalModel",
+    "dots_tts": "DotsTTSForConditionalGeneration",
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
     # ZONOS2 ships params.json (model_type "zonos2") with no config.json.

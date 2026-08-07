@@ -2218,6 +2218,72 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
     assert isinstance(result.data["audio_codes"], torch.Tensor)
     assert result.data["audio_codes"].tolist() == [[9, 9], [1, 2], [3, 4]]
     assert result.data["completion_tokens"] == 2
+    assert result.data["finish_reason"] == "stop"
+
+
+def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
+    """A length-capped generation must be distinguishable from natural EOS."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+        finish_reason="length",
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(
+            output_ids=[],
+            finished_reason=SimpleNamespace(
+                to_json=lambda: {"type": "stop", "matched": 2150}
+            ),
+        ),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "stop"
+
+
+def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
+    """Without a scheduler reason, reaching the budget is still a length stop."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
+        stage_payload=payload,
+        max_new_tokens=2,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_state_round_trips_finish_reason() -> None:
+    """The reason must survive the stage-payload state round trip."""
+    state = Qwen3TTSState.from_dict({"finish_reason": "length"})
+
+    assert state.finish_reason == "length"
+    assert state.to_dict()["finish_reason"] == "length"
+
+
+def test_speech_batch_result_exposes_finish_reason() -> None:
+    """Batch JSON results carry the reason the single-item header carries."""
+    from sglang_omni.serve.protocol import SpeechBatchResult
+
+    result = SpeechBatchResult(index=0, status="success", finish_reason="length")
+
+    assert result.model_dump(exclude_none=True)["finish_reason"] == "length"
 
 
 def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(

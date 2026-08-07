@@ -28,9 +28,11 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
+import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import uvicorn
@@ -53,6 +55,35 @@ from sglang_omni.utils.gpu_memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+_HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+class _PipelineUvicornServer(uvicorn.Server):
+    """Keep Uvicorn's graceful handling without re-raising process signals.
+
+    Uvicorn re-raises a captured SIGTERM after HTTP shutdown. That terminates
+    the interpreter before ``_run_server`` can stop spawned pipeline workers.
+    The pipeline launcher owns child-process cleanup, so it restores the
+    original handlers but deliberately consumes the already-handled signal.
+    """
+
+    @contextmanager
+    def capture_signals(self):
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        original_handlers = {
+            sig: signal.signal(sig, self.handle_exit) for sig in _HANDLED_SIGNALS
+        }
+        try:
+            yield
+        finally:
+            for sig, handler in original_handlers.items():
+                signal.signal(sig, handler)
+            self._captured_signals.clear()
+
 
 # ---------------------------------------------------------------------------
 # Built-in pipeline registry
@@ -414,7 +445,7 @@ async def _run_server(
             log_level=log_level,
             timeout_keep_alive=120,
         )
-        server = uvicorn.Server(config)
+        server = _PipelineUvicornServer(config)
         await _serve_with_failure_watch(server, [mp_runner.wait_failed()])
     finally:
         logger.info("Shutting down pipeline …")

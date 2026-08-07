@@ -7,7 +7,8 @@
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
 
 ```bash
-hf download Qwen/Qwen3-ASR-1.7B
+MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
+MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
 ```
 
 ## Server Configuration
@@ -20,7 +21,8 @@ it, or tune the crossover with `--async-lookahead-min-batch-size`.
 
 ```bash
 sgl-omni serve \
-  --model-path Qwen/Qwen3-ASR-1.7B \
+  --model-path "${MODEL_PATH}" \
+  --model-name Qwen/Qwen3-ASR-1.7B \
   --port 8000
 ```
 
@@ -68,14 +70,33 @@ print(resp.json()["text"])
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
-| `language` | string | `en` | Language hint; `zh`/`cn` select Chinese, other values use English prompting |
+| `language` | string | `en` | Language hint as a supported code or canonical name (case-insensitive) |
+| `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
+| `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
+| `stream` | boolean | `false` | Return transcript events over SSE |
 
-`verbose_json` is accepted, but currently returns the same minimal JSON shape as `json`:
-`{"text": "..."}`.
+`verbose_json` uses the model adapter's verbose response schema and includes
+duration-based usage (rounded-up audio seconds) when duration probing succeeds.
 
-`max_new_tokens` is supported inside the model request builder, but the public transcription endpoint does not currently expose it as a form field. The route uses the ASR stage default unless the pipeline is configured another way.
+### Language Hints
+
+Qwen3-ASR accepts the following 30 language codes and their canonical names:
+
+| Codes | Canonical names |
+|---|---|
+| `ar`, `yue`, `zh`, `cs`, `da`, `nl`, `en`, `fil`, `fi`, `fr` | Arabic, Cantonese, Chinese, Czech, Danish, Dutch, English, Filipino, Finnish, French |
+| `de`, `el`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `mk`, `ms` | German, Greek, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Macedonian, Malay |
+| `fa`, `pl`, `pt`, `ro`, `ru`, `es`, `sv`, `th`, `tr`, `vi` | Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, Vietnamese |
+
+For example, `language=es` and `language=Spanish` both force the prompt suffix
+`language Spanish<asr_text>`. The legacy `cn` and regional `zh-*` spellings are
+also accepted as Chinese. Unsupported language hints return HTTP 400 instead of
+silently falling back to English.
+
+The model also has ASR coverage for 22 Chinese dialects, but those dialect names
+are not supported as forced `language` hints; use `Chinese`/`zh` for them.
 
 ## Benchmarking
 
@@ -87,12 +108,33 @@ The report includes RTF (processing time divided by audio duration) and RTFx
 (successful input-audio seconds divided by wall-clock seconds).
 
 ```bash
-sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8000
+sgl-omni serve \
+  --model-path "${MODEL_PATH}" \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --port 8000
 
-# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
+# Sweep the full SeedTTS EN set (1088 clips), 3 repeats per concurrency:
+# Set SERVER_GPU_PID to the server process PID reported by nvidia-smi.
 python -m benchmarks.eval.benchmark_asr_seedtts \
-  --port 8000 --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+  --port 8000 \
+  --gpu-process-pid "${SERVER_GPU_PID}" \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --model-revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+  --concurrencies 1,2,4,8,16,32,64 \
+  --repeats 3 --warmup
 ```
+
+The result JSON includes the applied dataset revision, declared model revision,
+an effective evaluation-input content hash, normalization, repository and
+dependency fingerprints, complete sample counts, and latency/RTF/throughput.
+When local NVML and `psutil` sampling are available, it also includes CPU use,
+power, and peak/steady GPU memory. Pass each server GPU PID reported by NVML via
+`--gpu-process-pid`; without explicit PIDs, process-specific metrics remain
+unavailable rather than including unrelated workloads on the same GPU. In a
+Docker container, use the host PID namespace (`--pid=host`) to collect process
+CPU metrics. Unavailable metrics and monitor errors remain explicit. Optional
+server settings and an exact launch command can be declared with the benchmark's
+provenance flags.
 
 The ASR CI gate runs the selected ASR CI model preset on this same benchmark
 entry point (`tests/test_model/test_asr_ci_seedtts.py`). Qwen3-ASR remains
@@ -149,5 +191,8 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
+- Audio duration is bounded by the configured context and requested
+  `max_new_tokens`, rather than a fixed 30-second window. Split audio or reduce
+  `max_new_tokens` if the request exceeds that token budget.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

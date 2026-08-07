@@ -108,6 +108,11 @@ with open("output.wav", "wb") as f:
     f.write(resp.content)
 ```
 
+Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
+`X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
+response still contains decodable audio, but the utterance may be incomplete.
+Batch responses expose the same value as each item's `finish_reason`.
+
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model

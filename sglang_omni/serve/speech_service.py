@@ -459,6 +459,7 @@ class SpeechRequestValidator:
             audio_data=base64.b64encode(result.audio_bytes).decode("ascii"),
             format=result.format,
             media_type=result.mime_type,
+            finish_reason=result.finish_reason,
         )
 
     async def _prepare_batch_item_request(

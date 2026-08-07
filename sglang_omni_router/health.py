@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from typing import Callable
 
 import httpx
 
@@ -22,11 +23,13 @@ class HealthChecker:
         workers: list[Worker],
         config: RouterConfig,
         client: httpx.AsyncClient,
+        on_tick: Callable[[], None] | None = None,
     ) -> None:
         self._workers = workers
         self._config = config
         self._client = client
         self._task: asyncio.Task[None] | None = None
+        self._on_tick = on_tick
 
     async def check_all_workers_health(self) -> None:
         workers = tuple(self._workers)
@@ -41,6 +44,8 @@ class HealthChecker:
                     f"health: {type(result).__name__}: {result}",
                     exc_info=(type(result), result, result.__traceback__),
                 )
+        if self._on_tick is not None:
+            self._on_tick()
 
     async def check_worker_health(self, worker: Worker) -> None:
         await self._check_worker_health(worker)
@@ -75,6 +80,10 @@ class HealthChecker:
         if worker.is_dead:
             return
 
+        # Note (Jiaxin Deng): pin the state this probe was started against; an
+        # operator mark_dead/clear_dead in flight bumps the epoch, so a late
+        # result is dropped even if the worker looks live again by then.
+        epoch = worker.health_epoch
         url = f"{worker.url}{self._config.health_check_endpoint}"
         try:
             response = await self._client.get(
@@ -82,6 +91,8 @@ class HealthChecker:
                 timeout=self._config.health_check_timeout_secs,
             )
         except httpx.HTTPError as exc:
+            if worker.health_epoch != epoch:
+                return
             logger.debug(
                 f"Worker {worker.display_id} health check failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -95,6 +106,8 @@ class HealthChecker:
             )
             return
 
+        if worker.health_epoch != epoch:
+            return
         ok = 200 <= response.status_code < 300
         error = None
         if not ok:
