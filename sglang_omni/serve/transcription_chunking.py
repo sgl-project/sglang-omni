@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import logging
-import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -237,16 +236,30 @@ def plan_audio_chunks(
     )
 
 
-def _is_spaced_script(char: str) -> bool:
-    """Whether this character's writing system separates words with spaces.
+# Scripts that write without spaces between words. Everything not listed --
+# Latin, Cyrillic, Hangul (Korean does use word spaces), Arabic, ... -- takes
+# a space at a chunk seam. An explicit table because Unicode has no
+# word-spacing property: east_asian_width is a display-width proxy that
+# misclassifies Korean (wide but spaced) and Thai (narrow but unspaced).
+_UNSPACED_SCRIPT_RANGES = (
+    (0x0E00, 0x0EFF),  # Thai, Lao
+    (0x1000, 0x109F),  # Myanmar
+    (0x1780, 0x17FF),  # Khmer
+    (0x2E80, 0x303F),  # CJK radicals, Kangxi, CJK symbols and punctuation
+    (0x3040, 0x30FF),  # Hiragana, Katakana
+    (0x3400, 0x9FFF),  # CJK unified ideographs (+ extension A)
+    (0xF900, 0xFAFF),  # CJK compatibility ideographs
+    (0xFF00, 0xFFEF),  # fullwidth and halfwidth forms
+    (0x20000, 0x2FA1F),  # CJK unified ideographs extensions B..F
+)
 
-    Latin, Cyrillic, digits, half-width punctuation -> True. CJK characters
-    and full-width punctuation (east asian width W/F) -> False; those scripts
-    write without spaces.
-    """
+
+def _is_spaced_script(char: str) -> bool:
+    """Whether this character's writing system separates words with spaces."""
     if char.isspace():
         return False
-    return unicodedata.east_asian_width(char) not in ("W", "F")
+    code_point = ord(char)
+    return not any(low <= code_point <= high for low, high in _UNSPACED_SCRIPT_RANGES)
 
 
 def join_transcript_parts(parts: Iterable[str]) -> str:

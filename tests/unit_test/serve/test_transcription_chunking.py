@@ -427,6 +427,12 @@ def test_plan_resamples_to_the_target_rate() -> None:
         (["that is done.", "The next part"], "that is done. The next part"),
         # Digits behave like spaced script.
         (["chapter 1", "2 comes after"], "chapter 1 2 comes after"),
+        # Korean is wide in east_asian_width terms but its orthography DOES
+        # separate words with spaces -- a seam must not glue two words.
+        (["안녕하세요", "만나서 반갑습니다"], "안녕하세요 만나서 반갑습니다"),
+        # Thai is narrow but writes without word spaces -- a seam must not
+        # invent one.
+        (["สวัสดีครับ", "ผมชื่อมาก"], "สวัสดีครับผมชื่อมาก"),
         # Whitespace inside parts is stripped so the rule owns the seam.
         (["  hello  ", "  world  "], "hello world"),
         # Empty / all-whitespace parts (an all-silence chunk) are skipped.
@@ -443,6 +449,8 @@ def test_plan_resamples_to_the_target_rate() -> None:
         "fullwidth-period",
         "halfwidth-period",
         "digits",
+        "korean-spaced",
+        "thai-unspaced",
         "padded",
         "blank-part",
         "empty-part",
