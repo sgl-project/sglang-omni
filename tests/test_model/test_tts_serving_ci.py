@@ -482,53 +482,16 @@ def _worker_deltas(before: dict, after: dict) -> list[dict]:
     return deltas
 
 
-def _response_worker_id(result: dict) -> str | None:
-    headers = result.get("response_headers")
-    if not isinstance(headers, dict):
-        return None
-    worker_ids = [
-        value
-        for key, value in headers.items()
-        if str(key).lower() == WORKER_RESPONSE_HEADER and isinstance(value, str)
-    ]
-    return worker_ids[0] if len(worker_ids) == 1 else None
-
-
-def _websocket_worker_ids(
-    log_file: Path,
-    scenario_ids: set[str],
-    worker_aliases: dict[str, str],
-) -> dict[str, str]:
-    routed: dict[str, str] = {}
-    for line in log_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = WEBSOCKET_COMPLETION_RE.search(line)
-        if match is None or match.group(1) not in scenario_ids:
-            continue
-        scenario_id = match.group(1)
-        if scenario_id in routed:
-            raise AssertionError(
-                f"WebSocket scenario {scenario_id!r} has multiple completions"
-            )
-        worker_id = worker_aliases.get(match.group(2))
-        if worker_id is None:
-            raise AssertionError(
-                f"WebSocket scenario {scenario_id!r} names an unknown worker"
-            )
-        routed[scenario_id] = worker_id
-    return routed
-
-
-def _mixed_workload_distribution(
+def _mixed_worker_counts(
     run: ServingRun,
     workers_after: dict,
-) -> dict:
+) -> dict[str, int]:
     worker_aliases = {
         alias: worker["worker_id"]
         for worker in workers_after["workers"]
         for alias in (worker["worker_id"], worker["display_id"])
     }
-    worker_ids = [worker["worker_id"] for worker in workers_after["workers"]]
-    known_worker_ids = set(worker_ids)
+    worker_counts = {worker["worker_id"]: 0 for worker in workers_after["workers"]}
     events_path = run.benchmark_dir / "raw" / "events.jsonl"
     results = [
         json.loads(line)
@@ -540,77 +503,79 @@ def _mixed_workload_distribution(
         for result in results
         if result.get("stage_id") == MIXED_STAGE and result.get("workload") is not None
     ]
-    scenario_ids = [result.get("scenario_id") for result in mixed_results]
-    if not all(isinstance(scenario_id, str) for scenario_id in scenario_ids):
-        raise AssertionError("mixed results contain an invalid scenario ID")
-    if len(set(scenario_ids)) != len(scenario_ids):
-        raise AssertionError("mixed results contain duplicate scenario IDs")
+    expected_sample_count = sum(EXPECTED_WORKLOAD_SAMPLES.values())
+    assert (
+        len(mixed_results) == expected_sample_count
+    ), f"expected {expected_sample_count} mixed results, got {len(mixed_results)}"
+    scenario_ids = [result["scenario_id"] for result in mixed_results]
+    assert all(
+        isinstance(scenario_id, str) for scenario_id in scenario_ids
+    ), "mixed results contain an invalid scenario ID"
+    assert len(set(scenario_ids)) == len(
+        scenario_ids
+    ), "mixed results contain duplicate scenario IDs"
 
     websocket_scenario_ids = {
         result["scenario_id"]
         for result in mixed_results
-        if result.get("endpoint") == "websocket"
+        if result["endpoint"] == "websocket"
     }
-    if run.router.log_file is None:
-        raise AssertionError("router log is unavailable")
-    websocket_workers = _websocket_worker_ids(
-        run.router.log_file,
-        websocket_scenario_ids,
-        worker_aliases,
-    )
+    assert run.router.log_file is not None, "router log is unavailable"
+    websocket_workers: dict[str, str] = {}
+    for line in run.router.log_file.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines():
+        match = WEBSOCKET_COMPLETION_RE.search(line)
+        if match is None or match.group(1) not in websocket_scenario_ids:
+            continue
+        scenario_id, worker_alias = match.groups()
+        assert (
+            scenario_id not in websocket_workers
+        ), f"WebSocket scenario {scenario_id!r} has multiple completions"
+        assert (
+            worker_alias in worker_aliases
+        ), f"WebSocket scenario {scenario_id!r} names unknown worker {worker_alias!r}"
+        websocket_workers[scenario_id] = worker_aliases[worker_alias]
 
-    by_workload = {
-        workload: {worker_id: 0 for worker_id in worker_ids}
-        for workload in EXPECTED_WORKLOAD_SAMPLES
-    }
     for result in mixed_results:
         scenario_id = result["scenario_id"]
-        workload = result.get("workload")
-        if workload not in by_workload:
-            raise AssertionError(
-                f"mixed scenario {scenario_id!r} has unexpected workload {workload!r}"
-            )
-        if (
-            result.get("expected_success") is not True
-            or result.get("success") is not True
-        ):
-            raise AssertionError(f"mixed scenario {scenario_id!r} did not pass")
-        worker_id = (
-            websocket_workers.get(scenario_id)
-            if result.get("endpoint") == "websocket"
-            else _response_worker_id(result)
+        assert result["workload"] in EXPECTED_WORKLOAD_SAMPLES, (
+            f"mixed scenario {scenario_id!r} has unexpected workload "
+            f"{result['workload']!r}"
         )
-        if worker_id not in known_worker_ids:
+        assert (
+            result["expected_success"] is True and result["success"] is True
+        ), f"mixed scenario {scenario_id!r} did not pass"
+        endpoint = result["endpoint"]
+        if endpoint == "websocket":
+            assert (
+                scenario_id in websocket_workers
+            ), f"WebSocket scenario {scenario_id!r} has no completion"
+            worker_id = websocket_workers[scenario_id]
+        elif endpoint in {"speech", "speech_stream", "batch"}:
+            headers = result["response_headers"]
+            assert isinstance(
+                headers, dict
+            ), f"mixed scenario {scenario_id!r} has invalid response headers"
+            worker_headers = [
+                value
+                for key, value in headers.items()
+                if key.lower() == WORKER_RESPONSE_HEADER
+            ]
+            assert (
+                len(worker_headers) == 1
+            ), f"mixed scenario {scenario_id!r} has no unique worker header"
+            worker_id = worker_headers[0]
+        else:
             raise AssertionError(
-                f"mixed scenario {scenario_id!r} has no valid worker attribution"
+                f"mixed scenario {scenario_id!r} has unexpected endpoint {endpoint!r}"
             )
-        by_workload[workload][worker_id] += 1
+        assert (
+            worker_id in worker_counts
+        ), f"mixed scenario {scenario_id!r} names unknown worker {worker_id!r}"
+        worker_counts[worker_id] += 1
 
-    observed = {
-        workload: sum(worker_counts.values())
-        for workload, worker_counts in by_workload.items()
-    }
-    if observed != EXPECTED_WORKLOAD_SAMPLES:
-        raise AssertionError(
-            f"mixed workload population mismatch: observed={observed}, "
-            f"expected={EXPECTED_WORKLOAD_SAMPLES}"
-        )
-    by_worker = {
-        worker_id: sum(counts[worker_id] for counts in by_workload.values())
-        for worker_id in worker_ids
-    }
-    return {
-        "population": (
-            "successful workload-bearing mixed-production requests; "
-            "coverage and owner-affine voice stages excluded"
-        ),
-        "total_samples": sum(observed.values()),
-        "by_worker": by_worker,
-        "by_workload": {
-            workload: dict(worker_counts)
-            for workload, worker_counts in by_workload.items()
-        },
-    }
+    return worker_counts
 
 
 def _check_router(
@@ -625,10 +590,16 @@ def _check_router(
         return
     deltas = _worker_deltas(run.workers_before, workers_after)
     try:
-        mixed_distribution = _mixed_workload_distribution(run, workers_after)
-    except (AssertionError, json.JSONDecodeError, OSError) as exc:
+        mixed_counts = _mixed_worker_counts(run, workers_after)
+    except (AssertionError, KeyError, json.JSONDecodeError, OSError) as exc:
         checks.fail(f"mixed workload attribution failed: {exc}")
-        mixed_distribution = {"error": str(exc)}
+        mixed_attribution = {"valid": False, "error": str(exc)}
+    else:
+        mixed_attribution = {
+            "valid": True,
+            "total_samples": sum(mixed_counts.values()),
+            "by_worker": mixed_counts,
+        }
     (run.run_dir / "router_validation.json").write_text(
         json.dumps(
             {
@@ -637,7 +608,7 @@ def _check_router(
                 "health_before": run.health_before,
                 "health_after": health_after,
                 "worker_deltas": deltas,
-                "mixed_workload_distribution": mixed_distribution,
+                "mixed_workload_attribution": mixed_attribution,
             },
             indent=2,
         )
@@ -649,11 +620,11 @@ def _check_router(
         all(item["healthy"] and item["routable"] for item in deltas),
         f"router workers did not remain healthy and routable: {deltas}",
     )
-    if "error" not in mixed_distribution:
-        mixed_counts = list(mixed_distribution["by_worker"].values())
+    if mixed_attribution["valid"]:
+        worker_counts = list(mixed_attribution["by_worker"].values())
         checks.check(
-            all(count > 0 for count in mixed_counts),
-            f"both workers must serve mixed production traffic: {mixed_counts}",
+            all(count > 0 for count in worker_counts),
+            f"both workers must serve mixed production traffic: {worker_counts}",
         )
     minimum_class_requests = {
         "speech_http": (

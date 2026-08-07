@@ -538,8 +538,8 @@ tts_serving_mixed_speech_normal_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_speech_normal"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -581,8 +581,8 @@ tts_serving_mixed_rest_stream_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_rest_stream"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -644,8 +644,8 @@ tts_serving_mixed_batch32_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_batch32"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -677,8 +677,8 @@ tts_serving_mixed_ws_normal_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_ws_normal"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -720,8 +720,8 @@ tts_serving_mixed_ws_stream_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_ws_stream"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -783,8 +783,8 @@ tts_serving_mixed_long_speed:
   extra_env: {}
   context_vars: []
   variant: "mixed_long"
-  test_file_sha256: 8802b5c2807790158e6a539a77fee8a9b593ececef6e167f0410f4626862ab4d
-  last_discovered_at: 2026-08-07T12:17:00Z
+  test_file_sha256: f8c2c9ad666612670d3eade909ca1169de75f1825733b6dfd9584163f4fa5693
+  last_discovered_at: 2026-08-07T13:03:01Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
