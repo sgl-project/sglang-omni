@@ -26,6 +26,7 @@ runs:
         # The CI venv inherits the image's Python/Torch/FlashInfer environment,
         # so it can safely reuse the architecture-specific prewarmed cache.
         echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
+        echo "FLASHINFER_JIT_DEBUG=0" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
