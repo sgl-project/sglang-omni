@@ -2299,21 +2299,39 @@ def discover(out, only, cfg):
                 default_file,
             )
             sc_by_group = ms.get("sample_counts_by_group") or {}
-            groups = _emit_groups(
-                all_constants, cfg_paths, default_file, counters,
-                slack_derived=slack_derived,
-            )
-            for g, metrics in groups.items():
-                if g in sc_by_group:
-                    sample_counts = _build_sample_counts(sc_by_group[g], default_file)
+            for (
+                preset_name,
+                preset_env,
+                preset_gpus,
+                preset_model_ids,
+            ) in _calibration_presets(ms, extra):
+                # Presets own disjoint constant namespaces here exactly as they
+                # do under `variants`; without this every preset would claim
+                # the first preset's symbols and calibration would write one
+                # preset's worst-of-N over another's.
+                preset_filter = (
+                    (ms.get("calibration_presets") or {}).get(preset_name) or {}
+                ).get("constant_filter")
+                if preset_filter:
+                    ppat = re.compile(preset_filter)
+                    preset_constants = [
+                        (n, k)
+                        for (n, k) in all_constants
+                        if ppat.match(n.lstrip("_"))
+                    ]
                 else:
-                    sample_counts = default_sample_counts
-                for (
-                    preset_name,
-                    preset_env,
-                    preset_gpus,
-                    preset_model_ids,
-                ) in _calibration_presets(ms, extra):
+                    preset_constants = all_constants
+                groups = _emit_groups(
+                    preset_constants, cfg_paths, default_file, counters,
+                    slack_derived=slack_derived,
+                )
+                for g, metrics in groups.items():
+                    if g in sc_by_group:
+                        sample_counts = _build_sample_counts(
+                            sc_by_group[g], default_file
+                        )
+                    else:
+                        sample_counts = default_sample_counts
                     key = _stage_key(
                         base,
                         g,

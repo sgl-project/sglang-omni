@@ -15,6 +15,7 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_static_factory_args
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.whisper_asr import engine_builder as whisper_engine_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from tests.unit_test.fakes import FakeServerArgs
@@ -86,17 +87,17 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         lambda **kwargs: (object(), object()),
     )
     monkeypatch.setattr(
-        whisper_asr_stages,
+        whisper_engine_builder,
         "get_visible_gpu_sm_version",
         lambda gpu_id: 89,
     )
     monkeypatch.setattr(
-        whisper_asr_stages,
+        whisper_engine_builder,
         "get_process_gpu_memory_bytes",
         lambda gpu_id: 0,
     )
     monkeypatch.setattr(
-        whisper_asr_stages.logger,
+        whisper_engine_builder.logger,
         "info",
         lambda message, *args: runtime_logs.append((message, args)),
     )

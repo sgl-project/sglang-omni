@@ -212,6 +212,43 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     assert samples.shape == (1600,)
 
 
+def test_load_audio_trims_before_resampling() -> None:
+    import librosa
+    import torch
+    import torchaudio
+
+    sample_rate = 16000
+    tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate // 2) / sample_rate)
+    values = np.pad(tone, (sample_rate, sample_rate))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes((values * 32767).astype("<i2").tobytes())
+    wav = buffer.getvalue()
+    raw, sample_rate = torchaudio.load(io.BytesIO(wav))
+    expected, _ = librosa.effects.trim(raw.numpy(), top_db=30)
+    resample_kwargs = {
+        "lowpass_filter_width": 64,
+        "rolloff": 0.95,
+        "resampling_method": "sinc_interp_kaiser",
+    }
+    expected = torchaudio.functional.resample(
+        torch.from_numpy(expected), sample_rate, 48000, **resample_kwargs
+    )
+
+    samples = load_audio(
+        wav,
+        target_sample_rate=48000,
+        trim_top_db=30,
+        resample_kwargs=resample_kwargs,
+    )
+
+    assert samples.shape == expected.squeeze(0).shape
+    np.testing.assert_allclose(samples, expected.squeeze(0).numpy())
+
+
 def test_load_audio_falls_back_when_not_mono() -> None:
     samples = load_audio(_sine_wav_bytes(num_channels=2), mono=False)
 

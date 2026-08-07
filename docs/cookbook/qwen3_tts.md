@@ -108,6 +108,11 @@ with open("output.wav", "wb") as f:
     f.write(resp.content)
 ```
 
+Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
+`X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
+response still contains decodable audio, but the utterance may be incomplete.
+Batch responses expose the same value as each item's `finish_reason`.
+
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model
@@ -155,6 +160,11 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
 for a full Python raw PCM consumer.
+
+Base/reference-cloning checkpoints use true incremental codec and vocoder
+streaming for both this HTTP endpoint and `/v1/audio/speech/stream` WebSocket
+sessions with `stream_audio=true`. CustomVoice and VoiceDesign remain
+non-streaming.
 
 ## Generation Parameters
 

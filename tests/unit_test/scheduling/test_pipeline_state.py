@@ -87,6 +87,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     import dataclasses
 
     from sglang_omni.models.audar_tts.payload_types import AudarTTSState
+    from sglang_omni.models.dots_tts.payload_types import DotsTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -99,6 +100,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     # Every in-scope TTS model routes its state through PipelineStateBase.
     state_classes = (
         AudarTTSState,
+        DotsTTSState,
         S2ProState,
         HiggsTtsState,
         MingTTSState,
@@ -182,6 +184,7 @@ def _assert_restored_fields(
 
 def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.audar_tts.payload_types import AudarTTSState
+    from sglang_omni.models.dots_tts.payload_types import DotsTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -213,6 +216,23 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 prompt_tokens=4,
                 completion_tokens=6,
                 engine_time_s=0.125,
+            ),
+            {},
+        ),
+        (
+            DotsTTSState(
+                prompt_audio_path="ref.wav",
+                use_prompt_prefill=True,
+                speaker_scale=1.5,
+                ode_method="euler",
+                num_steps=4,
+                guidance_scale=1.2,
+                seed=7,
+                stream=True,
+                sample_rate=48000,
+                prompt_tokens=3,
+                completion_tokens=5,
+                engine_time_s=0.25,
             ),
             {},
         ),

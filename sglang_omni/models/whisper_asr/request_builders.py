@@ -8,7 +8,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -19,9 +18,9 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import GenerationConfig
 
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 
 _WHISPER_SAMPLE_RATE = 16000
 _MAX_AUDIO_DURATION_S = 30.0
@@ -42,28 +41,6 @@ class WhisperASRRequestData(SGLangARRequestData):
     language: str | None = "english"
     task: str = "transcribe"
     engine_start_s: float = 0.0
-
-
-def _audio_source_from_payload(payload: StagePayload) -> Any:
-    inputs = payload.request.inputs
-    if isinstance(inputs, dict):
-        for key in ("audio_bytes", "bytes", "file"):
-            value = inputs.get(key)
-            if value is not None:
-                return value
-        for key in ("audio_path", "path", "url"):
-            value = inputs.get(key)
-            if value is not None:
-                return value
-    return inputs
-
-
-def _load_audio(source: Any) -> np.ndarray:
-    return load_audio(
-        source,
-        source_name="Whisper ASR",
-        target_sample_rate=_WHISPER_SAMPLE_RATE,
-    )
 
 
 def _resolve_task(value: Any) -> str:
@@ -201,21 +178,23 @@ def make_whisper_scheduler_adapters(
         sampling_params.normalize(tokenizer=None)
 
         try:
-            audio = _load_audio(_audio_source_from_payload(payload))
+            prepared = prepare_audio(
+                payload,
+                source_name="Whisper ASR",
+                target_sample_rate=_WHISPER_SAMPLE_RATE,
+            )
         except Exception as exc:
             raise ValueError(
                 "Whisper ASR could not decode the uploaded audio; provide a valid "
                 "audio file."
             ) from exc
-        audio_duration_s = float(len(audio) / _WHISPER_SAMPLE_RATE)
-        if audio_duration_s > _MAX_AUDIO_DURATION_S:
+        if prepared.duration_s > _MAX_AUDIO_DURATION_S:
             raise ValueError(
                 "Whisper ASR accepts audio up to 30.0 seconds; split longer audio "
                 "before inference."
             )
-        fingerprint = audio_fingerprint(audio)
         features = processor.feature_extractor(
-            audio,
+            prepared.waveform,
             sampling_rate=_WHISPER_SAMPLE_RATE,
             return_tensors="pt",
         ).input_features
@@ -223,7 +202,7 @@ def make_whisper_scheduler_adapters(
             mm_items=[
                 MultimodalDataItem(
                     modality=Modality.AUDIO,
-                    hash=audio_fingerprint_int(fingerprint),
+                    hash=prepared.fingerprint_int,
                     feature=features,
                 )
             ],
@@ -236,7 +215,7 @@ def make_whisper_scheduler_adapters(
             origin_input_ids=input_ids,
             sampling_params=sampling_params,
             vocab_size=vocab_size,
-            extra_key=fingerprint,
+            extra_key=prepared.fingerprint,
         )
         req.multimodal_inputs = mm_inputs
         req._codec_suppress_tokens = None
@@ -247,7 +226,7 @@ def make_whisper_scheduler_adapters(
             prompt_token_ids=prompt_token_ids,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
-            audio_duration_s=audio_duration_s,
+            audio_duration_s=prepared.duration_s,
             language="english" if task == "translate" else language,
             task=task,
             engine_start_s=time.perf_counter(),
@@ -280,6 +259,5 @@ def make_whisper_scheduler_adapters(
 
 __all__ = [
     "WhisperASRRequestData",
-    "load_audio",
     "make_whisper_scheduler_adapters",
 ]

@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from benchmarks.dataset import prepare, seedtts
+from benchmarks.eval import benchmark_asr_seedtts
 
 _MODELS_DIR = (
     Path(__file__).resolve().parents[3] / ".claude/skills/tune-ci-thresholds/models"
@@ -64,6 +65,38 @@ def test_download_dataset_prewarms_all_mmmu_configs(monkeypatch) -> None:
     ]
 
 
+def test_download_seedtts_uses_pinned_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict = {}
+
+    def fake_load_dataset(repo_id: str, **kwargs):
+        observed["repo_id"] = repo_id
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        types.SimpleNamespace(
+            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            load_dataset=fake_load_dataset,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+    )
+
+    prepare.download_dataset(prepare.SEEDTTS_DATASET_ID, quiet=True)
+
+    assert observed == {
+        "repo_id": prepare.SEEDTTS_DATASET_ID,
+        "revision": prepare.SEEDTTS_DATASET_REVISION,
+    }
+
+
 def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     meta_dir = tmp_path / "en"
     meta_dir.mkdir()
@@ -81,6 +114,177 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].ref_text == "hello"
     assert samples[0].ref_audio == str(ref_audio)
     assert samples[0].target_text == "target one"
+
+
+def test_local_seedtts_source_does_not_claim_huggingface_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    meta_path = tmp_path / "meta.lst"
+    meta_path.write_text("sample-1|hello|ref.wav|target one\n")
+    (tmp_path / "ref.wav").write_bytes(b"audio")
+    output_path = tmp_path / "result.json"
+    captured: dict = {}
+
+    async def empty_sweep(*_args, **_kwargs):
+        return []
+
+    def capture_provenance(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_seedtts",
+            "--port",
+            "8000",
+            "--meta",
+            str(meta_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+    monkeypatch.setattr(benchmark_asr_seedtts, "_sweep", empty_sweep)
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "collect_benchmark_provenance",
+        capture_provenance,
+    )
+
+    benchmark_asr_seedtts.main()
+    assert captured["dataset_revision"] is None
+    assert captured["model_revision"] is None
+    assert captured["server_config"]["quantization"] is None
+
+
+def test_custom_seedtts_repo_does_not_use_canonical_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "result.json"
+    loaded: dict = {}
+    captured: dict = {}
+    audio_path = tmp_path / "custom.wav"
+    audio_path.write_bytes(b"audio")
+
+    def capture_load(source: str, **kwargs):
+        loaded["source"] = source
+        loaded.update(kwargs)
+        return [
+            seedtts.SampleInput(
+                sample_id="sample-1",
+                ref_text="reference",
+                ref_audio=str(audio_path),
+                target_text="target",
+            )
+        ]
+
+    async def empty_sweep(*_args, **_kwargs):
+        return []
+
+    def capture_provenance(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_seedtts",
+            "--port",
+            "8000",
+            "--meta",
+            "example/custom-seedtts",
+            "--output",
+            str(output_path),
+        ],
+    )
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "load_seedtts_samples",
+        capture_load,
+    )
+    monkeypatch.setattr(benchmark_asr_seedtts, "_sweep", empty_sweep)
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "collect_benchmark_provenance",
+        capture_provenance,
+    )
+
+    benchmark_asr_seedtts.main()
+
+    assert loaded["revision"] is None
+    assert captured["dataset_revision"] is None
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--concurrencies", ""],
+        ["--concurrencies", "0"],
+        ["--repeats", "0"],
+    ],
+)
+def test_asr_benchmark_cli_rejects_empty_work(
+    monkeypatch: pytest.MonkeyPatch,
+    extra_args: list[str],
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["benchmark_asr_seedtts", "--port", "8000", *extra_args],
+    )
+
+    with pytest.raises(SystemExit):
+        benchmark_asr_seedtts.parse_args()
+
+
+def test_asr_benchmark_rejects_empty_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_seedtts",
+            "--port",
+            "8000",
+            "--meta",
+            "example/empty",
+            "--output",
+            str(tmp_path / "result.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "load_seedtts_samples",
+        lambda *_args, **_kwargs: [],
+    )
+
+    with pytest.raises(RuntimeError, match="No SeedTTS samples"):
+        benchmark_asr_seedtts.main()
+
+
+def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.wav"
+    audio_path.write_bytes(b"first")
+    samples = [
+        seedtts.SampleInput(
+            sample_id="sample-1",
+            ref_text="reference",
+            ref_audio=str(audio_path),
+            target_text="target",
+        )
+    ]
+
+    before = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+    audio_path.write_bytes(b"second")
+    after = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+
+    assert before != after
 
 
 def test_load_seedtts_samples_stages_only_selected_rows(
@@ -102,9 +306,10 @@ def test_load_seedtts_samples_stages_only_selected_rows(
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
 
-    def fake_load_dataset(repo_id: str, split: str):
+    def fake_load_dataset(repo_id: str, split: str, revision: str | None = None):
         assert repo_id == "zhaochenyang20/seed-tts-eval-arrow"
         assert split == "en"
+        assert revision == prepare.SEEDTTS_DATASET_REVISION
         return dataset
 
     monkeypatch.setitem(
@@ -163,9 +368,10 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
         }
     ]
 
-    def fake_load_dataset(repo_id: str, split: str):
-        assert repo_id == "zhaochenyang20/seed-tts-eval-arrow"
+    def fake_load_dataset(repo_id: str, split: str, revision: str):
+        assert repo_id == prepare.SEEDTTS_DATASET_ID
         assert split == "en"
+        assert revision == prepare.SEEDTTS_DATASET_REVISION
         return _FakeDataset(rows)
 
     monkeypatch.setitem(
@@ -352,6 +558,7 @@ def test_tune_ci_threshold_tts_config_owns_only_tts_stages() -> None:
     expected_tests = [
         "tests/test_model/test_tts_ci.py",
         "tests/test_model/test_tts_serving_ci.py",
+        "tests/test_ci/test_tts_mps_dp2.py",
     ]
     assert config["test_globs"] == expected_tests
     assert "test_asr_ci.py" not in config.get("gpus_per_test", {})

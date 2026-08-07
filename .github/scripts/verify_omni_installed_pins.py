@@ -44,6 +44,12 @@ def _installed_version(distribution: str) -> str | None:
     return None
 
 
+def _matches_pin(installed: str, expected: str) -> bool:
+    if "+" in expected:
+        return installed == expected
+    return installed.partition("+")[0] == expected
+
+
 def main() -> int:
     python = sys.argv[1] if len(sys.argv) > 1 else sys.executable
     repo_root = Path(sys.argv[2] if len(sys.argv) > 2 else ".").resolve()
@@ -61,7 +67,7 @@ def main() -> int:
         if installed is None:
             missing.append(f"{distribution}=={expected}")
             continue
-        if installed != expected:
+        if not _matches_pin(installed, expected):
             mismatches.append(
                 f"{distribution}: installed={installed} expected={expected}"
             )

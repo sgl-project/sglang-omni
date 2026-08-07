@@ -31,6 +31,7 @@ class ModelWorkerConfig:
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "BailingMoeV2ForCausalLM": ("llm_config", None),
+    "DotsTTSForConditionalGeneration": ("llm_config", None),
     "MingTTSSGLangModel": ("llm_config", None),
     "Qwen3OmniTalker": ("talker_config", "text_config"),
     "Qwen3OmniThinkerForCausalLM": ("thinker_config", "text_config"),
@@ -87,6 +88,12 @@ class ModelWorker:
             )
 
             register_ming_tts_hf_config()
+        if self.model_arch_override == "DotsTTSForConditionalGeneration":
+            from sglang_omni.models.dots_tts.hf_config import (
+                register_dots_tts_hf_config,
+            )
+
+            register_dots_tts_hf_config()
 
         from sglang.srt.configs.model_config import ModelConfig
 

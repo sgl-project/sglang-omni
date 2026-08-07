@@ -40,7 +40,16 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del model_worker, checkpoint_dir, device, gpu_id, server_args
+        del checkpoint_dir, device, gpu_id, server_args
+        self._model_runner = model_worker.model_runner
+
+    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+        del server_args
+        graph_runner = self._model_runner.decode_cuda_graph_runner
+        model.init_sampling_graphs(
+            list(graph_runner.capture_bs),
+            disable_padding=graph_runner.disable_padding,
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(
@@ -50,7 +59,13 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.MossTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
+        self._stream_output_builder = (
+            request_builders.make_moss_tts_stream_output_builder()
+        )
         return request_builders.make_moss_tts_scheduler_adapters(model=model)
+
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        return {"stream_output_builder": self._stream_output_builder}
 
     def make_abort_callback(self) -> Any | None:
         return request_builders.cleanup_prepared_moss_tts_request

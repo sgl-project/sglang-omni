@@ -153,6 +153,11 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         self._uncacheable = 0
         self._last_log_time = 0.0
 
+    def close(self) -> None:
+        close = getattr(self._hook, "close", None)
+        if callable(close):
+            close()
+
     def get_or_encode(self, raw_input: Any, *, desc: str | None = None) -> ArtifactT:
         item = self._hook.normalize_input(raw_input)
         key = self._hook.cache_key(item)

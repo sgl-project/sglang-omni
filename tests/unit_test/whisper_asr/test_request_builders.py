@@ -89,6 +89,16 @@ def _payload(params: dict | None = None) -> StagePayload:
     )
 
 
+def _prepared_audio(num_samples: int = 16000) -> SimpleNamespace:
+    waveform = np.zeros(num_samples, dtype=np.float32)
+    return SimpleNamespace(
+        waveform=waveform,
+        duration_s=num_samples / 16000,
+        fingerprint="fingerprint",
+        fingerprint_int=1,
+    )
+
+
 def _adapters(tokenizer: _FakeTokenizer | None = None):
     tokenizer = tokenizer or _FakeTokenizer()
     return request_builders.make_whisper_scheduler_adapters(
@@ -103,8 +113,8 @@ def _adapters(tokenizer: _FakeTokenizer | None = None):
 def test_whisper_transcription_defaults_to_english(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(),
     )
     tokenizer = _FakeTokenizer()
     request_builder, _ = _adapters(tokenizer)
@@ -125,8 +135,8 @@ def test_whisper_prefix_state_is_request_local_under_concurrency(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(),
     )
     tokenizer = _SlowFakeTokenizer()
     request_builder, _ = _adapters(tokenizer)
@@ -195,8 +205,10 @@ def test_whisper_translation_requires_source_language_before_audio_load(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: (_ for _ in ()).throw(AssertionError("must not load audio")),
+        "prepare_audio",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not load audio")
+        ),
     )
     request_builder, _ = _adapters()
 
@@ -207,8 +219,8 @@ def test_whisper_translation_requires_source_language_before_audio_load(
 def test_whisper_translation_accepts_explicit_source_language(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(),
     )
     request_builder, result_adapter = _adapters()
 
@@ -228,8 +240,8 @@ def test_whisper_translation_accepts_explicit_source_language(monkeypatch) -> No
 def test_whisper_request_rejects_unknown_task(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(),
     )
     request_builder, _ = _adapters()
 
@@ -240,8 +252,8 @@ def test_whisper_request_rejects_unknown_task(monkeypatch) -> None:
 def test_whisper_request_rejects_excessive_token_budget(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(16000, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(),
     )
     request_builder, _ = _adapters()
 
@@ -264,8 +276,10 @@ def test_whisper_rejects_invalid_params_before_loading_audio(
 ) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: (_ for _ in ()).throw(AssertionError("audio load must not run")),
+        "prepare_audio",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("audio load must not run")
+        ),
     )
     request_builder, _ = _adapters()
 
@@ -276,8 +290,8 @@ def test_whisper_rejects_invalid_params_before_loading_audio(
 def test_whisper_request_rejects_audio_over_30_seconds(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: np.zeros(30 * 16000 + 1, dtype=np.float32),
+        "prepare_audio",
+        lambda *args, **kwargs: _prepared_audio(30 * 16000 + 1),
     )
     request_builder, _ = _adapters()
 
@@ -288,8 +302,8 @@ def test_whisper_request_rejects_audio_over_30_seconds(monkeypatch) -> None:
 def test_whisper_request_reports_audio_decode_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders,
-        "_load_audio",
-        lambda source: (_ for _ in ()).throw(RuntimeError("decode failed")),
+        "prepare_audio",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("decode failed")),
     )
     request_builder, _ = _adapters()
 

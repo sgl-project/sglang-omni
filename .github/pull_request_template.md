@@ -33,5 +33,7 @@
 CI runs on self-hosted GPU runners and requires a maintainer to add the
 `run-ci` label. Once labeled, every subsequent push re-triggers CI as
 long as the label remains. Use `/tag-and-rerun-ci higgs` or
-`/tag-and-rerun-ci moss` to select a TTS CI model. Draft PRs are skipped even
-if labeled.
+`/tag-and-rerun-ci moss` to select a TTS CI model, and
+`/tag-and-rerun-ci fun-asr` or `/tag-and-rerun-ci qwen3-asr` to select an ASR
+CI model. One selector from each family can be combined, for example
+`/tag-and-rerun-ci moss fun-asr`. Draft PRs are skipped even if labeled.
