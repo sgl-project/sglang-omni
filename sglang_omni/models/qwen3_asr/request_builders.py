@@ -146,10 +146,6 @@ def make_qwen3_asr_scheduler_adapters(
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
-        lang_raw = str(params.get("language") or "en").strip().lower()
-        forced_language = {"zh": "Chinese", "cn": "Chinese"}.get(
-            lang_raw, "Chinese" if lang_raw.startswith("zh") else "English"
-        )
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
 
         if context_length is not None:

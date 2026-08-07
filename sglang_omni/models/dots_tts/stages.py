@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -411,11 +412,17 @@ def create_vocoder_executor(
     **_: Any,
 ) -> DotsTTSStreamingVocoder:
     codec = load_dots_audio_codec(model_path, device=_device(device, gpu_id))
-    return DotsTTSStreamingVocoder(
+    vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
         merge_steps=vocoder_merge_steps,
     )
+    logging.getLogger(__name__).info(
+        "dots.tts vocoder backend: %s (merge_steps=%d)",
+        "compiled streaming chunks" if vocoder.optimize else "eager per-patch decode",
+        vocoder.merge_steps,
+    )
+    return vocoder
 
 
 __all__ = [
