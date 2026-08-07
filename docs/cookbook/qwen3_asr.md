@@ -191,5 +191,8 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
+- Audio duration is bounded by the configured context and requested
+  `max_new_tokens`, rather than a fixed 30-second window. Split audio or reduce
+  `max_new_tokens` if the request exceeds that token budget.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

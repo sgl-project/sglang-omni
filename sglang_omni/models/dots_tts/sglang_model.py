@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from torch import nn
 
@@ -82,15 +83,28 @@ class DotsTTSSGLangModel(nn.Module):
         forward_batch: Any,
         input_embeds: torch.Tensor | None = None,
         **kwargs: Any,
-    ):
+    ) -> LogitsProcessorOutput:
+        del kwargs
         if input_embeds is None:
             input_embeds = forward_batch.input_embeds
-        return self.qwen2(
+        hidden_states = self.qwen2.model(
             input_ids=input_ids,
             positions=positions,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
-            **kwargs,
+        )
+        # note (db-ol): dots consumes hidden states only and the runner
+        # overwrites next_token_ids, dummy logits just satisfy the contract.
+        if forward_batch.forward_mode.is_extend():
+            extend_seq_lens = getattr(forward_batch, "extend_seq_lens", None)
+            request_count = (
+                int(extend_seq_lens.numel()) if extend_seq_lens is not None else 1
+            )
+        else:
+            request_count = int(hidden_states.shape[0])
+        return LogitsProcessorOutput(
+            next_token_logits=hidden_states.new_empty((request_count, 1)),
+            hidden_states=hidden_states,
         )
 
 

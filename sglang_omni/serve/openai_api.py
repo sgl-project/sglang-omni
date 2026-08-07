@@ -122,7 +122,6 @@ MAX_VOICE_UPLOAD_BODY_BYTES = (
     MAX_VOICE_UPLOAD_BYTES + VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES
 )
 
-
 class _RequestBodyTooLarge(Exception):
     pass
 

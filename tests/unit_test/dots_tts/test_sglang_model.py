@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import nn
 
 from sglang_omni.models.dots_tts.sglang_model import DotsTTSSGLangModel
@@ -77,3 +80,68 @@ def test_weight_loader_routes_every_checkpoint_namespace() -> None:
 
     with pytest.raises(AssertionError, match="Unexpected dots.tts checkpoint weight"):
         model.load_weights([("new_acoustic_block.weight", torch.ones(1, 1))])
+
+
+class _TransformerOnlyBackbone(nn.Module):
+    def __init__(self, hidden: torch.Tensor) -> None:
+        super().__init__()
+        self.hidden = hidden
+        self.model_kwargs: dict | None = None
+
+    def model(self, **kwargs) -> torch.Tensor:
+        self.model_kwargs = kwargs
+        return self.hidden
+
+    def forward(self, *args, **kwargs):
+        raise AssertionError("dots.tts must not enter the lm_head logits path")
+
+
+def _forward_model(hidden: torch.Tensor) -> DotsTTSSGLangModel:
+    model = DotsTTSSGLangModel.__new__(DotsTTSSGLangModel)
+    nn.Module.__init__(model)
+    model.qwen2 = _TransformerOnlyBackbone(hidden)
+    return model
+
+
+def test_forward_prefill_skips_lm_head_and_keeps_full_hidden_rows() -> None:
+    hidden = torch.arange(12.0).reshape(6, 2)
+    model = _forward_model(hidden)
+    embeds = torch.zeros(6, 2)
+    batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        input_embeds=embeds,
+        extend_seq_lens=torch.tensor([4, 2]),
+    )
+
+    output = model.forward(
+        input_ids=torch.zeros(6, dtype=torch.long),
+        positions=torch.arange(6),
+        forward_batch=batch,
+    )
+
+    assert isinstance(output, LogitsProcessorOutput)
+    torch.testing.assert_close(output.hidden_states, hidden)
+    assert output.next_token_logits.shape == (2, 1)
+    assert model.qwen2.model_kwargs is not None
+    assert model.qwen2.model_kwargs["input_embeds"] is embeds
+
+
+def test_forward_decode_skips_lm_head_and_returns_per_request_rows() -> None:
+    hidden = torch.arange(6.0).reshape(3, 2)
+    model = _forward_model(hidden)
+    embeds = torch.zeros(3, 2)
+    batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: False),
+        input_embeds=embeds,
+    )
+
+    output = model.forward(
+        input_ids=torch.zeros(3, dtype=torch.long),
+        positions=torch.arange(3),
+        forward_batch=batch,
+        input_embeds=embeds,
+    )
+
+    assert isinstance(output, LogitsProcessorOutput)
+    torch.testing.assert_close(output.hidden_states, hidden)
+    assert output.next_token_logits.shape == (3, 1)

@@ -1452,6 +1452,29 @@ def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
     assert "accepts audio up to" in response.json()["detail"]
 
 
+def test_transcription_endpoint_maps_kv_capacity_error_to_400() -> None:
+    bad_request_error = (
+        "Request requires more tokens than the thinker KV cache can hold "
+        "(input_tokens=1500, max_new_tokens=128, required_tokens=1628, "
+        "kv_capacity=1600)."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "thinker KV cache" in response.json()["detail"]
+
+
 def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
     bad_request_error = "max_new_tokens must be between 1 and 200, got 65536"
     client = TestClient(
