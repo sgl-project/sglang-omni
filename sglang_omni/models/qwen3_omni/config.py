@@ -14,6 +14,7 @@ from sglang_omni.config import (
     StageResourceConfig,
     StageRuntimeConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -69,7 +70,7 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="image_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_image_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory_args={"device": current_platform.device_type, "dtype": None},
         gpu=gpu,
         next="mm_aggregate",
         project_payload={
@@ -83,7 +84,7 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory_args={"device": current_platform.device_type, "dtype": None},
         gpu=gpu,
         next="mm_aggregate",
         project_payload={
@@ -208,7 +209,10 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
-        factory_args={"device": "cuda", "enable_cuda_graph": True},
+        factory_args={
+            "device": current_platform.device_type,
+            "enable_cuda_graph": True,
+        },
         gpu=gpu,
         runtime=StageRuntimeConfig(
             resources=StageResourceConfig(total_gpu_memory_fraction=0.02)

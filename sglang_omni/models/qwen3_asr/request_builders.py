@@ -242,10 +242,6 @@ def make_qwen3_asr_scheduler_adapters(
         mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
 
         temperature = float(params.get("temperature") or 0.0)
-        if temperature == 0.0:
-            # Qwen3-ASR degenerates under pure-greedy (emits only the language
-            # tag then EOS); upstream uses 0.01 near-greedy.
-            temperature = 0.01
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"

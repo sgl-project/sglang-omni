@@ -13,6 +13,7 @@ from typing import Any
 
 import torch
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
@@ -100,7 +101,7 @@ class ModelRunner:
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
-        self.device = torch.device(f"cuda:{tp_worker.gpu_id}")
+        self.device = current_platform.get_device(tp_worker.gpu_id)
         self.model = tp_worker.model_runner.model
         self._execution_bridge: Any | None = None
 
@@ -391,8 +392,7 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        if self.device.type == "cuda":
-            torch.cuda.set_device(self.device)
+        torch.get_device_module(self.device).set_device(self.device)
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
