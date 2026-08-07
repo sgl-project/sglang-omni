@@ -349,6 +349,10 @@ class CreateSpeechRequest(BaseModel):
 
     # Voice cloning parameters
     ref_audio: str | None = None  # path or URL to reference audio
+    # note (luojiaxuan): sliding-window multi-turn history for
+    # MOSS-TTS-Realtime sessions; each turn is {"text": str,
+    # "audio_codes": [[...]] } or {"text": str, "audio": path}.
+    history: list[dict[str, Any]] | None = None
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     x_vector_only_mode: bool | None = None

@@ -1,0 +1,168 @@
+{
+  "cpu_affinity": [
+    27
+  ],
+  "cases": {
+    "1": {
+      "fa3": {
+        "cuda_graph_samples_us": [
+          8077.1661376953125,
+          8071.448974609375,
+          8072.5665283203125,
+          8072.7301025390625,
+          8073.2696533203125
+        ],
+        "cuda_graph_us": 8072.7301025390625,
+        "eager_samples_us": [
+          30494.93408203125,
+          28739.23828125,
+          28876.76025390625,
+          28961.7333984375,
+          28870.2294921875
+        ],
+        "eager_us": 28876.76025390625,
+        "fused_qkv": true,
+        "resolved_backend": "fa3"
+      },
+      "fa3_cuda_graph_speedup": 1.0793423829880342,
+      "fa3_eager_speedup": 1.4634463655954415,
+      "fa3_numerics": {
+        "cosine_similarity": 0.9999890327453613,
+        "max_abs": 0.0234375,
+        "mean_abs": 0.00253097852692008
+      },
+      "sdpa": {
+        "cuda_graph_samples_us": [
+          8716.854248046875,
+          8712.266235351562,
+          8713.23974609375,
+          8714.33349609375,
+          8713.15673828125
+        ],
+        "cuda_graph_us": 8713.23974609375,
+        "eager_samples_us": [
+          40926.44287109375,
+          42259.58984375,
+          41938.53515625,
+          43094.3115234375,
+          47300.673828125
+        ],
+        "eager_us": 42259.58984375,
+        "fused_qkv": false,
+        "resolved_backend": "sdpa"
+      },
+      "sdpa_fused_qkv": {
+        "cuda_graph_samples_us": [
+          8184.322509765625,
+          8169.41162109375,
+          8169.8876953125,
+          8170.81298828125,
+          8169.371337890625
+        ],
+        "cuda_graph_us": 8169.8876953125,
+        "eager_samples_us": [
+          34624.5556640625,
+          38404.82666015625,
+          38625.302734375,
+          37862.0654296875,
+          35124.3017578125
+        ],
+        "eager_us": 37862.0654296875,
+        "fused_qkv": true,
+        "resolved_backend": "sdpa"
+      },
+      "sdpa_fused_qkv_cuda_graph_speedup": 1.0665066731692041,
+      "sdpa_fused_qkv_eager_speedup": 1.1161459197789674,
+      "sdpa_fused_qkv_numerics": {
+        "cosine_similarity": 1.0,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      }
+    },
+    "16": {
+      "fa3": {
+        "cuda_graph_samples_us": [
+          10842.220458984375,
+          10839.586181640625,
+          10839.55810546875,
+          10841.5380859375,
+          10839.969482421875
+        ],
+        "cuda_graph_us": 10839.969482421875,
+        "eager_samples_us": [
+          30051.03515625,
+          29898.46923828125,
+          29983.60107421875,
+          29951.51123046875,
+          30126.66015625
+        ],
+        "eager_us": 29983.60107421875,
+        "fused_qkv": true,
+        "resolved_backend": "fa3"
+      },
+      "fa3_cuda_graph_speedup": 1.1021185227243422,
+      "fa3_eager_speedup": 1.6809106996394432,
+      "fa3_numerics": {
+        "cosine_similarity": 0.99998939037323,
+        "max_abs": 0.0390625,
+        "mean_abs": 0.0024723797105252743
+      },
+      "sdpa": {
+        "cuda_graph_samples_us": [
+          11946.93115234375,
+          11947.181396484375,
+          11946.708984375,
+          11947.344970703125,
+          11946.63818359375
+        ],
+        "cuda_graph_us": 11946.93115234375,
+        "eager_samples_us": [
+          48978.4423828125,
+          50399.755859375,
+          51359.560546875,
+          45641.845703125,
+          54350.419921875
+        ],
+        "eager_us": 50399.755859375,
+        "fused_qkv": false,
+        "resolved_backend": "sdpa"
+      },
+      "sdpa_fused_qkv": {
+        "cuda_graph_samples_us": [
+          11469.63623046875,
+          11471.417236328125,
+          11468.594970703125,
+          11469.647216796875,
+          11469.49951171875
+        ],
+        "cuda_graph_us": 11469.63623046875,
+        "eager_samples_us": [
+          35681.7724609375,
+          38067.2802734375,
+          36367.96875,
+          35703.740234375,
+          39614.86328125
+        ],
+        "eager_us": 36367.96875,
+        "fused_qkv": true,
+        "resolved_backend": "sdpa"
+      },
+      "sdpa_fused_qkv_cuda_graph_speedup": 1.0416137802703,
+      "sdpa_fused_qkv_eager_speedup": 1.385828177697579,
+      "sdpa_fused_qkv_numerics": {
+        "cosine_similarity": 1.000000238418579,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      }
+    }
+  },
+  "dtype": "torch.bfloat16",
+  "hardware": "NVIDIA H100 80GB HBM3",
+  "iterations": 50,
+  "mkl_num_threads": "1",
+  "omp_num_threads": "1",
+  "repeats": 5,
+  "timestamp": "2026-07-26T20:48:01Z",
+  "torch": "2.11.0+cu130",
+  "warmup": 20
+}

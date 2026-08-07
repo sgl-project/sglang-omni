@@ -755,6 +755,8 @@ def _build_tts_params(
         tts_params["instructions"] = request.instructions
     if request.ref_audio is not None:
         tts_params["ref_audio"] = request.ref_audio
+    if request.history is not None:
+        tts_params["history"] = request.history
     if request.ref_text is not None:
         tts_params["ref_text"] = request.ref_text
     if uploaded_voice is not None:

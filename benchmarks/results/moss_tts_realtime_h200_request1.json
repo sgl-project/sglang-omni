@@ -1,0 +1,125 @@
+{
+  "date": "2026-07-26",
+  "hardware": "1x NVIDIA H200 141GB",
+  "software": {
+    "sglang_omni_base": "dc64a6b21c2f82072a101df47bd62efd5b4e2c61",
+    "sglang": "0.5.12.post1",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.6.0",
+    "image": "jaxanluo/sglang-omni:dev"
+  },
+  "revisions": {
+    "model": "6acbc7f161a0db71c291f2d0aaa9eee59334cab2",
+    "codec": "3cd226ba2947efa357ef453bcad111b6eafba782",
+    "upstream_source": "58b20a0d5fcc6766658d50967a90a9d890009a46"
+  },
+  "workload": {
+    "concurrency": 1,
+    "warmup_requests": 2,
+    "measured_requests": 5,
+    "sample_rate": 24000,
+    "chunk_bytes": 4096,
+    "prompt": "moss_tts_realtime/audio/prompt_audio1.mp3",
+    "text": "Hello, this is a real-time speech synthesis benchmark running on one request.",
+    "sampling": {
+      "temperature": 0.8,
+      "top_p": 0.6,
+      "top_k": 30,
+      "repetition_penalty": 1.1,
+      "repetition_window": 50
+    }
+  },
+  "native": {
+    "global_attention": "sdpa",
+    "local_decode": "torch.compile(fullgraph=True)",
+    "ttfa_s_median": 0.2989782188087702,
+    "latency_s_mean": 3.721696076914668,
+    "audio_s_mean": 5.648000000000001,
+    "rtf_mean": 0.6595478619850353,
+    "samples": [
+      {
+        "ttfa_s": 0.2988419057801366,
+        "latency_s": 2.9535626717843115,
+        "audio_s": 4.48,
+        "rtf": 0.6592773820947123
+      },
+      {
+        "ttfa_s": 0.2989782188087702,
+        "latency_s": 2.8315153177827597,
+        "audio_s": 4.24,
+        "rtf": 0.667810216458198
+      },
+      {
+        "ttfa_s": 0.2942472859285772,
+        "latency_s": 4.329083901830018,
+        "audio_s": 6.48,
+        "rtf": 0.6680685033688298
+      },
+      {
+        "ttfa_s": 0.3004088052548468,
+        "latency_s": 4.3654116140678525,
+        "audio_s": 6.64,
+        "rtf": 0.6574415081427489
+      },
+      {
+        "ttfa_s": 4.127067630179226,
+        "latency_s": 4.128906879108399,
+        "audio_s": 6.4,
+        "rtf": 0.6451416998606874
+      }
+    ]
+  },
+  "omni": {
+    "global_attention": "fa3",
+    "local_decode": "sdpa_gqa_cuda_graph",
+    "ttfa_s_median": 0.13400825997814536,
+    "latency_s_mean": 1.4901190236210824,
+    "audio_s_mean": 5.632,
+    "rtf_mean": 0.2646838555945824,
+    "samples": [
+      {
+        "ttfa_s": 0.13542800769209862,
+        "latency_s": 1.283698168117553,
+        "audio_s": 4.8,
+        "rtf": 0.2674371183578236
+      },
+      {
+        "ttfa_s": 0.13400825997814536,
+        "latency_s": 1.4805224728770554,
+        "audio_s": 5.6,
+        "rtf": 0.26437901301375993
+      },
+      {
+        "ttfa_s": 0.1323314569890499,
+        "latency_s": 1.5959953451529145,
+        "audio_s": 6.08,
+        "rtf": 0.26249923440015044
+      },
+      {
+        "ttfa_s": 0.1352334190160036,
+        "latency_s": 1.5814021141268313,
+        "audio_s": 5.92,
+        "rtf": 0.2671287354943972
+      },
+      {
+        "ttfa_s": 0.13264894764870405,
+        "latency_s": 1.5089770178310573,
+        "audio_s": 5.76,
+        "rtf": 0.2619751767067808
+      }
+    ]
+  },
+  "comparison": {
+    "rtf_speedup": 2.4918326072568178,
+    "rtf_reduction_percent": 59.86889339646015,
+    "median_ttfa_reduction_percent": 55.177918808908764,
+    "mean_latency_reduction_percent": 59.96129203391563
+  },
+  "correctness_smoke": {
+    "scope": "one SGLang-Omni output from the benchmark prompt",
+    "asr_model": "openai/whisper-base.en",
+    "target": "Hello, this is a real-time speech synthesis benchmark running on one request.",
+    "transcript": "Hello, this is a real-time speech synthesis benchmark running on one request.",
+    "wer": 0.0
+  }
+}
