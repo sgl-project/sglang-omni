@@ -249,6 +249,7 @@ def managed_omni_server(
     port: int,
     host: str,
     log_file: Path | None,
+    server_config: str | None = None,
     max_running_requests: int | None = None,
     cuda_graph_max_bs: int | None = None,
     mem_fraction_static: float | None = None,
@@ -269,6 +270,8 @@ def managed_omni_server(
         "--host",
         host,
     ]
+    if server_config is not None:
+        cmd.extend(["--config", server_config])
     if max_running_requests is not None:
         cmd.extend(["--max-running-requests", str(max_running_requests)])
     if cuda_graph_max_bs is not None:

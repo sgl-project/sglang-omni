@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, and dots.tts.
 
 ## Prerequisites
 
@@ -29,6 +29,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
+| [dots.tts](https://github.com/studio-dots-ai/dots.tts) | `examples/configs/dots_tts.yaml` | 48 kHz continuous-latent TTS with reference audio and continuous batching (`max_running_requests=16` by default). The MF batch path uses engine-wide `num_steps=4` and Euler, and requires `ref_audio` + `ref_text`. TP1 only |
 
 ## Launch the Server
 
@@ -117,6 +118,18 @@ sgl-omni serve \
   --port 8000
 ```
 
+For dots.tts MeanFlow:
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf \
+  --config examples/configs/dots_tts.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
 For Ming-Omni-TTS on two 80 GB GPUs:
 
 ```bash
@@ -170,6 +183,23 @@ curl -X POST http://localhost:8000/v1/audio/speech \
       "instructions": "A warm, natural young adult voice."
     }' \
     --output output.wav
+```
+
+dots.tts accepts the same reference fields. The MeanFlow checkpoint is tuned
+for four flow steps:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "voice": "default",
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his.",
+    "stage_params": {"latent_engine": {"num_steps": 4}}
+  }' \
+  --output dots-output.wav
 ```
 
 For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a reference audio clip.

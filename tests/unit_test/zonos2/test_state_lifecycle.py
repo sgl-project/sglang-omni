@@ -125,6 +125,7 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> No
     scheduler._request_finished_callback = None
     scheduler._first_emit_done = {request_id}
     scheduler._prefill_start_done = {request_id}
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = result_adapter
     scheduler._model_runner = None
     scheduler._stream_output_builder = None

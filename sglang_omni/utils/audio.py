@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -22,7 +23,11 @@ def _is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
-def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | None:
+def _try_fast_wav_decode(
+    data: bytes,
+    target_sample_rate: int,
+    resample_kwargs: Mapping[str, Any] | None = None,
+) -> np.ndarray | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
     from sglang_omni.preprocessing.audio import _parse_wav_bytes
@@ -38,7 +43,10 @@ def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | N
         return audio
 
     resampled = torchaudio.functional.resample(
-        torch.from_numpy(audio), sample_rate, target_sample_rate
+        torch.from_numpy(audio),
+        sample_rate,
+        target_sample_rate,
+        **dict(resample_kwargs or {}),
     )
     return resampled.numpy()
 
@@ -60,6 +68,8 @@ def load_audio(
     source_name: str = "audio",
     target_sample_rate: int = 16000,
     mono: bool = True,
+    trim_top_db: float | None = None,
+    resample_kwargs: Mapping[str, Any] | None = None,
 ) -> np.ndarray:
     if isinstance(source, memoryview):
         source = source.tobytes()
@@ -87,8 +97,10 @@ def load_audio(
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
         # startup when mono=True without changing channel-preserving loads.
-        if mono and _is_riff_wav(source):
-            fast = _try_fast_wav_decode(source, target_sample_rate)
+        if mono and trim_top_db is None and _is_riff_wav(source):
+            fast = _try_fast_wav_decode(
+                source, target_sample_rate, resample_kwargs=resample_kwargs
+            )
             if fast is not None:
                 return fast
         audio, sample_rate = torchaudio.load(io.BytesIO(source))
@@ -104,9 +116,17 @@ def load_audio(
     if mono and audio.ndim == 2 and audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)
     audio = audio.to(torch.float32)
+    if trim_top_db is not None:
+        import librosa
+
+        trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
+        audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
         audio = torchaudio.functional.resample(
-            audio, int(sample_rate), target_sample_rate
+            audio,
+            int(sample_rate),
+            target_sample_rate,
+            **dict(resample_kwargs or {}),
         )
     if mono:
         audio = audio.squeeze(0)

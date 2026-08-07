@@ -54,6 +54,29 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
     assert out.weight_version == "v7"
 
 
+def test_speech_surfaces_finish_reason() -> None:
+    client = Client(
+        _SubmitStubCoordinator(
+            {
+                "audio_data": [0.0, 0.1, -0.1],
+                "sample_rate": 24000,
+                "finish_reason": "length",
+            }
+        )
+    )
+
+    result = asyncio.run(
+        client.speech(
+            GenerateRequest(prompt="hello"),
+            request_id="speech-1",
+            response_format="pcm",
+        )
+    )
+
+    assert result.finish_reason == "length"
+    assert result.mime_type == "audio/pcm"
+
+
 def test_completion_surfaces_omni_rollout() -> None:
     rollout = {
         "version": 1,
