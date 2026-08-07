@@ -11,11 +11,13 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any, cast
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 
+from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ def _expected_audio_tokens(item: Any) -> int | None:
     return int(num_tokens) if num_tokens is not None else None
 
 
-class FunASRPreLMEncoderService:
+class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
@@ -102,7 +104,6 @@ class FunASRPreLMEncoderService:
         self._namespace = cache_namespace
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._queue: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._closed = False
@@ -117,10 +118,7 @@ class FunASRPreLMEncoderService:
         self._queue_wait_total_s = 0.0
         self._queue_wait_max_s = 0.0
         self._encoder_time_s = 0.0
-        self._thread = threading.Thread(
-            target=self._worker, name="fun-asr-audio-encode", daemon=True
-        )
-        self._thread.start()
+        super().__init__(worker_name="fun-asr-audio-encode")
 
     def close(self) -> None:
         """Stop the encoder worker after all queued requests finish."""
@@ -139,7 +137,13 @@ class FunASRPreLMEncoderService:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("Fun-ASR pre-LM encoder service is closed")
-            self._queue.put((item, future, time.perf_counter()))
+            self._queue.put(
+                QueueEntry(
+                    item=item,
+                    future=future,
+                    enqueued_at=time.perf_counter(),
+                )
+            )
 
     def encode_item(self, item: Any) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
@@ -156,10 +160,7 @@ class FunASRPreLMEncoderService:
         key = self._cache_key(item)
 
         if key is None:
-            future: concurrent.futures.Future[torch.Tensor] = (
-                concurrent.futures.Future()
-            )
-            self._enqueue(item, future)
+            future = self._submit(item)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
 
@@ -168,7 +169,7 @@ class FunASRPreLMEncoderService:
             if self._is_valid(cached, expected_tokens):
                 with self._lock:
                     self._hits += 1
-                self._attach(item, cached)
+                self.attach_embedding(item, cached)
                 return
             logger.warning(
                 f"Fun-ASR pre-LM cache entry {key} failed validation "
@@ -194,14 +195,14 @@ class FunASRPreLMEncoderService:
                     leader = True
                     self._misses += 1
                     try:
-                        self._enqueue(item, future)
+                        self._submit(item, future)
                     except Exception:
                         del self._inflight[key]
                         raise
             else:
                 self._merged += 1
         if cached is not None:
-            self._attach(item, cached)
+            self.attach_embedding(item, cached)
             return
         try:
             embedding = future.result(timeout=self.ENCODE_TIMEOUT_S)
@@ -223,7 +224,7 @@ class FunASRPreLMEncoderService:
                 f"Fun-ASR pre-LM encode leader for {key} returned an invalid "
                 f"embedding"
             )
-        self._attach(item, embedding)
+        self.attach_embedding(item, embedding)
 
     def stats(self) -> dict[str, int | float]:
         with self._lock:
@@ -266,20 +267,18 @@ class FunASRPreLMEncoderService:
             and embedding.dtype == self._dtype
         )
 
-    def _attach(self, item: Any, embedding: torch.Tensor) -> None:
+    def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
         item.precomputed_embeddings = embedding.to(self._device, non_blocking=True)
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
     def _drain_batch(
         self,
-    ) -> tuple[list[tuple[Any, concurrent.futures.Future[torch.Tensor], float]], bool]:
+    ) -> tuple[list[QueueEntry[Any]], bool]:
         first = self._queue.get()
         if first is _SHUTDOWN:
             return [], True
-        batch = [
-            cast(tuple[Any, concurrent.futures.Future[torch.Tensor], float], first)
-        ]
+        batch = [cast(QueueEntry[Any], first)]
         deadline = time.monotonic() + self._max_batch_wait_s
         shutdown = False
         while len(batch) < self._max_batch_size:
@@ -295,115 +294,110 @@ class FunASRPreLMEncoderService:
             if queued is _SHUTDOWN:
                 shutdown = True
                 break
-            batch.append(
-                cast(
-                    tuple[Any, concurrent.futures.Future[torch.Tensor], float],
-                    queued,
-                )
-            )
+            batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
-    def _worker(self) -> None:
-        while True:
-            batch, shutdown = self._drain_batch()
-            if not batch:
-                return
-            dequeue_time = time.perf_counter()
-            queue_waits = [dequeue_time - enqueued_at for _, _, enqueued_at in batch]
-            with self._lock:
-                self._queue_wait_count += len(queue_waits)
-                self._queue_wait_total_s += sum(queue_waits)
-                self._queue_wait_max_s = max(
-                    self._queue_wait_max_s, max(queue_waits, default=0.0)
-                )
-            items = [item for item, _, _ in batch]
-            encode_start = time.perf_counter()
-            try:
-                embeddings = self._encode_batch(items)
-            except Exception as batch_exc:
-                if len(batch) == 1:
-                    batch[0][1].set_exception(batch_exc)
-                    with self._lock:
-                        self._encoder_time_s += time.perf_counter() - encode_start
-                    if shutdown:
-                        return
-                    continue
-                logger.exception(
-                    f"Fun-ASR batched audio encode failed for {len(items)} "
-                    f"items; retrying per item"
-                )
-                recovered = 0
-                for item, future, _ in batch:
-                    try:
-                        embedding = self._encode_batch([item])[0]
-                        future.set_result(embedding)
-                        recovered += 1
-                    except Exception as item_exc:
-                        future.set_exception(item_exc)
-                with self._lock:
-                    self._encoder_time_s += time.perf_counter() - encode_start
-                    # Note (Akazaakane): Retried items are single-item batches.
-                    self._batch_count += recovered
-                    self._item_count += recovered
-                if shutdown:
-                    return
-                continue
-            for (_, future, _), embedding in zip(batch, embeddings):
-                future.set_result(embedding)
-            with self._lock:
-                self._encoder_time_s += time.perf_counter() - encode_start
-                self._batch_count += 1
-                self._item_count += len(items)
-                batch_count = self._batch_count
-                item_count = self._item_count
-            if batch_count % 50 == 1:
-                logger.info(
-                    f"Fun-ASR pre-LM encoder stage: {batch_count} batches, "
-                    f"{item_count} items (avg "
-                    f"{item_count / batch_count:.2f} items/batch, "
-                    f"last batch: {len(items)}), cache: {self.stats()}"
-                )
-            if shutdown:
-                return
+    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+        return self._drain_batch()
 
-    def _encode_batch(self, items: list[Any]) -> list[torch.Tensor]:
-        stream_context = (
-            torch.cuda.stream(self._stream)
-            if self._stream is not None
-            else contextlib.nullcontext()
-        )
-        with torch.inference_mode(), stream_context:
-            embedding = self._model.get_audio_feature(items)
-            token_counts = []
-            for item in items:
-                expected = _expected_audio_tokens(item)
-                if expected is None:
-                    raise RuntimeError(
-                        "Fun-ASR pre-LM encode item is missing its audio token count"
-                    )
-                token_counts.append(expected)
-            if (
-                embedding.dim() != 2
-                or embedding.shape[0] != sum(token_counts)
-                or embedding.shape[1] != self._hidden_size
-                or embedding.dtype != self._dtype
-            ):
+    @contextlib.contextmanager
+    def _batch_context(self) -> Iterator[None]:
+        with torch.inference_mode():
+            if self._stream is None:
+                yield
+            else:
+                with torch.cuda.stream(self._stream):
+                    yield
+
+    def encode_batch(self, items: list[Any]) -> torch.Tensor:
+        return self._model.get_audio_feature(items)
+
+    def split_embeddings(
+        self,
+        items: list[Any],
+        embedding: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        token_counts = []
+        for item in items:
+            expected = _expected_audio_tokens(item)
+            if expected is None:
                 raise RuntimeError(
-                    f"Fun-ASR encoder output {tuple(embedding.shape)} "
-                    f"({embedding.dtype}) != expected rows "
-                    f"{sum(token_counts)}x{self._hidden_size} ({self._dtype})"
+                    "Fun-ASR pre-LM encode item is missing its audio token count"
                 )
-            parts = torch.split(embedding, token_counts, dim=0)
-            embeddings = [part.clone() for part in parts]
-            for item, part in zip(items, embeddings):
-                self._attach(item, part)
+            token_counts.append(expected)
+        if (
+            embedding.dim() != 2
+            or embedding.shape[0] != sum(token_counts)
+            or embedding.shape[1] != self._hidden_size
+            or embedding.dtype != self._dtype
+        ):
+            raise RuntimeError(
+                f"Fun-ASR encoder output {tuple(embedding.shape)} "
+                f"({embedding.dtype}) != expected rows "
+                f"{sum(token_counts)}x{self._hidden_size} ({self._dtype})"
+            )
+        parts = torch.split(embedding, token_counts, dim=0)
+        return [part.clone() for part in parts]
+
+    def synchronize_batch(self) -> None:
         if self._stream is not None:
             self._stream.synchronize()
-        for item, part in zip(items, embeddings):
-            key = self._cache_key(item)
-            if key is not None:
-                self._cache.put(key, part)
-        return embeddings
+
+    def cache_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+        key = self._cache_key(item)
+        if key is not None:
+            self._cache.put(key, embedding)
+
+    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+        if len(batch) == 1:
+            return False
+        logger.exception(
+            f"Fun-ASR batched audio encode failed for {len(batch)} "
+            f"items; retrying per item"
+        )
+        return True
+
+    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+        dequeue_time = time.perf_counter()
+        queue_waits = [
+            dequeue_time - entry.enqueued_at
+            for entry in batch
+            if entry.enqueued_at is not None
+        ]
+        with self._lock:
+            self._queue_wait_count += len(queue_waits)
+            self._queue_wait_total_s += sum(queue_waits)
+            self._queue_wait_max_s = max(
+                self._queue_wait_max_s,
+                max(queue_waits, default=0.0),
+            )
+
+    def _on_batch_finished(
+        self,
+        batch: list[QueueEntry[Any]],
+        batch_exc: Exception | None,
+        retry_recovered: int | None,
+        elapsed_s: float,
+    ) -> None:
+        with self._lock:
+            self._encoder_time_s += elapsed_s
+            if batch_exc is not None:
+                if retry_recovered is not None:
+                    # Note (Akazaakane): Retried items are single-item batches.
+                    self._batch_count += retry_recovered
+                    self._item_count += retry_recovered
+                return
+            self._batch_count += 1
+            self._item_count += len(batch)
+            batch_count = self._batch_count
+            item_count = self._item_count
+        if batch_count % 50 == 1:
+            logger.info(
+                f"Fun-ASR pre-LM encoder stage: {batch_count} batches, "
+                f"{item_count} items (avg "
+                f"{item_count / batch_count:.2f} items/batch, "
+                f"last batch: {len(batch)}), cache: {self.stats()}"
+            )
 
 
 __all__ = [

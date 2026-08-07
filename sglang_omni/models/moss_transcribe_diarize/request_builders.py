@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -19,10 +19,13 @@ from sglang.srt.managers.schedule_batch import (
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
+from sglang_omni.scheduling.token_text_streaming import (
+    make_token_text_stream_output_builder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,11 @@ _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|endoftext)\|>")
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 50
+
+# note (db-ol): dense multi speaker meetings decode to about 4.5 output
+# tokens per audio second including time markers, so 10 leaves roughly 2x
+# headroom without approaching the input token cost of the same audio.
+_OUTPUT_TOKENS_PER_AUDIO_SECOND = 10
 # Note (yichi): MOSS-Transcribe-Diarize is an audio LLM: a Qwen3 text decoder
 # over Whisper audio embeddings, trained on a fixed transcribe+diarize
 # instruction with the timestamped/speaker-labelled transcript as the target
@@ -52,6 +60,9 @@ class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     language: str = "auto"
     engine_start_s: float = 0.0
+    # note (db-ol): the scheduler clamps max_new_tokens to the remaining
+    # context, required once the duration scaled default can exceed it.
+    enforce_request_limits: bool = True
 
 
 def _only_audio(value: Any) -> Any:
@@ -66,29 +77,32 @@ def _only_audio(value: Any) -> Any:
 
 
 def _audio_source_from_payload(payload: StagePayload) -> Any:
+    """Extended source resolver: MOSS accepts more sources than the shared
+    default (``audio_data``, single-item ``audios`` lists, metadata fallbacks,
+    and ``{"data"|"path"|"url": ...}`` dict entries)."""
     inputs = payload.request.inputs
     if isinstance(inputs, dict):
         for key in ("audio_bytes", "bytes", "file", "audio_data"):
             value = inputs.get(key)
             if value is not None:
-                return value
+                return _unwrap_source_dict(value)
         value = inputs.get("audios")
         if value is not None:
-            return _only_audio(value)
+            return _unwrap_source_dict(_only_audio(value))
         for key in ("audio_path", "path", "url"):
             value = inputs.get(key)
             if value is not None:
-                return value
+                return _unwrap_source_dict(value)
 
     metadata = payload.request.metadata or {}
     value = metadata.get("audios")
     if value is not None:
-        return _only_audio(value)
+        return _unwrap_source_dict(_only_audio(value))
     for key in ("audio_data", "audio"):
         value = metadata.get(key)
         if value is not None:
-            return value
-    return inputs
+            return _unwrap_source_dict(value)
+    return _unwrap_source_dict(inputs)
 
 
 def _has_metadata_audio_source(payload: StagePayload) -> bool:
@@ -98,19 +112,15 @@ def _has_metadata_audio_source(payload: StagePayload) -> bool:
     )
 
 
-def _load_audio(source: Any) -> np.ndarray:
+def _unwrap_source_dict(source: Any) -> Any:
     if isinstance(source, dict):
         if source.get("data") is not None:
-            source = source["data"]
-        elif source.get("path") is not None:
-            source = source["path"]
-        elif source.get("url") is not None:
-            source = source["url"]
-    return load_audio(
-        source,
-        source_name="MOSS-Transcribe-Diarize",
-        target_sample_rate=_SAMPLE_RATE,
-    )
+            return source["data"]
+        if source.get("path") is not None:
+            return source["path"]
+        if source.get("url") is not None:
+            return source["url"]
+    return source
 
 
 def _explicit_generation_fields(metadata: dict[str, Any]) -> set[str]:
@@ -218,6 +228,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     processor: Any,
     tokenizer: Any,
     max_new_tokens: int,
+    context_length: int,
+    duration_scaled_default: bool = True,
     audio_encoder_service: Any | None = None,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
@@ -236,16 +248,29 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
         explicit_fields = _explicit_generation_fields(metadata)
-        audio = _load_audio(_audio_source_from_payload(payload))
-        audio_duration_s = float(len(audio) / _SAMPLE_RATE)
-        fingerprint = audio_fingerprint(audio)
+        prepared = prepare_audio(
+            payload,
+            source_name="MOSS-Transcribe-Diarize",
+            target_sample_rate=_SAMPLE_RATE,
+            source_resolver=_audio_source_from_payload,
+        )
+        audio = prepared.waveform
+        audio_duration_s = prepared.duration_s
+        fingerprint = prepared.fingerprint
         prompt = _prompt_from_payload(payload, processor)
 
+        # note (db-ol): cap the processor limit at the model context. The
+        # processor rejects sequences past max_length rather than truncating,
+        # and a request max_length above the context would skip that early
+        # rejection and defer the failure to scheduler admission.
+        max_length = min(
+            int(params.get("max_length") or context_length), context_length
+        )
         encoded = processor(
             text=prompt,
             audio=audio,
             return_tensors="pt",
-            max_length=int(params.get("max_length") or 131072),
+            max_length=max_length,
         )
         input_ids = encoded["input_ids"][0].tolist()
         features = encoded["input_features"]
@@ -258,7 +283,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
-            hash=audio_fingerprint_int(fingerprint),
+            hash=prepared.fingerprint_int,
             feature=features,
             model_specific_data={
                 "audio_feature_lengths": audio_feature_lengths,
@@ -289,7 +314,31 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
         top_p = _sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
         top_k = _sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+        # note (db-ol): the model default was sized for short clips and
+        # silently cuts transcripts past about 20 minutes. Scale the default
+        # budget with duration unless the operator configured a fixed one.
+        requested_max_new_tokens = params.get("max_new_tokens")
+        if requested_max_new_tokens is not None:
+            request_max_new_tokens = int(requested_max_new_tokens)
+            # note (db-ol): the API layer enforces ge=1 but internal callers
+            # bypass it, and a zero here would otherwise silently fall
+            # through to the duration scaled default.
+            if request_max_new_tokens < 1:
+                raise ValueError("max_new_tokens must be at least 1")
+        elif duration_scaled_default:
+            if audio_duration_s <= 0.0:
+                logger.warning(
+                    "Request %s decoded to empty audio, the output budget "
+                    "falls back to the fixed default %d",
+                    payload.request_id,
+                    max_new_tokens,
+                )
+            request_max_new_tokens = max(
+                max_new_tokens,
+                math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
+            )
+        else:
+            request_max_new_tokens = max_new_tokens
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -375,87 +424,31 @@ def make_moss_transcribe_diarize_stream_output_builder(
         if eos_token_id is not None
         else (int(tokenizer_eos) if tokenizer_eos is not None else None)
     )
-
-    def _build_stream_output(
-        request_id: str, req_data: Any, req_output: Any
-    ) -> list[OutgoingMessage]:
-        if req_data.req is None or req_output.data is None:
-            return []
-        req = req_data.req
-        # note (guozhihao): while chunked prefill is still consuming prompt tokens, suppress
-        # emission — prompt-side states would masquerade as output text.
-        if req.inflight_middle_chunks > 0:
-            return []
-
-        if req_data.stage_payload is None:
-            return []
-        stage_payload = req_data.stage_payload
-        if not (stage_payload.request.params or {}).get("stream", False):
-            return []
-
-        try:
-            token_id = int(req_output.data)
-        except (TypeError, ValueError):
-            return []
-
-        try:
-            pending = req._moss_stream_pending_ids
-        except AttributeError:
-            pending = []
-            req._moss_stream_pending_ids = pending
-
-        is_eos = resolved_eos is not None and token_id == resolved_eos
-        if not is_eos:
-            pending.append(token_id)
-        if not pending:
-            return []
-
-        # note (guozhihao): rate-limit by holding tokens until the interval elapses;
-        # last_emit == 0.0 means nothing emitted yet (first delta goes out immediately),
-        # and EOS always flushes the remaining buffer.
-        now = time.perf_counter()
-        try:
-            last_emit = req._moss_stream_last_emit_t
-        except AttributeError:
-            last_emit = 0.0
-        if (
-            not is_eos
-            and min_emit_interval_s > 0.0
-            and last_emit > 0.0
-            and (now - last_emit) < min_emit_interval_s
-        ):
-            return []
-
-        delta = _decode_token_ids(tokenizer, pending, skip_special_tokens=True)
-        if delta.endswith("\ufffd"):
-            return []
-        pending.clear()
-        if not delta:
-            return []
-
-        req._moss_stream_last_emit_t = now
-
-        return [
-            OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                target=None,
-                data={
-                    "text": delta,
-                    "modality": "text",
-                    "stage_name": "asr",
-                },
-                metadata={"modality": "text", "token_id": token_id},
-            )
-        ]
-
-    return _build_stream_output
+    return make_token_text_stream_output_builder(
+        decode_fn=lambda ids: _decode_token_ids(
+            tokenizer, ids, skip_special_tokens=True
+        ),
+        build_message_data=lambda delta: {
+            "text": delta,
+            "modality": "text",
+            "stage_name": "asr",
+        },
+        build_message_metadata=lambda token_id: {
+            "modality": "text",
+            "token_id": token_id,
+        },
+        pending_ids_attr="_moss_stream_pending_ids",
+        last_emit_attr="_moss_stream_last_emit_t",
+        eos_token_id=resolved_eos,
+        min_emit_interval_s=min_emit_interval_s,
+        allow_terminal_flush=False,
+        emit_trailing_replacement_on_terminal=False,
+    )
 
 
 __all__ = [
     "DEFAULT_TRANSCRIBE_DIARIZE_PROMPT",
     "MossTranscribeDiarizeRequestData",
-    "load_audio",
     "make_moss_transcribe_diarize_scheduler_adapters",
     "make_moss_transcribe_diarize_stream_output_builder",
     "postprocess_moss_transcribe_diarize_text",

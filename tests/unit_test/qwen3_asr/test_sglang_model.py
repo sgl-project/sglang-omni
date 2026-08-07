@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.sglang_model import Qwen3ASRForConditionalGeneration
 
 
@@ -25,6 +26,43 @@ class _RecordingAudioTower(nn.Module):
         self.seen_features = input_features
         self.seen_lengths = feature_lens
         return SimpleNamespace(last_hidden_state=input_features)
+
+
+@pytest.mark.parametrize("use_mrope_positions", [True, False])
+def test_forward_uses_available_mrope_positions(
+    monkeypatch: pytest.MonkeyPatch,
+    use_mrope_positions: bool,
+) -> None:
+    positions = torch.tensor([4, 5])
+    mrope_positions = torch.tensor([[4, 5], [4, 5], [4, 5]])
+    forward_batch = SimpleNamespace(
+        mrope_positions=mrope_positions if use_mrope_positions else None
+    )
+    output = torch.tensor([1.0])
+    seen_positions = None
+
+    def fake_general_mm_embed_routine(**kwargs):
+        nonlocal seen_positions
+        seen_positions = kwargs["positions"]
+        return output
+
+    monkeypatch.setattr(
+        sglang_model,
+        "general_mm_embed_routine",
+        fake_general_mm_embed_routine,
+    )
+    model = SimpleNamespace(language_model=object(), get_audio_feature=object())
+
+    actual = Qwen3ASRForConditionalGeneration.forward(
+        model,
+        input_ids=torch.tensor([1, 2]),
+        positions=positions,
+        forward_batch=forward_batch,
+    )
+
+    expected_positions = mrope_positions if use_mrope_positions else positions
+    assert seen_positions is expected_positions
+    assert actual is output
 
 
 def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:

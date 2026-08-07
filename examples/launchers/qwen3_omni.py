@@ -308,7 +308,13 @@ def _build_qwen_speech_server_parser() -> argparse.ArgumentParser:
             "point to the same device."
         ),
     )
+    target.add_argument(
+        "--enable-realtime",
+        action="store_true",
+        help="Mount the WebSocket /v1/realtime endpoint.",
+    )
     add_server_args(target, model_name="qwen3-omni")
+
     return target
 
 
@@ -457,6 +463,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         model_name=args.model_name,
+        enable_realtime=args.enable_realtime,
     )
 
 

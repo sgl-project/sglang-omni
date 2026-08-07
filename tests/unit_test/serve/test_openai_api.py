@@ -25,6 +25,7 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _ClosableStreamingResponse,
+    _first_transcription_chunk,
     _speech_audio_response,
     _transcription_stream,
     build_transcription_generate_request,
@@ -108,8 +109,11 @@ def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
 
 
 class SuccessfulSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -143,6 +147,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -277,6 +282,53 @@ class SuccessfulTranscriptionClient:
         del request_id, audio_format
         self.requests.append(request)
         return CompletionResult(request_id="transcription-1", text="hello world")
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        del request_id
+        self.requests.append(request)
+        yield GenerateChunk(request_id="transcription-1", text="hello ")
+        yield GenerateChunk(request_id="transcription-1", text="world")
+        yield GenerateChunk(
+            request_id="transcription-1",
+            text="hello world",
+            finish_reason="stop",
+        )
+
+
+class FailingTranscriptionClient:
+    def __init__(self, message: str, exc_type: type[Exception] | None = None) -> None:
+        self.message = message
+        self.exc_type = exc_type
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        from sglang_omni.client import ClientError
+
+        del request, request_id, audio_format
+        raise (self.exc_type or ClientError)(self.message)
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        from sglang_omni.client import ClientError
+
+        del request, request_id
+        raise (self.exc_type or ClientError)(self.message)
+        yield  # unreachable, makes this an async generator
 
 
 class _IdentityTranscriptionAdapter:
@@ -504,7 +556,7 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    speech_client = SuccessfulSpeechClient()
+    speech_client = SuccessfulSpeechClient(finish_reason="length")
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
@@ -518,6 +570,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
@@ -952,8 +1005,11 @@ def test_transcription_stream_close_reaches_coordinator_owner() -> None:
         client, coordinator, control_plane = _streaming_client()
         request_id = "req-transcription-close"
         stream = _transcription_stream(
-            client,
-            GenerateRequest(model="whisper", prompt="hello", stream=True),
+            client.generate(
+                GenerateRequest(model="whisper", prompt="hello", stream=True),
+                request_id=request_id,
+            ),
+            first_chunk=None,
             request_id=request_id,
             adapter=_IdentityTranscriptionAdapter(),
             duration_s=1.0,
@@ -1298,6 +1354,22 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.stream is False
 
 
+def test_transcription_request_preserves_explicit_empty_language() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="Qwen/Qwen3-ASR-1.7B",
+        language="",
+        prompt=None,
+        temperature=None,
+    )
+
+    assert gen_req.extra_params["language"] == ""
+    omni_req = Client._build_omni_request(gen_req)
+    assert omni_req.params["language"] == ""
+
+
 def test_transcription_request_passes_explicit_temperature() -> None:
     gen_req = build_transcription_generate_request(
         audio_bytes=b"RIFF",
@@ -1397,6 +1469,29 @@ def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
     assert "max_new_tokens must be" in response.json()["detail"]
 
 
+def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None:
+    bad_request_error = (
+        "Unsupported language: 'Klingon'. Use a supported language code "
+        "(ar, en, zh) or canonical name."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni", "language": "Klingon"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported language:" in response.json()["detail"]
+    assert "Use a supported language code" in response.json()["detail"]
+
+
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
@@ -1421,6 +1516,200 @@ def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     assert request.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert request.sampling.max_new_tokens == 4096
     assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
+
+
+def test_transcription_endpoint_maps_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens). Use a shorter input or enable --allow-auto-truncate."
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_runtime_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens).",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_transcription_endpoint_maps_processor_max_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Prompt/audio sequence exceeds max_length=132096"
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds max_length" in response.json()["detail"]
+
+
+def test_transcription_endpoint_keeps_500_for_server_errors() -> None:
+    transcription_client = FailingTranscriptionClient("scheduler worker crashed")
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
+
+
+def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    first_delta = body.index('"transcript.text.delta"')
+    done_index = body.index('"transcript.text.done"')
+    sentinel_index = body.index("data: [DONE]")
+    assert first_delta < done_index < sentinel_index
+    assert '"delta":"hello "' in body
+    assert '"delta":"world"' in body
+    assert '"text":"hello world"' in body
+
+
+def test_transcription_stream_maps_input_length_error_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Input length (140000 tokens) exceeds the maximum allowed length "
+        "(131071 tokens).",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
+    async def _drive() -> None:
+        aborts: list[str] = []
+        stream_closed = asyncio.Event()
+
+        class _AbortRecordingClient:
+            async def abort(self, request_id: str) -> None:
+                aborts.append(request_id)
+
+        async def _never_first_chunk():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stream_closed.set()
+            yield  # unreachable, makes this an async generator
+
+        request = DisconnectingRequest()
+        request.disconnected.set()
+        with pytest.raises(asyncio.CancelledError):
+            await _first_transcription_chunk(
+                request,
+                _AbortRecordingClient(),
+                _never_first_chunk(),
+                "transcription-1",
+            )
+        assert aborts == ["transcription-1"]
+        assert stream_closed.is_set()
+
+    asyncio.run(_drive())
+
+
+def test_transcription_stream_keeps_500_for_server_errors() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "scheduler worker crashed",
+        exc_type=RuntimeError,
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
 
 
 def test_transcription_endpoint_uses_openai_temperature_default() -> None:

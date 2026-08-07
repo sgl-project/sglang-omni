@@ -144,6 +144,9 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
         **kwargs: Any,
     ) -> torch.Tensor:
+        if forward_batch.mrope_positions is not None:
+            positions = forward_batch.mrope_positions
+
         hidden_states = general_mm_embed_routine(
             input_ids=input_ids,
             forward_batch=forward_batch,
