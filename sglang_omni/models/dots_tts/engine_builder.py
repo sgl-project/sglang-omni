@@ -18,7 +18,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def __init__(
         self,
         *,
-        optimize: bool = False,
+        optimize: bool = True,
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
