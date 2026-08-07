@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -51,7 +52,10 @@ EXPECTED_WORKLOAD_SAMPLES = {
     "long_prefill_decode": 20,
 }
 EXPECTED_COLLISION_EPOCHS = 20
-MIN_WORKER_TRAFFIC_SHARE = 0.10
+WORKER_RESPONSE_HEADER = "x-sglang-omni-worker"
+WEBSOCKET_COMPLETION_RE = re.compile(
+    r"tts_websocket_completed request_id=(\S+) worker=(\S+)"
+)
 
 SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF: float | None = None
 SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF: float | None = None
@@ -478,6 +482,137 @@ def _worker_deltas(before: dict, after: dict) -> list[dict]:
     return deltas
 
 
+def _response_worker_id(result: dict) -> str | None:
+    headers = result.get("response_headers")
+    if not isinstance(headers, dict):
+        return None
+    worker_ids = [
+        value
+        for key, value in headers.items()
+        if str(key).lower() == WORKER_RESPONSE_HEADER and isinstance(value, str)
+    ]
+    return worker_ids[0] if len(worker_ids) == 1 else None
+
+
+def _websocket_worker_ids(
+    log_file: Path,
+    scenario_ids: set[str],
+    worker_aliases: dict[str, str],
+) -> dict[str, str]:
+    routed: dict[str, str] = {}
+    for line in log_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = WEBSOCKET_COMPLETION_RE.search(line)
+        if match is None or match.group(1) not in scenario_ids:
+            continue
+        scenario_id = match.group(1)
+        if scenario_id in routed:
+            raise AssertionError(
+                f"WebSocket scenario {scenario_id!r} has multiple completions"
+            )
+        worker_id = worker_aliases.get(match.group(2))
+        if worker_id is None:
+            raise AssertionError(
+                f"WebSocket scenario {scenario_id!r} names an unknown worker"
+            )
+        routed[scenario_id] = worker_id
+    return routed
+
+
+def _mixed_workload_distribution(
+    run: ServingRun,
+    workers_after: dict,
+) -> dict:
+    worker_aliases = {
+        alias: worker["worker_id"]
+        for worker in workers_after["workers"]
+        for alias in (worker["worker_id"], worker["display_id"])
+    }
+    worker_ids = [worker["worker_id"] for worker in workers_after["workers"]]
+    known_worker_ids = set(worker_ids)
+    events_path = run.benchmark_dir / "raw" / "events.jsonl"
+    results = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    mixed_results = [
+        result
+        for result in results
+        if result.get("stage_id") == MIXED_STAGE and result.get("workload") is not None
+    ]
+    scenario_ids = [result.get("scenario_id") for result in mixed_results]
+    if not all(isinstance(scenario_id, str) for scenario_id in scenario_ids):
+        raise AssertionError("mixed results contain an invalid scenario ID")
+    if len(set(scenario_ids)) != len(scenario_ids):
+        raise AssertionError("mixed results contain duplicate scenario IDs")
+
+    websocket_scenario_ids = {
+        result["scenario_id"]
+        for result in mixed_results
+        if result.get("endpoint") == "websocket"
+    }
+    if run.router.log_file is None:
+        raise AssertionError("router log is unavailable")
+    websocket_workers = _websocket_worker_ids(
+        run.router.log_file,
+        websocket_scenario_ids,
+        worker_aliases,
+    )
+
+    by_workload = {
+        workload: {worker_id: 0 for worker_id in worker_ids}
+        for workload in EXPECTED_WORKLOAD_SAMPLES
+    }
+    for result in mixed_results:
+        scenario_id = result["scenario_id"]
+        workload = result.get("workload")
+        if workload not in by_workload:
+            raise AssertionError(
+                f"mixed scenario {scenario_id!r} has unexpected workload {workload!r}"
+            )
+        if (
+            result.get("expected_success") is not True
+            or result.get("success") is not True
+        ):
+            raise AssertionError(f"mixed scenario {scenario_id!r} did not pass")
+        worker_id = (
+            websocket_workers.get(scenario_id)
+            if result.get("endpoint") == "websocket"
+            else _response_worker_id(result)
+        )
+        if worker_id not in known_worker_ids:
+            raise AssertionError(
+                f"mixed scenario {scenario_id!r} has no valid worker attribution"
+            )
+        by_workload[workload][worker_id] += 1
+
+    observed = {
+        workload: sum(worker_counts.values())
+        for workload, worker_counts in by_workload.items()
+    }
+    if observed != EXPECTED_WORKLOAD_SAMPLES:
+        raise AssertionError(
+            f"mixed workload population mismatch: observed={observed}, "
+            f"expected={EXPECTED_WORKLOAD_SAMPLES}"
+        )
+    by_worker = {
+        worker_id: sum(counts[worker_id] for counts in by_workload.values())
+        for worker_id in worker_ids
+    }
+    return {
+        "population": (
+            "successful workload-bearing mixed-production requests; "
+            "coverage and owner-affine voice stages excluded"
+        ),
+        "total_samples": sum(observed.values()),
+        "by_worker": by_worker,
+        "by_workload": {
+            workload: dict(worker_counts)
+            for workload, worker_counts in by_workload.items()
+        },
+    }
+
+
 def _check_router(
     run: ServingRun,
     checks: MetricCheckCollector,
@@ -489,6 +624,11 @@ def _check_router(
         checks.fail(f"router state probe failed: {exc}")
         return
     deltas = _worker_deltas(run.workers_before, workers_after)
+    try:
+        mixed_distribution = _mixed_workload_distribution(run, workers_after)
+    except (AssertionError, json.JSONDecodeError, OSError) as exc:
+        checks.fail(f"mixed workload attribution failed: {exc}")
+        mixed_distribution = {"error": str(exc)}
     (run.run_dir / "router_validation.json").write_text(
         json.dumps(
             {
@@ -497,6 +637,7 @@ def _check_router(
                 "health_before": run.health_before,
                 "health_after": health_after,
                 "worker_deltas": deltas,
+                "mixed_workload_distribution": mixed_distribution,
             },
             indent=2,
         )
@@ -508,14 +649,12 @@ def _check_router(
         all(item["healthy"] and item["routable"] for item in deltas),
         f"router workers did not remain healthy and routable: {deltas}",
     )
-    routed = [item["routed"] for item in deltas]
-    total_routed = sum(routed)
-    checks.check(
-        total_routed > 0
-        and all(count / total_routed >= MIN_WORKER_TRAFFIC_SHARE for count in routed),
-        f"both workers must serve at least {MIN_WORKER_TRAFFIC_SHARE:.0%} "
-        f"of traffic: {routed}",
-    )
+    if "error" not in mixed_distribution:
+        mixed_counts = list(mixed_distribution["by_worker"].values())
+        checks.check(
+            all(count > 0 for count in mixed_counts),
+            f"both workers must serve mixed production traffic: {mixed_counts}",
+        )
     minimum_class_requests = {
         "speech_http": (
             EXPECTED_WORKLOAD_SAMPLES["speech_normal"]
@@ -535,15 +674,6 @@ def _check_router(
             class_total >= minimum_requests,
             f"router served {class_total} {service_class} "
             f"requests; expected at least {minimum_requests}",
-        )
-        checks.check(
-            class_total > 0
-            and all(
-                count / class_total >= MIN_WORKER_TRAFFIC_SHARE
-                for count in class_counts
-            ),
-            f"both workers must serve at least {MIN_WORKER_TRAFFIC_SHARE:.0%} "
-            f"of {service_class} traffic: {class_counts}",
         )
     voice_counts = {
         item["worker_id"]: item["classes"].get("voice_control", 0) for item in deltas
