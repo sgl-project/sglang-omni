@@ -208,19 +208,53 @@ def register_transcriptions(app: FastAPI) -> None:
                 headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
             )
 
-        gen_req = build_transcription_generate_request(
-            audio_bytes=audio_bytes,
-            filename=file.filename,
-            content_type=file.content_type,
-            model=model or default_model,
-            language=language,
-            prompt=prompt,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-        )
+        duration_s = _probe_audio_duration(audio_bytes)
+        chunking: AudioChunkingConfig = app.state.audio_chunking
+        plan: ChunkPlan | None = None
+        if needs_chunking(duration_s, chunking):
+            try:
+                # Check duration before decoding: a small compressed file can
+                # hold hours of audio, and decoding that eats gigabytes.
+                check_total_duration(duration_s, chunking)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Decode + split in a worker thread: decoding a long file is pure
+            # CPU and would stall the event loop.
+            plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
 
+        chunk_texts: list[str] | None = None
         try:
-            result = await client.completion(gen_req, request_id=request_id)
+            if plan is not None:
+                duration_s = plan.duration_s
+                chunk_texts = await _await_transcription_with_disconnect_abort(
+                    request,
+                    _transcribe_audio_chunks(
+                        client,
+                        plan,
+                        request_id=request_id,
+                        model=model or default_model,
+                        filename=file.filename,
+                        language=language,
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_new_tokens=max_new_tokens,
+                        max_concurrent=chunking.max_concurrent_chunks,
+                    ),
+                )
+                text = join_transcript_parts(chunk_texts)
+            else:
+                gen_req = build_transcription_generate_request(
+                    audio_bytes=audio_bytes,
+                    filename=file.filename,
+                    content_type=file.content_type,
+                    model=model or default_model,
+                    language=language,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                )
+                result = await client.completion(gen_req, request_id=request_id)
+                text = result.text
         except ClientError as exc:
             if is_bad_request_error(exc):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -230,8 +264,6 @@ def register_transcriptions(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             logger.exception("Error transcribing audio for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        text = result.text
         if normalized_response_format == "text":
             return PlainTextResponse(text)
         if normalized_response_format not in {"json", "verbose_json"}:
@@ -245,18 +277,31 @@ def register_transcriptions(app: FastAPI) -> None:
 
         adapter = resolve_adapter(getattr(app.state, "architectures", None))
         text = adapter.postprocess_text(text)
-        duration_s = _probe_audio_duration(audio_bytes)
         usage = (
             TranscriptionUsage(seconds=math.ceil(duration_s))
             if duration_s > 0
             else None
         )
         if normalized_response_format == "verbose_json":
-            response = adapter.build_verbose_response(
-                text=text,
-                language=language,
-                audio_duration_s=duration_s,
-            )
+            if plan is not None and chunk_texts is not None:
+                # Chunked path: the split already knows where each chunk sits
+                # in the upload, so segments get real (chunk-level) timestamps
+                # instead of one segment spanning the whole file.
+                response = adapter.build_verbose_response_from_chunks(
+                    text=text,
+                    chunks=[
+                        (span.start_s, span.end_s, chunk_text)
+                        for span, chunk_text in zip(plan.spans, chunk_texts)
+                    ],
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
+            else:
+                response = adapter.build_verbose_response(
+                    text=text,
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
             response.usage = usage
             return JSONResponse(content=response.model_dump(exclude_none=True))
         return JSONResponse(
