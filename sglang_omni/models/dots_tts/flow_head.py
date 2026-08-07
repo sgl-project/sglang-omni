@@ -153,6 +153,7 @@ class DotsTTSFlowHead(nn.Module):
         num_slots: int,
         nfe: int,
         max_audio_patches: int,
+        optimize: bool = False,
     ) -> None:
         if self.mode != "meanflow":
             raise ValueError("dots.tts continuous batching currently requires MeanFlow")
@@ -166,6 +167,7 @@ class DotsTTSFlowHead(nn.Module):
         self._tail = DotsTtsAcousticTail(
             dit=fuse_dit_for_inference(self),
             coordinate_proj=self.coordinate_proj,
+            latent_proj=self.latent_proj,
             patch_encoder=self.patch_encoder,
             spec=DotsTtsTailSpec(
                 nfe=int(nfe),
@@ -178,6 +180,7 @@ class DotsTTSFlowHead(nn.Module):
             ),
             device=parameter.device,
             dtype=parameter.dtype,
+            optimize=optimize,
         )
         self._batched_nfe = int(nfe)
 
@@ -621,7 +624,6 @@ class DotsTTSFlowHead(nn.Module):
         normalized = self._tail.sample_patches(
             slots,
             fm_hidden_rows=self.hidden_proj(hidden),
-            latent_proj=self.latent_proj,
         )
         feedback = self._tail.encode_feedback(
             slots,

@@ -113,12 +113,13 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 )
             )
         model.flow.optimize = self.optimize and max_running_requests == 1
-        if self.optimize and max_running_requests > 1:
-            logger.info(
-                "dots.tts optimize with max_running_requests=%d runs the eager "
-                "fused batched tail; the compiled DiT path requires "
-                "max_running_requests=1",
-                max_running_requests,
+        model.eval()
+        if max_running_requests > 1:
+            model.flow.init_batched_tail(
+                num_slots=max_running_requests,
+                nfe=self.num_steps,
+                max_audio_patches=self.max_audio_patches,
+                optimize=self.optimize,
             )
         if max_running_requests == 1:
             tail_backend = (
@@ -127,7 +128,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 else "eager single-request DiT/semantic encoder"
             )
         else:
-            tail_backend = "fused eager batched tail"
+            tail_backend = model.flow._tail.backend
         logger.info(
             "dots.tts latent engine backend: %s (optimize=%s, "
             "max_running_requests=%d, num_steps=%d)",
@@ -144,13 +145,6 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 else "eager"
             ),
         )
-        if max_running_requests > 1:
-            model.flow.init_batched_tail(
-                num_slots=max_running_requests,
-                nfe=self.num_steps,
-                max_audio_patches=self.max_audio_patches,
-            )
-        model.eval()
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
