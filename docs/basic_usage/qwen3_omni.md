@@ -313,12 +313,16 @@ nothing, which is why code2wav shares the thinker's GPU instead of getting
 isolated like the talker.
 
 Single-stream traffic (one request at a time) sees a different trade-off.
-There is no concurrent work to hide the added cross-device handoff between
-the thinker and the talker, so single-stream end-to-end latency gets
-14–17% worse. Single-stream TTFA still improves by about 30% (0.48–0.49 s
-to 0.34–0.35 s), because the talker no longer waits its turn on a shared GPU.
-Streaming TTS workloads should prefer this layout regardless, since TTFA is
-the latency users notice first.
+In the talker-placement experiment above, isolating the talker — moving it
+off the thinker's GPU — made single-stream end-to-end latency 14–17% worse:
+with one request in flight there is no contention to escape, while that
+experiment's thinker-to-talker handoff started crossing a device boundary.
+Single-stream TTFA still improved by about 30% (0.48–0.49 s to 0.34–0.35 s),
+because the talker no longer waits its turn on a shared GPU. Both the old
+and the new default layout already keep the thinker and talker on separate
+GPUs, so these numbers describe that experiment's topology change, not the
+default code2wav placement. Streaming TTS workloads should prefer this
+layout regardless, since TTFA is the latency users notice first.
 
 ### Realtime Speech with Server VAD
 

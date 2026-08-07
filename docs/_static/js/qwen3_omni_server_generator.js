@@ -150,7 +150,7 @@
       items.push({ flag: '--model-path Intel/…int4-AutoRound', desc: int4Desc });
     }
     if (items.length === 0) {
-      items.push({ flag: '(no extra flags)', desc: 'Disaggregated speech pipeline with thinker on GPU 0 and talker on GPU 1 by default' });
+      items.push({ flag: '(no extra flags)', desc: 'Disaggregated speech pipeline: thinker and code2wav on GPU 0, talker alone on GPU 1 by default' });
     }
     return items;
   }
