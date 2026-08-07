@@ -106,6 +106,8 @@ class DotsTTSFlowHead(nn.Module):
         self._dit_solver: Any = None
         self._tail: Any = None
         self._batched_nfe: int | None = None
+        self._eos_pinned: torch.Tensor | None = None
+        self._eos_event: torch.cuda.Event | None = None
 
     def _bucket(self, requested: int) -> int:
         if requested <= 0:
@@ -151,6 +153,7 @@ class DotsTTSFlowHead(nn.Module):
         num_slots: int,
         nfe: int,
         max_audio_patches: int,
+        optimize: bool = False,
     ) -> None:
         if self.mode != "meanflow":
             raise ValueError("dots.tts continuous batching currently requires MeanFlow")
@@ -164,6 +167,7 @@ class DotsTTSFlowHead(nn.Module):
         self._tail = DotsTtsAcousticTail(
             dit=fuse_dit_for_inference(self),
             coordinate_proj=self.coordinate_proj,
+            latent_proj=self.latent_proj,
             patch_encoder=self.patch_encoder,
             spec=DotsTtsTailSpec(
                 nfe=int(nfe),
@@ -176,6 +180,7 @@ class DotsTTSFlowHead(nn.Module):
             ),
             device=parameter.device,
             dtype=parameter.dtype,
+            optimize=optimize,
         )
         self._batched_nfe = int(nfe)
 
@@ -501,14 +506,27 @@ class DotsTTSFlowHead(nn.Module):
         should_check_eos = not (
             state.suppress_first_eos_check and state.decoded_patches == 0
         )
-        finished = should_check_eos and bool(
-            (
+        # note (luojiaxuan): compute the EOS flag now but keep it on the GPU;
+        # reading it here would stall the host before any tail work is queued.
+        # The readback happens after the DiT/patch-encoder launches below, via
+        # a pinned staging buffer + event so the copy overlaps the tail kernels
+        # (same idea as the batched path's single deferred readback).
+        eos_hit: torch.Tensor | None = None
+        if should_check_eos:
+            eos_hit = (
                 self.eos_proj(hidden_states)
                 .softmax(dim=-1)[:, -1, 1]
                 .gt(float(eos_threshold))
-                .item()
+                .reshape(())
             )
-        )
+            if eos_hit.is_cuda:
+                if self._eos_pinned is None:
+                    self._eos_pinned = torch.zeros(
+                        (), dtype=torch.bool, pin_memory=True
+                    )
+                    self._eos_event = torch.cuda.Event()
+                self._eos_pinned.copy_(eos_hit, non_blocking=True)
+                self._eos_event.record()
         from dots_tts.modules.backbone.dit_inference import DiTSolverState
 
         if state.dit_state is None:
@@ -547,6 +565,13 @@ class DotsTTSFlowHead(nn.Module):
             bucket_resolver=self._bucket,
             dtype=state.fm_sequence.dtype,
         )
+        if eos_hit is None:
+            finished = False
+        elif eos_hit.is_cuda:
+            self._eos_event.synchronize()
+            finished = bool(self._eos_pinned.item())
+        else:
+            finished = bool(eos_hit.item())
         emit = not state.drop_regenerated_prompt_patch
         state.drop_regenerated_prompt_patch = False
         state.decoded_patches += 1
@@ -599,7 +624,6 @@ class DotsTTSFlowHead(nn.Module):
         normalized = self._tail.sample_patches(
             slots,
             fm_hidden_rows=self.hidden_proj(hidden),
-            latent_proj=self.latent_proj,
         )
         feedback = self._tail.encode_feedback(
             slots,

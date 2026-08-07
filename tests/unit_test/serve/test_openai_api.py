@@ -25,13 +25,15 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _ClosableStreamingResponse,
-    _first_transcription_chunk,
     _speech_audio_response,
-    _transcription_stream,
-    build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from sglang_omni.serve.transcriptions import (
+    _first_transcription_chunk,
+    _transcription_stream,
+    build_transcription_generate_request,
+)
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -1701,7 +1703,7 @@ def _tiny_plan(num_chunks: int):
 
 
 def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
-    from sglang_omni.serve.openai_api import _transcribe_audio_chunks
+    from sglang_omni.serve.transcriptions import _transcribe_audio_chunks
 
     return asyncio.wait_for(
         _transcribe_audio_chunks(
@@ -1832,7 +1834,7 @@ def test_chunk_failure_aborts_the_chunks_still_running() -> None:
 
 
 def test_client_disconnect_aborts_all_running_chunks() -> None:
-    from sglang_omni.serve.openai_api import (
+    from sglang_omni.serve.transcriptions import (
         _await_transcription_with_disconnect_abort,
         _transcribe_audio_chunks,
     )
@@ -1950,6 +1952,29 @@ def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
 
     assert response.status_code == 400
     assert "accepts audio up to" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_kv_capacity_error_to_400() -> None:
+    bad_request_error = (
+        "Request requires more tokens than the thinker KV cache can hold "
+        "(input_tokens=1500, max_new_tokens=128, required_tokens=1628, "
+        "kv_capacity=1600)."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "thinker KV cache" in response.json()["detail"]
 
 
 def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:

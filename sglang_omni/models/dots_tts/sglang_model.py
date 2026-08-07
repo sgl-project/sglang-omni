@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from torch import nn
 
@@ -17,6 +18,10 @@ from sglang_omni.models.weight_loader import default_weight_loader
 
 class DotsTTSSGLangModel(nn.Module):
     """Keep AR execution in SGLang; add only dots-specific model operators."""
+
+    # note (luojiaxuan): class-level default so partially-constructed instances (tests build via
+    # __new__) resolve the graph-feedback probe to "disabled".
+    _graph_feedback_buffer: torch.Tensor | None = None
 
     def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         super().__init__()
@@ -39,9 +44,34 @@ class DotsTTSSGLangModel(nn.Module):
             latent_stats_path=str(Path(checkpoint) / "latent_stats.pt"),
             optimize=False,
         )
+        self._graph_feedback_buffer: torch.Tensor | None = None
 
     def get_input_embeddings(self):
         return self.qwen2.get_input_embeddings()
+
+    @property
+    def graph_feedback_buffer(self) -> torch.Tensor | None:
+        return self._graph_feedback_buffer
+
+    def enable_graph_feedback(self, max_batch_size: int) -> None:
+        """Route decode feedback embeddings through a persistent buffer.
+
+        SGLang 0.5.16's decode CUDA graph only stages ``forward_batch
+        .input_embeds`` into a static buffer for dFlash draft workers, so a
+        graph replay would silently ignore the per-step latent feedback and
+        decode from the control-token embeddings instead. Owning the static
+        buffer model-side makes capture bake this address into the graph;
+        ``before_decode`` copies each step's feedback into it, and the same
+        read path serves eager decode, so graph and eager stay equivalent.
+        """
+        if max_batch_size <= 0:
+            raise ValueError("dots.tts graph feedback buffer needs a positive size")
+        parameter = next(self.qwen2.parameters())
+        self._graph_feedback_buffer = torch.zeros(
+            (int(max_batch_size), int(self.qwen2.config.hidden_size)),
+            device=parameter.device,
+            dtype=parameter.dtype,
+        )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         qwen_weights: list[tuple[str, torch.Tensor]] = []
@@ -82,15 +112,35 @@ class DotsTTSSGLangModel(nn.Module):
         forward_batch: Any,
         input_embeds: torch.Tensor | None = None,
         **kwargs: Any,
-    ):
-        if input_embeds is None:
+    ) -> LogitsProcessorOutput:
+        del kwargs
+        if (
+            self._graph_feedback_buffer is not None
+            and forward_batch.forward_mode.is_decode()
+        ):
+            # note (luojiaxuan): same source for capture, replay, and eager decode; rows beyond
+            # the live batch are padding and their outputs are discarded.
+            input_embeds = self._graph_feedback_buffer[: input_ids.shape[0]]
+        elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
-        return self.qwen2(
+        hidden_states = self.qwen2.model(
             input_ids=input_ids,
             positions=positions,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
-            **kwargs,
+        )
+        # note (db-ol): dots consumes hidden states only and the runner
+        # overwrites next_token_ids, dummy logits just satisfy the contract.
+        if forward_batch.forward_mode.is_extend():
+            extend_seq_lens = getattr(forward_batch, "extend_seq_lens", None)
+            request_count = (
+                int(extend_seq_lens.numel()) if extend_seq_lens is not None else 1
+            )
+        else:
+            request_count = int(hidden_states.shape[0])
+        return LogitsProcessorOutput(
+            next_token_logits=hidden_states.new_empty((request_count, 1)),
+            hidden_states=hidden_states,
         )
 
 

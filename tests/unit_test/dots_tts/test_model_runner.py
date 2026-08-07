@@ -191,3 +191,43 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
     assert released == [flow_state]
     assert runner._request_data == {}
     assert requests[0].data.flow_state is None
+
+
+def _decode_request(request_id: str, fill: float):
+    feedback = torch.full((1, 4), fill)
+    return SimpleNamespace(
+        request_id=request_id,
+        data=SimpleNamespace(pending_feedback_queue=deque([feedback])),
+    )
+
+
+def test_dots_before_decode_writes_graph_feedback_buffer_in_batch_order() -> None:
+    buffer = torch.zeros(4, 4)
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        graph_feedback_buffer=buffer,
+        parameters=lambda: iter([torch.zeros(1, dtype=torch.float32)]),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([0, 0]), input_embeds=None)
+
+    runner.before_decode(
+        forward_batch, object(), [_decode_request("a", 5.0), _decode_request("b", 6.0)]
+    )
+
+    torch.testing.assert_close(buffer[0], torch.full((4,), 5.0))
+    torch.testing.assert_close(buffer[1], torch.full((4,), 6.0))
+    torch.testing.assert_close(buffer[2], torch.zeros(4))
+    assert forward_batch.input_embeds is None
+
+
+def test_dots_before_decode_without_buffer_sets_forward_batch_embeds() -> None:
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        graph_feedback_buffer=None,
+        parameters=lambda: iter([torch.zeros(1, dtype=torch.float32)]),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([0]), input_embeds=None)
+
+    runner.before_decode(forward_batch, object(), [_decode_request("a", 9.0)])
+
+    torch.testing.assert_close(forward_batch.input_embeds, torch.full((1, 4), 9.0))
