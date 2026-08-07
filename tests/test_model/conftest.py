@@ -16,6 +16,57 @@ if TYPE_CHECKING:
 
     from tests.utils import ServerHandle
 
+
+def _parse_cpuset(spec: str) -> set[int]:
+    """Parse a Linux cpulist such as "0-23,64-87" into a CPU id set."""
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            raise ValueError(f"Empty component in OMNI_CI_CPUSET {spec!r}")
+        if "-" in part:
+            lo_text, hi_text = part.split("-", 1)
+            lo, hi = int(lo_text), int(hi_text)
+            if lo > hi:
+                raise ValueError(f"Invalid OMNI_CI_CPUSET range {part!r}")
+            cpus.update(range(lo, hi + 1))
+        else:
+            cpus.add(int(part))
+    if not cpus:
+        raise ValueError(f"OMNI_CI_CPUSET {spec!r} selects no CPUs")
+    return cpus
+
+
+def _apply_omni_ci_cpuset() -> set[int] | None:
+    spec = os.environ.get("OMNI_CI_CPUSET", "").strip()
+    if not spec or not hasattr(os, "sched_setaffinity"):
+        return None
+    requested = _parse_cpuset(spec)
+    previous = os.sched_getaffinity(0)
+    os.sched_setaffinity(0, requested)
+    # Note: (Jiaxin Deng) Linux may silently intersect the request with the
+    # cgroup/cpuset-allowed CPUs; a partial pin would invalidate calibration.
+    effective = os.sched_getaffinity(0)
+    if effective != requested:
+        raise RuntimeError(
+            f"OMNI_CI_CPUSET pinning ineffective: requested {sorted(requested)}, "
+            f"previously allowed {sorted(previous)}, effective {sorted(effective)}"
+        )
+    return requested
+
+
+@pytest.fixture(autouse=True, scope="session")
+def pin_omni_ci_cpuset() -> None:
+    """Pin the test session, and every server it spawns, to OMNI_CI_CPUSET.
+
+    The gates in this directory measure host-bound serving stacks, so on a
+    shared runner concurrent jobs inflate per-request CPU cost and shift
+    calibrated floors. Child processes inherit the affinity, which keeps the
+    managed router, its workers, and the bench client on the reserved cores.
+    """
+    _apply_omni_ci_cpuset()
+
+
 TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
 TTS_STAGE_NONSTREAM = "tts-stage-1-nonstream"
 TTS_STAGE_STREAM = "tts-stage-2-stream"

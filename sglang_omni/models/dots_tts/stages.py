@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -379,7 +380,7 @@ def create_sglang_latent_engine_executor(
     model_path: str,
     *,
     precision: str = "bfloat16",
-    optimize: bool = False,
+    optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
     device: str | None = "cuda",
@@ -406,16 +407,22 @@ def create_vocoder_executor(
     *,
     device: str | None = "cuda",
     gpu_id: int | None = None,
-    optimize: bool = False,
+    optimize: bool = True,
     vocoder_merge_steps: int = 4,
     **_: Any,
 ) -> DotsTTSStreamingVocoder:
     codec = load_dots_audio_codec(model_path, device=_device(device, gpu_id))
-    return DotsTTSStreamingVocoder(
+    vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
         merge_steps=vocoder_merge_steps,
     )
+    logging.getLogger(__name__).info(
+        "dots.tts vocoder backend: %s (merge_steps=%d)",
+        "compiled streaming chunks" if vocoder.optimize else "eager per-patch decode",
+        vocoder.merge_steps,
+    )
+    return vocoder
 
 
 __all__ = [

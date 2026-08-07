@@ -13,7 +13,9 @@ MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
 
 ## Server Configuration
 
-Qwen3-ASR runs a single ASR stage on one GPU.
+Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows
+the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
+`--stages.asr.factory-args.dtype float16` to force FP16.
 Async decode is enabled by default for decode batches of at least two requests,
 allowing the shared one-step-lookahead path to overlap host-side result
 processing with the next GPU decode forward. Use `--decode-mode sync` to disable
@@ -73,7 +75,7 @@ print(resp.json()["text"])
 | `language` | string | `en` | Language hint as a supported code or canonical name (case-insensitive) |
 | `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0.01` effective | Sampling temperature; `0` is converted to near-greedy `0.01` |
+| `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return transcript events over SSE |
 
@@ -191,5 +193,8 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
+- Audio duration is bounded by the configured context and requested
+  `max_new_tokens`, rather than a fixed 30-second window. Split audio or reduce
+  `max_new_tokens` if the request exceeds that token budget.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

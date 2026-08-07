@@ -18,7 +18,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def __init__(
         self,
         *,
-        optimize: bool = False,
+        optimize: bool = True,
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
@@ -78,6 +78,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             raise ValueError(
                 "dots.tts uses its DiT compile path; SGLang backbone compile is disabled"
             )
+        if not bool(overrides.get("disable_cuda_graph", True)):
+            # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
+            # its can_run gate requires an exact hidden-mode match with the
+            # acoustic tail's per-step request.
+            overrides["enable_return_hidden_states"] = True
 
     def setup_model(
         self,
@@ -91,21 +96,55 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         del checkpoint_dir, device, gpu_id
         model = model_worker.model_runner.model
         max_running_requests = int(server_args.max_running_requests)
-        model.flow.optimize = self.optimize and max_running_requests == 1
-        if self.optimize and max_running_requests > 1:
-            logger.info(
-                "dots.tts optimize with max_running_requests=%d runs the eager "
-                "fused batched tail; the compiled DiT path requires "
-                "max_running_requests=1",
-                max_running_requests,
+        if not bool(server_args.disable_cuda_graph):
+            from sglang_omni.scheduling.generation_batch_policy import (
+                get_decode_cuda_graph_max_bs,
             )
+
+            # note (luojiaxuan): installed before init_cuda_graphs so capture bakes the buffer
+            # address into the decode graph. Generously sized: rows are tiny
+            # (hidden_size elements) and capture may pad above
+            # max_running_requests.
+            model.enable_graph_feedback(
+                max(
+                    max_running_requests,
+                    int(get_decode_cuda_graph_max_bs(server_args) or 0),
+                    256,
+                )
+            )
+        model.flow.optimize = self.optimize and max_running_requests == 1
+        model.eval()
         if max_running_requests > 1:
             model.flow.init_batched_tail(
                 num_slots=max_running_requests,
                 nfe=self.num_steps,
                 max_audio_patches=self.max_audio_patches,
+                optimize=self.optimize,
             )
-        model.eval()
+        if max_running_requests == 1:
+            tail_backend = (
+                "compiled single-request DiT/semantic encoder"
+                if model.flow.optimize
+                else "eager single-request DiT/semantic encoder"
+            )
+        else:
+            tail_backend = model.flow._tail.backend
+        logger.info(
+            "dots.tts latent engine backend: %s (optimize=%s, "
+            "max_running_requests=%d, num_steps=%d)",
+            tail_backend,
+            self.optimize,
+            max_running_requests,
+            self.num_steps,
+        )
+        logger.info(
+            "dots.tts backbone decode: %s",
+            (
+                "SGLang CUDA graph with model-owned feedback buffer"
+                if not bool(server_args.disable_cuda_graph)
+                else "eager"
+            ),
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner

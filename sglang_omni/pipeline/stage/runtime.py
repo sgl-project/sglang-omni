@@ -170,7 +170,7 @@ class Stage:
                     if self.gpu_id is not None:
                         import torch
 
-                        torch.cuda.set_device(int(self.gpu_id))
+                        torch.get_device_module().set_device(int(self.gpu_id))
                         logger.info(
                             "Scheduler thread for stage %s set CUDA device to %s",
                             self.name,

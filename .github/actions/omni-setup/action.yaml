@@ -23,19 +23,17 @@ runs:
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
-        # FlashInfer does not use XDG_CACHE_HOME. Keep it on the image's
-        # architecture-specific prewarmed cache under /root/.cache/flashinfer.
+        # The CI venv inherits the image's Python/Torch/FlashInfer environment,
+        # so it can safely reuse the architecture-specific prewarmed cache.
         echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
+        echo "FLASHINFER_JIT_DEBUG=0" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}" >> "${GITHUB_ENV}"
-        # uv cache and the uv-managed CPython interpreter must live on the
-        # persistent /data/omni-ci mount: the venv's bin/python is a symlink into
-        # UV_PYTHON_INSTALL_DIR, so if that dir sat under /github/home (wiped every
-        # job by the runner) the reused venv would break with "python not found".
+        # Keep downloaded wheels on the persistent /data/omni-ci mount.
         echo "UV_CACHE_DIR=/data/omni-ci/uv-cache" >> "${GITHUB_ENV}"
-        echo "UV_PYTHON_INSTALL_DIR=/data/omni-ci/uv-python" >> "${GITHUB_ENV}"
+        echo "OMNI_CI_PYTHON=${OMNI_CI_HOME}/${{ inputs.venv-name }}/bin/python" >> "${GITHUB_ENV}"
 
     - name: Restore cache
       shell: bash
