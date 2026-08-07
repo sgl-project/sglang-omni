@@ -353,7 +353,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
         gpu_talker = args.gpu_thinker if args.colocated else 1
     gpu_code2wav = args.gpu_code2wav
     if gpu_code2wav is None:
-        gpu_code2wav = args.gpu_thinker if args.colocated else 0
+        gpu_code2wav = args.gpu_thinker
     gpu_image_encoder = args.gpu_image_encoder
     if gpu_image_encoder is None:
         gpu_image_encoder = args.gpu_thinker if args.colocated else 0
