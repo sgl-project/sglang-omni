@@ -114,10 +114,18 @@ class DotsTTSModelRunner(ModelRunner):
             if feedback.ndim > 1:
                 feedback = feedback.reshape(-1, feedback.shape[-1])[-1]
             rows.append(feedback)
-        forward_batch.input_embeds = torch.stack(rows).to(
+        stacked = torch.stack(rows).to(
             device=forward_batch.input_ids.device,
             dtype=next(self.model.parameters()).dtype,
         )
+        buffer = self.model.graph_feedback_buffer
+        if buffer is not None:
+            # note (luojiaxuan): row order matches the forward batch; the copy runs on the same
+            # stream as the (graph or eager) forward, so it is ordered ahead
+            # of the launch. forward() reads the buffer for decode directly.
+            buffer[: stacked.shape[0]].copy_(stacked)
+        else:
+            forward_batch.input_embeds = stacked
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
@@ -133,6 +141,12 @@ class DotsTTSModelRunner(ModelRunner):
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
+        # note (luojiaxuan): decode runs one token per request, so FULL and LAST return the same
+        # rows. The decode CUDA graph is captured with FULL (via
+        # enable_return_hidden_states) and its can_run gate requires an exact
+        # hidden-mode match, so request FULL whenever the graph path is on.
+        if self.model.graph_feedback_buffer is not None:
+            return CaptureHiddenMode.FULL
         return CaptureHiddenMode.LAST
 
     def post_prefill(

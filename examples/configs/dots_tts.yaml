@@ -8,5 +8,10 @@ runtime_overrides:
     server_args_overrides:
       mem_fraction_static: 0.20
       max_running_requests: 16
+      # note (luojiaxuan): backbone decode runs through the SGLang CUDA graph
+      # with the model-owned feedback buffer; delete these two lines (or set
+      # disable_cuda_graph: true) to fall back to eager backbone decode.
+      disable_cuda_graph: false
+      cuda_graph_max_bs: 16
   vocoder:
     optimize: true
