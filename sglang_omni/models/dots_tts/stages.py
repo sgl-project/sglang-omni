@@ -422,9 +422,11 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
     )
     logging.getLogger(__name__).info(
-        "dots.tts vocoder backend: %s (merge_steps=%d)",
+        "dots.tts vocoder backend: %s (merge_steps=%d, batch_size=%d, wait_ms=%d)",
         "compiled streaming chunks" if vocoder.optimize else "eager per-patch decode",
         vocoder.merge_steps,
+        max_batch_size,
+        max_batch_wait_ms,
     )
     return vocoder
 

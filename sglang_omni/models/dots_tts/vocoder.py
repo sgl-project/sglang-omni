@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,11 +18,13 @@ from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 _LENGTH_BUCKET_FRAMES = 32
+logger = logging.getLogger(__name__)
 
 
 class DotsTTSBatchVocoder(BatchVocoderBase):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
+        self._logged_batch = False
 
     def prepare_item(self, payload: StagePayload) -> tuple[DotsTTSState, torch.Tensor]:
         state = load_dots_tts_state(payload)
@@ -39,6 +42,16 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
             frames = int(latents.shape[1])
             bucket = (frames + _LENGTH_BUCKET_FRAMES - 1) // _LENGTH_BUCKET_FRAMES
             buckets.setdefault(bucket, []).append((index, latents))
+
+        bucket_sizes = [len(bucket_items) for bucket_items in buckets.values()]
+        if not self._logged_batch and max(bucket_sizes, default=0) > 1:
+            logger.info(
+                "dots.tts AudioVAE batched decode is active: requests=%d "
+                "bucket_sizes=%s",
+                len(items),
+                bucket_sizes,
+            )
+            self._logged_batch = True
 
         with self.codec.lock:
             for bucket_items in buckets.values():

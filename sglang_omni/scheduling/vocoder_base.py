@@ -58,12 +58,9 @@ class BatchVocoderBase:
             wav, sr = results[0]
             return self.store_result(payload, state, wav, sr)
 
-        async def _batch(payloads):
-            return await self.decode_payloads(payloads)
-
         return SimpleScheduler(
             _single,
-            batch_compute_fn=_batch,
+            batch_compute_fn=self.decode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
