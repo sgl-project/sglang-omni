@@ -7,16 +7,21 @@ from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 
-from sglang_omni.models.moss_transcribe_diarize import request_builders
+from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
+DEFAULT_MOSS_TD_PREFILL_CUDA_GRAPH_BS = [128, 192, 384, 768, 1536, 2048, 4096]
+
 
 class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
     model_name = "MOSS-Transcribe-Diarize"
     model_arch_override = "MossTranscribeDiarizeForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -93,6 +98,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_bs_prefill": DEFAULT_MOSS_TD_PREFILL_CUDA_GRAPH_BS,
             "dtype": dtype,
         }
 
