@@ -1514,6 +1514,39 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
+def test_streamed_long_audio_is_rejected_explicitly() -> None:
+    # Streaming is not chunked yet; without this 400 a long upload would run
+    # as a single request and the 640-token output budget would silently cut
+    # the transcript tail (observed live: 243s audio came back 20% short with
+    # HTTP 200).
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "stream=false" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
+def test_streamed_short_audio_streams_as_before() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("short.wav", _wav_upload(0.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert "transcript.text.done" in response.text
+
+
 def test_verbose_json_reports_per_chunk_segments() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client)

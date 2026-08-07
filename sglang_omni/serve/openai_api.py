@@ -1676,6 +1676,21 @@ def _register_transcriptions(app: FastAPI) -> None:
                         f"'text', got {response_format!r}"
                     ),
                 )
+            # Chunking does not cover the streaming path yet. Without this
+            # guard a long upload would run as one request and the output
+            # budget would silently cut the transcript tail -- the exact bug
+            # chunking exists to remove. Reject loudly instead.
+            stream_chunking: AudioChunkingConfig = app.state.audio_chunking
+            if needs_chunking(_probe_audio_duration(audio_bytes), stream_chunking):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "stream=true does not support audio longer than "
+                        f"{stream_chunking.max_audio_clip_s:g} seconds yet; "
+                        "use stream=false, which transcribes long audio in "
+                        "chunks"
+                    ),
+                )
             gen_req = build_transcription_generate_request(
                 audio_bytes=audio_bytes,
                 filename=file.filename,
