@@ -40,6 +40,26 @@ def _describe_sglang_runtime_configuration(
     )
 
 
+def init_sglang_cuda_graphs(model_worker: Any) -> None:
+    """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
+    if not model_worker.enable_prefill_input_embeds:
+        # Required even when graphs are disabled: SGLang installs its eager
+        # phase runner from init_cuda_graphs().
+        model_worker.model_runner.init_cuda_graphs()
+        return
+
+    model_config = model_worker.model_config
+    original_is_multimodal = model_config.is_multimodal
+    # Attention backends have already captured the model's real modality.
+    # Only the prefill graph runner needs this temporary view so it allocates
+    # the upstream input_embeds replay buffer.
+    model_config.is_multimodal = True
+    try:
+        model_worker.model_runner.init_cuda_graphs()
+    finally:
+        model_config.is_multimodal = original_is_multimodal
+
+
 def create_sglang_infrastructure(
     server_args: Any,
     gpu_id: int,
@@ -93,16 +113,8 @@ def create_sglang_infrastructure(
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
 
-    if model_worker.enable_prefill_input_embeds:
-        # The attention backends above cache is_multimodal at construction
-        # and must keep the model's real semantics; only the prefill graph
-        # runner reads the flag from here, to register its input_embeds slot.
-        model_worker.model_config.is_multimodal = True
-
     if not defer_cuda_graph_capture:
-        # This is required even when graphs are disabled: SGLang installs
-        # the eager phase runner from init_cuda_graphs().
-        model_runner.init_cuda_graphs()
+        init_sglang_cuda_graphs(model_worker)
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 

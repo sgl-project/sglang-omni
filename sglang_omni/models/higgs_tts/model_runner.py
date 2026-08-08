@@ -91,7 +91,6 @@ class HiggsTTSModelRunner(ModelRunner):
             forward_batch,
             OmniPrefillInputs(
                 input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
-                rids=tuple(req.request_id for req in requests),
             ),
         )
 

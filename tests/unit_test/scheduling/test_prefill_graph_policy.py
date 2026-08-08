@@ -116,6 +116,20 @@ def test_breakable_rejects_non_increasing_buckets() -> None:
         )
 
 
+@pytest.mark.parametrize("buckets", [(128.0, 256), ("128", 256), (True, 256)])
+def test_breakable_rejects_non_integral_bucket_types(
+    buckets: tuple[Any, int],
+) -> None:
+    with pytest.raises(ValueError, match="sequence of positive integers"):
+        _validate(
+            _server_args(
+                prefill_backend="breakable",
+                prefill_bs=buckets,
+                locked=_PREFILL_BS_LOCKED,
+            )
+        )
+
+
 def test_breakable_rejects_max_bs_mismatch() -> None:
     with pytest.raises(ValueError, match="cuda_graph_max_bs_prefill"):
         _validate(
@@ -286,27 +300,40 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
 
     infra_kwargs_seen: list[dict[str, Any]] = []
     attest_calls: list[tuple[Any, Any]] = []
+    backend_locks_seen: list[bool] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
         prefill_backend = overrides.get("cuda_graph_backend_prefill", "disabled")
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
+        locked = set(_PREFILL_BS_LOCKED if prefill_bs else ())
+        if "cuda_graph_backend_prefill" in overrides:
+            locked.add(("prefill", "backend"))
         return _server_args(
             prefill_backend=prefill_backend,
             prefill_bs=prefill_bs,
             prefill_max_bs=overrides.get("cuda_graph_max_bs_prefill"),
-            locked=_PREFILL_BS_LOCKED if prefill_bs else frozenset(),
+            locked=locked,
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del server_args, gpu_id
+        del gpu_id
         infra_kwargs_seen.append(dict(kwargs))
+        backend_locks_seen.append(
+            ("prefill", "backend") in server_args._cuda_graph_config_locked
+        )
         model_runner = SimpleNamespace(
             model=SimpleNamespace(),
             init_cuda_graphs=lambda: None,
         )
         return (
-            SimpleNamespace(model_runner=model_runner),
+            SimpleNamespace(
+                model_runner=model_runner,
+                model_config=SimpleNamespace(is_multimodal=False),
+                enable_prefill_input_embeds=bool(
+                    kwargs.get("enable_prefill_input_embeds")
+                ),
+            ),
             "tree_cache",
             "req_pool",
             "kv_pool",
@@ -366,11 +393,13 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     )
 
     assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
+    assert backend_locks_seen[-1] is True
     assert len(attest_calls) == 1
 
     PolicyBuilder().build("model")
 
     assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
+    assert backend_locks_seen[-1] is False
     assert len(attest_calls) == 1
 
 

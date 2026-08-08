@@ -266,9 +266,12 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
 
 
 def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
-    """Assert the captured prefill CUDA graphs match the declared policy;
-    SGLang downgrades to eager without raising at several capture-eligibility
-    gates, and a declared-but-absent graph must fail startup loudly."""
+    """Assert captured prefill graphs match an explicit or realized policy.
+
+    An operator-locked backend must materialize or fail startup. An unlocked
+    model default retains SGLang's auto-selection semantics and may fall back
+    to eager at capture-time safety gates such as insufficient free memory.
+    """
     from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
         PrefillCudaGraphRunner,
     )
@@ -277,6 +280,13 @@ def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
     # init_cuda_graphs always assigns this before attestation runs.
     runner = model_runner.prefill_cuda_graph_runner
     if not isinstance(runner, PrefillCudaGraphRunner):
+        if ("prefill", "backend") not in server_args._cuda_graph_config_locked:
+            logger.warning(
+                "auto-selected prefill CUDA graph backend %r did not capture; "
+                "using SGLang's eager prefill fallback",
+                prefill_cfg.backend,
+            )
+            return
         raise RuntimeError(
             f"prefill CUDA graph backend {prefill_cfg.backend!r} was declared "
             "but SGLang did not construct PrefillCudaGraphRunner "

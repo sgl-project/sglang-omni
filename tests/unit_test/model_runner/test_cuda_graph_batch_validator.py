@@ -360,12 +360,18 @@ def _real_prefill_runner(
 
 
 def _attest_server_args(
-    *, backend: str = "breakable", bs: tuple[int, ...] = (128, 256)
+    *,
+    backend: str = "breakable",
+    bs: tuple[int, ...] = (128, 256),
+    backend_locked: bool = True,
 ):
     return SimpleNamespace(
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=backend, bs=list(bs))
-        )
+        ),
+        _cuda_graph_config_locked=(
+            {("prefill", "backend")} if backend_locked else set()
+        ),
     )
 
 
@@ -382,6 +388,17 @@ def test_attest_prefill_graphs_rejects_missing_runner():
 
     with pytest.raises(RuntimeError, match="did not construct"):
         cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+
+
+def test_attest_prefill_graphs_allows_auto_backend_to_fall_back(caplog):
+    model_runner = SimpleNamespace(prefill_cuda_graph_runner=SimpleNamespace())
+
+    cgv.attest_prefill_cuda_graphs(
+        model_runner,
+        _attest_server_args(backend_locked=False),
+    )
+
+    assert "eager prefill fallback" in caplog.text
 
 
 def test_attest_prefill_graphs_rejects_backend_mismatch():

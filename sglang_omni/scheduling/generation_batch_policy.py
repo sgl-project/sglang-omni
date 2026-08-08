@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
+from numbers import Integral
 from typing import Any
 
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
@@ -338,10 +339,14 @@ def _normalize_cuda_graph_bs(
         return None
 
     try:
-        normalized = tuple(int(item) for item in value)
-    except (TypeError, ValueError):
+        items = tuple(value)
+    except TypeError:
         errors.append(f"{field} must be a sequence of positive integers")
         return None
+    if any(isinstance(item, bool) or not isinstance(item, Integral) for item in items):
+        errors.append(f"{field} must be a sequence of positive integers")
+        return None
+    normalized = tuple(int(item) for item in items)
 
     if not normalized:
         errors.append(f"{field} must be non-empty")

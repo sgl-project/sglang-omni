@@ -12,10 +12,6 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch import nn
 
-from sglang_omni.model_runner.prefill_inputs import (
-    OmniPrefillInputs,
-    get_omni_prefill_inputs,
-)
 from sglang_omni.models.higgs_tts.hf_config import HiggsMultimodalQwen3Config
 from sglang_omni.models.higgs_tts.modeling import (
     HiggsFusedMultiTextEmbedding,
@@ -432,6 +428,7 @@ class HiggsTTSModel(nn.Module):
         positions: torch.Tensor,
         forward_batch,
         input_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | None = None,
         **kwargs,
     ):
         """Run the backbone then sample multi-codebook codes per request.
@@ -447,22 +444,16 @@ class HiggsTTSModel(nn.Module):
                 input_ids, batch_size=input_ids.shape[0]
             )
         else:
-            prefill_inputs = get_omni_prefill_inputs(forward_batch)
-            if prefill_inputs is None:
+            if input_embeds is None:
                 raise RuntimeError(
-                    "Higgs prefill requires OmniPrefillInputs on "
-                    "forward_batch.mm_inputs; before_prefill attaches it to "
-                    "every prefill batch"
+                    "Higgs prefill requires runner-composed input_embeds"
                 )
-            if input_embeds is not None:
+            if omni_prefill_rids is None:
                 raise RuntimeError(
-                    "Higgs prefill received an input_embeds argument alongside "
-                    "the OmniPrefillInputs payload; the payload is the single "
-                    "embedding source"
+                    "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
                 )
-            input_embeds = prefill_inputs.input_embeds
             req_ids, gen_params = self._extract_batch_metadata(
-                forward_batch, prefill_inputs
+                forward_batch, omni_prefill_rids
             )
 
         hidden_states = self.backbone.model(
@@ -528,11 +519,8 @@ class HiggsTTSModel(nn.Module):
     def _extract_batch_metadata(
         self,
         forward_batch,
-        prefill_inputs: OmniPrefillInputs,
+        req_ids: list[str],
     ) -> tuple[list[str], list[HiggsGenParams]]:
-        # The payload is the identity source: the graph runner's static batch
-        # does not preserve ForwardBatch.rids.
-        req_ids = [str(r) for r in prefill_inputs.rids]
         batch_size = self._infer_batch_size(forward_batch)
         gen_params = self._gen_params_for_batch(forward_batch.sampling_info, batch_size)
         return req_ids, gen_params

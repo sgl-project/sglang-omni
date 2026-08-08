@@ -14,10 +14,7 @@ import typer
 
 from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
 from sglang_omni.config.runtime import resolve_stage_static_factory_args
-from sglang_omni.model_runner.prefill_inputs import (
-    OmniPrefillInputs,
-    get_omni_prefill_inputs,
-)
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts import utils as higgs_utils
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -55,23 +52,6 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
     assert stages_by_name["vocoder"].process == "pipeline"
     assert stages_by_name["vocoder"].factory_args["compile_decode"] is False
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
-
-
-def test_higgs_batch_metadata_reads_prefill_payload() -> None:
-    model = object.__new__(HiggsTTSModel)
-    payload = OmniPrefillInputs(
-        input_embeds=torch.zeros(2, 4),
-        rids=("payload-a", "payload-b"),
-    )
-    forward_batch = SimpleNamespace(
-        seq_lens=torch.tensor([1, 1]),
-        sampling_info=None,
-    )
-
-    req_ids, params = model._extract_batch_metadata(forward_batch, payload)
-
-    assert req_ids == ["payload-a", "payload-b"]
-    assert len(params) == 2
 
 
 def test_higgs_sampler_pool_rows_default_to_unseeded() -> None:
@@ -116,7 +96,7 @@ def test_higgs_request_row_seed_tracks_request_seed() -> None:
     assert model._sampler_pool.seeds[0].item() == 42
 
 
-def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
+def test_higgs_prefill_embeddings_attach_private_sidecar() -> None:
     seeds: list[tuple[str, int | None]] = []
     model = SimpleNamespace(
         set_request_seed=lambda request_id, seed: seeds.append((request_id, seed)),
@@ -133,6 +113,7 @@ def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
     )
     forward_batch = SimpleNamespace(
         input_embeds=None,
+        replace_embeds=None,
         mm_inputs=[None],
         input_ids=torch.zeros(134, dtype=torch.long),
         batch_size=1,
@@ -142,10 +123,10 @@ def test_higgs_prefill_embeddings_ride_the_batch_payload() -> None:
 
     payload = get_omni_prefill_inputs(forward_batch)
     assert forward_batch.input_embeds is None
+    assert forward_batch.mm_inputs == [None]
     assert payload is not None
     assert payload.input_embeds.shape == (134, 4)
     torch.testing.assert_close(payload.input_embeds, raw_embeds)
-    assert payload.rids == ("request",)
     assert seeds == [("request", 17)]
 
 
@@ -272,6 +253,11 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
 
     def fake_build_sglang_server_args(checkpoint_dir, context_length, **overrides):
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
+        locked = set()
+        if prefill_bs:
+            locked.add(("prefill", "bs"))
+        if "cuda_graph_backend_prefill" in overrides:
+            locked.add(("prefill", "backend"))
         server_args = FakeServerArgs(
             disable_cuda_graph=overrides["disable_cuda_graph"],
             disable_overlap_schedule=False,
@@ -293,9 +279,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
                     max_bs=overrides.get("cuda_graph_max_bs_prefill"),
                 ),
             ),
-            _cuda_graph_config_locked=(
-                frozenset({("prefill", "bs")}) if prefill_bs else frozenset()
-            ),
+            _cuda_graph_config_locked=locked,
             torch_compile_max_bs=32,
         )
         captured["checkpoint_dir"] = checkpoint_dir
@@ -322,7 +306,13 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
 
         model_runner.init_cuda_graphs = init_cuda_graphs
         return (
-            SimpleNamespace(model_runner=model_runner),
+            SimpleNamespace(
+                model_runner=model_runner,
+                model_config=SimpleNamespace(is_multimodal=False),
+                enable_prefill_input_embeds=bool(
+                    kwargs.get("enable_prefill_input_embeds")
+                ),
+            ),
             object(),
             object(),
             object(),
@@ -417,6 +407,9 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
         "cuda_graph_bs_prefill"
     ] == build_default_prefill_cuda_graph_bs(512)
     assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
+    assert ("prefill", "backend") not in captured[
+        "server_args"
+    ]._cuda_graph_config_locked
     assert captured["infra_kwargs"]["enable_prefill_input_embeds"] is True
     assert len(records["attest_calls"]) == 1
     assert captured["server_args"].disable_overlap_schedule is True
@@ -441,7 +434,7 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
     )
 
 
-def test_higgs_tts_engine_disable_cuda_graph_override_disables_prefill(
+def test_higgs_tts_engine_prefill_disable_keeps_decode_graphs(
     monkeypatch,
 ) -> None:
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
@@ -458,16 +451,15 @@ def test_higgs_tts_engine_disable_cuda_graph_override_disables_prefill(
     )
     builder.build(
         "bosonai/higgs-tts-3-4b",
-        server_args_overrides={"disable_cuda_graph": True},
+        server_args_overrides={"cuda_graph_backend_prefill": "disabled"},
     )
 
-    assert captured["overrides"]["disable_cuda_graph"] is True
+    assert captured["overrides"]["disable_cuda_graph"] is False
     assert captured["overrides"]["cuda_graph_backend_prefill"] == "disabled"
-    assert "cuda_graph_bs_prefill" not in captured["overrides"]
     assert captured["server_args"].cuda_graph_config.prefill.backend == "disabled"
     assert "enable_prefill_input_embeds" not in captured["infra_kwargs"]
     assert records["attest_calls"] == []
-    assert records["init_graph_calls"] == []
+    assert records["init_graph_calls"] == [True]
 
 
 def test_higgs_tts_engine_lifecycle_callbacks_require_model() -> None:

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any
+
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
 
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -13,6 +16,23 @@ from sglang_omni.scheduling.generation_batch_policy import (
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+
+def _operator_selected_prefill_graph_backend(
+    server_args_overrides: Mapping[str, Any] | None,
+) -> bool:
+    if not server_args_overrides:
+        return False
+    if "cuda_graph_backend_prefill" in server_args_overrides:
+        return True
+
+    config = server_args_overrides.get("cuda_graph_config")
+    if isinstance(config, CudaGraphConfig):
+        config = config.to_dict()
+    if not isinstance(config, Mapping):
+        return False
+    prefill_config = config.get("prefill")
+    return isinstance(prefill_config, Mapping) and "backend" in prefill_config
 
 
 class SGLangGenerationEngineBuilder(ABC):
@@ -54,6 +74,9 @@ class SGLangGenerationEngineBuilder(ABC):
 
         self.pre_infra_setup(checkpoint_dir)
 
+        operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
+            server_args_overrides
+        )
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
@@ -72,6 +95,15 @@ class SGLangGenerationEngineBuilder(ABC):
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+        if (
+            prefill_graph_backend != CudaGraphBackend.DISABLED
+            and not operator_selected_prefill_backend
+        ):
+            # SGLang treats every non-default source as operator-locked. A
+            # model-qualified stage default should survive compatibility
+            # resolution, but must remain eligible for the late free-memory
+            # safety gate immediately before graph capture.
+            server_args._cuda_graph_config_locked.discard(("prefill", "backend"))
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
                 raise RuntimeError(
@@ -109,7 +141,7 @@ class SGLangGenerationEngineBuilder(ABC):
         self.compile_model(model, server_args)
 
         if want_cuda_graph:
-            model_worker.model_runner.init_cuda_graphs()
+            scheduling_bootstrap.init_sglang_cuda_graphs(model_worker)
             self.post_cuda_graph_setup(model, server_args)
             if prefill_graph_backend != CudaGraphBackend.DISABLED:
                 from sglang_omni.utils import cuda_graph_batch_validator

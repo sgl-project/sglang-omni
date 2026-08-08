@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Batch-carried prefill inputs for breakable prefill CUDA graphs.
+"""Omni-owned prefill inputs for breakable prefill CUDA graphs.
 
-Runner-composed prefill conditioning (embeddings plus request identity)
-crosses the graph boundary as an OmniPrefillInputs payload stored on
-ForwardBatch.mm_inputs: the prefill graph gate rejects batches carrying
-input_embeds, and the replay-time static batch preserves mm_inputs but not
-rids. The model's forward reads the payload on both the graph and eager
-paths. On a real prefill batch mm_inputs is never None: prepare_for_extend
-fills it with one entry per request (None for text-only requests), and
-attaching replaces that placeholder list on the ForwardBatch only.
+Runner-composed embeddings must remain off ``ForwardBatch.input_embeds``
+until after prefill-CUDA-graph admission because upstream rejects batches
+carrying that field. They also must not reuse ``ForwardBatch.mm_inputs``,
+whose upstream contract belongs to multimodal request inputs. This module
+therefore attaches the embeddings to a private, short-lived Omni sidecar.
+``SGLModelRunner._extend_forward_kwargs`` moves them into explicit model
+forward kwargs after admission, and the Omni runner clears the sidecar after
+the forward completes.
 """
 
 from __future__ import annotations
@@ -18,38 +18,28 @@ from typing import Any
 
 import torch
 
+_OMNI_PREFILL_INPUTS_ATTR = "_sglang_omni_prefill_inputs"
+
 
 @dataclass(frozen=True)
 class OmniPrefillInputs:
     """Per-forward prefill conditioning composed by an omni model runner.
 
     input_embeds covers exactly the extend-window tokens of the batch, in
-    model dtype. rids carries request identity for the eager tail.
+    model dtype. Request identity remains owned by ``ForwardBatch.rids`` and
+    is forwarded separately by ``SGLModelRunner``.
     """
 
     input_embeds: torch.Tensor
-    rids: tuple[str, ...]
 
 
 def attach_omni_prefill_inputs(
     forward_batch: Any, prefill_inputs: OmniPrefillInputs
 ) -> None:
-    """Stow prefill_inputs on forward_batch.mm_inputs."""
-    if forward_batch.input_embeds is not None:
+    """Attach ``prefill_inputs`` without modifying upstream-owned fields."""
+    if forward_batch.replace_embeds is not None:
         raise RuntimeError(
-            "OmniPrefillInputs requires forward_batch.input_embeds to stay "
-            "None; the model forward consumes the payload instead"
-        )
-    mm_inputs = forward_batch.mm_inputs
-    if isinstance(mm_inputs, OmniPrefillInputs):
-        raise RuntimeError(
-            "forward_batch.mm_inputs already carries OmniPrefillInputs; "
-            "refusing to attach twice to the same batch"
-        )
-    if mm_inputs is not None and any(item is not None for item in mm_inputs):
-        raise RuntimeError(
-            "forward_batch.mm_inputs carries SGLang multimodal inputs; "
-            "refusing to overwrite them with OmniPrefillInputs"
+            "OmniPrefillInputs conflicts with forward_batch.replace_embeds"
         )
     num_tokens = len(forward_batch.input_ids)
     if prefill_inputs.input_embeds.shape[0] != num_tokens:
@@ -58,26 +48,23 @@ def attach_omni_prefill_inputs(
             f"embeds rows={prefill_inputs.input_embeds.shape[0]}, "
             f"batch tokens={num_tokens}"
         )
-    if len(prefill_inputs.rids) != forward_batch.batch_size:
-        raise RuntimeError(
-            "OmniPrefillInputs rids must cover the batch: "
-            f"rids={len(prefill_inputs.rids)}, "
-            f"batch_size={forward_batch.batch_size}"
-        )
-    forward_batch.mm_inputs = prefill_inputs
+    setattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR, prefill_inputs)
 
 
 def get_omni_prefill_inputs(forward_batch: Any) -> OmniPrefillInputs | None:
-    """Return the attached payload, or None for batches without one,
-    including batches whose mm_inputs carries genuine multimodal inputs."""
-    payload = forward_batch.mm_inputs
-    if isinstance(payload, OmniPrefillInputs):
-        return payload
-    return None
+    """Return the private Omni payload, or ``None`` when none is attached."""
+    return getattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR, None)
+
+
+def clear_omni_prefill_inputs(forward_batch: Any) -> None:
+    """Remove the private Omni payload, if present."""
+    if hasattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR):
+        delattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR)
 
 
 __all__ = [
     "OmniPrefillInputs",
     "attach_omni_prefill_inputs",
+    "clear_omni_prefill_inputs",
     "get_omni_prefill_inputs",
 ]
