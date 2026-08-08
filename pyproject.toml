@@ -67,8 +67,6 @@ dependencies = [
     "tiktoken",
     "hydra-core",
     "omegaconf",
-    "descript-audiotools",
-    "descript-audio-codec==1.0.0",
     "torchaudio==2.11.0",
     "torchcodec==0.11.1",     # Matches torch 2.11.x / sglang 0.5.16
     # Gradio playground

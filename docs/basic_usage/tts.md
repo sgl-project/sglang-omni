@@ -10,6 +10,10 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
+Fish Audio also requires its model-specific DAC dependencies. Complete the
+[Fish Audio S2-Pro prerequisites](../cookbook/fishaudio_s2_pro.md#prerequisites)
+before starting the server.
+
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
 so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
 
