@@ -10,7 +10,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
-Fish Audio also requires its model-specific DAC dependencies. Complete the
+Fish Audio requires its model-specific DAC dependencies. Complete the
 [Fish Audio S2-Pro prerequisites](../cookbook/fishaudio_s2_pro.md#prerequisites)
 before starting the server.
 
