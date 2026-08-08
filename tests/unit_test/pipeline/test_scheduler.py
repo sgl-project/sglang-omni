@@ -1606,8 +1606,10 @@ def test_omni_scheduler_normalizes_req_token_arrays() -> None:
     assert req.origin_input_ids.tolist() == origin
 
 
-def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
-    """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
+def _construct_omni_scheduler(
+    monkeypatch, *, return_global_server_args: bool = False, **kwargs
+) -> OmniScheduler | tuple[OmniScheduler, object]:
+    """Build an OmniScheduler over the minimum stub surface __init__ touches."""
     monkeypatch.setattr(
         OmniScheduler,
         "_init_parallel_state",
@@ -1696,6 +1698,18 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         token_to_kv_pool_allocator=None,
         server_args=server_args,
         model_config=SimpleNamespace(),
+        **kwargs,
+    )
+
+    if return_global_server_args:
+        return scheduler, global_server_args
+    return scheduler
+
+
+def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
+    """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
+    scheduler, global_server_args = _construct_omni_scheduler(
+        monkeypatch, return_global_server_args=True
     )
 
     assert scheduler._pending_chunked_abort_req is None
@@ -1888,6 +1902,50 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
             enable_overlap=True,
             enable_async_decode=True,
         )
+
+
+def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
+    """Defaults keep the gate off; the wait is stored in seconds."""
+    scheduler = _construct_omni_scheduler(monkeypatch)
+    assert scheduler.prefill_coalesce_requests == 0
+    assert scheduler.prefill_coalesce_wait_s == pytest.approx(0.06)
+
+    enabled = _construct_omni_scheduler(
+        monkeypatch, prefill_coalesce_requests=32.0, prefill_coalesce_wait_ms=300
+    )
+    assert enabled.prefill_coalesce_requests == 32
+    assert enabled.prefill_coalesce_wait_s == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(
+    "coalesce_kwargs",
+    [
+        {"prefill_coalesce_requests": None},
+        {"prefill_coalesce_wait_ms": None},
+        {"prefill_coalesce_requests": -1},
+        {"prefill_coalesce_requests": True},
+        {"prefill_coalesce_requests": -0.5},
+        {"prefill_coalesce_requests": 2.9},
+        {"prefill_coalesce_requests": float("inf")},
+        {"prefill_coalesce_wait_ms": 0.0},
+        {"prefill_coalesce_wait_ms": float("nan")},
+        {"prefill_coalesce_wait_ms": float("inf")},
+    ],
+)
+def test_omni_scheduler_rejects_invalid_prefill_coalesce_args(
+    monkeypatch, coalesce_kwargs
+) -> None:
+    """Config-file values never pass through the CLI, so __init__ is the shared
+    choke point where both entrypoints have to fail fast."""
+    with pytest.raises(ValueError):
+        _construct_omni_scheduler(monkeypatch, **coalesce_kwargs)
+
+
+def test_omni_scheduler_null_coalesce_error_points_at_zero(monkeypatch) -> None:
+    """An explicit YAML null is ambiguous, so it must name the documented off
+    switch rather than trip an assert that -O would strip."""
+    with pytest.raises(ValueError, match="use 0 to disable"):
+        _construct_omni_scheduler(monkeypatch, prefill_coalesce_requests=None)
 
 
 def test_stage_output_cache_eviction_uses_lru_order() -> None:

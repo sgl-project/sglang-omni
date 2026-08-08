@@ -15,6 +15,10 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
+from sglang_omni.scheduling.prefill_coalesce import (
+    validate_prefill_coalesce_requests,
+    validate_prefill_coalesce_wait_ms,
+)
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 
@@ -37,7 +41,23 @@ _ASYNC_DECODE_FACTORIES = frozenset(
     }
 )
 _ASYNC_DECODE_SUPPORTED_MODELS = (
-    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, and Qwen3-ASR"
+    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
+    "Qwen3-ASR, and the Qwen3-Omni thinker"
+)
+_PREFILL_COALESCE_FACTORIES = frozenset(
+    {
+        "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.qwen3_omni.stages."
+        "create_sglang_thinker_executor_from_config",
+        "sglang_omni.models.moss_transcribe_diarize.stages."
+        "create_sglang_moss_transcribe_diarize_executor",
+        "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
+    }
+)
+_PREFILL_COALESCE_SUPPORTED_MODELS = (
+    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
+    "and the Qwen3-Omni thinker"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -863,6 +883,67 @@ def apply_decode_mode_cli_overrides(
     return pipeline_config
 
 
+def apply_prefill_coalesce_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    prefill_coalesce_requests: int | None,
+    prefill_coalesce_wait_ms: float | None,
+) -> PipelineConfig:
+    updates: dict[str, object] = {}
+    try:
+        if prefill_coalesce_requests is not None:
+            updates["prefill_coalesce_requests"] = validate_prefill_coalesce_requests(
+                prefill_coalesce_requests
+            )
+        if prefill_coalesce_wait_ms is not None:
+            updates["prefill_coalesce_wait_ms"] = validate_prefill_coalesce_wait_ms(
+                prefill_coalesce_wait_ms
+            )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if not updates:
+        return pipeline_config
+    matching_stages = [
+        stage
+        for stage in pipeline_config.stages
+        if stage.factory in _PREFILL_COALESCE_FACTORIES
+    ]
+    if not matching_stages:
+        raise typer.BadParameter(
+            "--prefill-coalesce-requests/--prefill-coalesce-wait-ms currently "
+            f"support only {_PREFILL_COALESCE_SUPPORTED_MODELS}; no stage in "
+            "this pipeline uses a supported factory"
+        )
+
+    def configured_requests(stage: StageConfig) -> int:
+        raw_value = (stage.factory_args or {}).get("prefill_coalesce_requests", 0)
+        runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
+        if (
+            isinstance(runtime_overrides, dict)
+            and "prefill_coalesce_requests" in runtime_overrides
+        ):
+            raw_value = runtime_overrides["prefill_coalesce_requests"]
+        try:
+            return validate_prefill_coalesce_requests(raw_value)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+    if prefill_coalesce_requests is None and not any(
+        # The YAML may already enable the gate; only warn when tuning the wait
+        # would genuinely have no effect on any targeted stage.
+        configured_requests(stage) >= 2
+        for stage in matching_stages
+    ):
+        logger.warning(
+            "--prefill-coalesce-wait-ms alone does not enable coalescing; the "
+            "gate engages only when prefill_coalesce_requests is >= 2 (via "
+            "--prefill-coalesce-requests or per-stage YAML)"
+        )
+    _apply_factory_args_updates(pipeline_config, matching_stages, updates)
+    return pipeline_config
+
+
 def apply_torch_compile_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -1210,6 +1291,32 @@ def serve(
             ),
         ),
     ] = None,
+    prefill_coalesce_requests: Annotated[
+        int | None,
+        typer.Option(
+            "--prefill-coalesce-requests",
+            "--prefill_coalesce_requests",
+            help=(
+                "Hold prefill admission until this many requests are waiting "
+                "(or the oldest has waited --prefill-coalesce-wait-ms), "
+                "amortizing the per-step host cost. The gate engages at >= 2; "
+                "0 disables (default), and 1 is likewise a no-op (logs a "
+                "warning). "
+                f"Available for {_PREFILL_COALESCE_SUPPORTED_MODELS}."
+            ),
+        ),
+    ] = None,
+    prefill_coalesce_wait_ms: Annotated[
+        float | None,
+        typer.Option(
+            "--prefill-coalesce-wait-ms",
+            "--prefill_coalesce_wait_ms",
+            help=(
+                "Upper bound on the extra time-to-first-token a queued request "
+                "pays for prefill coalescing. Default 60."
+            ),
+        ),
+    ] = None,
     max_running_requests: Annotated[
         int | None,
         typer.Option(
@@ -1327,6 +1434,11 @@ def serve(
         merged_config,
         decode_mode=decode_mode,
         async_lookahead_min_batch_size=async_lookahead_min_batch_size,
+    )
+    merged_config = apply_prefill_coalesce_cli_overrides(
+        merged_config,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     )
     generation_server_args_overrides: dict[str, object] = {}
     if max_running_requests is not None:

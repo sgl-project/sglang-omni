@@ -81,7 +81,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             },
             gpu=0,
             runtime=StageRuntimeConfig(
-                resources=StageResourceConfig(total_gpu_memory_fraction=0.85)
+                resources=StageResourceConfig(total_gpu_memory_fraction=0.85),
             ),
             next="vocoder",
             stream_to=["vocoder"],
