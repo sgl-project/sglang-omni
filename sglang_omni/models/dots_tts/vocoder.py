@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,10 +17,14 @@ from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+_LENGTH_BUCKET_FRAMES = 32
+logger = logging.getLogger(__name__)
+
 
 class DotsTTSBatchVocoder(BatchVocoderBase):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
+        self._logged_batch = False
 
     def prepare_item(self, payload: StagePayload) -> tuple[DotsTTSState, torch.Tensor]:
         state = load_dots_tts_state(payload)
@@ -30,14 +35,67 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
     async def decode_batch(
         self, items: list[tuple[DotsTTSState, torch.Tensor]]
     ) -> list[tuple[torch.Tensor, int]]:
-        outputs = []
+        outputs: list[tuple[torch.Tensor, int] | None] = [None] * len(items)
+        buckets: dict[int, list[tuple[int, torch.Tensor]]] = {}
+        for index, (_state, latents) in enumerate(items):
+            self._validate_latents(latents)
+            frames = int(latents.shape[1])
+            bucket = (frames + _LENGTH_BUCKET_FRAMES - 1) // _LENGTH_BUCKET_FRAMES
+            buckets.setdefault(bucket, []).append((index, latents))
+
+        bucket_sizes = [len(bucket_items) for bucket_items in buckets.values()]
+        if not self._logged_batch and max(bucket_sizes, default=0) > 1:
+            logger.info(
+                "dots.tts AudioVAE batched decode is active: requests=%d "
+                "bucket_sizes=%s",
+                len(items),
+                bucket_sizes,
+            )
+            self._logged_batch = True
+
         with self.codec.lock:
-            for _state, latents in items:
-                waveform = self.codec.inference.decode_latents(
-                    latents.to(self.codec.device)
+            for bucket_items in buckets.values():
+                max_frames = max(int(latents.shape[1]) for _, latents in bucket_items)
+                padded = bucket_items[0][1].new_zeros(
+                    len(bucket_items),
+                    max_frames,
+                    self.codec.latent_dim,
+                    device=self.codec.device,
                 )
-                outputs.append((waveform, self.codec.sample_rate))
-        return outputs
+                for row, (_index, latents) in enumerate(bucket_items):
+                    frames = int(latents.shape[1])
+                    padded[row, :frames].copy_(latents[0].to(self.codec.device))
+
+                waveform_batch = self.codec.inference.decode_latents(padded)
+                if waveform_batch.shape[0] != len(bucket_items):
+                    raise RuntimeError(
+                        "dots.tts AudioVAE returned an unexpected batch size: "
+                        f"expected {len(bucket_items)}, got {waveform_batch.shape[0]}"
+                    )
+                for row, (index, latents) in enumerate(bucket_items):
+                    valid_samples = int(latents.shape[1]) * self.codec.hop_size
+                    outputs[index] = (
+                        waveform_batch[row : row + 1, ..., :valid_samples],
+                        self.codec.sample_rate,
+                    )
+
+        if any(output is None for output in outputs):
+            raise RuntimeError("dots.tts AudioVAE did not produce every batch result")
+        return [output for output in outputs if output is not None]
+
+    def _validate_latents(self, latents: torch.Tensor) -> None:
+        if latents.ndim != 3 or latents.shape[0] != 1:
+            raise ValueError(
+                "dots.tts latents must have shape [1, frames, latent_dim], "
+                f"got {tuple(latents.shape)}"
+            )
+        if latents.shape[1] == 0:
+            raise ValueError("dots.tts latents must contain at least one frame")
+        if latents.shape[2] != self.codec.latent_dim:
+            raise ValueError(
+                f"dots.tts latent_dim must be {self.codec.latent_dim}, "
+                f"got {latents.shape[2]}"
+            )
 
     def store_result(
         self,
@@ -77,19 +135,32 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
         *,
         optimize: bool,
         merge_steps: int = 4,
+        max_batch_size: int = 4,
+        max_batch_wait_ms: int = 2,
     ) -> None:
         if merge_steps < 1:
             raise ValueError("dots.tts vocoder merge_steps must be positive")
+        if max_batch_size < 1:
+            raise ValueError("dots.tts vocoder max_batch_size must be positive")
+        if max_batch_wait_ms < 0:
+            raise ValueError("dots.tts vocoder max_batch_wait_ms must be non-negative")
         self.codec = codec
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
         self._batch_vocoder = DotsTTSBatchVocoder(codec)
         super().__init__(
             self._batch_vocoder.decode_payload,
+            batch_compute_fn=self._batch_vocoder.decode_payloads,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
             sample_rate=codec.sample_rate,
             stream_source_hint="dots.tts",
             stream_input_modality="audio_latents",
         )
+
+    def validate_non_streaming_payload(self, payload: StagePayload) -> None:
+        _state, latents = self._batch_vocoder.prepare_item(payload)
+        self._batch_vocoder._validate_latents(latents)
 
     def create_stream_state(self, request_id: str) -> _DotsStreamState:
         del request_id
@@ -144,12 +215,14 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
                 else (1 if state.received_patches <= 2 else self.merge_steps)
             )
             patches, state.pending = state.pending[:take], state.pending[take:]
+            # note (db-ol): compiled stream step cudagraph trees corrupt the
+            # backbone decode graph replay in this process, see issue 1392.
             with self.codec.lock:
                 chunk = self.codec.inference.stream_step(
                     torch.cat(patches, dim=1),
                     stream_state=state.codec_state,
                     optimize=self.optimize,
-                    use_compiled=not is_final,
+                    use_compiled=False,
                 )
             if chunk.numel():
                 chunks.append(chunk)

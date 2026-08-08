@@ -95,6 +95,25 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
 
 
+def test_non_streaming_batch_skips_done_before_later_payloads() -> None:
+    scheduler = _TestStreamingScheduler(max_batch_size=3)
+    first = IncomingMessage("a", "new_request", _payload("a"))
+    scheduler.inbox.put(IncomingMessage("b", "stream_done"))
+    scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
+    scheduler.inbox.put(IncomingMessage("c", "stream_done"))
+    scheduler.inbox.put(IncomingMessage("c", "new_request", _payload("c")))
+
+    batch = scheduler._collect_new_request_batch(first)
+    scheduler._handle_new_request_batch(batch)
+    while scheduler._pending_messages:
+        scheduler._handle_message(scheduler._next_message(), None)
+
+    assert scheduler.batch_calls == [["a", "b", "c"]]
+    assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
+    assert not scheduler._pending_messages
+    assert not scheduler._pending_done
+
+
 def test_streaming_simple_scheduler_keeps_streaming_request_out_of_batch() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=3)
     first = IncomingMessage("a", "new_request", _payload("a"))

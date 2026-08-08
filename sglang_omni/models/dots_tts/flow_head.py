@@ -156,7 +156,14 @@ class DotsTTSFlowHead(nn.Module):
         optimize: bool = False,
     ) -> None:
         if self.mode != "meanflow":
-            raise ValueError("dots.tts continuous batching currently requires MeanFlow")
+            # note (luojiaxuan): flow-matching checkpoints (SOAR, base) need the
+            # CFG double branch, which the batched tail does not implement. They
+            # serve on the single-request solver instead.
+            raise ValueError(
+                "dots.tts continuous batching requires a MeanFlow checkpoint; "
+                f"this checkpoint is {self.mode}. Serve it with "
+                "max_running_requests=1 (see examples/configs/dots_tts_soar.yaml)"
+            )
         from sglang_omni.models.dots_tts.tail import (
             DotsTtsAcousticTail,
             DotsTtsTailSpec,
