@@ -179,6 +179,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
         server_args = FakeServerArgs(**overrides)
+        server_args.cuda_graph_config = SimpleNamespace(
+            prefill=SimpleNamespace(backend="disabled")
+        )
         server_args.mm_attention_backend = None
         return server_args
 

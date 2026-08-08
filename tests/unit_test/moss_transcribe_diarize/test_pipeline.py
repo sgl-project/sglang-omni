@@ -250,7 +250,12 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        lambda *a, **k: SimpleNamespace(context_length=4096),
+        lambda *a, **k: SimpleNamespace(
+            context_length=4096,
+            cuda_graph_config=SimpleNamespace(
+                prefill=SimpleNamespace(backend="disabled")
+            ),
+        ),
     )
     monkeypatch.setattr(
         engine_factory, "validate_generation_batch_policy", lambda **k: None
@@ -328,7 +333,12 @@ def test_factory_context_length_override_uses_final_server_value(
     def capture_server_args(model_path, **kwargs):
         del model_path
         server_args_kwargs.update(kwargs)
-        return SimpleNamespace(context_length=final_context_length)
+        return SimpleNamespace(
+            context_length=final_context_length,
+            cuda_graph_config=SimpleNamespace(
+                prefill=SimpleNamespace(backend="disabled")
+            ),
+        )
 
     def capture_adapters(**kwargs):
         adapter_kwargs.update(kwargs)
