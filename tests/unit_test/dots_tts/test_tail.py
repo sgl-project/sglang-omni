@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
+import pytest
 import torch
 from dots_tts.models.dots_tts.config import _DiTConfig, _EncoderConfig
 from dots_tts.modules.backbone.dit import DiT
@@ -82,26 +84,36 @@ def _patch_encoder() -> VAESemanticEncoder:
     return VAESemanticEncoder(in_dim=LATENT_DIM, out_dim=FM_HIDDEN, config=config)
 
 
-def _build_tail(model: _TailModel, *, slots: int):
-    encoder = _patch_encoder()
+def _build_tail(
+    model: _TailModel,
+    *,
+    slots: int,
+    device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.float32,
+    patch_capacity: int = 8,
+    optimize: bool = False,
+):
+    encoder = _patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
         for parameter in encoder.parameters():
             parameter.normal_(0.0, 0.2)
     return tail.DotsTtsAcousticTail(
         dit=tail.fuse_dit_for_inference(model),
         coordinate_proj=model.coordinate_proj,
+        latent_proj=model.latent_proj,
         patch_encoder=encoder,
         spec=tail.DotsTtsTailSpec(
             nfe=NFE,
-            patch_capacity=8,
+            patch_capacity=patch_capacity,
             num_slots=slots,
             hidden_patch_size=1,
             latent_patch_size=PATCH_SIZE,
             latent_dim=LATENT_DIM,
             fm_hidden_size=FM_HIDDEN,
         ),
-        device=torch.device("cpu"),
-        dtype=torch.float32,
+        device=device,
+        dtype=dtype,
+        optimize=optimize,
     )
 
 
@@ -143,10 +155,11 @@ def _reference_meanflow(
     return latent
 
 
-def test_kv_cached_tail_matches_full_recompute() -> None:
+@pytest.mark.parametrize("slots", [1, 2])
+def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     torch.manual_seed(1234)
     model = _TailModel().eval()
-    acoustic_tail = _build_tail(model, slots=1)
+    acoustic_tail = _build_tail(model, slots=slots)
     unit = acoustic_tail.spec.unit_len
     g_cond = torch.randn(1, FM_HIDDEN)
     grid = torch.linspace(0.0, 1.0, NFE + 1)
@@ -172,11 +185,10 @@ def test_kv_cached_tail_matches_full_recompute() -> None:
         g_cond,
     )
     torch.manual_seed(9)
-    actual = acoustic_tail.sample_patches(
-        [slot], fm_hidden_rows=hidden, latent_proj=model.latent_proj
-    )
+    actual = acoustic_tail.sample_patches([slot], fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
+    assert acoustic_tail._dit_contiguous_view_steps == (NFE if slots == 1 else 0)
 
 
 def test_tail_slots_are_bounded_and_reusable() -> None:
@@ -191,6 +203,42 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
         raise AssertionError("slot exhaustion must fail")
     acoustic_tail.release_slot(first)
     assert acoustic_tail.acquire_slot() == first
+
+
+def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
+    torch.manual_seed(1234)
+    direct = _build_tail(_TailModel().eval(), slots=2)
+    torch.manual_seed(1234)
+    fallback = _build_tail(_TailModel().eval(), slots=3)
+    direct_slots = [direct.acquire_slot(), direct.acquire_slot()][::-1]
+    fallback_slots = [
+        fallback.acquire_slot(),
+        fallback.acquire_slot(),
+        fallback.acquire_slot(),
+    ]
+    fallback.release_slot(fallback_slots.pop(1))
+
+    grid = torch.linspace(0.0, 1.0, NFE + 1)
+    for row, units in enumerate((3, 2)):
+        g_cond = torch.randn(1, FM_HIDDEN)
+        mods = direct.dit.build_mods(
+            grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+        )
+        history = torch.randn(units * direct.spec.unit_len, FM_HIDDEN)
+        for acoustic_tail, slot in (
+            (direct, direct_slots[row]),
+            (fallback, fallback_slots[row]),
+        ):
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + row)
+
+    hidden = torch.randn(2, FM_HIDDEN)
+    actual = direct.sample_patches(direct_slots, fm_hidden_rows=hidden)
+    expected = fallback.sample_patches(fallback_slots, fm_hidden_rows=hidden)
+
+    torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
+    assert direct._dit_contiguous_view_steps == NFE
+    assert fallback._dit_contiguous_view_steps == 0
 
 
 def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
@@ -215,3 +263,63 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
     mods = dit.build_mods(steps, duration=torch.full_like(steps, 0.5))
 
     assert mods.dtype == torch.bfloat16
+
+
+@pytest.mark.gpu
+def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = _TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = _build_tail(
+        eager_model,
+        slots=8,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+    )
+    torch.manual_seed(9)
+    graph = _build_tail(
+        graph_model,
+        slots=8,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+    )
+
+    for name in (
+        "_dit_k",
+        "_dit_v",
+        "_encoder_k",
+        "_encoder_v",
+        "_encoder_conv_tail",
+        "_window",
+        "_all_mods",
+    ):
+        eager_value = getattr(eager, name)
+        eager_value.normal_(0, 0.05)
+        getattr(graph, name).copy_(eager_value)
+    for slot in range(8):
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
+        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        eager.initialize_slot_rng(slot, 100 + slot)
+        graph.initialize_slot_rng(slot, 100 + slot)
+
+    slots = [7, 2, 5, 0, 6, 1, 4, 3]
+    hidden = torch.randn(8, FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(slots, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(slots, fm_hidden_rows=hidden)
+    torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+
+    latent = torch.randn(8, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+    eager_feedback = eager.encode_feedback(slots, latent)
+    graph_feedback = graph.encode_feedback(slots, latent)
+    torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
+    assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph._graph_misses
+    assert graph._dit_contiguous_view_steps == NFE

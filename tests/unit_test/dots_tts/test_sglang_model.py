@@ -145,3 +145,47 @@ def test_forward_decode_skips_lm_head_and_returns_per_request_rows() -> None:
     assert isinstance(output, LogitsProcessorOutput)
     torch.testing.assert_close(output.hidden_states, hidden)
     assert output.next_token_logits.shape == (3, 1)
+
+
+def test_graph_feedback_buffer_routes_decode_input_embeds() -> None:
+    class _BufferBackbone(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4)
+            self.weight = nn.Parameter(torch.zeros(1))
+            self.model_kwargs: dict | None = None
+
+        def model(self, **kwargs) -> torch.Tensor:
+            self.model_kwargs = kwargs
+            return kwargs["input_embeds"]
+
+        def forward(self, *args, **kwargs):
+            raise AssertionError("dots.tts must not enter the lm_head logits path")
+
+    model = DotsTTSSGLangModel.__new__(DotsTTSSGLangModel)
+    nn.Module.__init__(model)
+    model.qwen2 = _BufferBackbone()
+
+    assert model.graph_feedback_buffer is None
+    model.enable_graph_feedback(3)
+    buffer = model.graph_feedback_buffer
+    assert buffer is not None and buffer.shape == (3, 4)
+
+    buffer[:2].copy_(torch.full((2, 4), 8.0))
+    decode_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True, is_extend=lambda: False),
+        input_embeds=None,
+    )
+    output = model.forward(torch.tensor([1, 2]), torch.tensor([0, 0]), decode_batch)
+    torch.testing.assert_close(output.hidden_states, torch.full((2, 4), 8.0))
+    assert model.qwen2.model_kwargs["input_embeds"].data_ptr() == buffer.data_ptr()
+
+    prefill_embeds = torch.full((1, 4), 2.0)
+    prefill_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: False, is_extend=lambda: True),
+        input_embeds=prefill_embeds,
+        extend_seq_lens=torch.tensor([1]),
+    )
+    output = model.forward(torch.tensor([3]), torch.tensor([0]), prefill_batch)
+    torch.testing.assert_close(output.hidden_states, prefill_embeds)
+    assert model.qwen2.model_kwargs["input_embeds"] is prefill_embeds

@@ -52,6 +52,12 @@ def test_qwen3_asr_stage_default_allows_32_running_requests() -> None:
     assert "request_build_max_backlog" not in signature.parameters
 
 
+def test_qwen3_asr_stage_default_uses_auto_dtype() -> None:
+    signature = inspect.signature(create_sglang_qwen3_asr_executor)
+
+    assert signature.parameters["dtype"].default == "auto"
+
+
 def test_qwen3_asr_stage_default_enables_pre_lm_encoder() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 

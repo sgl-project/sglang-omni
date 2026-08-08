@@ -29,7 +29,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
-| [dots.tts](https://github.com/studio-dots-ai/dots.tts) | `examples/configs/dots_tts.yaml` | 48 kHz continuous-latent TTS with reference audio and continuous batching (`max_running_requests=16` by default). The MF batch path uses engine-wide `num_steps=4` and Euler, and requires `ref_audio` + `ref_text`. TP1 only |
+| [dots.tts](https://github.com/studio-dots-ai/dots.tts) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
 
 ## Launch the Server
 
@@ -129,6 +129,25 @@ sgl-omni serve \
   --allowed-media-domain us.aws.cdn.hf.co \
   --port 8000
 ```
+
+For dots.tts SOAR:
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
+`dots.tts-base` uses the same config; pass `--model-path dots-studio/dots.tts-base`.
+
+SOAR and base are flow-matching checkpoints, so they run the single-request solver
+(`max_running_requests=1`) with classifier-free guidance. Continuous batching is
+MeanFlow-only for now. `rednote-hilab/dots.tts-*` is the old org name and redirects to
+`dots-studio/dots.tts-*`; both work as `--model-path`.
 
 For Ming-Omni-TTS on two 80 GB GPUs:
 
