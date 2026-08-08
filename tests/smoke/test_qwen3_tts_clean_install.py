@@ -6,18 +6,15 @@ every request 500s".
 
 The test does following things:
 
-    1. Build a venv from *only* `pyproject.toml` (i.e. whatever transformers
-       version is pinned there today -- currently `transformers==5.12.1` per
-       `pyproject.toml:24`). No dev/test extras, no local overrides.
-    2. Run the exact install line documented at `docs/basic_usage/tts.md:18`
+    1. Build a venv from only `pyproject.toml` (currently having 
+       `transformers==5.12.1`). No dev/test extras, no local overrides.
+    2. Run the install line as documented at `docs/basic_usage/tts.md:18`
        (and mirrored at `docs/cookbook/qwen3_tts.md:22`):
            uv pip install --upgrade sox einops
            uv pip install --no-deps qwen-tts==0.1.1
-    3. Launch `sgl-omni serve` for a Qwen3-TTS Base checkpoint, exactly as
-       documented.
+    3. Launch `sgl-omni serve` for a Qwen3-TTS Base checkpoint
     4. Send one real `/v1/audio/speech` request (the same reference-audio
-       example from the docs, since Qwen3-TTS Base requires `ref_audio`) and
-       assert it comes back as audio, not a 500.
+       example from the docs) and assert it comes back as audio, not a 500.
 
 Run explicitly with:
 
@@ -44,23 +41,15 @@ from typing import Iterator
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Constants mirrored from the documented, user-facing install / serve flow.
-# If these ever need to change, they should change in lockstep with the docs
-# they're copied from -- that's the whole point of this test.
-# ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# docs/basic_usage/tts.md:18 and docs/cookbook/qwen3_tts.md:22
 QWEN_TTS_EXTRA_DEPS = ["sox", "einops"]
 QWEN_TTS_PACKAGE_SPEC = "qwen-tts==0.1.1"
 
-# docs/basic_usage/tts.md "For Qwen3-TTS Base"
 MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 MODEL_CONFIG = "examples/configs/qwen3_tts_0_6b.yaml"
 
-# docs/basic_usage/tts.md "Qwen3-TTS Base requires reference audio"
 REFERENCE_AUDIO = (
     "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/"
     "resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
@@ -91,7 +80,7 @@ def _skip_reason() -> str | None:
     if shutil.which("uv") is None:
         return "uv is not on PATH; required to build the clean install venv."
     if not (REPO_ROOT / "pyproject.toml").exists():
-        return f"Could not find pyproject.toml at {REPO_ROOT}; wrong repo root?"
+        return f"Could not find pyproject.toml at {REPO_ROOT};"
     try:
         gpu_check = subprocess.run(
             ["nvidia-smi", "-L"],
@@ -108,7 +97,7 @@ def _skip_reason() -> str | None:
 
 @pytest.fixture(scope="module")
 def clean_env_python(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
-    """Build a venv from *only* pyproject.toml + the documented install line.
+    """Build a venv from *only* pyproject.toml + the documented install line in docs.
 
     This deliberately does not reuse the interpreter running pytest: that
     interpreter may have local patches, editable installs with extra pins,
@@ -120,18 +109,16 @@ def clean_env_python(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]
 
     _run(["uv", "venv", str(venv_dir), "--python", "3.11"], cwd=REPO_ROOT)
     venv_python = venv_dir / "bin" / "python"
-    if not venv_python.exists():  # pragma: no cover - Windows runners, if any
+    if not venv_python.exists():  
         venv_python = venv_dir / "Scripts" / "python.exe"
 
-    # Step 1: install sglang-omni itself exactly as pyproject.toml pins it
-    # (in particular transformers==5.12.1, pyproject.toml:24). No extras.
+    # install sglang-omni itself exactly as pyproject.toml pins it
+    # (in particular transformers==5.12.1).
     _run(
         ["uv", "pip", "install", "--python", str(venv_python), str(REPO_ROOT)],
         cwd=REPO_ROOT,
     )
 
-    # Step 2: the documented Qwen3-TTS install lines, verbatim
-    # (docs/basic_usage/tts.md:18, docs/cookbook/qwen3_tts.md:22).
     _run(
         [
             "uv",
@@ -209,7 +196,7 @@ def qwen3_tts_server(clean_env_python: Path) -> Iterator[str]:
             proc.kill()
             proc.wait(timeout=30)
         log_file.close()
-        if proc.returncode not in (0, None, -15):  # not a clean exit/terminate
+        if proc.returncode not in (0, None, -15):  
             print(f"[clean-install smoke] server log ({log_path}):")
             print(log_path.read_text(encoding="utf-8", errors="replace"))
 
@@ -261,17 +248,12 @@ def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
 def test_qwen3_tts_base_serves_one_request_end_to_end(
     qwen3_tts_server: str,
 ) -> None:
-    """Boot Qwen3-TTS Base from a clean install and synthesize once.
-
-    This is the documented "Qwen3-TTS Base requires reference audio" curl
-    example from docs/basic_usage/tts.md, sent as a real HTTP request against
-    a server built from nothing but pyproject.toml + the documented qwen-tts
-    install line.
+    """Boot Qwen3-TTS Base from a clean install.
 
     Before the create_causal_mask shim, this failed on every request with a
     500 originating from qwen-tts calling
-    `create_causal_mask(..., input_embeds=..., cache_position=...)` against a
-    transformers version that spells the parameter `inputs_embeds` and no
+    `create_causal_mask(..., input_embeds=..., cache_position=...)` against
+    transformers 5.12 that spells the parameter `inputs_embeds` and no
     longer accepts `cache_position` at all.
     """
     payload = {
