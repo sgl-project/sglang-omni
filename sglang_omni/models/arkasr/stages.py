@@ -28,6 +28,10 @@ def create_sglang_arkasr_executor(
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_max_pending: int = 32,
+    prefill_coalesce_requests: int = 16,
+    prefill_coalesce_wait_ms: float = 32.0,
+    prefill_coalesce_when_idle: bool = True,
+    prefill_coalesce_requires_pending_builds: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
@@ -50,6 +54,12 @@ def create_sglang_arkasr_executor(
         pre_lm_max_batch_size=pre_lm_max_batch_size,
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         pre_lm_max_pending=pre_lm_max_pending,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        prefill_coalesce_requires_pending_builds=(
+            prefill_coalesce_requires_pending_builds
+        ),
     ).build(
         model_path,
         device=device,
