@@ -968,9 +968,7 @@ class Stage:
         outbox = self.scheduler.outbox
         while self._running or not outbox.empty():
             try:
-                out = await loop.run_in_executor(
-                    None, lambda: outbox.get(timeout=0.1)
-                )
+                out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
             except _queue_mod.Empty:
                 continue
 
