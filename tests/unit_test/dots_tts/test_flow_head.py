@@ -517,7 +517,7 @@ def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
         prefill_end=3,
         decoded_latent_patches=[],
     )
-  
+
     state.suppress_first_eos_check = True
     state.decoded_patches = 0
     with torch.no_grad():
