@@ -278,8 +278,8 @@ class StreamingSimpleScheduler:
                     msg.type == "stream_done"
                     and msg.request_id not in self._stream_payloads
                 ):
-                    # Done-before-payload only latches state, so defer it and
-                    # keep looking for terminal payloads that can batch.
+                    # Note(Chenchen Hong): Done-before-payload only latches state,
+                    # so defer it and keep looking for terminal payloads that can batch.
                     self._pending_messages.append(msg)
                     continue
                 self._pending_messages.append(msg)
