@@ -22,6 +22,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=False,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "AudarTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
