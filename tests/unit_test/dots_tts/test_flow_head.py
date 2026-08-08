@@ -341,3 +341,71 @@ def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
         prompt_patch_count=0,
         total_span_count=10**6,
     )
+
+
+def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> None:
+    torch.save(
+        {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
+        tmp_path / "latent_stats.pt",
+    )
+    config = {
+        "latent_dim": LATENT_DIM,
+        "patch_size": PATCH_SIZE,
+        "PatchEncoder": {
+            "num_layers": 1,
+            "num_heads": 2,
+            "hidden_size": FM_HIDDEN,
+            "ffn_hidden_size": 64,
+            "causal": True,
+        },
+        "DiT": {
+            "num_layers": 2,
+            "num_heads": 2,
+            "hidden_size": FM_HIDDEN,
+            "ffn_hidden_size": 64,
+            "modulation": True,
+            "qk_norm": True,
+            "rotary_bias": True,
+        },
+        "vocoder": {"sample_rate": 48000},
+        # note (luojiaxuan): SOAR and base ship without a meanflow block.
+        "meanflow": None,
+    }
+    flow = DotsTTSFlowHead(
+        config,
+        llm_hidden_size=LLM_HIDDEN,
+        latent_stats_path=str(tmp_path / "latent_stats.pt"),
+        optimize=False,
+    )
+    with torch.no_grad():
+        for parameter in flow.parameters():
+            parameter.normal_(0.0, 0.2)
+    flow = flow.eval()
+
+    assert flow.mode == "flow_matching"
+    assert not flow.is_batched
+    # note (luojiaxuan): single-request serving keeps per-request num_steps and CFG.
+    flow.validate_request(num_steps=10, ode_method="euler")
+
+    with pytest.raises(ValueError, match="max_running_requests=1"):
+        flow.init_batched_tail(num_slots=16, nfe=10, max_audio_patches=8)
+
+    state, _ = flow.new_request(
+        max_audio_patch_count=8,
+        prompt_latents=None,
+        speaker_embedding=torch.randn(1, 512),
+        speaker_scale=1.5,
+        rng=None,
+    )
+    flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
+    step = flow.decode_next(
+        state,
+        hidden_states=torch.randn(1, 1, LLM_HIDDEN),
+        num_steps=2,
+        ode_method="euler",
+        guidance_scale=1.2,
+        eos_threshold=0.8,
+    )
+    assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
+    assert torch.isfinite(step.latent_patch).all()
+    assert torch.isfinite(step.feedback_embedding).all()

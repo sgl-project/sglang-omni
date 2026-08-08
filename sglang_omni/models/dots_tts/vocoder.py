@@ -144,12 +144,14 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
                 else (1 if state.received_patches <= 2 else self.merge_steps)
             )
             patches, state.pending = state.pending[:take], state.pending[take:]
+            # note (db-ol): compiled stream step cudagraph trees corrupt the
+            # backbone decode graph replay in this process, see issue 1392.
             with self.codec.lock:
                 chunk = self.codec.inference.stream_step(
                     torch.cat(patches, dim=1),
                     stream_state=state.codec_state,
                     optimize=self.optimize,
-                    use_compiled=not is_final,
+                    use_compiled=False,
                 )
             if chunk.numel():
                 chunks.append(chunk)
