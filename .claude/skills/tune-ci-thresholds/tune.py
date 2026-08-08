@@ -341,6 +341,62 @@ def resolve_repo_root(host: dict | None) -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_CPUSET_BUSY_WARN = 0.20
+
+
+def cpuset_external_busy(cpuset: str, interval: float = 1.0) -> float | None:
+    """Fraction of the cpuset consumed by foreign load, from /proc/stat.
+
+    Sampled before pytest launches, so activity on those cores belongs to
+    others. Affinity is self-restraint, not a reservation: a sustained
+    intruder depresses every round equally, which destructive rejection
+    cannot see, so contamination is surfaced here and in provenance.
+    """
+    try:
+        cpus: set[int] = set()
+        for part in cpuset.split(","):
+            lo, _, hi = part.partition("-")
+            cpus.update(range(int(lo), int(hi or lo) + 1))
+
+        def snap() -> dict:
+            vals = {}
+            with open("/proc/stat") as f:
+                for line in f:
+                    if line.startswith("cpu") and line[3:4].isdigit():
+                        parts = line.split()
+                        idx = int(parts[0][3:])
+                        if idx in cpus:
+                            nums = list(map(int, parts[1:]))
+                            vals[idx] = (sum(nums), nums[3] + nums[4])
+            return vals
+
+        first = snap()
+        time.sleep(interval)
+        second = snap()
+        total = sum(second[i][0] - first[i][0] for i in second if i in first)
+        idle = sum(second[i][1] - first[i][1] for i in second if i in first)
+        if total <= 0:
+            return None
+        return round(1.0 - idle / total, 4)
+    except Exception:
+        return None
+
+
+def cpuset_for_gpus(host: dict | None, picked: list) -> str | None:
+    """CI cpuset for the picked GPU group, mirroring the runner lane partition.
+
+    An explicit OMNI_CI_CPUSET in the caller's environment wins, matching CI
+    semantics where the runner decides the value. Returns None when neither
+    source provides one; the pinning fixture then stays a no-op.
+    """
+    explicit = os.environ.get("OMNI_CI_CPUSET", "").strip()
+    if explicit:
+        return explicit
+    table = (host or {}).get("gpu_group_cpusets") or {}
+    key = ",".join(str(g) for g in sorted(picked))
+    return table.get(key)
+
+
 def apply_host_profile(cfg: dict, host: dict) -> None:
     """Map host physical paths onto tune.py auto_env (no symlinks required)."""
     physical = host.get("physical") or {}
@@ -501,6 +557,7 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
         "XDG_CACHE_HOME", "HF_ENDPOINT", "TORCHINDUCTOR_CACHE_DIR",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",
+        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF",
     )
     image_digest = (
         os.environ.get("OMNI_CI_IMAGE_DIGEST")
@@ -3208,8 +3265,19 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             print(f"{label} {reason}")
             break
         env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, picked))
+        cpuset = cpuset_for_gpus(host, picked)
+        cpuset_busy = None
+        if cpuset:
+            env["OMNI_CI_CPUSET"] = cpuset
+            cpuset_busy = cpuset_external_busy(cpuset)
+            if cpuset_busy is not None and cpuset_busy > _CPUSET_BUSY_WARN:
+                print(f"{label} WARNING: cpuset {cpuset} is {cpuset_busy:.0%} "
+                      f"busy with foreign load before launch — this round may "
+                      f"be contaminated")
         print(f"{label} using GPU(s) {picked} "
-              f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
+              f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}, "
+              f"OMNI_CI_CPUSET={cpuset or 'unset'}, "
+              f"cpuset_busy_prelaunch={cpuset_busy})")
         t0 = time.monotonic()
         # Never pass -x / --exitfirst: calibration must collect every stage's
         # metrics even when an earlier threshold assertion fails. Only hard
@@ -3244,14 +3312,16 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             attempt_history.append(dict(
                 attempt=attempts, status=status, reason=reason,
                 duration_s=round(dur, 2), pytest_rc=pytest_rc,
-                gpu_indices=list(picked)))
+                gpu_indices=list(picked), cpuset=cpuset,
+                cpuset_busy_prelaunch=cpuset_busy))
             break
         reason = _classify(text, pytest_rc)
         status = "failed"
         attempt_history.append(dict(
             attempt=attempts, status=status, reason=reason,
             duration_s=round(dur, 2), pytest_rc=pytest_rc,
-            gpu_indices=list(picked)))
+            gpu_indices=list(picked), cpuset=cpuset,
+            cpuset_busy_prelaunch=cpuset_busy))
         retryable = (
             any(s in reason for s in RETRY_SIGS)
             or reason.startswith("crashed")
