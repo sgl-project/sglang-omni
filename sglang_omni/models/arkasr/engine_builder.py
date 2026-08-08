@@ -76,16 +76,6 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        # note (jiannan-17): context_length is an explicit server-args
-        # parameter, so the override must be popped here or
-        # build_sglang_server_args would receive it twice.
-        if "context_length" in overrides:
-            self.context_length = int(overrides.pop("context_length"))
-
-    def customize_server_args(self, server_args: Any) -> None:
-        self.context_length = int(server_args.context_length)
-
     def setup_model_resources(
         self,
         model: Any,
