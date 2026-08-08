@@ -409,6 +409,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     optimize: bool = True,
     vocoder_merge_steps: int = 4,
+    max_batch_size: int = 4,
+    max_batch_wait_ms: int = 2,
     **_: Any,
 ) -> DotsTTSStreamingVocoder:
     codec = load_dots_audio_codec(model_path, device=_device(device, gpu_id))
@@ -416,11 +418,15 @@ def create_vocoder_executor(
         codec,
         optimize=optimize,
         merge_steps=vocoder_merge_steps,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
     )
     logging.getLogger(__name__).info(
-        "dots.tts vocoder backend: %s (merge_steps=%d)",
+        "dots.tts vocoder backend: %s (merge_steps=%d, batch_size=%d, wait_ms=%d)",
         "compiled streaming chunks" if vocoder.optimize else "eager per-patch decode",
         vocoder.merge_steps,
+        max_batch_size,
+        max_batch_wait_ms,
     )
     return vocoder
 

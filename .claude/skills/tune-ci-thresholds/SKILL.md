@@ -247,6 +247,16 @@ Infrastructure failures are not silently treated as metric observations.
 
 ## Environment comparability
 
+CI pins every perf-gate pytest session to a NUMA-local cpuset: the runner lane
+exports `OMNI_CI_CPUSET` and `tests/test_model/conftest.py` applies it
+(sched_setaffinity, inherited by spawned servers). Calibration reproduces the
+same condition through the same code path: `tune.py` looks up the picked GPU
+group in the host profile's `gpu_group_cpusets` table and exports
+`OMNI_CI_CPUSET` for the pytest invocation. Keep that table in sync with the
+production runner `.env` partition; numbers measured without the pin do not
+describe the environment CI gates run in. An explicit `OMNI_CI_CPUSET` in the
+operator's environment overrides the table.
+
 `precheck` writes `environment-fingerprint.json` containing:
 
 - image name/digest when supplied by the runtime;
