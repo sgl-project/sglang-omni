@@ -380,7 +380,7 @@ def create_sglang_latent_engine_executor(
     model_path: str,
     *,
     precision: str = "bfloat16",
-    optimize: bool = False,
+    optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
     device: str | None = "cuda",
@@ -407,7 +407,7 @@ def create_vocoder_executor(
     *,
     device: str | None = "cuda",
     gpu_id: int | None = None,
-    optimize: bool = False,
+    optimize: bool = True,
     vocoder_merge_steps: int = 4,
     **_: Any,
 ) -> DotsTTSStreamingVocoder:
