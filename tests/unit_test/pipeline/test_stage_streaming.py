@@ -267,6 +267,60 @@ def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
     asyncio.run(_run())
 
 
+def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        run_in_executor = AsyncMock(side_effect=lambda _, get: get())
+        monkeypatch.setattr(loop, "run_in_executor", run_in_executor)
+
+        execution_order: list[int | str] = []
+
+        class _RecordingControlPlane(_FakeControlPlane):
+            async def send_stream(self, msg) -> None:
+                execution_order.append(msg.chunk["sequence"])
+                await super().send_stream(msg)
+
+        control_plane = _RecordingControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"tts_engine": "inproc://tts_engine"},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        stage._active_requests.add("req-live")
+
+        for sequence in range(1, 66):
+            scheduler.outbox.put(
+                OutgoingMessage("req-live", "stream", {"sequence": sequence})
+            )
+
+        async def _competing_ready_coroutine() -> None:
+            execution_order.append("competing-coroutine")
+
+        competing_task = asyncio.create_task(_competing_ready_coroutine())
+        await stage._drain_outbox_external()
+        await competing_task
+
+        assert execution_order == [
+            *range(1, 65),
+            "competing-coroutine",
+            65,
+        ]
+        assert [msg.chunk["sequence"] for msg in control_plane.streams] == list(
+            range(1, 66)
+        )
+        assert scheduler.outbox.empty()
+        assert run_in_executor.await_count == 2
+
+    asyncio.run(_run())
+
+
 def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
