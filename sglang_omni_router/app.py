@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from sglang_omni import __version__
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
     resolve_admin_api_key,
@@ -172,7 +173,7 @@ def create_app(
 
     resolved_key = resolve_admin_api_key(admin_api_key)
 
-    app = FastAPI(title="sglang-omni-router", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="sglang-omni-router", version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

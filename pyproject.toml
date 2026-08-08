@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-omni"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.13"
 dependencies = [
     # Core dependencies
@@ -91,6 +92,11 @@ audar-tts = [
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
 
+[project.urls]
+Documentation = "https://sgl-project.github.io/sglang-omni/"
+Issues = "https://github.com/sgl-project/sglang-omni/issues"
+Repository = "https://github.com/sgl-project/sglang-omni"
+
 [tool.uv]
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
@@ -108,7 +114,11 @@ markers = [
 where = ["."]
 include = ["sglang_omni*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
+
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

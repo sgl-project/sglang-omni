@@ -32,8 +32,10 @@ cd sglang-omni
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install -v -e .   # drop `-e` for a non-editable install
+uv pip install sglang-omni
 ```
+
+The `dev` image is mutable. Pin the image by digest when you need a reproducible environment.
 
 ## 🛠️ Option B: Manual install
 
@@ -45,11 +47,24 @@ Build the prerequisites first:
 Then install:
 
 ```bash
+uv venv .venv -p 3.12
+source .venv/bin/activate
+
+uv pip install sglang-omni
+```
+
+To pin an exact package version, use `uv pip install "sglang-omni==X.Y.Z"`.
+
+### Install from source
+
+For development or testing an unreleased change, install from source:
+
+```bash
 git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
 
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install -v -e .   # drop `-e` for a non-editable install
+uv pip install -v -e .   # drop -e for a non-editable install
 ```

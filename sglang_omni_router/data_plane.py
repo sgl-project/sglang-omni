@@ -26,6 +26,7 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
 from sglang_omni_router.app import (
     _merge_models,
@@ -451,7 +452,7 @@ def create_data_plane_app(
             if forward_client is not None and forward_client is not internal_client:
                 await forward_client.aclose()
 
-    app = FastAPI(title="sglang-omni-router-dp", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="sglang-omni-router-dp", version=__version__, lifespan=lifespan)
     # Note (Jiaxin Deng): same external CORS policy as the single-process app;
     # the DP is the public surface.
     app.add_middleware(
