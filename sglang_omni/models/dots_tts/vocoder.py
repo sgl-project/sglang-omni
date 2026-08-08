@@ -140,6 +140,10 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
     ) -> None:
         if merge_steps < 1:
             raise ValueError("dots.tts vocoder merge_steps must be positive")
+        if max_batch_size < 1:
+            raise ValueError("dots.tts vocoder max_batch_size must be positive")
+        if max_batch_wait_ms < 0:
+            raise ValueError("dots.tts vocoder max_batch_wait_ms must be non-negative")
         self.codec = codec
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
@@ -153,6 +157,10 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
             stream_source_hint="dots.tts",
             stream_input_modality="audio_latents",
         )
+
+    def validate_non_streaming_payload(self, payload: StagePayload) -> None:
+        _state, latents = self._batch_vocoder.prepare_item(payload)
+        self._batch_vocoder._validate_latents(latents)
 
     def create_stream_state(self, request_id: str) -> _DotsStreamState:
         del request_id

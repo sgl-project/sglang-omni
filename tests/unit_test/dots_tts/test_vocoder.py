@@ -15,6 +15,7 @@ from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSStreamingVocoder,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
 
 
 class _FakeInference:
@@ -146,3 +147,38 @@ def test_streaming_vocoder_enables_only_non_streaming_payload_batching() -> None
     assert len(codec.inference.inputs) == 1
     assert [result.request_id for result in results] == ["a", "b"]
     assert scheduler.is_streaming_payload(_payload("stream", 16, 1, stream=True))
+
+
+def test_non_streaming_batch_isolates_invalid_payload() -> None:
+    codec = _codec()
+    scheduler = DotsTTSStreamingVocoder(codec, optimize=False)
+    invalid = _payload("bad", 16, 2)
+    invalid.data["generated_latents"] = torch.zeros(2, 4, 3)
+
+    scheduler._handle_new_request_batch(
+        [
+            IncomingMessage("good-a", "new_request", _payload("good-a", 16, 1)),
+            IncomingMessage("bad", "new_request", invalid),
+            IncomingMessage("good-b", "new_request", _payload("good-b", 16, 3)),
+        ]
+    )
+
+    outputs = [scheduler.outbox.get_nowait() for _ in range(3)]
+    by_request = {output.request_id: output for output in outputs}
+    assert by_request["bad"].type == "error"
+    assert isinstance(by_request["bad"].data, ValueError)
+    assert by_request["good-a"].type == "result"
+    assert by_request["good-b"].type == "result"
+    assert [item.shape for item in codec.inference.inputs] == [(2, 16, 3)]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_batch_size": 0}, "max_batch_size"),
+        ({"max_batch_wait_ms": -1}, "max_batch_wait_ms"),
+    ],
+)
+def test_invalid_batch_config_is_rejected(kwargs: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        DotsTTSStreamingVocoder(_codec(), optimize=False, **kwargs)
