@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from types import SimpleNamespace
+
+import pytest
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
@@ -14,6 +17,70 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from tests.unit_test.fakes import FakeServerArgs
+
+
+def test_whisper_encoder_cuda_graph_is_opt_in() -> None:
+    signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
+
+    assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["encoder_graph_batch_buckets"].default is None
+
+
+def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    calls: list[tuple[list[int], int]] = []
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+        enable_encoder_cuda_graph=True,
+        encoder_graph_batch_buckets=[1, 4, 4],
+    )
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    assert builder.encoder_graph_batch_buckets == (1, 4)
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(
+            (list(buckets), feature_len)
+        )
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=None,
+        generation_cuda_graph_enabled=True,
+    )
+    assert calls == [([1, 4], 3000)]
+
+    builder.setup_model_resources(
+        model,
+        server_args=None,
+        generation_cuda_graph_enabled=False,
+    )
+    assert calls == [([1, 4], 3000)]
+
+
+def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    defaults = builder.generation_defaults(dtype="float16")
+
+    assert defaults["max_prefill_tokens"] == 4096
+    assert defaults["chunked_prefill_size"] == 0
+
+    overrides = {"chunked_prefill_size": 0}
+    builder.adjust_overrides(overrides)
+    assert overrides["chunked_prefill_size"] == 0
+
+    with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
+        builder.adjust_overrides({"chunked_prefill_size": 4096})
 
 
 def test_whisper_asr_config_uses_single_batched_stage() -> None:
@@ -117,3 +184,4 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
+    assert build_kwargs["chunked_prefill_size"] == 0

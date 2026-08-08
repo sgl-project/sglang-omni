@@ -7,6 +7,14 @@ from typing import Any
 
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
+_DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+
+
+def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
+    values = _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS if buckets is None else buckets
+    normalized = {int(value) for value in values}
+    return tuple(sorted(value for value in normalized if value >= 1))
+
 
 class WhisperASREngineBuilder(AsrEngineBuilder):
     model_name = "Whisper ASR"
@@ -18,10 +26,16 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         max_running_requests: int,
         max_new_tokens: int,
         mem_fraction_static: float,
+        enable_encoder_cuda_graph: bool = False,
+        encoder_graph_batch_buckets: list[int] | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
+        self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
+        self.encoder_graph_batch_buckets = _normalize_encoder_graph_buckets(
+            encoder_graph_batch_buckets
+        )
         self.processor: Any = None
         self.tokenizer: Any = None
         self.generation_config: Any = None
@@ -53,6 +67,28 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             or 448
         )
 
+    def setup_model_resources(
+        self,
+        model: Any,
+        server_args: Any,
+        *,
+        generation_cuda_graph_enabled: bool,
+    ) -> None:
+        del server_args
+        if self.enable_encoder_cuda_graph and generation_cuda_graph_enabled:
+            model.init_encoder_graphs(
+                self.encoder_graph_batch_buckets,
+                int(self.processor.feature_extractor.nb_max_frames),
+            )
+
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if int(overrides.get("chunked_prefill_size") or 0) > 0:
+            raise ValueError(
+                "Whisper ASR requires chunked_prefill_size=0 because its encoder "
+                "prefix must be admitted atomically"
+            )
+        overrides["chunked_prefill_size"] = 0
+
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
             "max_running_requests": self.max_running_requests,
@@ -61,7 +97,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "enable_torch_compile": True,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
-            "chunked_prefill_size": 4096,
+            "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
