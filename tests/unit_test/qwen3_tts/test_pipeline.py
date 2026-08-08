@@ -3341,6 +3341,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     class FakeWorker:
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
+            self.enable_prefill_input_embeds = False
 
     class FakeQwen3TTSModel:
         def __init__(self, **kwargs) -> None:

@@ -485,6 +485,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     class FakeWorker:
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
+            self.enable_prefill_input_embeds = False
 
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path

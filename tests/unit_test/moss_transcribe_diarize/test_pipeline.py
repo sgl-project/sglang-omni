@@ -225,7 +225,11 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         calls["init_cuda_graphs"] += 1
 
     model_runner = SimpleNamespace(model=model, init_cuda_graphs=_bump_init_cuda_graphs)
-    model_worker = SimpleNamespace(gpu_id=0, model_runner=model_runner)
+    model_worker = SimpleNamespace(
+        gpu_id=0,
+        model_runner=model_runner,
+        enable_prefill_input_embeds=False,
+    )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
     processor = SimpleNamespace(
