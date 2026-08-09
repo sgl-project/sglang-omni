@@ -225,7 +225,8 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
                 decode=SimpleNamespace(
                     max_bs=kwargs["cuda_graph_max_bs"],
                     bs=kwargs["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs.get("torch_compile_max_bs"),
@@ -261,7 +262,10 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
             ),
             init_cuda_graphs=init_cuda_graphs,
         )
-        model_worker = SimpleNamespace(model_runner=model_runner)
+        model_worker = SimpleNamespace(
+            model_runner=model_runner,
+            enable_prefill_input_embeds=False,
+        )
         return (
             model_worker,
             object(),

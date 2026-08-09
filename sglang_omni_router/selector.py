@@ -13,6 +13,43 @@ class NoEligibleWorkerError(RuntimeError):
     pass
 
 
+def eligible_workers(
+    workers: list[Worker],
+    *,
+    required_capabilities: set[Capability],
+    requested_model: str | None = None,
+) -> list[Worker]:
+    """Return routable workers that satisfy the request contract."""
+    candidates = [
+        worker
+        for worker in workers
+        if worker.is_routable
+        and all(worker.supports(capability) for capability in required_capabilities)
+    ]
+    if requested_model is not None and any(worker.model for worker in candidates):
+        candidates = [
+            worker for worker in candidates if worker.model == requested_model
+        ]
+    return candidates
+
+
+def require_eligible_worker(
+    worker: Worker | None,
+    *,
+    required_capabilities: set[Capability],
+    requested_model: str | None = None,
+) -> Worker:
+    """Validate an exact worker without advancing load-balancer state."""
+    candidates = eligible_workers(
+        [] if worker is None else [worker],
+        required_capabilities=required_capabilities,
+        requested_model=requested_model,
+    )
+    if not candidates:
+        raise NoEligibleWorkerError("no eligible healthy worker")
+    return candidates[0]
+
+
 class WorkerSelector:
     def __init__(
         self,
@@ -34,16 +71,11 @@ class WorkerSelector:
         required_capabilities: set[Capability],
         requested_model: str | None = None,
     ) -> Worker:
-        candidates = [
-            worker
-            for worker in workers
-            if worker.is_routable
-            and all(worker.supports(capability) for capability in required_capabilities)
-        ]
-        if requested_model is not None and any(worker.model for worker in candidates):
-            candidates = [
-                worker for worker in candidates if worker.model == requested_model
-            ]
+        candidates = eligible_workers(
+            workers,
+            required_capabilities=required_capabilities,
+            requested_model=requested_model,
+        )
         if not candidates:
             raise NoEligibleWorkerError("no eligible healthy workers")
 

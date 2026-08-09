@@ -3267,6 +3267,10 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, picked))
         cpuset = cpuset_for_gpus(host, picked)
         cpuset_busy = None
+        if not cpuset:
+            print(f"{label} WARNING: no cpuset for GPU group {sorted(picked)} "
+                  f"and OMNI_CI_CPUSET is unset; this session runs unpinned "
+                  f"and its numbers are NOT comparable to pinned CI")
         if cpuset:
             env["OMNI_CI_CPUSET"] = cpuset
             cpuset_busy = cpuset_external_busy(cpuset)

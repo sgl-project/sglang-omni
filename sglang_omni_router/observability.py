@@ -28,10 +28,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
+from sglang_omni_router.worker import ServiceClass
+
 _COUNTER_KEYS = ("routed_total", "successful_total", "failed_total")
+_CLASS_COUNTER_KEYS = (
+    "routed_requests_by_class",
+    "successful_requests_by_class",
+    "failed_requests_by_class",
+)
+NonNegativeCounter = Annotated[int, Field(ge=0)]
 
 
 class WorkerCounters(BaseModel):
@@ -44,6 +53,15 @@ class WorkerCounters(BaseModel):
     successful_total: int = Field(default=0, ge=0)
     failed_total: int = Field(default=0, ge=0)
     current_active: int = Field(default=0, ge=0)
+    routed_requests_by_class: dict[ServiceClass, NonNegativeCounter] = Field(
+        default_factory=dict
+    )
+    successful_requests_by_class: dict[ServiceClass, NonNegativeCounter] = Field(
+        default_factory=dict
+    )
+    failed_requests_by_class: dict[ServiceClass, NonNegativeCounter] = Field(
+        default_factory=dict
+    )
 
 
 class CounterReport(BaseModel):
@@ -61,10 +79,19 @@ class StaleCounterGenerationError(Exception):
 class _WorkerLedger:
     baseline: dict[str, int]
     high_water: dict[str, int]
+    class_baseline: dict[str, dict[str, int]]
+    class_high_water: dict[str, dict[str, int]]
     current_active: int = 0
 
     def contribution(self, key: str) -> int:
         return max(0, self.high_water[key] - self.baseline[key])
+
+    def class_contributions(self, key: str) -> dict[str, int]:
+        baseline = self.class_baseline[key]
+        return {
+            service_class: max(0, value - baseline.get(service_class, 0))
+            for service_class, value in self.class_high_water[key].items()
+        }
 
 
 @dataclass
@@ -83,6 +110,7 @@ class DataPlaneCounterLedger:
     def __init__(self, liveness_secs: float = 3.0) -> None:
         self._entries: dict[int, _LedgerEntry] = {}
         self._retired: dict[str, dict[str, int]] = {}
+        self._retired_by_class: dict[str, dict[str, dict[str, int]]] = {}
         # Note (Jiaxin Deng): first contact is per CP process, not per
         # generation: a respawned DP starts its counters at zero, so baselining
         # it against its own first report would drop everything it served
@@ -131,6 +159,13 @@ class DataPlaneCounterLedger:
                         for key in _COUNTER_KEYS
                     },
                     high_water={key: getattr(item, key) for key in _COUNTER_KEYS},
+                    class_baseline={
+                        key: dict(getattr(item, key)) if first_contact else {}
+                        for key in _CLASS_COUNTER_KEYS
+                    },
+                    class_high_water={
+                        key: dict(getattr(item, key)) for key in _CLASS_COUNTER_KEYS
+                    },
                     current_active=item.current_active,
                 )
             else:
@@ -140,6 +175,12 @@ class DataPlaneCounterLedger:
                     ledger.high_water[key] = max(
                         ledger.high_water[key], getattr(item, key)
                     )
+                for key in _CLASS_COUNTER_KEYS:
+                    high_water = ledger.class_high_water[key]
+                    for service_class, value in getattr(item, key).items():
+                        high_water[service_class] = max(
+                            high_water.get(service_class, 0), value
+                        )
                 ledger.current_active = item.current_active
             segments = per_worker.setdefault(item.worker_id, {})
             duplicate = segments.get(item.incarnation)
@@ -173,6 +214,12 @@ class DataPlaneCounterLedger:
         slot = self._retired.setdefault(worker_id, {key: 0 for key in _COUNTER_KEYS})
         for key in _COUNTER_KEYS:
             slot[key] += ledger.contribution(key)
+        class_slot = self._retired_by_class.setdefault(
+            worker_id,
+            {key: {} for key in _CLASS_COUNTER_KEYS},
+        )
+        for key in _CLASS_COUNTER_KEYS:
+            _add_counter_maps(class_slot[key], ledger.class_contributions(key))
 
     def totals(self, worker_id: str) -> dict[str, int]:
         totals = dict(self._retired.get(worker_id, {key: 0 for key in _COUNTER_KEYS}))
@@ -180,6 +227,20 @@ class DataPlaneCounterLedger:
             for ledger in entry.per_worker.get(worker_id, {}).values():
                 for key in _COUNTER_KEYS:
                     totals[key] += ledger.contribution(key)
+        return totals
+
+    def class_totals(self, worker_id: str) -> dict[str, dict[str, int]]:
+        totals = {
+            key: dict(values)
+            for key, values in self._retired_by_class.get(
+                worker_id,
+                {key: {} for key in _CLASS_COUNTER_KEYS},
+            ).items()
+        }
+        for entry in self._entries.values():
+            for ledger in entry.per_worker.get(worker_id, {}).values():
+                for key in _CLASS_COUNTER_KEYS:
+                    _add_counter_maps(totals[key], ledger.class_contributions(key))
         return totals
 
     def active_gauge(self, worker_id: str, *, now: float | None = None) -> int:
@@ -192,16 +253,23 @@ class DataPlaneCounterLedger:
                 gauge += ledger.current_active
         return gauge
 
-    def overlay(self, worker) -> dict[str, int]:
+    def overlay(self, worker) -> dict[str, object]:
         """Counter fields merged over Worker.to_dict() when rendering /workers.
 
         active_requests is a best-effort instantaneous sum over live DPs;
         the totals follow the documented baseline (since-CP-start) protocol.
         """
         totals = self.totals(worker.worker_id)
+        class_totals = self.class_totals(worker.worker_id)
         return {
             "active_requests": self.active_gauge(worker.worker_id),
             "routed_requests": totals["routed_total"],
             "successful_requests": totals["successful_total"],
             "failed_requests": totals["failed_total"],
+            **class_totals,
         }
+
+
+def _add_counter_maps(target: dict[str, int], source: dict[str, int]) -> None:
+    for service_class, value in source.items():
+        target[service_class] = target.get(service_class, 0) + value

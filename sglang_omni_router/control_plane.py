@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
+from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
 from sglang_omni_router.admission_shm import (
     AdmissionAggregateView,
@@ -276,7 +277,7 @@ def create_control_plane_app(
             if owns_client:
                 await client.aclose()
 
-    app = FastAPI(title="sglang-omni-router-cp", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="sglang-omni-router-cp", version=__version__, lifespan=lifespan)
     resolved_key = resolve_admin_api_key(admin_api_key)
 
     @app.get("/live")

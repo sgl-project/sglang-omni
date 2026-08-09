@@ -30,7 +30,8 @@ def _server_args(**overrides: object) -> SimpleNamespace:
         decode=SimpleNamespace(
             max_bs=values.pop("cuda_graph_max_bs"),
             bs=values.pop("cuda_graph_bs"),
-        )
+        ),
+        prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
     )
     return SimpleNamespace(**values)
 
@@ -126,13 +127,32 @@ def test_validate_generation_batch_policy_requires_enabled_compile_coverage() ->
         max_running_requests=64,
         cuda_graph_max_bs=64,
         cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
-        torch_compile_max_bs=16,
+        torch_compile_max_bs=32,
     )
-    with pytest.raises(ValueError, match="torch_compile_max_bs must cover"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"torch_compile_max_bs must cover.*"
+            r"increase torch_compile_max_bs to at least max_running_requests.*"
+            r"--talker-torch-compile-max-bs"
+        ),
+    ):
         validate_generation_batch_policy(
-            model_name="test-model",
+            model_name="Qwen3-TTS",
             server_args=undercovered_compile,
         )
+
+
+def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> None:
+    validate_generation_batch_policy(
+        model_name="test-model",
+        server_args=_server_args(
+            max_running_requests=64,
+            cuda_graph_max_bs=64,
+            cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
+            torch_compile_max_bs=64,
+        ),
+    )
 
 
 def test_validate_generation_batch_policy_ignores_disabled_compile_cap() -> None:

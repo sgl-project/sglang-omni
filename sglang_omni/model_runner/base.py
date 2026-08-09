@@ -13,6 +13,7 @@ from typing import Any
 
 import torch
 
+from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
@@ -475,6 +476,7 @@ class ModelRunner:
             return batch_result
         finally:
             if is_prefill:
+                clear_omni_prefill_inputs(forward_batch)
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
