@@ -15,7 +15,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
 
-    # The model reads the whole clip as prompt tokens (~13/audio second), so a
+    # Note (Jeffro): The model reads the whole clip as prompt tokens (~13/audio second), so a
     # request stops fitting the engine context past ~115s. 60s keeps ~2x
     # margin; longer uploads are chunked at the serving layer.
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
@@ -41,15 +41,9 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 32,
-                # Note: Cap on generated tokens per request; generation just stops there, so
-                # a too-small cap silently drops the transcript tail. Speech produces
-                # ~5 output tokens per audio second: 128 only covered ~25s, and a 60s
-                # chunk needs ~300 -- 640 doubles that. Safe to raise: context_length
-                # adds max_new_tokens on top of the audio budget (engine_builder.py),
-                # so it grows by the same amount and the audio that fits is untouched.
-                # If max_audio_clip_s is raised, raise this along with it
-                # (~5 tokens per audio second).
-                "max_new_tokens": 640,
+                # Note (Jeffro): This is the floor for the per-request output budget.
+                # The request builder will scale the actual budget with audio duration.
+                "max_new_tokens": 128,
                 "request_build_max_workers": 8,
                 "request_build_max_pending": 32,
                 "enable_pre_lm_encoder": True,

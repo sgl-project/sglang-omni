@@ -15,6 +15,7 @@ into those positions. So request_builder must:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -32,7 +33,10 @@ from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
-from .audio_lengths import qwen3_asr_num_audio_tokens
+from .audio_lengths import (
+    QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND,
+    qwen3_asr_num_audio_tokens,
+)
 from .languages import resolve_language
 
 logger = logging.getLogger(__name__)
@@ -146,7 +150,15 @@ def make_qwen3_asr_scheduler_adapters(
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+
+        explicit_max_new_tokens = params.get("max_new_tokens")
+        if explicit_max_new_tokens is not None:
+            request_max_new_tokens = int(explicit_max_new_tokens)
+        else:
+            request_max_new_tokens = max(
+                int(max_new_tokens),
+                math.ceil(audio_duration_s * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND),
+            )
 
         if context_length is not None:
             hop_length = int(getattr(feature_extractor, "hop_length", 0))
@@ -163,6 +175,12 @@ def make_qwen3_asr_scheduler_adapters(
             estimated_input_ids = _build_prompt_ids(
                 estimated_audio_tokens, forced_language
             )
+
+            if explicit_max_new_tokens is None:
+                remaining = context_length - 1 - len(estimated_input_ids)
+                if remaining >= int(max_new_tokens):
+                    request_max_new_tokens = min(request_max_new_tokens, remaining)
+
             _validate_context_budget(estimated_input_ids, request_max_new_tokens)
 
         # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
