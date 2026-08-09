@@ -625,6 +625,10 @@ class DotsTTSFlowHead(nn.Module):
                 )
             ]
 
+        if self.has_pending_batched_eos:
+            raise RuntimeError(
+                "dots.tts batched EOS staging overwritten before resolve_batched_eos"
+            )
         for steps, method in zip(num_steps, ode_methods, strict=True):
             self.validate_request(num_steps=steps, ode_method=method)
         hidden = hidden_states[:, -1] if hidden_states.ndim == 3 else hidden_states
@@ -707,10 +711,6 @@ class DotsTTSFlowHead(nn.Module):
         if eos_hits.ndim != 1:
             raise RuntimeError(
                 f"dots.tts batched EOS flags must be rank-1, got {tuple(eos_hits.shape)}"
-            )
-        if self._batched_eos_pending > 0:
-            raise RuntimeError(
-                "dots.tts batched EOS staging overwritten before resolve_batched_eos"
             )
         n = int(eos_hits.shape[0])
         if n <= 0:

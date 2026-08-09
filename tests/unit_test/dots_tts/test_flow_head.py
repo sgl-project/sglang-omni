@@ -484,6 +484,15 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
         eos_thresholds=[2.0],
         append_hidden=False,
     )
+    slot = state.slot
+    assert slot is not None
+    tail = flow._tail
+    fm_seq_len = tail.fm_seq_len(slot)
+    encoder_seq_len = tail._encoder_seq_len[slot]
+    rng_state = tail.slot_rng_state(slot)
+    assert rng_state is not None
+    decoded_patches = state.decoded_patches
+
     with pytest.raises(RuntimeError, match="before resolve_batched_eos"):
         flow.decode_batch(
             [state],
@@ -494,6 +503,12 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
             eos_thresholds=[2.0],
             append_hidden=True,
         )
+    assert tail.fm_seq_len(slot) == fm_seq_len
+    assert tail._encoder_seq_len[slot] == encoder_seq_len
+    actual_rng_state = tail.slot_rng_state(slot)
+    assert actual_rng_state is not None
+    torch.testing.assert_close(actual_rng_state, rng_state, rtol=0, atol=0)
+    assert state.decoded_patches == decoded_patches
     assert flow.resolve_batched_eos() == [False]
 
 
