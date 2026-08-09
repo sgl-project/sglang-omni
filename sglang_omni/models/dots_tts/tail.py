@@ -279,6 +279,7 @@ class DotsTtsAcousticTail:
         self._capture_stream: torch.cuda.Stream | None = None
         self._graph_replays: Counter[str] = Counter()
         self._graph_misses: Counter[str] = Counter()
+        self._dit_contiguous_view_steps = 0
         if optimize and device.type == "cuda":
             self._capture_cuda_graphs()
 
@@ -290,7 +291,7 @@ class DotsTtsAcousticTail:
             self._dit_layers,
             spec.num_slots,
             self._dit_heads,
-            spec.dit_cache_tokens,
+            spec.dit_cache_tokens + spec.unit_len,
             self._dit_head_dim,
         )
         self._dit_v = torch.zeros_like(self._dit_k)
@@ -506,26 +507,46 @@ class DotsTtsAcousticTail:
             persistent, device=self.device, dtype=torch.long
         )
         noise = self._sample_noise(slots)
+        direct_kv = len(slots) == spec.num_slots and sorted(slots) == list(
+            range(spec.num_slots)
+        )
+        if direct_kv:
+            order = torch.argsort(slot_index)
+            work_slots = torch.arange(spec.num_slots, device=self.device)
+            work_persistent = persistent_index.index_select(0, order)
+            work_hidden = fm_hidden_rows.index_select(0, order)
+            work_noise = noise.index_select(0, order)
+            self._dit_contiguous_view_steps += spec.nfe
+            if self._dit_contiguous_view_steps == spec.nfe:
+                logger.info("dots.tts contiguous DiT KV view is active")
+        else:
+            work_slots = slot_index
+            work_persistent = persistent_index
+            work_hidden = fm_hidden_rows
+            work_noise = noise
         graph = self._select_graph(self._meanflow_graphs, len(slots), capacity)
         if graph is None:
             self._graph_misses["meanflow"] += 1
             latent = self._sample_patches_core(
-                slot_index,
-                persistent_index,
+                work_slots,
+                work_persistent,
                 capacity,
-                fm_hidden_rows,
-                noise,
+                work_hidden,
+                work_noise,
+                direct_kv=direct_kv,
             )
         else:
-            graph.inputs["slots"].copy_(slot_index)
-            graph.inputs["starts"].copy_(persistent_index)
-            graph.inputs["hidden"].copy_(fm_hidden_rows)
-            graph.inputs["noise"].copy_(noise)
+            graph.inputs["slots"].copy_(work_slots)
+            graph.inputs["starts"].copy_(work_persistent)
+            graph.inputs["hidden"].copy_(work_hidden)
+            graph.inputs["noise"].copy_(work_noise)
             graph.graph.replay()
             latent = graph.output.clone()
             self._graph_replays["meanflow"] += 1
             if self._graph_replays["meanflow"] == 1:
                 logger.info("dots.tts batched MeanFlow CUDA graph replay is active")
+        if direct_kv:
+            latent = latent.index_select(0, slot_index)
         for slot in slots:
             self._fm_seq_len[slot] += spec.latent_patch_size
         return latent
@@ -537,22 +558,33 @@ class DotsTtsAcousticTail:
         capacity: int,
         fm_hidden_rows: torch.Tensor,
         noise: torch.Tensor,
+        *,
+        direct_kv: bool = False,
     ) -> torch.Tensor:
         spec = self.spec
-        self._window[slot_index, spec.unit_len :] = fm_hidden_rows.unsqueeze(1).to(
-            self.dtype
+        window = (
+            self._window[: spec.num_slots] if direct_kv else self._window[slot_index]
         )
+        window[:, spec.unit_len :] = fm_hidden_rows.unsqueeze(1).to(self.dtype)
+        if not direct_kv:
+            self._window[slot_index] = window
         latent = self._run_meanflow(
             slot_index,
             persistent_index,
             capacity,
             noise,
+            direct_kv=direct_kv,
         )
-        carry = self._window[slot_index, spec.unit_len :]
-        self._window[slot_index, : spec.hidden_patch_size] = carry
-        self._window[slot_index, spec.hidden_patch_size : spec.unit_len] = (
-            self._latent_proj(latent).to(self.dtype)
+        window = (
+            self._window[: spec.num_slots] if direct_kv else self._window[slot_index]
         )
+        carry = window[:, spec.unit_len :]
+        window[:, : spec.hidden_patch_size] = carry
+        window[:, spec.hidden_patch_size : spec.unit_len] = self._latent_proj(
+            latent
+        ).to(self.dtype)
+        if not direct_kv:
+            self._window[slot_index] = window
         return latent
 
     def _run_meanflow(
@@ -561,13 +593,21 @@ class DotsTtsAcousticTail:
         persistent_index: torch.Tensor,
         capacity: int,
         latent: torch.Tensor,
+        *,
+        direct_kv: bool = False,
     ) -> torch.Tensor:
         spec = self.spec
         rows = int(slot_index.numel())
         unit = spec.unit_len
         query_len = 2 * unit
-        previous = self._window[slot_index, :unit]
-        hidden = self._window[slot_index, unit:]
+        if direct_kv:
+            previous = self._window[:rows, :unit]
+            hidden = self._window[:rows, unit:]
+            mods = self._all_mods[:, :rows]
+        else:
+            previous = self._window[slot_index, :unit]
+            hidden = self._window[slot_index, unit:]
+            mods = self._all_mods.index_select(1, slot_index)
         latent_slice = slice(
             unit + spec.hidden_patch_size,
             unit + spec.hidden_patch_size + spec.latent_patch_size,
@@ -575,7 +615,6 @@ class DotsTtsAcousticTail:
         mask = self._dit_mask[:rows, :, :, : capacity + query_len]
         self._fill_mask(mask, capacity, persistent_index, unit, unit)
         cos, sin = _rotary_cos_sin(self._dit_rotary, persistent_index, query_len)
-        mods = self._all_mods.index_select(1, slot_index)
         token_index = persistent_index.reshape(1, rows, 1) + torch.arange(
             unit, device=self.device
         ).reshape(1, 1, unit)
@@ -584,20 +623,24 @@ class DotsTtsAcousticTail:
         promote = slice(capacity, capacity + unit)
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             for ode_index in range(spec.nfe):
-                keys = self._dit_scratch_k[:, :rows, :, : capacity + query_len]
-                values = self._dit_scratch_v[:, :rows, :, : capacity + query_len]
-                torch.index_select(
-                    self._dit_k[ode_index, :, :, :, :capacity],
-                    1,
-                    slot_index,
-                    out=keys[:, :, :, :capacity],
-                )
-                torch.index_select(
-                    self._dit_v[ode_index, :, :, :, :capacity],
-                    1,
-                    slot_index,
-                    out=values[:, :, :, :capacity],
-                )
+                if direct_kv:
+                    keys = self._dit_k[ode_index, :, :rows, :, : capacity + query_len]
+                    values = self._dit_v[ode_index, :, :rows, :, : capacity + query_len]
+                else:
+                    keys = self._dit_scratch_k[:, :rows, :, : capacity + query_len]
+                    values = self._dit_scratch_v[:, :rows, :, : capacity + query_len]
+                    torch.index_select(
+                        self._dit_k[ode_index, :, :, :, :capacity],
+                        1,
+                        slot_index,
+                        out=keys[:, :, :, :capacity],
+                    )
+                    torch.index_select(
+                        self._dit_v[ode_index, :, :, :, :capacity],
+                        1,
+                        slot_index,
+                        out=values[:, :, :, :capacity],
+                    )
 
                 def cached_attention(
                     layer: int, block: nn.Module, value: torch.Tensor
@@ -858,6 +901,7 @@ class DotsTtsAcousticTail:
                 capacity,
                 inputs["hidden"],
                 inputs["noise"],
+                direct_kv=batch_size == self.spec.num_slots,
             )
         else:
             inputs = {

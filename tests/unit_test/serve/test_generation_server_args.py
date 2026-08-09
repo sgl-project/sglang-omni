@@ -187,6 +187,77 @@ def test_generation_server_args_support_migrated_tts_configs(
     assert overrides == GENERATION_SERVER_ARGS
 
 
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_qwen3_tts_cli_routes_64_batch_policy_to_tts_engine(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(
+        **_serve_kwargs(
+            max_running_requests=64,
+            cuda_graph_max_bs=64,
+            talker_torch_compile_max_bs=64,
+        )
+    )
+
+    launched_config = launch_server.call_args.args[0]
+    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
+    assert overrides["max_running_requests"] == 64
+    assert overrides["cuda_graph_max_bs"] == 64
+    assert overrides["torch_compile_max_bs"] == 64
+    assert "server_args_overrides" not in _stage_args(launched_config, "vocoder")
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_higgs_talker_compile_override_targets_tts_engine(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
+
+    launched_config = launch_server.call_args.args[0]
+    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
+    assert overrides["torch_compile_max_bs"] == 64
+    for stage_name in ("audio_encoder", "vocoder"):
+        assert "server_args_overrides" not in _stage_args(launched_config, stage_name)
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_talker_torch_compile_max_bs_rejects_unsupported_pipeline(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="stage",
+                process="pipeline",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                terminal=True,
+            )
+        ],
+    )
+    from_model_path.return_value = _DummyManager(config)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=(r"--talker-torch-compile-max-bs is not supported by " r"PipelineConfig"),
+    ):
+        serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
+
+    launch_server.assert_not_called()
+
+
 def test_generation_server_args_support_qwen3_omni_speech() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     _apply_generation_server_args(config)

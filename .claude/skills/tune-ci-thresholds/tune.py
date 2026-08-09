@@ -341,6 +341,75 @@ def resolve_repo_root(host: dict | None) -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_CPUSET_BUSY_WARN = 0.20
+_CPUSET_BUSY_RECHECK_S = 30.0
+_CPUSET_BUSY_WAIT_MAX_S = 900.0
+# note (Jiaxin Deng): keep in sync with FAIL_FOREIGN_CORES in
+# tests/utils/ci_cpu_contention.py; above this the round measured the
+# intruder, not the model.
+_CONTENTION_FAIL_CORES = 2.0
+
+
+def contention_peak_from_log(text: str) -> float | None:
+    peaks = re.findall(r"\[cpuset-contention\] \S+ windows=\d+ "
+                       r"foreign-cores mean=[0-9.]+ max=([0-9.]+)", text)
+    return float(peaks[-1]) if peaks else None
+
+
+
+def cpuset_external_busy(cpuset: str, interval: float = 1.0) -> float | None:
+    """Fraction of the cpuset consumed by foreign load, from /proc/stat.
+
+    Sampled before pytest launches, so activity on those cores belongs to
+    others. Affinity is self-restraint, not a reservation: a sustained
+    intruder depresses every round equally, which destructive rejection
+    cannot see, so contamination is surfaced here and in provenance.
+    """
+    try:
+        cpus: set[int] = set()
+        for part in cpuset.split(","):
+            lo, _, hi = part.partition("-")
+            cpus.update(range(int(lo), int(hi or lo) + 1))
+
+        def snap() -> dict:
+            vals = {}
+            with open("/proc/stat") as f:
+                for line in f:
+                    if line.startswith("cpu") and line[3:4].isdigit():
+                        parts = line.split()
+                        idx = int(parts[0][3:])
+                        if idx in cpus:
+                            nums = list(map(int, parts[1:]))
+                            vals[idx] = (sum(nums), nums[3] + nums[4])
+            return vals
+
+        first = snap()
+        time.sleep(interval)
+        second = snap()
+        total = sum(second[i][0] - first[i][0] for i in second if i in first)
+        idle = sum(second[i][1] - first[i][1] for i in second if i in first)
+        if total <= 0:
+            return None
+        return round(1.0 - idle / total, 4)
+    except Exception:
+        return None
+
+
+def cpuset_for_gpus(host: dict | None, picked: list) -> str | None:
+    """CI cpuset for the picked GPU group, mirroring the runner lane partition.
+
+    An explicit OMNI_CI_CPUSET in the caller's environment wins, matching CI
+    semantics where the runner decides the value. Returns None when neither
+    source provides one; the pinning fixture then stays a no-op.
+    """
+    explicit = os.environ.get("OMNI_CI_CPUSET", "").strip()
+    if explicit:
+        return explicit
+    table = (host or {}).get("gpu_group_cpusets") or {}
+    key = ",".join(str(g) for g in sorted(picked))
+    return table.get(key)
+
+
 def apply_host_profile(cfg: dict, host: dict) -> None:
     """Map host physical paths onto tune.py auto_env (no symlinks required)."""
     physical = host.get("physical") or {}
@@ -501,6 +570,7 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
         "XDG_CACHE_HOME", "HF_ENDPOINT", "TORCHINDUCTOR_CACHE_DIR",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",
+        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF",
     )
     image_digest = (
         os.environ.get("OMNI_CI_IMAGE_DIGEST")
@@ -3208,8 +3278,32 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             print(f"{label} {reason}")
             break
         env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, picked))
+        cpuset = cpuset_for_gpus(host, picked)
+        cpuset_busy = None
+        if not cpuset:
+            print(f"{label} WARNING: no cpuset for GPU group {sorted(picked)} "
+                  f"and OMNI_CI_CPUSET is unset; this session runs unpinned "
+                  f"and its numbers are NOT comparable to pinned CI")
+        if cpuset:
+            env["OMNI_CI_CPUSET"] = cpuset
+            cpuset_busy = cpuset_external_busy(cpuset)
+            waited = 0.0
+            while (cpuset_busy is not None and cpuset_busy > _CPUSET_BUSY_WARN
+                   and waited < _CPUSET_BUSY_WAIT_MAX_S):
+                print(f"{label} cpuset {cpuset} is {cpuset_busy:.0%} busy with "
+                      f"foreign load — waiting for it to clear "
+                      f"({int(waited)}s/{int(_CPUSET_BUSY_WAIT_MAX_S)}s)")
+                time.sleep(_CPUSET_BUSY_RECHECK_S)
+                waited += _CPUSET_BUSY_RECHECK_S
+                cpuset_busy = cpuset_external_busy(cpuset)
+            if cpuset_busy is not None and cpuset_busy > _CPUSET_BUSY_WARN:
+                print(f"{label} WARNING: cpuset {cpuset} still {cpuset_busy:.0%} "
+                      f"busy after {int(waited)}s — launching anyway; the round "
+                      f"is rejected if contention persists")
         print(f"{label} using GPU(s) {picked} "
-              f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
+              f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']}, "
+              f"OMNI_CI_CPUSET={cpuset or 'unset'}, "
+              f"cpuset_busy_prelaunch={cpuset_busy})")
         t0 = time.monotonic()
         # Never pass -x / --exitfirst: calibration must collect every stage's
         # metrics even when an earlier threshold assertion fails. Only hard
@@ -3239,19 +3333,41 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             break
         dur = time.monotonic() - t0
         text = log.read_text(errors="replace")
+        contention_peak = contention_peak_from_log(text)
+        if (contention_peak is not None
+                and contention_peak > _CONTENTION_FAIL_CORES):
+            status = "failed"
+            reason = f"cpuset_contention (peak {contention_peak:.2f} cores)"
+            attempt_history.append(dict(
+                attempt=attempts, status=status, reason=reason,
+                duration_s=round(dur, 2), pytest_rc=pytest_rc,
+                gpu_indices=list(picked), cpuset=cpuset,
+                cpuset_busy_prelaunch=cpuset_busy))
+            if attempts < _MAX_RUN_ATTEMPTS:
+                print(f"{label} {reason} — round discarded; waiting for the "
+                      f"cpuset to clear, then re-running this round")
+                if not _ensure_gpus_free(
+                    gpus_needed, host=host, target_gpus=list(picked)
+                ):
+                    status, reason = "failed", "GPU memory not released before retry"
+                    break
+                continue
+            break
         if pytest_rc == 0:
             status, reason = "ok", ""
             attempt_history.append(dict(
                 attempt=attempts, status=status, reason=reason,
                 duration_s=round(dur, 2), pytest_rc=pytest_rc,
-                gpu_indices=list(picked)))
+                gpu_indices=list(picked), cpuset=cpuset,
+                cpuset_busy_prelaunch=cpuset_busy))
             break
         reason = _classify(text, pytest_rc)
         status = "failed"
         attempt_history.append(dict(
             attempt=attempts, status=status, reason=reason,
             duration_s=round(dur, 2), pytest_rc=pytest_rc,
-            gpu_indices=list(picked)))
+            gpu_indices=list(picked), cpuset=cpuset,
+            cpuset_busy_prelaunch=cpuset_busy))
         retryable = (
             any(s in reason for s in RETRY_SIGS)
             or reason.startswith("crashed")

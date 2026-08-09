@@ -15,10 +15,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.utils.gpu_memory import (
-    format_bytes_gib,
-    get_process_gpu_memory_bytes,
-)
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
 logger = logging.getLogger(__name__)
 

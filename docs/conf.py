@@ -1,15 +1,12 @@
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, os.path.abspath("../.."))
-
 DOCS_PATH = Path(__file__).parent
 ROOT_PATH = DOCS_PATH.parent
+sys.path.insert(0, str(ROOT_PATH))
 
-
-__version__ = "0.1.0"
+from sglang_omni import __version__  # noqa: E402
 
 project = "SGLang"
 copyright = f"2025-{datetime.now().year}, SGLang-Omni"

@@ -3,10 +3,38 @@
 Run this checklist before every fresh session and after environment recovery.
 `tune.py run` must not start while a mandatory gate fails.
 
+## Before anything: stop CI on the host
+
+Calibration and CI must not run concurrently (team policy, 2026-08-08).
+Pinning fixes the CPU quota, so a quiet host does not re-introduce the
+idle-host bias the pre-pinning #1260 calibration suffered from; what stopping
+CI removes is lane-lease races, reaper kills, and shared-bandwidth noise.
+
+On the runner host, before the first `run`:
+
+```bash
+# Back up, then set max_runners: 0 in
+# /home/sglang-omni/actions-runner-h100/omni-autoscaler.yaml (hot-reloaded).
+grep ^max_runners /home/sglang-omni/actions-runner-h100/omni-autoscaler.yaml  # must be 0
+pgrep -f Runner.Listener  # must print nothing once in-flight jobs drain
+```
+
+Wait for in-flight jobs to finish (or kill their job containers only with the
+user's explicit approval). Restore `max_runners` to its backed-up value as
+soon as the last calibration run completes; do not leave CI stopped while
+writing reports.
+
 ## 0. Environment bootstrap
 
 - Export `TUNE_HOST`, `TUNE_REPO_ROOT`, `TUNE_VENV_PYTHON`, `TUNE_GPU_INCLUDE`,
   and `TUNE_GPU_EXCLUDE` explicitly.
+- Every two-GPU calibration group must be pinned to exactly 32 logical cores
+  (16 physical plus their HT siblings), matching the runner-side bundle for
+  that lane. Inside a two-GPU container the picked ids are always `0,1`, so
+  the host table cannot resolve the physical lane; export `OMNI_CI_CPUSET`
+  with the borrowed lane's cores explicitly. `tune.py` warns and runs
+  unpinned when neither source provides a cpuset; such numbers must not
+  drive thresholds.
 - Source `.github/scripts/ci_env.sh` for CI-comparable defaults when available.
 - Do **not** source `~/.zshrc` / `~/.bashrc` for calibration launches; they
   often override `CUDA_VISIBLE_DEVICES` and break multi-group pinning.
@@ -101,6 +129,11 @@ specific gap.
 - Required Hugging Face model and dataset snapshots are locally available.
 - Speaker-similarity weights and completion marker exist for TTS stages.
 - UTMOS assets are warmed before TTS calibration.
+- The FlashInfer JIT cache is warm for the stages being calibrated. A cold
+  `fused_moe_90` build takes about eight minutes on a pinned 16-core cpuset
+  and burns startup-timeout rounds until it lands. Warm it with one
+  throwaway server launch, or calibrate from a container that has run the
+  model before.
 - This group’s cache root and `.torchinductor` are writable.
 - Concurrent groups must not share a writable FlashInfer JIT dir that another
   group may delete mid-run.

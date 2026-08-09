@@ -3,13 +3,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.dots_tts.flow_head import DotsFlowStep
 from sglang_omni.models.dots_tts.request_builders import DotsFlowResume
+
+
+@dataclass
+class _DotsFlowLaunchBuf:
+    """Acoustic-tail launch payload; finish is applied in _resolve_flow_finish."""
+
+    data_rows: list[Any]
+    steps: list[DotsFlowStep]
+    batched: bool
 
 
 class DotsTTSModelRunner(ModelRunner):
@@ -185,19 +196,28 @@ class DotsTTSModelRunner(ModelRunner):
             offset += length
         if offset != hidden.size(0):
             raise RuntimeError("dots.tts prefill hidden rows do not match requests")
-        self._run_flow_batch(
+        launch_buf = self._launch_flow_batch(
             result,
             requests,
             torch.stack(last_hidden),
             append_hidden=False,
         )
+        self._resolve_flow_finish(launch_buf)
 
     def post_decode(
         self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
-        del forward_batch, schedule_batch
+        launch_buf = self.post_decode_launch(result, forward_batch, requests)
+        self.post_decode_resolve(
+            launch_buf, result, forward_batch, schedule_batch, requests
+        )
+
+    def post_decode_launch(
+        self, result: Any, forward_batch: Any, requests: list
+    ) -> _DotsFlowLaunchBuf | None:
+        del forward_batch
         if not requests:
-            return
+            return None
         hidden = self._hidden_states(result)
         if hidden.ndim == 3:
             hidden = hidden[:, -1]
@@ -205,16 +225,27 @@ class DotsTTSModelRunner(ModelRunner):
             raise RuntimeError(
                 f"dots.tts expected rank-2/3 decode hidden, got {hidden.ndim}"
             )
-        self._run_flow_batch(result, requests, hidden, append_hidden=True)
+        return self._launch_flow_batch(result, requests, hidden, append_hidden=True)
 
-    def _run_flow_batch(
+    def post_decode_resolve(
+        self,
+        launch_buf: _DotsFlowLaunchBuf | None,
+        result: Any,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        del result, forward_batch, schedule_batch, requests
+        self._resolve_flow_finish(launch_buf)
+
+    def _launch_flow_batch(
         self,
         result: Any,
         requests: list,
         hidden: torch.Tensor,
         *,
         append_hidden: bool,
-    ) -> None:
+    ) -> _DotsFlowLaunchBuf:
         data_rows = [request.data for request in requests]
         steps = self.model.flow.decode_batch(
             [data.flow_state for data in data_rows],
@@ -234,13 +265,32 @@ class DotsTTSModelRunner(ModelRunner):
                 data.latest_latent_patch = decoded_latent
                 data.latent_patches.append(decoded_latent)
             next_token_ids.append(data.control_token_id)
-            if step.finished:
-                data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
         result.next_token_ids = torch.tensor(
             next_token_ids,
             dtype=torch.long,
             device=hidden.device,
         )
+        return _DotsFlowLaunchBuf(
+            data_rows=data_rows,
+            steps=steps,
+            batched=bool(self.model.flow.is_batched),
+        )
+
+    def _resolve_flow_finish(self, launch_buf: _DotsFlowLaunchBuf | None) -> None:
+        if launch_buf is None:
+            return
+        if launch_buf.batched:
+            finished_flags = self.model.flow.resolve_batched_eos()
+            if len(finished_flags) != len(launch_buf.data_rows):
+                raise RuntimeError(
+                    "dots.tts batched EOS resolve size mismatch: "
+                    f"flags={len(finished_flags)} requests={len(launch_buf.data_rows)}"
+                )
+        else:
+            finished_flags = [bool(step.finished) for step in launch_buf.steps]
+        for data, finished in zip(launch_buf.data_rows, finished_flags, strict=True):
+            if finished:
+                data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
 
     @staticmethod
     def _hidden_states(result: Any) -> torch.Tensor:

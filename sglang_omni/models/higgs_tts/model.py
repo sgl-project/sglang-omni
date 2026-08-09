@@ -211,6 +211,12 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.long, device=cg_device
         )
 
+    @property
+    def language_model(self) -> Qwen3ForCausalLM:
+        """Decoder handle for SGLang prefill-graph discovery; a property
+        keeps the parameter tree free of a duplicate alias."""
+        return self.backbone
+
     def get_input_embeddings(self) -> nn.Embedding:
         return self.backbone.get_input_embeddings()
 
@@ -422,6 +428,7 @@ class HiggsTTSModel(nn.Module):
         positions: torch.Tensor,
         forward_batch,
         input_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | None = None,
         **kwargs,
     ):
         """Run the backbone then sample multi-codebook codes per request.
@@ -439,9 +446,15 @@ class HiggsTTSModel(nn.Module):
         else:
             if input_embeds is None:
                 raise RuntimeError(
-                    "Higgs prefill requires composed multi-codebook input embeddings"
+                    "Higgs prefill requires runner-composed input_embeds"
                 )
-            req_ids, gen_params = self._extract_batch_metadata(forward_batch)
+            if omni_prefill_rids is None:
+                raise RuntimeError(
+                    "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
+                )
+            req_ids, gen_params = self._extract_batch_metadata(
+                forward_batch, omni_prefill_rids
+            )
 
         hidden_states = self.backbone.model(
             input_ids,
@@ -470,6 +483,8 @@ class HiggsTTSModel(nn.Module):
                 hidden_states_last, req_ids, gen_params
             )
 
+        # Rows are per-request, not per-token; the graph runner's replay trim
+        # is a no-op on these shapes only because bs <= extend tokens.
         return LogitsProcessorOutput(
             next_token_logits=text_logits_BV,
             hidden_states=hidden_states_last,
@@ -502,30 +517,12 @@ class HiggsTTSModel(nn.Module):
         return bool(is_decode()) if callable(is_decode) else False
 
     def _extract_batch_metadata(
-        self, forward_batch
+        self,
+        forward_batch,
+        req_ids: list[str],
     ) -> tuple[list[str], list[HiggsGenParams]]:
-        # ``rids`` is part of SGLang's ForwardBatch contract and survives the
-        # 0.5.15 EagerRunner static-buffer copy. ``req_ids`` was an Omni-added
-        # dynamic attribute; dataclasses.replace drops it, silently routing
-        # prefill sampling into fallback rows such as "req-0".
-        req_ids_raw = getattr(forward_batch, "rids", None)
-        if req_ids_raw is None:
-            req_ids_raw = getattr(forward_batch, "req_ids", None)
         batch_size = self._infer_batch_size(forward_batch)
-        if req_ids_raw is None:
-            # No fabricated fallback identities: sampler rows keyed on made-up
-            # ids silently decouple output routing and seeding from the real
-            # requests. Full-backend prefill capture never reaches this eager
-            # tail (it replays only the transformer body), so a batch without
-            # ``rids`` here means the runner contract changed — fail loudly.
-            raise RuntimeError(
-                "Higgs prefill batch carries neither ForwardBatch.rids nor "
-                "req_ids; refusing to fabricate request identities"
-            )
-        req_ids = [str(r) for r in req_ids_raw]
-
-        sampling_info = getattr(forward_batch, "sampling_info", None)
-        gen_params = self._gen_params_for_batch(sampling_info, batch_size)
+        gen_params = self._gen_params_for_batch(forward_batch.sampling_info, batch_size)
         return req_ids, gen_params
 
     @staticmethod

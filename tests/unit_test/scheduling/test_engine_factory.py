@@ -108,6 +108,8 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     class FakeWorker:
         def __init__(self, server_args: Any) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
+            self.model_config = SimpleNamespace(is_multimodal=False)
+            self.enable_prefill_input_embeds = False
 
     def fake_build_sglang_server_args(
         checkpoint_dir: str,
@@ -126,7 +128,8 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
                 decode=SimpleNamespace(
                     max_bs=kwargs["cuda_graph_max_bs"],
                     bs=kwargs["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
@@ -350,12 +353,21 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
         def init_cuda_graphs(self) -> None:
             events.append("init_cuda_graphs")
 
-    model_worker = SimpleNamespace(model_runner=FakeSGLangRunner())
+    model_worker = SimpleNamespace(
+        model_runner=FakeSGLangRunner(),
+        model_config=SimpleNamespace(is_multimodal=False),
+        enable_prefill_input_embeds=False,
+    )
 
     def fake_server_args(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
         events.append("server_args")
-        return SimpleNamespace()
+        return SimpleNamespace(
+            cuda_graph_config=SimpleNamespace(
+                prefill=SimpleNamespace(backend="disabled")
+            ),
+            _cuda_graph_config_locked=set(),
+        )
 
     def fake_validate(**kwargs: Any) -> None:
         assert kwargs["model_name"] == "Test ASR"

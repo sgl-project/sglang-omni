@@ -110,6 +110,20 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_servers.sh \
   <gpu-group> <group-run-1> [<group-run-2> ...]
 ```
 
+Tab C — cpuset foreign-load supervisor (one per calibration cpuset):
+
+```bash
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh \
+  <cpuset-spec> [interval-s]
+```
+
+Tab C shows the reserved cores' busy fraction so the operator sees an
+intrusion as it happens. Enforcement does not depend on it: `tune.py` waits
+before each launch while the cpuset carries foreign load, and a round whose
+in-session sampler reports a foreign peak above the contention limit is
+discarded and re-run after the cpuset clears, without touching completed
+rounds.
+
 Behavior:
 
 - Resolves the active pytest from its process and `--basetemp`.

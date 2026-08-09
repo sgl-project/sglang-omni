@@ -6,16 +6,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Callable
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from sglang_omni import __version__
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
     resolve_admin_api_key,
@@ -25,6 +26,7 @@ from sglang_omni_router.config import (
     MIN_CONNECTIONS_PER_WORKER,
     RouterConfig,
     WorkerConfig,
+    can_own_uploaded_voices,
 )
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.proxy import ProxyHandler, filter_request_headers
@@ -35,6 +37,8 @@ from sglang_omni_router.update_journal import (
     UpdateJournal,
     build_journal,
 )
+from sglang_omni_router.voice_routing import VoiceRoutingState
+from sglang_omni_router.websocket_proxy import TTSWebSocketProxy
 from sglang_omni_router.worker import (
     HEALTH_STATE_UNHEALTHY,
     HEALTH_STATE_UNKNOWN,
@@ -141,11 +145,26 @@ def create_app(
         client=health_client,
     )
     selector = WorkerSelector(config.policy)
+    voice_routing = VoiceRoutingState(
+        workers=workers,
+        owner_url=config.voice_owner_worker_url,
+        client=health_client,
+        timeout_secs=config.health_check_timeout_secs,
+        retry_interval_secs=config.health_check_interval_secs,
+    )
     proxy = ProxyHandler(
         config=config,
         workers=workers,
         selector=selector,
         client=client,
+        voice_routing=voice_routing,
+    )
+    websocket_proxy = TTSWebSocketProxy(
+        config=config,
+        workers=workers,
+        selector=selector,
+        admission=proxy.admission,
+        voice_routing=voice_routing,
     )
 
     @asynccontextmanager
@@ -156,23 +175,26 @@ def create_app(
         app.state.health_http_client = health_client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
+        app.state.voice_routing = voice_routing
+        app.state.websocket_proxy = websocket_proxy
         app.state.admission_controller = proxy.admission
         app.state.admin_update_lock = asyncio.Lock()
         app.state.update_journal = journal
         recover_worker_pool_from_journal(journal, workers)
-        await health_checker.start()
-        try:
-            yield
-        finally:
-            await health_checker.stop()
-            if owns_health_client:
-                await health_client.aclose()
+        async with AsyncExitStack() as resources:
             if owns_client:
-                await client.aclose()
+                resources.push_async_callback(client.aclose)
+            if owns_health_client:
+                resources.push_async_callback(health_client.aclose)
+            await health_checker.start()
+            resources.push_async_callback(health_checker.stop)
+            await voice_routing.start()
+            resources.push_async_callback(voice_routing.stop)
+            yield
 
     resolved_key = resolve_admin_api_key(admin_api_key)
 
-    app = FastAPI(title="sglang-omni-router", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="sglang-omni-router", version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -181,7 +203,15 @@ def create_app(
         allow_headers=["*"],
     )
 
-    register_routes(app, workers, proxy, config, admin_api_key=resolved_key)
+    register_routes(
+        app,
+        workers,
+        proxy,
+        websocket_proxy,
+        voice_routing,
+        config,
+        admin_api_key=resolved_key,
+    )
     register_favicon(app)
     return app
 
@@ -190,20 +220,30 @@ def register_routes(
     app: FastAPI,
     workers: list[Worker],
     proxy: ProxyHandler,
+    websocket_proxy: TTSWebSocketProxy,
+    voice_routing: VoiceRoutingState,
     config: RouterConfig,
     *,
     admin_api_key: str | None = None,
 ) -> None:
-    register_health_routes(app, workers, proxy)
-    register_admin_routes(app, workers, config, admin_api_key=admin_api_key)
+    register_health_routes(app, workers, proxy, voice_routing)
+    register_admin_routes(
+        app,
+        workers,
+        config,
+        voice_routing=voice_routing,
+        admin_api_key=admin_api_key,
+    )
     register_public_metadata_routes(app, workers, config)
     register_data_routes(app, proxy)
+    register_tts_routes(app, proxy, websocket_proxy)
 
 
 def register_health_routes(
     app: FastAPI,
     workers: list[Worker],
     proxy: ProxyHandler,
+    voice_routing: VoiceRoutingState,
 ) -> None:
     @app.get("/live")
     async def live() -> JSONResponse:
@@ -223,7 +263,10 @@ def register_health_routes(
             workers,
             available_status="healthy",
             unavailable_status="unhealthy",
-            extra={"admission": proxy.admission.to_dict()},
+            extra={
+                "admission": proxy.admission.to_dict(),
+                "voice_routing": voice_routing.to_dict(),
+            },
         )
 
 
@@ -255,6 +298,7 @@ def register_admin_routes(
     workers: list[Worker],
     config: RouterConfig,
     *,
+    voice_routing: VoiceRoutingState | None = None,
     admin_api_key: str | None = None,
 ) -> None:
     _auth = make_admin_auth_dependency(admin_api_key)
@@ -494,6 +538,20 @@ def register_admin_routes(
                     None,
                 )
 
+        voice_owner = (
+            voice_routing.ensure_owner() if voice_routing is not None else None
+        )
+        if voice_owner is worker and not can_own_uploaded_voices(
+            next_config.capabilities
+        ):
+            return (
+                _error_response(
+                    409,
+                    "voice owner worker must retain speech and audio_input capabilities",
+                ),
+                None,
+            )
+
         worker.replace_config(next_config)
 
         if requested_disabled is not None:
@@ -536,6 +594,11 @@ def register_admin_routes(
         worker = _find_worker(workers, worker_id)
         if worker is None:
             return _error_response(404, "worker not found")
+        voice_owner = (
+            voice_routing.ensure_owner() if voice_routing is not None else None
+        )
+        if voice_owner is worker:
+            return _error_response(409, "voice owner worker cannot be deleted")
         workers.remove(worker)
         logger.info(
             f"worker_deleted worker={worker.display_id} url={worker.url} "
@@ -717,6 +780,33 @@ def register_data_routes(
         return await _forward(request, "/v1/audio/transcriptions")
 
 
+def register_tts_routes(
+    app: FastAPI,
+    proxy: ProxyHandler,
+    websocket_proxy: TTSWebSocketProxy,
+) -> None:
+    @app.post("/v1/audio/speech/batch")
+    async def audio_speech_batch(request: Request) -> Response:
+        return await proxy.forward_model_request(request, "/v1/audio/speech/batch")
+
+    @app.websocket("/v1/audio/speech/stream")
+    async def audio_speech_stream(websocket: WebSocket) -> None:
+        await websocket_proxy.forward(websocket)
+
+    @app.get("/v1/audio/voices")
+    async def audio_voices(request: Request) -> Response:
+        return await proxy.forward_model_request(request, "/v1/audio/voices")
+
+    @app.post("/v1/audio/voices")
+    async def upload_audio_voice(request: Request) -> Response:
+        return await proxy.forward_model_request(request, "/v1/audio/voices")
+
+    @app.delete("/v1/audio/voices/{name}")
+    async def delete_audio_voice(name: str, request: Request) -> Response:
+        path = f"/v1/audio/voices/{quote(name, safe='')}"
+        return await proxy.forward_model_request(request, path)
+
+
 def _pool_summary(
     workers: list[Worker],
     *,
@@ -768,6 +858,9 @@ def _worker_pool_status_response(
 
 
 def _notify_registry_change(app: FastAPI) -> None:
+    voice_routing = getattr(app.state, "voice_routing", None)
+    if voice_routing is not None:
+        voice_routing.request_refresh()
     # Note (Jiaxin Deng): CP hook, republishes the snapshot after a registry
     # mutation; unset (single-process mode) is a no-op.
     callback = getattr(app.state, "on_registry_change", None)

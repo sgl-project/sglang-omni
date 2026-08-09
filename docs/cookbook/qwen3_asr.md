@@ -43,7 +43,6 @@ sgl-omni serve \
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F model=Qwen/Qwen3-ASR-1.7B \
   -F file=@tests/data/query_to_cars.wav \
-  -F language=en \
   -F response_format=json
 ```
 
@@ -55,7 +54,6 @@ with open("tests/data/query_to_cars.wav", "rb") as f:
         "http://localhost:8000/v1/audio/transcriptions",
         data={
             "model": "Qwen/Qwen3-ASR-1.7B",
-            "language": "en",
             "response_format": "json",
         },
         files={"file": ("query_to_cars.wav", f, "audio/wav")},
@@ -72,7 +70,7 @@ print(resp.json()["text"])
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
-| `language` | string | `en` | Language hint as a supported code or canonical name (case-insensitive) |
+| `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
 | `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
@@ -84,7 +82,11 @@ duration-based usage (rounded-up audio seconds) when duration probing succeeds.
 
 ### Language Hints
 
-Qwen3-ASR accepts the following 30 language codes and their canonical names:
+When `language` is omitted, Qwen3-ASR detects the spoken language before
+transcribing. Set an explicit hint when the language is known or automatic
+detection is unreliable for short or ambiguous audio.
+
+Qwen3-ASR accepts the following 30 explicit language codes and their canonical names:
 
 | Codes | Canonical names |
 |---|---|

@@ -56,15 +56,38 @@ def _apply_omni_ci_cpuset() -> set[int] | None:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def pin_omni_ci_cpuset() -> None:
+def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
     """Pin the test session, and every server it spawns, to OMNI_CI_CPUSET.
 
     The gates in this directory measure host-bound serving stacks, so on a
     shared runner concurrent jobs inflate per-request CPU cost and shift
     calibrated floors. Child processes inherit the affinity, which keeps the
     managed router, its workers, and the bench client on the reserved cores.
+    Pinning restrains only this session, so a contention sampler reports
+    foreign load on the reserved cores at session end. On CI heavy intrusion
+    fails the session after results are written, so the stage retry
+    re-measures on a clean window instead of gating on polluted numbers;
+    calibration handles the same signal itself by rejecting the round.
     """
-    _apply_omni_ci_cpuset()
+    cpus = _apply_omni_ci_cpuset()
+    if cpus is None:
+        yield
+        return
+    from tests.utils.ci_cpu_contention import FAIL_FOREIGN_CORES, ContentionSampler
+
+    sampler = ContentionSampler(cpus)
+    sampler.start()
+    try:
+        yield
+    finally:
+        sampler.stop()
+        print(sampler.summary())
+        peak = sampler.peak_foreign_cores()
+        if os.environ.get("GITHUB_ACTIONS") == "true" and peak > FAIL_FOREIGN_CORES:
+            pytest.fail(
+                f"cpuset contention: foreign load peaked at {peak:.2f} cores "
+                f"on the pinned cpuset; failing so the stage retry re-measures"
+            )
 
 
 TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)

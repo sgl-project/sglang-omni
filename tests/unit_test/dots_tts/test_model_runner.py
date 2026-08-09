@@ -231,3 +231,125 @@ def test_dots_before_decode_without_buffer_sets_forward_batch_embeds() -> None:
     runner.before_decode(forward_batch, object(), [_decode_request("a", 9.0)])
 
     torch.testing.assert_close(forward_batch.input_embeds, torch.full((1, 4), 9.0))
+
+
+def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
+    finished_token = object()
+
+    class _Flow:
+        is_batched = True
+
+        def decode_batch(self, *_args, **_kwargs):
+            return [
+                SimpleNamespace(
+                    feedback_embedding=torch.zeros(4),
+                    latent_patch=torch.zeros(1, 2, 2),
+                    finished=False,
+                    emit=True,
+                ),
+                SimpleNamespace(
+                    feedback_embedding=torch.ones(4),
+                    latent_patch=torch.ones(1, 2, 2),
+                    finished=False,
+                    emit=True,
+                ),
+            ]
+
+        def resolve_batched_eos(self):
+            return [False, True]
+
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=_Flow())
+
+    def _request(request_id: str, control_token_id: int):
+        return SimpleNamespace(
+            request_id=request_id,
+            data=SimpleNamespace(
+                flow_state=object(),
+                pending_feedback_queue=deque(),
+                decoded_latent_patches=[],
+                latent_patches=[],
+                latest_latent_patch=None,
+                control_token_id=control_token_id,
+                state=SimpleNamespace(
+                    num_steps=2,
+                    ode_method="euler",
+                    guidance_scale=1.0,
+                    eos_threshold=0.5,
+                ),
+                req=SimpleNamespace(finished_reason=None),
+            ),
+        )
+
+    requests = [_request("a", 7), _request("b", 9)]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(2, 4)),
+        next_token_ids=None,
+    )
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "sglang_omni.models.dots_tts.model_runner.FINISH_MATCHED_TOKEN",
+            lambda token_id: (finished_token, token_id),
+        )
+        runner.post_decode(result, object(), object(), requests)
+
+    assert requests[0].data.req.finished_reason is None
+    assert requests[1].data.req.finished_reason == (finished_token, 9)
+    assert result.next_token_ids.tolist() == [7, 9]
+    assert len(requests[0].data.pending_feedback_queue) == 1
+    assert len(requests[1].data.latent_patches) == 1
+
+
+def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> None:
+    finished_token = object()
+
+    class _Flow:
+        is_batched = False
+
+        def decode_batch(self, *_args, **_kwargs):
+            return [
+                SimpleNamespace(
+                    feedback_embedding=torch.zeros(4),
+                    latent_patch=torch.zeros(1, 2, 2),
+                    finished=True,
+                    emit=True,
+                )
+            ]
+
+        def resolve_batched_eos(self):
+            raise AssertionError("single-request path must not resolve batched EOS")
+
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=_Flow())
+    request = SimpleNamespace(
+        request_id="a",
+        data=SimpleNamespace(
+            flow_state=object(),
+            pending_feedback_queue=deque(),
+            decoded_latent_patches=[],
+            latent_patches=[],
+            latest_latent_patch=None,
+            control_token_id=3,
+            state=SimpleNamespace(
+                num_steps=2,
+                ode_method="euler",
+                guidance_scale=1.0,
+                eos_threshold=0.5,
+            ),
+            req=SimpleNamespace(finished_reason=None),
+        ),
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, 4)),
+        next_token_ids=None,
+    )
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "sglang_omni.models.dots_tts.model_runner.FINISH_MATCHED_TOKEN",
+            lambda token_id: (finished_token, token_id),
+        )
+        runner.post_decode(result, object(), object(), [request])
+
+    assert request.data.req.finished_reason == (finished_token, 3)
