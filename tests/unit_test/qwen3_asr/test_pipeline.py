@@ -27,7 +27,7 @@ def _make_engine_builder(
     *, mm_attention_backend: str | None = None
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     return qwen3_asr_builder.Qwen3ASREngineBuilder(
-        max_running_requests=32,
+        max_running_requests=64,
         max_new_tokens=128,
         enable_async_decode=True,
         async_decode_min_batch_size=2,
@@ -37,6 +37,10 @@ def _make_engine_builder(
         mm_attention_backend=mm_attention_backend,
         request_build_max_workers=8,
         request_build_max_pending=32,
+        prefill_coalesce_requests=16,
+        prefill_coalesce_wait_ms=24.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
     )
 
 
@@ -85,7 +89,7 @@ def test_qwen3_asr_explicit_mm_attention_backend_overrides_sm_default(
     assert defaults["mm_attention_backend"] == "fa3"
 
 
-def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
+def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
 
     assert config.entry_stage == "asr"
@@ -94,9 +98,16 @@ def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.gpu_placement == {"asr": 0}
     assert config.stages[0].factory.endswith("create_sglang_qwen3_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 32
+    assert config.stages[0].factory_args["max_running_requests"] == 64
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 32
+    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 16
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 24
+    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert (
+        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
+        is True
+    )
     assert "request_build_max_backlog" not in config.stages[0].factory_args
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
     assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
@@ -113,12 +124,18 @@ def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     )
 
 
-def test_qwen3_asr_stage_default_allows_32_running_requests() -> None:
+def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
-    assert signature.parameters["max_running_requests"].default == 32
+    assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 32
+    assert signature.parameters["prefill_coalesce_requests"].default == 16
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert (
+        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
     assert "request_build_max_backlog" not in signature.parameters
 
 
@@ -308,12 +325,29 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
             server_args_overrides={"context_length": 2048},
         )
 
-    assert build_kwargs["cuda_graph_max_bs"] == 32
-    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
-    assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32]" in caplog.text
+    assert build_kwargs["cuda_graph_max_bs"] == 64
+    assert build_kwargs["cuda_graph_bs"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
+    assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]" in caplog.text
     assert "mm_attention_backend" not in build_kwargs
     assert memory_queries == [0, 0, 0]
     assert adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
+    assert scheduler.prefill_coalesce_requests == 16
+    assert scheduler.prefill_coalesce_wait_ms == 24.0
+    assert scheduler.prefill_coalesce_when_idle is True
+    assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.shutdown_callback is fake_encoder_service.close
