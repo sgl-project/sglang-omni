@@ -59,6 +59,10 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.prefill_coalesce import (
+    validate_prefill_coalesce_requests,
+    validate_prefill_coalesce_wait_ms,
+)
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -279,18 +283,20 @@ class OmniScheduler:
                 "requests"
             )
 
-        # Note: (maydomine) coalescing gate: hold prefill until K requests wait
-        # or the oldest has waited T ms; 0 disables.
-        if int(prefill_coalesce_requests) > 1 and int(server_args.tp_size) > 1:
+        # Note: (maydomine) Validate here as well as in the CLI because per-stage
+        # YAML reaches the scheduler through factory_args.
+        requests = validate_prefill_coalesce_requests(prefill_coalesce_requests)
+        wait_ms = validate_prefill_coalesce_wait_ms(prefill_coalesce_wait_ms)
+        if requests > 1 and int(server_args.tp_size) > 1:
             logger.warning(
                 "Prefill admission coalescing is disabled for "
                 f"tp_size={server_args.tp_size}: the wait deadline reads each "
                 "rank's local clock, so ranks could disagree on expiry and "
                 "break lockstep scheduling"
             )
-            prefill_coalesce_requests = 0
-        self.prefill_coalesce_requests = int(prefill_coalesce_requests)
-        self.prefill_coalesce_wait_s = float(prefill_coalesce_wait_ms) / 1e3
+            requests = 0
+        self.prefill_coalesce_requests = requests
+        self.prefill_coalesce_wait_s = wait_ms / 1e3
         self.prefill_coalesce_when_idle = bool(prefill_coalesce_when_idle)
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)

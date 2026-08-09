@@ -22,6 +22,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=False,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "AudarTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -29,6 +30,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=False,
         supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -36,6 +38,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "HiggsMultimodalQwen3ForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -43,6 +46,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=True,
     ),
     "MossTTSDelayModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -50,6 +54,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "MossTTSLocalModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -57,6 +62,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "FishQwen3OmniForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -64,6 +70,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "BailingMMNativeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -71,6 +78,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "VoxtralTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
@@ -78,6 +86,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
     "Zonos2ForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -85,6 +94,7 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
     ),
 }
 
@@ -204,6 +214,7 @@ def test_launcher_model_capabilities_log_summary() -> None:
         "streaming_vocoder": True,
         "cuda_graph": True,
         "torch_compile": True,
+        "breakable_prefill_cuda_graph": False,
     }
 
 

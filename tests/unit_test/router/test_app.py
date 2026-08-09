@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,19 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from sglang_omni_router import proxy as proxy_module
+from sglang_omni_router import websocket_proxy as websocket_proxy_module
 from sglang_omni_router.app import _broadcast_admin_request, create_app
-from sglang_omni_router.config import RouterConfig, WorkerConfig
+from sglang_omni_router.config import (
+    DEFAULT_CAPABILITIES,
+    Capability,
+    RouterConfig,
+    WorkerConfig,
+)
+from sglang_omni_router.health import HealthChecker
+from sglang_omni_router.route_metadata import RouteKind
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.update_journal import JournalUnwritableError, UpdateJournal
+from sglang_omni_router.voice_routing import VoiceRoutingState
 from sglang_omni_router.worker import build_workers, worker_id_from_url
 
 
@@ -34,7 +44,9 @@ def _router_config(
     max_inflight: int | None = None,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
+    health_check_interval_secs: int = 10,
     worker_configs: list[WorkerConfig] | None = None,
+    voice_owner_worker_url: str | None = None,
     router_state_dir: str | None = None,
 ) -> RouterConfig:
     return RouterConfig(
@@ -50,6 +62,8 @@ def _router_config(
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
+        health_check_interval_secs=health_check_interval_secs,
+        voice_owner_worker_url=voice_owner_worker_url,
         router_state_dir=router_state_dir,
     )
 
@@ -337,6 +351,64 @@ def test_worker_crud_updates_runtime_pool_and_validates_payloads() -> None:
         assert client.get(f"/workers/{worker_id}").status_code == 404
 
 
+def test_worker_crud_rejects_voice_owner_deletion() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(
+                200,
+                json={"uploaded_voices": []},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    app = create_app(
+        _router_config(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with TestClient(app) as client:
+        owner = client.get("/workers").json()["workers"][0]
+        response = client.delete(f"/workers/{owner['worker_id']}")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == (
+        "voice owner worker cannot be deleted"
+    )
+
+
+def test_worker_crud_rejects_removing_voice_owner_capabilities() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(
+                200,
+                json={"uploaded_voices": []},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    app = create_app(
+        _router_config(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with TestClient(app) as client:
+        owner = client.get("/workers").json()["workers"][0]
+        response = client.put(
+            f"/workers/{owner['worker_id']}",
+            json={"capabilities": ["chat", "speech"]},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == (
+        "voice owner worker must retain speech and audio_input capabilities"
+    )
+    assert app.state.workers[0].capabilities == set(DEFAULT_CAPABILITIES)
+
+
 def test_worker_update_validation_failure_is_atomic() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -614,13 +686,14 @@ def test_absent_journaled_worker_survives_restart_as_a_tombstone(
 def test_deleting_a_journaled_worker_keeps_the_tombstone_for_readd(
     tmp_path: Path,
 ) -> None:
-    worker_id = worker_id_from_url("http://worker-a:8101")
+    worker_url = "http://worker-b:8102"
+    worker_id = worker_id_from_url(worker_url)
     app, journal_path = _journal_app(tmp_path, [worker_id])
     with TestClient(app) as client:
         assert client.delete(f"/workers/{worker_id}").status_code == 200
         # Note (Jiaxin Deng): deletion must not erase the tombstone
         assert UpdateJournal(journal_path).pending() == [worker_id]
-        readded = client.post("/workers", json={"url": "http://worker-a:8101"})
+        readded = client.post("/workers", json={"url": worker_url})
         assert readded.status_code == 200
         assert readded.json()["worker"]["disabled"] is True
 
@@ -2653,6 +2726,21 @@ def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:
             "input": "hello",
             "references": [{"audio_path": "voice.wav", "text": "hello"}],
         },
+        {
+            "model": "qwen3-omni",
+            "input": "hello",
+            "references": [{"data": "base64-audio", "text": "hello"}],
+        },
+        {
+            "model": "qwen3-omni",
+            "input": "hello",
+            "references": [{"audio": "base64-audio", "text": "hello"}],
+        },
+        {
+            "model": "qwen3-omni",
+            "input": "hello",
+            "references": [{"ref_audio": "base64-audio", "text": "hello"}],
+        },
     ],
 )
 def test_speech_reference_audio_requires_audio_input_capability(
@@ -2691,6 +2779,146 @@ def test_speech_reference_audio_requires_audio_input_capability(
 
     assert response.status_code == 200
     assert seen_workers == ["worker-b:8102"]
+
+
+@pytest.mark.parametrize(
+    ("route_path", "payload"),
+    [
+        ("/v1/audio/speech", {"input": "hello", "voice": "Clone"}),
+        (
+            "/v1/audio/speech/batch",
+            {"voice": "default", "items": [{"input": "hello", "voice": "Clone"}]},
+        ),
+    ],
+)
+def test_speech_json_without_content_type_preserves_voice_ownership(
+    route_path: str,
+    payload: dict[str, object],
+) -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(
+                200,
+                json={"uploaded_voices": [{"name": "Clone"}]},
+                request=request,
+            )
+        if request.url.path == route_path:
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, content=b"audio", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101"),
+        WorkerConfig(url="http://worker-b:8102"),
+    ]
+    app = create_app(
+        _router_config(
+            worker_configs=worker_configs,
+            voice_owner_worker_url="http://worker-b:8102",
+        ),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/v1/audio/voices").status_code == 200
+        for _ in range(100):
+            if (
+                client.get("/health").json()["voice_routing"]["registry_state"]
+                == "ready"
+            ):
+                break
+            time.sleep(0.01)
+        response = client.post(
+            route_path,
+            content=json.dumps(payload).encode(),
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
+
+
+@pytest.mark.parametrize(
+    "non_owner_capabilities",
+    [
+        {"speech", "audio_input", "video_input"},
+        {"speech", "video_input"},
+    ],
+)
+@pytest.mark.parametrize(
+    ("route_path", "request_fields"),
+    [
+        (
+            "/v1/audio/speech",
+            {"input": "hello", "voice": "default"},
+        ),
+        (
+            "/v1/audio/speech/batch",
+            {
+                "voice": "default",
+                "items": [{"input": "hello"}],
+            },
+        ),
+    ],
+)
+def test_large_tts_body_uses_voice_owner_in_heterogeneous_pool(
+    non_owner_capabilities: set[Capability],
+    route_path: str,
+    request_fields: dict[str, object],
+) -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(
+                200,
+                json={"uploaded_voices": []},
+                request=request,
+            )
+        if request.url.path == route_path:
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(
+                200,
+                content=b"ok",
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(
+            url="http://worker-a:8101",
+            capabilities={"speech", "audio_input"},
+        ),
+        WorkerConfig(
+            url="http://worker-b:8102",
+            capabilities=non_owner_capabilities,
+        ),
+    ]
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    body = _large_json_body(
+        {
+            "model": "qwen3-omni",
+            **request_fields,
+        }
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            route_path,
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-a:8101"]
 
 
 def test_streaming_chat_relays_exact_sse_bytes() -> None:
@@ -2790,6 +3018,44 @@ def test_payload_too_large_is_rejected_before_worker_selection() -> None:
 
     assert response.status_code == 413
     assert seen_paths == ["/health", "/health"]
+
+
+def test_voice_upload_uses_endpoint_specific_body_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append((request.method, request.url.path))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/voices":
+            return httpx.Response(
+                200,
+                json={"uploaded_voices": []},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    monkeypatch.setattr(proxy_module, "MAX_VOICE_UPLOAD_BODY_BYTES", 4)
+    app = create_app(
+        _router_config(max_payload_size=128),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/voices", content=b"too-large")
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {
+            "message": "request body must be at most 4 bytes",
+            "type": "RequestTooLargeError",
+            "param": "audio_sample",
+            "code": 413,
+        }
+    }
+    assert ("POST", "/v1/audio/voices") not in seen_requests
 
 
 def test_payload_without_content_length_is_rejected_while_streaming_body() -> None:
@@ -3135,12 +3401,56 @@ def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
     assert any("under-feed" in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_lifespan_unwinds_all_resources_when_voice_stop_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    async def health_start(_self) -> None:
+        events.append("health_start")
+
+    async def health_stop(_self) -> None:
+        events.append("health_stop")
+
+    async def voice_start(_self) -> None:
+        events.append("voice_start")
+
+    async def voice_stop(_self) -> None:
+        events.append("voice_stop")
+        raise RuntimeError("voice stop failed")
+
+    async def client_close(_self) -> None:
+        events.append("client_close")
+
+    monkeypatch.setattr(HealthChecker, "start", health_start)
+    monkeypatch.setattr(HealthChecker, "stop", health_stop)
+    monkeypatch.setattr(VoiceRoutingState, "start", voice_start)
+    monkeypatch.setattr(VoiceRoutingState, "stop", voice_stop)
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", client_close)
+
+    app = create_app(_router_config())
+    with pytest.raises(RuntimeError, match="voice stop failed"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert events == [
+        "health_start",
+        "voice_start",
+        "voice_stop",
+        "health_stop",
+        "client_close",
+        "client_close",
+    ]
+
+
 def test_route_registration_split_exposes_exact_route_sets() -> None:
     from sglang_omni_router.app import (
         register_admin_routes,
         register_data_routes,
         register_health_routes,
         register_public_metadata_routes,
+        register_tts_routes,
     )
 
     config = _router_config()
@@ -3148,11 +3458,26 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200))
     )
+    voice_routing = VoiceRoutingState(
+        workers=workers,
+        owner_url=config.voice_owner_worker_url,
+        client=client,
+        timeout_secs=config.health_check_timeout_secs,
+        retry_interval_secs=config.health_check_interval_secs,
+    )
     proxy = proxy_module.ProxyHandler(
         config=config,
         workers=workers,
         selector=WorkerSelector(config.policy),
         client=client,
+        voice_routing=voice_routing,
+    )
+    websocket_proxy = websocket_proxy_module.TTSWebSocketProxy(
+        config=config,
+        workers=workers,
+        selector=WorkerSelector(config.policy),
+        admission=proxy.admission,
+        voice_routing=voice_routing,
     )
 
     def _paths(register) -> set[str]:
@@ -3161,7 +3486,9 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         register(app)
         return {route.path for route in app.routes} - base
 
-    assert _paths(lambda app: register_health_routes(app, workers, proxy)) == {
+    assert _paths(
+        lambda app: register_health_routes(app, workers, proxy, voice_routing)
+    ) == {
         "/live",
         "/ready",
         "/health",
@@ -3190,6 +3517,12 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/v1/chat/completions",
         "/v1/audio/speech",
         "/v1/audio/transcriptions",
+    }
+    assert _paths(lambda app: register_tts_routes(app, proxy, websocket_proxy)) == {
+        "/v1/audio/speech/batch",
+        "/v1/audio/speech/stream",
+        "/v1/audio/voices",
+        "/v1/audio/voices/{name}",
     }
 
 
@@ -3531,8 +3864,12 @@ async def test_a_cancelled_upstream_send_returns_the_active_gauge() -> None:
         model=None,
         stream=False,
         required_capabilities=set(),
-        body_exceeds_metadata_limit=False,
-        route_capabilities_header_present=False,
+        is_body_over_metadata_limit=False,
+        has_route_model_header=False,
+        has_route_capabilities_header=False,
+        route_kind=RouteKind.GENERATION,
+        service_class="generation",
+        voice_names_requiring_registry=set(),
     )
     release = proxy_module._ReleaseOnce(proxy.admission)
 

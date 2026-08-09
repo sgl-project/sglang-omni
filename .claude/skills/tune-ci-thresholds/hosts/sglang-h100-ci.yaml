@@ -20,6 +20,18 @@ venv_python: /github/home/calibration/omni/bin/python
 # On 8× H100 shared hosts, GPU 6–7 run CI continuously — never pick or kill them.
 gpu_exclude: [6, 7]
 
+# note (Jiaxin Deng): CI pins each perf-gate session to a NUMA-local cpuset;
+# tune.py exports the entry for the picked GPU pair so calibration measures
+# the same condition. Keep in sync with the production runner .env partition.
+# The former "0,1" shadow range (0-15,64-79) is deliberately absent: those
+# node0 cores host system daemons and interactive load, and tail latencies
+# measured there are unusable (2026-08-08 validation). With CI stopped for
+# calibration, borrow a real lane pair and its cpuset instead.
+gpu_group_cpusets:
+  "2,3": "16-31,80-95"
+  "4,5": "48-63,112-127"
+  "6,7": "32-47,96-111"
+
 physical:
   hf_hub: /root/.cache/huggingface
   speaker_sim: /root/.cache/huggingface/speaker_sim

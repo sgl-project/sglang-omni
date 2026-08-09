@@ -50,7 +50,7 @@ class Qwen3ASRRequestData(SGLangARRequestData):
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
     audio_duration_s: float = 0.0
-    language: str = "en"
+    language: str | None = None
     engine_start_s: float = 0.0
 
 
@@ -103,21 +103,21 @@ def make_qwen3_asr_scheduler_adapters(
 
     audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
     eos_token_id = int(tokenizer.eos_token_id)
-    vocab_size = int(tokenizer.vocab_size)
+    # note (Xinyu): added tokens such as <asr_text> live above
+    # tokenizer.vocab_size. Req uses this bound to reject invalid model outputs,
+    # so include the added tokens.
+    vocab_size = len(tokenizer)
     asr_text_token_ids = _encode_literal(tokenizer, _ASR_TEXT)
 
-    def _build_prompt_ids(num_audio_tokens: int, language: str) -> list[int]:
+    def _build_prompt_ids(num_audio_tokens: int, language: str | None) -> list[int]:
         prompt = (
             f"<|im_start|>user\n"
             f"{_AUDIO_START}{_AUDIO_PAD * num_audio_tokens}{_AUDIO_END}"
             f"<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
-        # Qwen3-ASR needs a forced prefix "language <Lang><asr_text>" on the
-        # assistant turn; the model then generates only the transcription after
-        # <asr_text>. Without it the (small) model emits the language tag then
-        # stops. Upstream qwen_asr does the same (_build_text_prompt).
-        prompt = prompt + f"language {language}<asr_text>"
+        if language is not None:
+            prompt += f"language {language}<asr_text>"
         return tokenizer(prompt, add_special_tokens=False).input_ids
 
     def _validate_context_budget(
@@ -138,8 +138,10 @@ def make_qwen3_asr_scheduler_adapters(
     def request_builder(payload: StagePayload) -> Qwen3ASRRequestData:
         params = payload.request.params or {}
         language = params.get("language")
-        requested_language = "en" if language is None else str(language)
-        forced_language = resolve_language(requested_language)
+        requested_language = None if language is None else str(language)
+        forced_language = (
+            None if requested_language is None else resolve_language(requested_language)
+        )
         prepared = prepare_audio(
             payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
         )
@@ -293,6 +295,18 @@ def make_qwen3_asr_scheduler_adapters(
             f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} raw={raw!r}"
         )
         asr_text_idx = _find_subsequence(output_ids, asr_text_token_ids)
+        detected_language = None
+        if data.language is None and asr_text_idx is not None:
+            prefix = _decode_token_ids(
+                tokenizer,
+                output_ids[:asr_text_idx],
+                skip_special_tokens=True,
+            ).strip()
+            label, separator, value = prefix.partition(" ")
+            if separator and label.casefold() == "language":
+                detected_language = value.strip() or None
+            elif prefix:
+                detected_language = prefix
         transcript_ids = (
             output_ids[asr_text_idx + len(asr_text_token_ids) :]
             if asr_text_idx is not None
@@ -307,7 +321,7 @@ def make_qwen3_asr_scheduler_adapters(
             request=payload.request,
             data={
                 "text": text,
-                "language": data.language,
+                "language": data.language or detected_language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
                 "usage": {"engine_time_s": engine_time_s},

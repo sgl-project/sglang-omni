@@ -15,6 +15,10 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_STREAM_STRIDE,
 )
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,7 @@ logger = logging.getLogger(__name__)
 class HiggsTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Higgs TTS"
     context_length = 4096
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -79,6 +84,9 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
                 else 0.85
             ),
             "chunked_prefill_size": 8192,
+            # Qualified capture budget; longer prefills run eager.
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(512),
             "dtype": "bfloat16",
         }
 
@@ -99,13 +107,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def customize_server_args(self, server_args: Any) -> None:
-        prefill_backend = server_args.cuda_graph_config.prefill.backend
-        if prefill_backend != "disabled":
-            raise RuntimeError(
-                "Higgs prefill CUDA graphs are disabled because padded prefill "
-                "changes model outputs; keep cuda_graph_config.prefill.backend="
-                f"'disabled', got {prefill_backend!r}"
-            )
         override_server_args(
             server_args,
             "sglang_omni.higgs_tts.disable_overlap_schedule",
