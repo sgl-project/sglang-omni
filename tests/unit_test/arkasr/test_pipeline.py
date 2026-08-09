@@ -2,6 +2,7 @@
 """Unit tests for the ARK-ASR-3B adapter (CPU-only, no checkpoint download)."""
 
 import inspect
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -89,6 +90,10 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
+    assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["encoder_graph_batch_buckets"].default == (1, 2, 4, 8)
+    assert signature.parameters["encoder_graph_frame_bucket_step"].default == 256
+    assert signature.parameters["encoder_graph_max_frames"].default == 3000
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -117,6 +122,11 @@ def test_arkasr_pre_lm_encoder_knobs_are_stage_configurable():
     assert factory_args["pre_lm_max_batch_size"] == 8
     assert factory_args["pre_lm_max_batch_wait_ms"] == 0
     assert factory_args["pre_lm_max_pending"] == 32
+    assert factory_args["enable_encoder_cuda_graph"] is False
+    assert factory_args["encoder_graph_batch_buckets"] == [1, 2, 4, 8]
+    assert factory_args["encoder_graph_frame_bucket_step"] == 256
+    assert factory_args["encoder_graph_max_frames"] == 3000
+    assert factory_args["encoder_graph_min_free_gb"] == 3.0
 
 
 def test_arkasr_rejects_invalid_pre_lm_batch_size():
@@ -277,6 +287,14 @@ def _stub_arkasr_engine_build(
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
+    monkeypatch.setattr(
+        arkasr_builder.ArkasrEngineBuilder,
+        "make_model_runner",
+        lambda self, model_worker, output_proc: SimpleNamespace(
+            model_worker=model_worker,
+            output_proc=output_proc,
+        ),
+    )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
     return SimpleNamespace(
         graph_init_workers=graph_init_workers,
@@ -333,6 +351,59 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     )
     assert stub.encoder_batch_sizes == [8]
     assert stub.encoder_service_kwargs["max_queue_size"] == 32
+
+
+def test_arkasr_encoder_cuda_graph_supersedes_encoder_compile(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import sglang_omni.models.arkasr.encoder_cuda_graph as graph_module
+
+    constructed: list[dict[str, object]] = []
+
+    class _FakeGraphRunner:
+        def __init__(self, audio_encoder, **kwargs):  # noqa: ANN001, ANN003
+            constructed.append({"audio_encoder": audio_encoder, "kwargs": kwargs})
+
+    encoder_service = SimpleNamespace(close=lambda: None)
+    stub = _stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=encoder_service,
+    )
+    audio_encoder = object()
+    stub.model_worker.model_runner.model = SimpleNamespace(
+        audio_encoder=audio_encoder,
+        set_encoder_max_batch_size=stub.encoder_batch_sizes.append,
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "ArkasrEncoderCudaGraphRunner",
+        _FakeGraphRunner,
+    )
+
+    with caplog.at_level(logging.WARNING, logger=arkasr_builder.__name__):
+        create_sglang_arkasr_executor(
+            "AutoArk-AI/ARK-ASR-3B",
+            enable_encoder_torch_compile=True,
+            enable_encoder_cuda_graph=True,
+            encoder_graph_batch_buckets=[1, 4],
+            encoder_graph_frame_bucket_step=128,
+            encoder_graph_max_frames=512,
+            encoder_graph_min_free_gb=0.5,
+        )
+
+    assert len(constructed) == 1
+    assert constructed[0]["audio_encoder"] is audio_encoder
+    assert constructed[0]["kwargs"] == {
+        "batch_buckets": (1, 4),
+        "frame_bucket_step": 128,
+        "max_frames": 512,
+        "min_free_gb": 0.5,
+    }
+    assert "enable_encoder_cuda_graph supersedes enable_encoder_torch_compile" in (
+        caplog.text
+    )
 
 
 def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(

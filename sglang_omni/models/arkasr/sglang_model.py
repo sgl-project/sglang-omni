@@ -165,7 +165,16 @@ class ArkasrForConditionalGeneration(nn.Module):
                 mel_lengths, device=device, dtype=torch.long
             ).unsqueeze(1)
 
-        encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
+        encoded: torch.Tensor | None = None
+        graph_runner = getattr(self, "encoder_cuda_graph_runner", None)
+        if graph_runner is not None:
+            # Bucketed graph replay always uses an explicit mask, including
+            # B=1.  ``None`` means the shape/bucket failed and the eager path
+            # below keeps existing semantics.
+            encoded = graph_runner.run(batched, mel_lengths)
+
+        if encoded is None:
+            encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
         outputs = []
         for batch_index, mel_length in enumerate(mel_lengths):
             num_tokens = arkasr_num_audio_tokens(

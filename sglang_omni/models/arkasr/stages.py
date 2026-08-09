@@ -32,6 +32,12 @@ def create_sglang_arkasr_executor(
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_max_pending: int = 32,
+    enable_encoder_torch_compile: bool = False,
+    enable_encoder_cuda_graph: bool = False,
+    encoder_graph_batch_buckets: list[int] | tuple[int, ...] = (1, 2, 4, 8),
+    encoder_graph_frame_bucket_step: int = 256,
+    encoder_graph_max_frames: int = 3000,
+    encoder_graph_min_free_gb: float = 3.0,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
@@ -60,6 +66,12 @@ def create_sglang_arkasr_executor(
         pre_lm_max_batch_size=pre_lm_max_batch_size,
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         pre_lm_max_pending=pre_lm_max_pending,
+        enable_encoder_torch_compile=enable_encoder_torch_compile,
+        enable_encoder_cuda_graph=enable_encoder_cuda_graph,
+        encoder_graph_batch_buckets=encoder_graph_batch_buckets,
+        encoder_graph_frame_bucket_step=encoder_graph_frame_bucket_step,
+        encoder_graph_max_frames=encoder_graph_max_frames,
+        encoder_graph_min_free_gb=encoder_graph_min_free_gb,
     ).build(
         model_path,
         device=device,

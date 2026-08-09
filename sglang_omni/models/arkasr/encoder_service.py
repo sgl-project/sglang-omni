@@ -26,6 +26,11 @@ pad+mask encoder has no internal bound, so there its one knob sets the actual
 encoder width, whereas for ARK it only sets how many requests reach the call.
 (MOSS-TD spells its drain size ``encoder_max_batch_size``; that name is
 already ARK's model-internal bound, so it is deliberately not reused here.)
+
+#1411 made ARK's ``get_audio_feature`` pad+mask batches across mixed mel
+lengths, so groups drained here now run as one fused tower+adapter forward.
+When the opt-in encoder CUDA graph is enabled, this service is also the main
+call site that replays captured graph buckets off the LM scheduler path.
 """
 
 from __future__ import annotations
