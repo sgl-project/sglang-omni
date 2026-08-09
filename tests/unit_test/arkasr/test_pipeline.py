@@ -71,20 +71,16 @@ def test_arkasr_stage_defaults():
 def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
 ) -> None:
-    """The factory defers capture, then calls the runner's init_cuda_graphs
-    exactly when the deferred-capture probe asked for graphs. The fake runner
-    exposes only the 0.5.16 method name, so a stale call site fails loudly."""
-    calls = {"init_cuda_graphs": 0}
-
-    def _bump_init_cuda_graphs() -> None:
-        calls["init_cuda_graphs"] += 1
-
+    """The factory defers capture, then calls bootstrap.init_sglang_cuda_graphs
+    exactly when the deferred-capture probe asked for graphs. The worker stub
+    stays minimal: helper internals are already covered in
+    tests/unit_test/serve/test_sglang_bootstrap.py."""
+    graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
 
-    model_runner = SimpleNamespace(
-        model=object(), init_cuda_graphs=_bump_init_cuda_graphs
+    model_worker = SimpleNamespace(
+        gpu_id=0, model_runner=SimpleNamespace(model=object())
     )
-    model_worker = SimpleNamespace(gpu_id=0, model_runner=model_runner)
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
     monkeypatch.setattr(
@@ -96,7 +92,10 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         arkasr_builder,
         "WhisperFeatureExtractor",
         SimpleNamespace(
-            from_pretrained=lambda *a, **k: SimpleNamespace(nb_max_frames=3000)
+            # note (jiannan-17): 2000 differs from the 3000 fallback, so the
+            # context_length assertion below fails if the builder stops
+            # reading nb_max_frames from the extractor.
+            from_pretrained=lambda *a, **k: SimpleNamespace(nb_max_frames=2000)
         ),
     )
     monkeypatch.setattr(
@@ -124,17 +123,29 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
-            )
+            ),
+            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
         )
         return server_args
 
     monkeypatch.setattr(
         sglang_backend, "build_sglang_server_args", _fake_server_args_builder
     )
+    infra_kwargs_seen: dict[str, object] = {}
+
+    def _fake_defer_infra(server_args, gpu_id, **kwargs):
+        infra_kwargs_seen.update(kwargs)
+        return infra
+
     monkeypatch.setattr(
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
-        lambda *a, **k: infra,
+        _fake_defer_infra,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "init_sglang_cuda_graphs",
+        lambda worker: graph_init_workers.append(worker),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
     monkeypatch.setattr(
@@ -145,7 +156,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         "AutoArk-AI/ARK-ASR-3B", mm_attention_backend="triton_attn"
     )
 
-    assert calls["init_cuda_graphs"] == (1 if want_cuda_graph else 0)
+    assert graph_init_workers == ([model_worker] if want_cuda_graph else [])
     # note (jiannan-17): the scheduler fake records its kwargs, proving the
     # builder forwards the stage knobs instead of dropping them.
     assert scheduler.request_build_max_workers == 2
@@ -153,6 +164,11 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert adapter_kwargs["merge_factor"] == 7
     assert adapter_kwargs["audio_token_id"] == 4242
     assert adapter_kwargs["max_new_tokens"] == 256
+    # note (jiannan-17): context_length and model_arch_override moved from
+    # stages.py into the builder. Keep both pinned so a missing value fails
+    # here instead of at serve time.
+    assert scheduler.server_args.context_length == 2000 // 2 + 256 + 8
+    assert infra_kwargs_seen["model_arch_override"] == "ArkasrForConditionalGeneration"
 
 
 def test_arkasr_audio_token_count():
