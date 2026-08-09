@@ -81,10 +81,12 @@ class FunASREncoderCudaGraphRunner:
         self._graphs: dict[Tuple[int, int], tuple] = {}
         self._failed: set[Tuple[int, int]] = set()
         self._pool = None
-        # Serializes capture and replay: replay mutates the bucket's static
-        # buffers, and both the pre-LM worker and the scheduler's inline
-        # prefill path can reach get_audio_feature.
+        # note (wilsonzheng0327): serializes capture and replay -- replay
+        # mutates the bucket's static buffers, and both the pre-LM worker and
+        # the scheduler's inline prefill path can reach get_audio_feature.
         self._lock = threading.Lock()
+        self._done_event = torch.cuda.Event()
+        self._event_recorded = False
 
     def _forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         enc_out = self._audio_tower(xs, mask)
@@ -106,7 +108,8 @@ class FunASREncoderCudaGraphRunner:
             )
             return self._forward(static_xs, mask)
 
-        # Warmup on a fresh stream so allocator state settles before capture.
+        # note (wilsonzheng0327): warmup on a fresh stream so allocator state
+        # settles before capture.
         stream = torch.cuda.Stream(device=self._device)
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
@@ -118,8 +121,9 @@ class FunASREncoderCudaGraphRunner:
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
-        # thread_local error mode: the LM scheduler thread keeps launching
-        # kernels concurrently and must not poison this thread's capture.
+        # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
+        # thread keeps launching kernels concurrently and must not poison this
+        # thread's capture.
         with torch.cuda.graph(
             graph, pool=self._pool, capture_error_mode="thread_local"
         ):
@@ -184,6 +188,11 @@ class FunASREncoderCudaGraphRunner:
             graph, static_xs, static_ilens, static_out = entry
             if static_xs.shape[-1] != feat_dim:
                 return None
+            stream = torch.cuda.current_stream(self._device)
+            # note (wilsonzheng0327): wait for previous caller's output copy
+            # on some stream to finish before using shared resource
+            if self._event_recorded:
+                self._done_event.wait(stream)
             static_xs.zero_()
             static_xs[:b, :t].copy_(xs, non_blocking=True)
             # Padded rows keep ilens=1: one valid zeroed frame, output dropped.
@@ -192,9 +201,12 @@ class FunASREncoderCudaGraphRunner:
                 torch.as_tensor(lengths, dtype=torch.long), non_blocking=True
             )
             graph.replay()
-            # Clone before releasing the lock: the next replay overwrites
-            # static_out in place.
-            return static_out[:b].clone()
+            # note (wilsonzheng0327): the next call needs to wait on this
+            # event before it touches anything shared to ensure clone finishes
+            out = static_out[:b].clone()
+            self._done_event.record(stream)
+            self._event_recorded = True
+            return out
 
 
 __all__ = ["FunASREncoderCudaGraphRunner"]
