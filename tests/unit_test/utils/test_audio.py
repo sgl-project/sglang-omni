@@ -201,6 +201,20 @@ def test_load_audio_fast_path_skips_torchaudio(monkeypatch) -> None:
     assert samples.shape == (1600,)
 
 
+def test_load_audio_local_wav_path_uses_fast_path(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "audio.wav"
+    path.write_bytes(_sine_wav_bytes())
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("torchaudio.load should not be called on the fast path")
+
+    monkeypatch.setattr(audio.torchaudio, "load", fail_load)
+
+    samples = load_audio(str(path))
+
+    assert samples.shape == (1600,)
+
+
 def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     def fail_load(*args, **kwargs):
         raise AssertionError("torchaudio.load should not be called on the fast path")
