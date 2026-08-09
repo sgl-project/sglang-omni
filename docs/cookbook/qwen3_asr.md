@@ -20,6 +20,9 @@ Async decode is enabled by default for decode batches of at least two requests,
 allowing the shared one-step-lookahead path to overlap host-side result
 processing with the next GPU decode forward. Use `--decode-mode sync` to disable
 it, or tune the crossover with `--async-lookahead-min-batch-size`.
+The request builders also use the shared LM prefill-admission gate while more
+request builds are pending: prefill starts when 16 built requests are ready,
+after the oldest ready request waits 24 ms, or immediately when build work drains.
 
 ```bash
 sgl-omni serve \
@@ -27,6 +30,19 @@ sgl-omni serve \
   --model-name Qwen/Qwen3-ASR-1.7B \
   --port 8000
 ```
+
+For a single 24 GB RTX 4090 (SM89), use the checked-in consumer profile:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_rtx4090.yaml \
+  --port 8000
+```
+
+This qualified profile keeps the model in BF16, limits the stage to 16 running
+requests, and sets `mem_fraction_static` to `0.65`. Its bounds are specific to
+the validated RTX 4090 layout; use the default configuration or a separately
+qualified profile on other GPU architectures.
 
 For example, force synchronous decode when comparing modes:
 
@@ -166,9 +182,9 @@ Requests/s by client concurrency:
 | 4 / 16 / 32 | 47.6 | 60.3 | 70.4 | 55.4 | 301/3264 |
 | 8 / 16 / 32 | 48.5 | 75.6 | 89.7 | 64.6 | 173/3264 |
 | 8 / 16 / 16 | 57.6 | 75.4 | 42.2 | 46.7 | 250/3264 |
-| **8 / 32 / 32 (default)** | 57.7 | 76.5 | 87.1 | 65.1 | 0 |
+| 8 / 32 / 32 | 57.7 | 76.5 | 87.1 | 65.1 | 0 |
 | 8 / 64 / 32 | 55.2 | 76.6 | 87.9 | 64.7 | 0 |
-| 8 / 32 / 64 | 57.4 | 77.0 | 90.2 | 96.8 | 0 |
+| **8 / 32 / 64 (default)** | 57.4 | 77.0 | 90.2 | 96.8 | 0 |
 | 8 / 64 / 64 | 57.0 | 74.3 | 88.8 | 100.3 | 0 |
 
 Reading, and the resulting defaults:
@@ -180,14 +196,13 @@ Reading, and the resulting defaults:
   concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.
 - **`max_running_requests` 16 collapses concurrency 32** (queue-bound) with no
   light-load latency benefit, so there is no latency-first case for lowering
-  it. 32 (the default) is memory-conservative for 80 GB GPUs; raising it to
-  **64 unlocks the concurrency-64 regime** (+~50 % requests/s, zero shedding)
-  at the price of larger CUDA-graph and KV memory — the throughput-first
-  override:
+  it. The default is 64 because it unlocks the concurrency-64 regime (+~50 %
+  requests/s, zero shedding), at the price of larger CUDA-graph and KV memory.
+  On memory-constrained GPUs, use the memory-conservative override:
 
 ```bash
 sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
-  --max-running-requests 64   # throughput-first; needs the extra GPU memory
+  --max-running-requests 32
 ```
 
 - Corpus WER stayed 0.0122 for every configuration at every level.

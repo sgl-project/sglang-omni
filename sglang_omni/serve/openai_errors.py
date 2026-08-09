@@ -9,6 +9,7 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
     "Request requires more tokens than the thinker KV cache can hold",
     "accepts audio up to",
+    "could not decode the uploaded audio",
     "max_new_tokens must be",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",

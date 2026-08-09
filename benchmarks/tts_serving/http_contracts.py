@@ -40,7 +40,7 @@ async def read_response_body(response: aiohttp.ClientResponse) -> bytes:
     return bytes(body)
 
 
-def _mark_unexpected_success(result: ScenarioResult, scenario: Scenario) -> None:
+def mark_unexpected_success(result: ScenarioResult, scenario: Scenario) -> None:
     result.success = False
     result.status = "unexpected_success"
     result.capability = "fail"
@@ -51,20 +51,14 @@ def _mark_unexpected_success(result: ScenarioResult, scenario: Scenario) -> None
     )
 
 
-def _result_has_terminal_error(result: ScenarioResult) -> bool:
-    return result.error_class is not None or (
-        result.status not in {"error", "ok"} and not result.success
-    )
-
-
-def _mark_success(result: ScenarioResult, *, capability: str | None = "pass") -> None:
+def mark_success(result: ScenarioResult, *, capability: str | None = "pass") -> None:
     result.success = True
     result.status = "ok"
     if capability is not None:
         result.capability = capability
 
 
-def _mark_unsupported_contract(
+def mark_unsupported_contract(
     result: ScenarioResult,
     scenario: Scenario,
     *,
@@ -82,7 +76,7 @@ def _mark_unsupported_contract(
     )
 
 
-def _classify_http_failure(
+def classify_http_failure(
     status: int,
     body: str,
     result: ScenarioResult,
@@ -96,8 +90,8 @@ def _classify_http_failure(
             result.error_class = "expected_client_error"
             result.capability = "pass"
             return
-        if _is_unsupported_http_status(status, scenario):
-            _mark_unsupported_contract(result, scenario, body=body)
+        if is_unsupported_http_status(status, scenario):
+            mark_unsupported_contract(result, scenario, body=body)
             return
         result.status = "invalid_voice_response"
         result.error_class = "protocol_error"
@@ -110,7 +104,7 @@ def _classify_http_failure(
     if 400 <= status < 500 and _is_expected_client_error_scenario(scenario):
         expected_status = _expected_client_error_status(scenario)
         if status != expected_status:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_error_response",
                 error=(
@@ -119,12 +113,12 @@ def _classify_http_failure(
                 ),
             )
             return
-        if not _is_valid_error_response(
+        if not is_valid_error_response(
             status,
             body,
             expected_status=expected_status,
         ):
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_error_response",
                 error=(
@@ -137,8 +131,8 @@ def _classify_http_failure(
         result.error_class = "expected_client_error"
         result.capability = "pass"
         return
-    if _is_unsupported_http_status(status, scenario):
-        _mark_unsupported_contract(result, scenario, body=body)
+    if is_unsupported_http_status(status, scenario):
+        mark_unsupported_contract(result, scenario, body=body)
         return
     if 500 <= status:
         result.status = "failed"
@@ -151,7 +145,7 @@ def _classify_http_failure(
         result.capability = "fail"
 
 
-def _is_unsupported_http_status(status: int, scenario: Scenario) -> bool:
+def is_unsupported_http_status(status: int, scenario: Scenario) -> bool:
     if status not in UNSUPPORTED_HTTP_STATUSES:
         return False
     if scenario.capability_key == "voices.delete" and not scenario.expect_success:
@@ -171,14 +165,14 @@ def _expected_client_error_status(scenario: Scenario) -> int:
     return scenario.expected_http_status or 400
 
 
-def _json_object_from_bytes(
+def json_object_from_bytes(
     body: bytes,
     result: ScenarioResult,
     *,
     status: str,
     error_prefix: str,
 ) -> dict[str, Any] | None:
-    payload = _json_from_bytes(
+    payload = json_from_bytes(
         body,
         result,
         status=status,
@@ -188,7 +182,7 @@ def _json_object_from_bytes(
     if payload is None:
         return None
     if not isinstance(payload, dict):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status=status,
             error=f"{error_prefix}: response must be a JSON object",
@@ -197,7 +191,7 @@ def _json_object_from_bytes(
     return payload
 
 
-def _json_from_bytes(
+def json_from_bytes(
     body: bytes,
     result: ScenarioResult,
     *,
@@ -212,7 +206,7 @@ def _json_from_bytes(
             else default_empty
         )
     except json.JSONDecodeError as exc:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status=status,
             error=f"{error_prefix}: {exc}",
@@ -234,7 +228,7 @@ def _is_valid_missing_voice_delete_response(status: int, body: str) -> bool:
     return isinstance(error, (dict, str)) and bool(error)
 
 
-def _is_valid_error_response(
+def is_valid_error_response(
     status: int,
     body: str,
     *,
@@ -246,7 +240,7 @@ def _is_valid_error_response(
     )
 
 
-def _mark_protocol_error(result: ScenarioResult, *, status: str, error: str) -> None:
+def mark_protocol_error(result: ScenarioResult, *, status: str, error: str) -> None:
     result.status = status
     result.success = False
     result.capability = "fail"

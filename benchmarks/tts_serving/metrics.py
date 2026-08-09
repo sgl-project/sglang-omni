@@ -42,6 +42,8 @@ class ScenarioResult:
     http_status: int | None = None
     http_status_class: str | None = None
     latency_s: float = 0.0
+    configured_offset_s: float | None = None
+    collision_epoch_s: float | None = None
     planned_start_s: float | None = None
     actual_start_s: float | None = None
     completed_s: float | None = None

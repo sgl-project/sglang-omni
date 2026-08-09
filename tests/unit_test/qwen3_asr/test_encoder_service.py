@@ -169,6 +169,22 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
+def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    service.encode_item(item)
+
+    cached = service.lookup_cached_embedding(item.audio_fingerprint, 3)
+
+    assert cached is not None
+    assert torch.equal(cached, item.precomputed_embeddings.cpu())
+    assert service.stats()["hits"] == 1
+
+    assert service.lookup_cached_embedding(item.audio_fingerprint, 4) is None
+    assert len(service._cache) == 0
+
+
 def test_extended_audio_never_reuses_prefix_embedding() -> None:
     model = _StubModel()
     service = _make_service(model)

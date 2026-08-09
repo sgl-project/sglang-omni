@@ -65,6 +65,7 @@ The Docker image installs `ffmpeg`.
 benchmark_tts_serving.py       # entry point under benchmarks/eval/
 spec.py                        # spec schema and load-stage defaults
 scenarios.py                   # deterministic scenario matrix
+text_corpus.py                 # pinned target-text corpus loading
 http_client.py                 # HTTP request dispatch
 sdk_client.py                  # OpenAI SDK compatibility path
 ws_client.py                   # WebSocket speech-stream path
@@ -112,14 +113,22 @@ Load-stage fields:
 | Field | Description |
 |-------|-------------|
 | `id` | Stable stage id used in scenario ids and artifacts. |
-| `mode` | `closed_loop`, `open_loop`, `ramp`, `burst`, or `soak`. |
-| `request_count` | Number of scheduled scenarios for the stage. |
+| `mode` | `closed_loop`, `open_loop`, `ramp`, `burst`, `soak`, or `scheduled`. |
+| `request_count` | Number of scenarios for non-`scheduled` stages. |
 | `max_concurrency` | Maximum in-flight requests for the stage. |
 | `request_rate` | Requests per second for `open_loop` and `ramp`. Do not set this for `soak` because it is derived from `request_count / duration_s`. |
 | `start_request_rate` | Initial requests per second for `ramp`. |
 | `duration_s` | Wall-clock duration for `soak`. |
+| `text_corpus` | Target-text corpus for supported workloads in a `scheduled` stage. `seedtts-en` allocates deterministic, non-overlapping texts from pinned SeedTTS English metadata. |
 | `arrival_distribution` | `deterministic` or `poisson`. |
 | `enabled_endpoints` | Optional per-stage endpoint override. |
+| `coverage_schedule` | Start and end offsets used to spread required contract scenarios across a `scheduled` stage. |
+| `workload_schedules` | Per-workload background and collision offsets for a `scheduled` stage. These offsets are the arrival authority, so rate, duration, distribution, and request-count fields are not accepted with this mode. |
+
+Scheduled offsets must be strictly increasing. Every collision offset must
+contain exactly one request from every configured workload, and background or
+coverage requests cannot use the same offset. The report validates both this
+membership and a common client-observed in-flight interval for each cohort.
 
 ## Endpoint Contracts
 
@@ -200,6 +209,9 @@ docker build -f benchmarks/tts_serving/Dockerfile \
 ```
 
 Run the image with a spec mounted at the contract path:
+
+Specs using `text_corpus: seedtts-en` download the pinned SeedTTS metadata to
+the container's temporary Hugging Face cache on first use.
 
 ```bash
 docker run --rm \
@@ -286,7 +298,11 @@ logs/harness.log      # load-stage execution notes
 | `harness_status` | Whether the harness ran successfully. |
 | `overall.coverage_contract_valid` | Whether required scenario coverage was achieved. |
 | `overall.load_generation_valid` | Whether the client emitted the intended load without saturation or excessive lag. |
+| `overall.mixed_arrival_valid` | Whether scheduled workload counts and collision evidence passed. |
 | `metrics.status_counts` | Count of `ok`, protocol failures, unsupported contracts, and load-generator failures. |
 | `metrics.endpoint_mix` | Executed scenario count by endpoint family. |
+| `metrics.by_stage` | Operational metrics across all successful traffic in each stage, including coverage traffic. |
+| `metrics.by_stage_and_workload` | Performance metrics for each workload within a load stage. |
+| `metrics.mixed_arrival` | Workload counts, coverage counts, and per-collision overlap evidence. |
 | `unsupported_contracts` | Enabled API contracts that were missing or unsupported. |
 | `coverage_failures` | Coverage requirements that traffic alone could not prove. |

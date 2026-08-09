@@ -23,7 +23,9 @@ def qwen3_asr_audio_token_lengths(input_lengths: Any) -> torch.Tensor:
 
 def qwen3_asr_num_audio_tokens(num_mel_frames: int) -> int:
     """Scalar wrapper for scheduler request construction."""
-    return int(qwen3_asr_audio_token_lengths(num_mel_frames).item())
+    input_lengths_leave = num_mel_frames % 100
+    feat_lengths = (input_lengths_leave - 1) // 2 + 1
+    return ((feat_lengths - 1) // 2 + 1 - 1) // 2 + 1 + (num_mel_frames // 100) * 13
 
 
 __all__ = [

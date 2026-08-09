@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -14,7 +15,11 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
+
+logger = logging.getLogger(__name__)
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder):
@@ -34,6 +39,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         mm_attention_backend: str | None,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        prefill_coalesce_requests: int,
+        prefill_coalesce_wait_ms: float,
+        prefill_coalesce_when_idle: bool,
+        prefill_coalesce_requires_pending_builds: bool,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -58,6 +67,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
         self.pre_lm_cache_size_bytes = pre_lm_cache_size_bytes
@@ -100,6 +115,35 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
 
+    def _log_memory_checkpoint(self, checkpoint: str) -> None:
+        logger.info(
+            "Qwen3-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
+            checkpoint,
+            self.gpu_id,
+            format_bytes_gib(get_process_gpu_memory_bytes(self.gpu_id)),
+        )
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        super().validate_before_infrastructure(server_args)
+        logger.info(
+            "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
+            "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
+            "torch_compile=%s max_running_requests=%s mem_fraction_static=%s",
+            getattr(server_args, "dtype", None),
+            getattr(server_args, "attention_backend", None),
+            getattr(server_args, "mm_attention_backend", None),
+            not getattr(server_args, "disable_cuda_graph", False),
+            get_decode_cuda_graph_bs(server_args),
+            getattr(server_args, "enable_torch_compile", False),
+            getattr(server_args, "max_running_requests", None),
+            getattr(server_args, "mem_fraction_static", None),
+        )
+        self._log_memory_checkpoint("pre_model_load")
+
+    def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
+        del model, server_args
+        self._log_memory_checkpoint("post_static_allocation")
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
@@ -115,6 +159,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del generation_cuda_graph_enabled
+        self._log_memory_checkpoint("post_cuda_graph_capture")
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (luojiaxuan): constructed after SGLang's generation CUDA
@@ -162,4 +207,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
         }
