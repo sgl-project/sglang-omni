@@ -316,13 +316,16 @@ def validate_acoustic_pool_memory(
         return
     if headroom_ratio < 0.0:
         raise ValueError("dots.tts acoustic pool headroom_ratio must be non-negative")
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
     free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     # note (guozhihao-224): 15% headroom covers CUDA-graph capture and scratch
     # beyond the eager pool tensors themselves.
     required = int(estimate.total_bytes * (1.0 + float(headroom_ratio)))
     if free_bytes >= required:
         return
-    fit_slots = max(int(free_bytes // max(estimate.bytes_per_slot, 1)), 0)
+    slot_required = estimate.bytes_per_slot * (1.0 + float(headroom_ratio))
+    fit_slots = max(int(free_bytes // max(slot_required, 1.0)), 0)
     raise ValueError(
         "dots.tts acoustic-tail admission failed at startup: estimated pools need "
         f"{_gib(required):.2f} GiB "
@@ -588,7 +591,7 @@ class DotsTtsAcousticTail:
             raise RuntimeError(
                 "dots.tts acoustic tail admission failed: ran out of slots "
                 f"({in_use}/{in_use} in use). Lower client concurrency or "
-                "max_running_requests; the engine does not silently shrink capacity."
+                "raise max_running_requests; the engine does not silently shrink capacity."
             )
         slot = self._free_slots.pop()
         self._fm_seq_len[slot] = 0

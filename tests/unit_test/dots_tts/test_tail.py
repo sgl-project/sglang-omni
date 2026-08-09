@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -202,6 +203,7 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
         assert "ran out of slots" in message
         assert "admission failed" in message
         assert "does not silently shrink" in message
+        assert "raise max_running_requests" in message
     else:
         raise AssertionError("slot exhaustion must fail")
     acoustic_tail.release_slot(first)
@@ -256,6 +258,8 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
         dtype=torch.bfloat16,
     )
     device = torch.device("cuda:0")
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
@@ -266,6 +270,7 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
     message = str(caught.value)
     assert "Parameters are not changed automatically" in message
     assert "Lower max_running_requests" in message
+    assert "about 4 full-length slot(s)" in message
 
     # Enough free memory passes.
     monkeypatch.setattr(
@@ -277,6 +282,39 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
 
     # Non-CUDA devices skip the gate.
     tail.validate_acoustic_pool_memory(estimate, device=torch.device("cpu"))
+
+
+def test_validate_acoustic_pool_memory_releases_cached_blocks_before_sampling_free_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    estimate = tail.AcousticPoolMemoryEstimate(
+        dit_kv_bytes=10,
+        encoder_kv_bytes=0,
+        scratch_bytes=0,
+        aux_bytes=0,
+        total_bytes=10,
+        num_slots=1,
+        patch_capacity=1,
+        nfe=1,
+        dtype=torch.uint8,
+    )
+    memory = {"free": 10}
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
+    monkeypatch.setattr(
+        torch.cuda,
+        "empty_cache",
+        lambda: memory.update(free=12),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda _device=None: (memory["free"], 20),
+    )
+
+    tail.validate_acoustic_pool_memory(
+        estimate,
+        device=torch.device("cuda:0"),
+    )
 
 
 def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
