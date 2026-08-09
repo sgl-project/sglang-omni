@@ -44,14 +44,16 @@ BENCHMARK_TIMEOUT_S = 1800
 BENCHMARK_TIMEOUT_RETURNCODE = 124
 MIXED_STAGE = "mixed-production"
 EXPECTED_WORKLOAD_SAMPLES = {
-    "speech_normal": 40,
-    "rest_stream": 40,
-    "ws_normal": 40,
+    "speech_normal": 50,
+    "rest_stream": 50,
+    "ws_normal": 50,
     "ws_stream_audio": 40,
     "batch_32_all_valid": 20,
     "long_prefill_decode": 20,
 }
 EXPECTED_COLLISION_EPOCHS = 20
+EXPECTED_COVERAGE_REQUESTS = 102
+EXPECTED_COVERAGE_ERRORS = 35
 WORKER_RESPONSE_HEADER = "x-sglang-omni-worker"
 WEBSOCKET_COMPLETION_RE = re.compile(
     r"tts_websocket_completed request_id=(\S+) worker=(\S+)"
@@ -728,6 +730,10 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
                 "benchmark harness failed",
             )
             benchmark_checks.check(
+                report.get("schema_version") == 4,
+                "unexpected benchmark report schema",
+            )
+            benchmark_checks.check(
                 overall.get("passed") is True,
                 "benchmark did not pass",
             )
@@ -767,6 +773,18 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
                 mixed.get("observed_collision_epoch_count")
                 == EXPECTED_COLLISION_EPOCHS,
                 "not every collision epoch was observed",
+            )
+            benchmark_checks.check(
+                mixed.get("coverage_request_count") == EXPECTED_COVERAGE_REQUESTS,
+                "scheduled coverage population changed",
+            )
+            benchmark_checks.check(
+                mixed.get("coverage_passed_count") == EXPECTED_COVERAGE_REQUESTS,
+                "scheduled coverage traffic did not pass",
+            )
+            benchmark_checks.check(
+                mixed.get("expected_error_request_count") == EXPECTED_COVERAGE_ERRORS,
+                "scheduled expected-error population changed",
             )
             _check_performance(report, measurement_checks, threshold_checks)
 
