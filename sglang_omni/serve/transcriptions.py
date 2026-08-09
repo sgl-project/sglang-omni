@@ -493,12 +493,12 @@ async def _await_transcription_with_disconnect_abort(
         )
         if work_task in done:  # transcription completed first
             return work_task.result()
-        # Bounded: the work task's cleanup (child cancels + engine aborts)
-        # keeps running inside the task even after we stop waiting; the bound
-        # only protects this handler from a cleanup that itself hangs.
-        await _cancel_task_bounded(work_task)
         raise asyncio.CancelledError
     finally:
+        # Clean up both tasks on every exit, otherwise the work task keeps
+        # running and nobody aborts its engine requests.
+        if not work_task.done():
+            await _cancel_task_bounded(work_task)
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
 

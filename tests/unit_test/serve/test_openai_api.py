@@ -1890,6 +1890,68 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
     asyncio.run(scenario())
 
 
+def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
+    # The wrapper's handler task can be cancelled from outside (server
+    # shutdown, ASGI teardown) rather than via is_disconnected(). The
+    # finally block must stop the work task too, or its engine requests
+    # keep running with nobody left to abort them.
+    from sglang_omni.serve.transcriptions import (
+        _await_transcription_with_disconnect_abort,
+        _transcribe_audio_chunks,
+    )
+
+    class HangingClient:
+        def __init__(self, expected: int) -> None:
+            self.expected = expected
+            self.arrived = 0
+            self.all_started = asyncio.Event()
+            self.aborted: list[str] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            self.arrived += 1
+            if self.arrived >= self.expected:
+                self.all_started.set()
+            await asyncio.Future()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    class NeverDisconnects:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def scenario() -> None:
+        hanging_client = HangingClient(expected=2)
+        work = _transcribe_audio_chunks(
+            hanging_client,
+            _tiny_plan(2),
+            request_id="req",
+            model="asr",
+            filename=None,
+            language=None,
+            prompt=None,
+            temperature=None,
+            max_new_tokens=None,
+            max_concurrent=2,
+        )
+        wrapper_task = asyncio.create_task(
+            _await_transcription_with_disconnect_abort(NeverDisconnects(), work)
+        )
+        await asyncio.wait_for(hanging_client.all_started.wait(), timeout=10.0)
+        wrapper_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await wrapper_task
+        # The work task's cleanup may finish just after the bounded wait; give
+        # it a few ticks before asserting the engine-side aborts happened.
+        for _ in range(50):
+            if len(hanging_client.aborted) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert sorted(hanging_client.aborted) == ["req-chunk-0", "req-chunk-1"]
+
+    asyncio.run(scenario())
+
+
 def _m4a_upload(duration_s: float, sample_rate: int = 16000) -> bytes:
     """Loud AAC/M4A clip -- a format libsndfile cannot inspect."""
     import io as io_module
