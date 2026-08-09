@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from typing import Any
 
 import pytest
@@ -347,6 +348,23 @@ class ChunkRecordingTranscriptionClient:
         if self.fail_chunk is not None and index == self.fail_chunk:
             raise ClientError(self.fail_message)
         return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        from sglang_omni.client import ClientError
+
+        assert request_id is not None
+        self.requests.append((request_id, request))
+        index = self._chunk_index(request_id)
+        if index is None:
+            index = len(self.requests) - 1
+        if self.fail_chunk is not None and index == self.fail_chunk:
+            raise ClientError(self.fail_message)
+        text = f"part{index}"
+        yield GenerateChunk(request_id=request_id, text=text, finish_reason="stop")
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -1518,11 +1536,7 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
-def test_streamed_long_audio_is_rejected_explicitly() -> None:
-    # Streaming cannot chunk; without this 400 a too-long upload would run
-    # as a single request and truncate (observed live: 243s audio came back
-    # 20% short with HTTP 200). No native limit declared here, so the guard
-    # falls back to the chunk length.
+def test_streamed_long_audio_is_transcribed_chunk_by_chunk() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client)
 
@@ -1532,9 +1546,65 @@ def test_streamed_long_audio_is_rejected_explicitly() -> None:
         files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
     )
 
-    assert response.status_code == 400
-    assert "stream=false" in response.json()["detail"]
-    assert transcription_client.requests == []
+    assert response.status_code == 200
+    count = len(transcription_client.requests)
+    assert count > 1
+    seen_ids = [request_id for request_id, _ in transcription_client.requests]
+    assert [
+        int(request_id.rsplit("-chunk-", 1)[-1]) for request_id in seen_ids
+    ] == list(range(count))
+    for _, request in transcription_client.requests:
+        assert request.stream is True
+        assert request.prompt["audio_bytes"][:4] == b"RIFF"
+        assert request.prompt["content_type"] == "audio/wav"
+    expected_text = " ".join(f"part{index}" for index in range(count))
+    assert f'"text":"{expected_text}"' in response.text
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    deltas = [
+        event["delta"] for event in events if event["type"] == "transcript.text.delta"
+    ]
+    streamed_text = "".join(deltas)
+    done_text = next(
+        event["text"] for event in events if event["type"] == "transcript.text.done"
+    )
+    assert len(deltas) == count
+    assert streamed_text == done_text == expected_text
+    assert response.text.rstrip().endswith("data: [DONE]")
+
+
+def test_streamed_long_audio_first_chunk_failure_maps_before_sse() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=0)
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 500
+    assert "chunk 0" in response.json()["detail"]
+
+
+def test_streamed_long_audio_later_failure_emits_error_without_done() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=1)
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert '"delta":"part0"' in response.text
+    assert '"type": "error"' in response.text
+    assert "chunk 1" in response.text
+    assert "data: [DONE]" not in response.text
 
 
 def test_streamed_audio_within_the_native_limit_streams_whole() -> None:
@@ -1555,7 +1625,7 @@ def test_streamed_audio_within_the_native_limit_streams_whole() -> None:
     assert "transcript.text.done" in response.text
 
 
-def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
+def test_streamed_audio_beyond_the_native_limit_is_chunked() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client, max_native_clip_s=2.0)
 
@@ -1565,9 +1635,9 @@ def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
         files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
     )
 
-    assert response.status_code == 400
-    assert "2 seconds" in response.json()["detail"]
-    assert transcription_client.requests == []
+    assert response.status_code == 200
+    assert len(transcription_client.requests) > 1
+    assert all(request.stream for _, request in transcription_client.requests)
 
 
 def test_streamed_short_audio_streams_as_before() -> None:
@@ -1755,6 +1825,53 @@ def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
         ),
         timeout=10.0,
     )
+
+
+def test_closing_chunked_stream_aborts_active_child() -> None:
+    from sglang_omni.serve.transcriptions import _stream_transcription_chunks
+
+    class HangingStreamClient:
+        def __init__(self) -> None:
+            self.aborted: list[str] = []
+            self.closed = asyncio.Event()
+            self.started = asyncio.Event()
+
+        async def generate(self, request, request_id):
+            del request
+            try:
+                self.started.set()
+                await asyncio.Future()
+                yield GenerateChunk(request_id=request_id, text="unreachable")
+            finally:
+                self.closed.set()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    async def scenario() -> None:
+        client = HangingStreamClient()
+        stream = _stream_transcription_chunks(
+            client,
+            _tiny_plan(2),
+            request_id="req",
+            model="asr",
+            filename=None,
+            language=None,
+            prompt=None,
+            temperature=None,
+            max_new_tokens=None,
+        )
+
+        first_chunk_task = asyncio.create_task(anext(stream))
+        await client.started.wait()
+        first_chunk_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_chunk_task
+
+        assert client.aborted == ["req-chunk-0"]
+        assert client.closed.is_set()
+
+    asyncio.run(scenario())
 
 
 def test_chunks_run_concurrently() -> None:

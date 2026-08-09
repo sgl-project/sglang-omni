@@ -10,7 +10,7 @@ import logging
 import math
 import uuid
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -150,32 +150,47 @@ def register_transcriptions(app: FastAPI) -> None:
                 )
             stream_chunking: AudioChunkingConfig = app.state.audio_chunking
             duration_s = _probe_audio_duration(audio_bytes)
+            plan: ChunkPlan | None = None
             if (
                 stream_chunking.allow_audio_chunking
                 and duration_s > stream_chunking.stream_clip_limit_s
             ):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "stream=true does not support audio longer than "
-                        f"{stream_chunking.stream_clip_limit_s:g} seconds; "
-                        "use stream=false, which transcribes long audio in "
-                        "chunks"
-                    ),
+                try:
+                    check_total_duration(duration_s, stream_chunking)
+                    plan = await asyncio.to_thread(
+                        plan_audio_chunks,
+                        audio_bytes,
+                        stream_chunking,
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if plan is not None:
+                duration_s = plan.duration_s
+                chunk_stream = _stream_transcription_chunks(
+                    client,
+                    plan,
+                    request_id=request_id,
+                    model=model or default_model,
+                    filename=file.filename,
+                    language=language,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
                 )
-            gen_req = build_transcription_generate_request(
-                audio_bytes=audio_bytes,
-                filename=file.filename,
-                content_type=file.content_type,
-                model=model or default_model,
-                language=language,
-                prompt=prompt,
-                temperature=temperature,
-                max_new_tokens=max_new_tokens,
-                stream=True,
-            )
+            else:
+                gen_req = build_transcription_generate_request(
+                    audio_bytes=audio_bytes,
+                    filename=file.filename,
+                    content_type=file.content_type,
+                    model=model or default_model,
+                    language=language,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    stream=True,
+                )
+                chunk_stream = client.generate(gen_req, request_id=request_id)
             adapter = resolve_adapter(getattr(app.state, "architectures", None))
-            chunk_stream = client.generate(gen_req, request_id=request_id)
             # Pull the first chunk before sending response headers so admission
             # failures map to HTTP statuses rather than SSE error payloads.
             try:
@@ -388,6 +403,75 @@ def _build_chunk_generate_request(
         temperature=temperature,
         max_new_tokens=max_new_tokens,
         stream=stream,
+    )
+
+
+async def _stream_transcription_chunks(
+    client: Client,
+    plan: ChunkPlan,
+    *,
+    request_id: str,
+    model: str,
+    filename: str | None,
+    language: str | None,
+    prompt: str | None,
+    temperature: float | None,
+    max_new_tokens: int | None,
+) -> AsyncIterator[GenerateChunk]:
+    """Stream ordered child requests as one coherent transcription."""
+    texts: list[str] = []
+    emitted_text = ""
+    for span in plan.spans:
+        chunk_bytes = await asyncio.to_thread(plan.encode, span)
+        gen_req = _build_chunk_generate_request(
+            chunk_bytes,
+            model=model,
+            filename=filename,
+            language=language,
+            prompt=prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            stream=True,
+        )
+        child_request_id = f"{request_id}-chunk-{span.index}"
+        child_stream = client.generate(gen_req, request_id=child_request_id)
+        streamed_text: list[str] = []
+        final_text: str | None = None
+        completed = False
+        try:
+            async with aclosing(child_stream):
+                async for chunk in child_stream:
+                    if chunk.finish_reason is not None:
+                        if isinstance(chunk.text, str) and chunk.text:
+                            final_text = chunk.text
+                        continue
+                    if chunk.modality == "text" and chunk.text:
+                        streamed_text.append(chunk.text)
+            completed = True
+        except Exception as exc:
+            raise ClientError(
+                f"transcription failed for chunk {span.index} "
+                f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
+            ) from exc
+        finally:
+            if not completed:
+                with suppress(Exception):
+                    await client.abort(child_request_id)
+        child_text = final_text if final_text is not None else "".join(streamed_text)
+        texts.append(child_text)
+        joined_text = join_transcript_parts(texts)
+        delta = joined_text[len(emitted_text) :]
+        if delta:
+            # Qwen3-ASR currently emits one terminal text chunk rather than
+            # token deltas. Emit completed children at chunk granularity and
+            # include the same seam text used by the final joined transcript.
+            yield GenerateChunk(request_id=child_request_id, text=delta)
+        emitted_text = joined_text
+
+    yield GenerateChunk(
+        request_id=request_id,
+        text=emitted_text,
+        finish_reason="stop",
     )
 
 
