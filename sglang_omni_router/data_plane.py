@@ -26,6 +26,7 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
 from sglang_omni_router.app import (
     _merge_models,
@@ -394,6 +395,15 @@ def create_data_plane_app(
                         "successful_total": worker.successful_requests,
                         "failed_total": worker.failed_requests,
                         "current_active": worker.active_requests,
+                        "routed_requests_by_class": dict(
+                            worker.routed_requests_by_class
+                        ),
+                        "successful_requests_by_class": dict(
+                            worker.successful_requests_by_class
+                        ),
+                        "failed_requests_by_class": dict(
+                            worker.failed_requests_by_class
+                        ),
                     }
                     for worker in view.reportable_workers()
                 ],
@@ -451,7 +461,7 @@ def create_data_plane_app(
             if forward_client is not None and forward_client is not internal_client:
                 await forward_client.aclose()
 
-    app = FastAPI(title="sglang-omni-router-dp", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="sglang-omni-router-dp", version=__version__, lifespan=lifespan)
     # Note (Jiaxin Deng): same external CORS policy as the single-process app;
     # the DP is the public surface.
     app.add_middleware(

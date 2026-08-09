@@ -30,6 +30,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         enable_torch_compile: bool,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
+        prefill_coalesce_requests: int,
+        prefill_coalesce_wait_ms: float,
         encoder_chunk_buckets: list[int],
         encoder_torch_compile: bool,
         encoder_max_batch_size: int,
@@ -46,6 +48,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.enable_torch_compile = enable_torch_compile
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.encoder_chunk_buckets = encoder_chunk_buckets
         self.encoder_torch_compile = encoder_torch_compile
         self.encoder_max_batch_size = encoder_max_batch_size
@@ -148,6 +152,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

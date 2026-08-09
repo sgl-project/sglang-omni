@@ -208,6 +208,9 @@ def _model_capabilities_log_summary(
         "streaming_vocoder": capabilities.supports_streaming_vocoder,
         "cuda_graph": capabilities.supports_cuda_graph,
         "torch_compile": capabilities.supports_torch_compile,
+        "breakable_prefill_cuda_graph": (
+            capabilities.supports_breakable_prefill_cuda_graph
+        ),
     }
 
 

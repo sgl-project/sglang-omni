@@ -31,6 +31,7 @@ WS_CONTROL_EVENT_TYPES = {
     "response.created",
     "input.ack",
 }
+REQUEST_ID_HEADER = "X-SGLang-Omni-Request-ID"
 UNSUPPORTED_WS_STATUSES = UNSUPPORTED_HTTP_STATUSES
 SUPPORTED_WS_RESPONSE_FORMATS = {"wav", "pcm", "mp3", "flac", "aac", "opus"}
 SUPPORTED_WS_SPLIT_GRANULARITIES = {"sentence", "clause"}
@@ -62,7 +63,11 @@ async def run_ws_scenario(
     url = websocket_url(spec.base_url, scenario.path)
     start = time.perf_counter()
     try:
-        async with session.ws_connect(url, max_msg_size=MAX_HTTP_RESPONSE_BYTES) as ws:
+        async with session.ws_connect(
+            url,
+            headers={REQUEST_ID_HEADER: scenario.id},
+            max_msg_size=MAX_HTTP_RESPONSE_BYTES,
+        ) as ws:
             await _run_ws_script(
                 ws,
                 result,
@@ -656,7 +661,11 @@ async def _probe_websocket_after_disconnect(
         response_format="pcm",
     )
     try:
-        async with session.ws_connect(url, max_msg_size=MAX_HTTP_RESPONSE_BYTES) as ws:
+        async with session.ws_connect(
+            url,
+            headers={REQUEST_ID_HEADER: probe_result.scenario_id},
+            max_msg_size=MAX_HTTP_RESPONSE_BYTES,
+        ) as ws:
             await _run_ws_script(
                 ws,
                 probe_result,

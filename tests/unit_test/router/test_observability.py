@@ -167,7 +167,45 @@ def test_overlay_renders_counter_fields() -> None:
         "routed_requests": 6,
         "successful_requests": 6,
         "failed_requests": 0,
+        "routed_requests_by_class": {},
+        "successful_requests_by_class": {},
+        "failed_requests_by_class": {},
     }
+
+
+def test_service_class_counters_follow_the_cumulative_ledger_protocol() -> None:
+    def report(
+        seq: int,
+        routed: int,
+        *,
+        generation: int = 1,
+    ) -> CounterReport:
+        return CounterReport(
+            dp_index=0,
+            generation=generation,
+            counter_seq=seq,
+            workers=[
+                WorkerCounters(
+                    worker_id="w0",
+                    routed_total=routed,
+                    successful_total=routed,
+                    routed_requests_by_class={"speech_http": routed},
+                    successful_requests_by_class={"speech_http": routed},
+                )
+            ],
+        )
+
+    ledger = DataPlaneCounterLedger()
+    ledger.apply(report(1, 4), now=0.0)
+    ledger.apply(report(2, 9), now=1.0)
+    assert ledger.class_totals("w0") == {
+        "routed_requests_by_class": {"speech_http": 5},
+        "successful_requests_by_class": {"speech_http": 5},
+        "failed_requests_by_class": {},
+    }
+
+    ledger.apply(report(1, 2, generation=2), now=2.0)
+    assert ledger.class_totals("w0")["routed_requests_by_class"] == {"speech_http": 7}
 
 
 def _two_incarnation_report(seq: int, rows: list[tuple[str, int]]) -> CounterReport:

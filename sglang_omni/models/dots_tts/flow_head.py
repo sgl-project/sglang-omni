@@ -108,6 +108,10 @@ class DotsTTSFlowHead(nn.Module):
         self._batched_nfe: int | None = None
         self._eos_pinned: torch.Tensor | None = None
         self._eos_event: torch.cuda.Event | None = None
+        self._batched_eos_pinned: torch.Tensor | None = None
+        self._batched_eos_event: torch.cuda.Event | None = None
+        self._batched_eos_host: list[bool] | None = None
+        self._batched_eos_pending: int = 0
 
     def _bucket(self, requested: int) -> int:
         if requested <= 0:
@@ -190,6 +194,7 @@ class DotsTTSFlowHead(nn.Module):
             optimize=optimize,
         )
         self._batched_nfe = int(nfe)
+        self._prepare_batched_eos_staging(int(num_slots), parameter.device)
 
     def validate_request(
         self,
@@ -620,11 +625,19 @@ class DotsTTSFlowHead(nn.Module):
                 )
             ]
 
+        if self.has_pending_batched_eos:
+            raise RuntimeError(
+                "dots.tts batched EOS staging overwritten before resolve_batched_eos"
+            )
         for steps, method in zip(num_steps, ode_methods, strict=True):
             self.validate_request(num_steps=steps, ode_method=method)
         hidden = hidden_states[:, -1] if hidden_states.ndim == 3 else hidden_states
+        # note (guozhihao-224): stage EOS after tail launch; finish is applied in ModelRunner resolve.
         probabilities = self.eos_proj(hidden).softmax(dim=-1)[:, 1]
         eos_hits = probabilities.gt(probabilities.new_tensor(eos_thresholds))
+        for row, state in enumerate(states):
+            if state.suppress_first_eos_check and state.decoded_patches == 0:
+                eos_hits[row] = False
         slots = [state.slot for state in states]
         if any(slot is None for slot in slots):
             raise RuntimeError("dots.tts batched request is missing its tail slot")
@@ -636,16 +649,7 @@ class DotsTTSFlowHead(nn.Module):
             slots,
             self._patch_encoder_input(normalized, already_normalized=True),
         )
-        # Single readback after the tail work is queued so the sync overlaps it.
-        eos_flags = eos_hits.tolist()
-        finished = [
-            (
-                False
-                if state.suppress_first_eos_check and state.decoded_patches == 0
-                else bool(eos_flags[row])
-            )
-            for row, state in enumerate(states)
-        ]
+        self._stage_batched_eos(eos_hits)
         results = []
         for row, state in enumerate(states):
             emit = not state.drop_regenerated_prompt_patch
@@ -655,11 +659,76 @@ class DotsTTSFlowHead(nn.Module):
                 DotsFlowStep(
                     latent_patch=self.io.denormalize(normalized[row : row + 1]),
                     feedback_embedding=feedback[row],
-                    finished=finished[row],
+                    finished=False,
                     emit=emit,
                 )
             )
         return results
+
+    @property
+    def has_pending_batched_eos(self) -> bool:
+        return self._batched_eos_pending > 0
+
+    def resolve_batched_eos(self) -> list[bool]:
+        """Return staged batched EOS flags. Call before the next decode_batch."""
+        n = int(self._batched_eos_pending)
+        if n <= 0:
+            return []
+        if self._batched_eos_host is not None:
+            flags = self._batched_eos_host
+            self._batched_eos_host = None
+        else:
+            assert self._batched_eos_event is not None
+            assert self._batched_eos_pinned is not None
+            self._batched_eos_event.synchronize()
+            flags = [bool(value) for value in self._batched_eos_pinned[:n].tolist()]
+        self._batched_eos_pending = 0
+        return flags
+
+    def _prepare_batched_eos_staging(self, capacity: int, device: torch.device) -> None:
+        """Reset pending EOS staging and size the pinned buffer at init."""
+        self._batched_eos_pending = 0
+        self._batched_eos_host = None
+        if device.type != "cuda" or capacity <= 0:
+            self._batched_eos_pinned = None
+            self._batched_eos_event = None
+            return
+        self._ensure_batched_eos_capacity(capacity, device)
+
+    def _ensure_batched_eos_capacity(self, capacity: int, device: torch.device) -> None:
+        if device.type != "cuda" or capacity <= 0:
+            return
+        if (
+            self._batched_eos_pinned is None
+            or int(self._batched_eos_pinned.numel()) < capacity
+        ):
+            self._batched_eos_pinned = torch.zeros(
+                capacity, dtype=torch.bool, pin_memory=True
+            )
+            self._batched_eos_event = torch.cuda.Event()
+
+    def _stage_batched_eos(self, eos_hits: torch.Tensor) -> None:
+        if eos_hits.ndim != 1:
+            raise RuntimeError(
+                f"dots.tts batched EOS flags must be rank-1, got {tuple(eos_hits.shape)}"
+            )
+        n = int(eos_hits.shape[0])
+        if n <= 0:
+            self._batched_eos_pending = 0
+            self._batched_eos_host = None
+            return
+        if eos_hits.is_cuda:
+            self._ensure_batched_eos_capacity(n, eos_hits.device)
+            assert self._batched_eos_pinned is not None
+            assert self._batched_eos_event is not None
+            self._batched_eos_pinned[:n].copy_(
+                eos_hits.to(dtype=torch.bool), non_blocking=True
+            )
+            self._batched_eos_event.record()
+            self._batched_eos_host = None
+        else:
+            self._batched_eos_host = [bool(value) for value in eos_hits.tolist()]
+        self._batched_eos_pending = n
 
     def release_request(self, state: DotsFlowState | None) -> None:
         if state is not None and state.slot is not None and self._tail is not None:

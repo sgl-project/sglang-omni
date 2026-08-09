@@ -492,18 +492,28 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             .contiguous()
             .to(device=device, dtype=dtype, non_blocking=True)
         )
-        # note (guozhihao): skip masking for the common B=1 unpadded path so it
-        # stays numerically equivalent to the unmasked encoder forward.
-        if batch_size == 1 and lengths[0] == t_max:
-            sanm_mask: Optional[torch.Tensor] = None
-        else:
-            ilens = torch.tensor(lengths, device=device, dtype=torch.long)
-            sanm_mask = _sanm_mask_from_lengths(
-                ilens, t_max, dtype=xs.dtype, device=device
-            )
 
-        enc_out = self.audio_tower(xs, sanm_mask)
-        adp_out = self.multi_modal_projector(enc_out, sanm_mask)
+        adp_out: Optional[torch.Tensor] = None
+        graph_runner = getattr(self, "encoder_cuda_graph_runner", None)
+        if graph_runner is not None:
+            # Bucketed capture/replay; always masked. Returns None when no
+            # bucket fits (falls through to the eager path below).
+            adp_out = graph_runner.run(xs, lengths)
+
+        if adp_out is None:
+            # note (guozhihao): skip masking for the common B=1 unpadded path
+            # so it stays numerically equivalent to the unmasked encoder
+            # forward.
+            if batch_size == 1 and lengths[0] == t_max:
+                sanm_mask: Optional[torch.Tensor] = None
+            else:
+                ilens = torch.tensor(lengths, device=device, dtype=torch.long)
+                sanm_mask = _sanm_mask_from_lengths(
+                    ilens, t_max, dtype=xs.dtype, device=device
+                )
+
+            enc_out = self.audio_tower(xs, sanm_mask)
+            adp_out = self.multi_modal_projector(enc_out, sanm_mask)
 
         embeddings: List[torch.Tensor] = []
         for b, length in enumerate(lengths):

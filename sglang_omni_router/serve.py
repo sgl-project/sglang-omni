@@ -199,6 +199,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-check-timeout-secs", type=int, default=5)
     parser.add_argument("--health-check-interval-secs", type=int, default=10)
     parser.add_argument("--health-check-endpoint", default="/health")
+    parser.add_argument(
+        "--voice-owner-worker-url",
+        default=None,
+        help=(
+            "Single-process mode only: worker that owns uploaded-voice state. "
+            "Defaults to the first worker with speech and audio_input "
+            "capabilities. Voice management and requests using uploaded voices "
+            "are pinned to this worker."
+        ),
+    )
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--strict-limits",
@@ -277,6 +287,7 @@ def build_config_from_args(
         health_check_timeout_secs=args.health_check_timeout_secs,
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
+        voice_owner_worker_url=args.voice_owner_worker_url,
         router_state_dir=args.router_state_dir,
     )
 
@@ -299,6 +310,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.router_processes < 1:
         parser.error("--router-processes must be >= 1")
+    if args.router_processes > 1 and args.voice_owner_worker_url is not None:
+        parser.error("--voice-owner-worker-url requires --router-processes 1")
     log_level = normalize_log_level(args.log_level)
     log_config = build_log_config(args.log_level)
     logging.config.dictConfig(log_config)
@@ -375,6 +388,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 parser.exit(130)
             return
         logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
+        voice_owner = config.voice_owner_worker_url or "auto:first-capable"
         logger.info(
             f"Router configuration: workers={len(config.workers)} | "
             f"policy={config.policy} | "
@@ -387,6 +401,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"health_check_endpoint={config.health_check_endpoint} | "
             f"health_check_interval_secs={config.health_check_interval_secs} | "
             f"health_check_timeout_secs={config.health_check_timeout_secs} | "
+            f"voice_owner_worker={voice_owner} | "
             f"readiness_requires_routable_worker=true"
         )
         uvicorn.run(

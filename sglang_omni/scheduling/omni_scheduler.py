@@ -59,6 +59,10 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.prefill_coalesce import (
+    validate_prefill_coalesce_requests,
+    validate_prefill_coalesce_wait_ms,
+)
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -191,6 +195,8 @@ class OmniScheduler:
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
+        prefill_coalesce_requires_pending_builds: bool = False,
+        prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
@@ -279,19 +285,27 @@ class OmniScheduler:
                 "requests"
             )
 
-        # Note: (maydomine) coalescing gate: hold prefill until K requests wait
-        # or the oldest has waited T ms; 0 disables.
-        if int(prefill_coalesce_requests) > 1 and int(server_args.tp_size) > 1:
+        # Note: (maydomine) Validate here as well as in the CLI because per-stage
+        # YAML reaches the scheduler through factory_args.
+        requests = validate_prefill_coalesce_requests(prefill_coalesce_requests)
+        wait_ms = validate_prefill_coalesce_wait_ms(prefill_coalesce_wait_ms)
+        if requests > 1 and int(server_args.tp_size) > 1:
             logger.warning(
                 "Prefill admission coalescing is disabled for "
                 f"tp_size={server_args.tp_size}: the wait deadline reads each "
                 "rank's local clock, so ranks could disagree on expiry and "
                 "break lockstep scheduling"
             )
-            prefill_coalesce_requests = 0
-        self.prefill_coalesce_requests = int(prefill_coalesce_requests)
-        self.prefill_coalesce_wait_s = float(prefill_coalesce_wait_ms) / 1e3
+            requests = 0
+        self.prefill_coalesce_requests = requests
+        self.prefill_coalesce_wait_s = wait_ms / 1e3
         self.prefill_coalesce_when_idle = bool(prefill_coalesce_when_idle)
+        self.prefill_coalesce_requires_pending_builds = bool(
+            prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = bool(
+            prefill_coalesce_after_builds_during_decode
+        )
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -1152,10 +1166,19 @@ class OmniScheduler:
         # so the coalesce hold-off returns an empty plan rather than None.
         if self.prefill_coalesce_requests <= 1 or self.chunked_req is not None:
             return _Upstream.get_new_batch_prefill(self, running_batch)
-        if not self.prefill_coalesce_when_idle and (
-            running_batch is None or running_batch.is_empty()
-        ):
+        decode_is_idle = running_batch is None or running_batch.is_empty()
+        if not self.prefill_coalesce_when_idle and decode_is_idle:
             return _Upstream.get_new_batch_prefill(self, running_batch)
+        if self.prefill_coalesce_requires_pending_builds:
+            with self._request_admission_lock:
+                build_work_pending = bool(
+                    self._pending_request_builds
+                    or self._backlogged_request_build_payloads
+                )
+            if not build_work_pending and not (
+                self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
+            ):
+                return _Upstream.get_new_batch_prefill(self, running_batch)
         waiting = self.waiting_queue
         if not waiting or len(waiting) >= self.prefill_coalesce_requests:
             return _Upstream.get_new_batch_prefill(self, running_batch)

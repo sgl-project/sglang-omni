@@ -41,6 +41,7 @@ class SimpleScheduler:
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
+        shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -64,6 +65,8 @@ class SimpleScheduler:
                 "max_concurrency > 1 and batch_compute_fn are mutually exclusive"
             )
         self._abort_callback = abort_callback
+        self._shutdown_callback = shutdown_callback
+        self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
         self._abort_lock = threading.Lock()
         self._running = False
@@ -298,6 +301,11 @@ class SimpleScheduler:
 
     def stop(self) -> None:
         self._running = False
+        with self._shutdown_lock:
+            callback = self._shutdown_callback
+            self._shutdown_callback = None
+        if callback is not None:
+            callback()
 
     def abort(self, request_id: str) -> None:
         with self._abort_lock:

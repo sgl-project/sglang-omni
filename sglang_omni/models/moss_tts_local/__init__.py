@@ -9,6 +9,7 @@ CAPABILITIES = ModelCapabilities(
     supports_streaming_vocoder=True,
     supports_cuda_graph=True,
     supports_torch_compile=True,
+    supports_breakable_prefill_cuda_graph=False,
 )
 
 __all__ = ["CAPABILITIES"]
