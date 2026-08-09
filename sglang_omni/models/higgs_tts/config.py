@@ -38,6 +38,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
+
+    @classmethod
     def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
         # Note (Akazaakane): every handoff travels as HiggsTtsState in the payload and
         # the stages only share process-local caches, which re-fill on a miss. No

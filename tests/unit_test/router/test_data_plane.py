@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from sglang_omni_router.data_plane import (
     create_data_plane_app,
 )
 from sglang_omni_router.snapshot import SnapshotWorker, SnapshotWriter
+from sglang_omni_router.worker import worker_id_from_url
 
 
 def _config(failure_threshold: int = 1) -> RouterConfig:
@@ -234,6 +236,64 @@ def test_dp_routes_after_snapshot_and_tracks_disabled_workers(
         _wait_for(lambda: client.post("/generate", json={}).status_code == 503)
         response = client.post("/generate", json={})
         assert response.json()["error"]["message"] == "no eligible upstream"
+
+
+def test_dp_large_speech_body_preserves_audio_input_routing(tmp_path: Path) -> None:
+    upstream = _Recorder()
+    app, snapshot_path = _dp_app(tmp_path, upstream)
+    writer = SnapshotWriter(snapshot_path, cp_epoch="e")
+    speech_only = _entry(capabilities=["speech"])
+    audio_worker = _entry(
+        "http://worker-b:8102",
+        capabilities=["speech", "audio_input"],
+    )
+    body = json.dumps(
+        {
+            "input": "hello",
+            "voice": "default",
+            "ref_audio": "data:audio/wav;base64," + "A" * (1024 * 1024),
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        _snapshot(writer, speech_only, audio_worker)
+        _wait_for(lambda: client.get("/ready").status_code == 200)
+        response = client.post(
+            "/v1/audio/speech",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-sglang-omni-worker"] == worker_id_from_url(
+        audio_worker.url
+    )
+
+
+def test_dp_large_speech_body_rejects_a_speech_only_pool(tmp_path: Path) -> None:
+    upstream = _Recorder()
+    app, snapshot_path = _dp_app(tmp_path, upstream)
+    writer = SnapshotWriter(snapshot_path, cp_epoch="e")
+    body = json.dumps(
+        {
+            "input": "hello",
+            "voice": "default",
+            "ref_audio": "data:audio/wav;base64," + "A" * (1024 * 1024),
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        _snapshot(writer, _entry(capabilities=["speech"]))
+        _wait_for(lambda: client.get("/ready").status_code == 200)
+        response = client.post(
+            "/v1/audio/speech",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["message"] == "no eligible upstream"
+    assert upstream.requests == []
 
 
 def test_dp_sheds_when_the_snapshot_goes_stale_and_recovers(
@@ -577,6 +637,9 @@ def test_dp_flushes_cumulative_counters_to_the_cp(tmp_path: Path) -> None:
         assert report["workers"][0]["routed_total"] == 2
         assert report["workers"][0]["successful_total"] == 2
         assert report["workers"][0]["current_active"] == 0
+        assert report["workers"][0]["routed_requests_by_class"] == {"generation": 2}
+        assert report["workers"][0]["successful_requests_by_class"] == {"generation": 2}
+        assert report["workers"][0]["failed_requests_by_class"] == {}
 
 
 def test_failure_reports_retry_with_a_bound_then_give_up(tmp_path: Path) -> None:

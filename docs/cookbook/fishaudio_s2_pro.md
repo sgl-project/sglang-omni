@@ -4,7 +4,19 @@
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` by following [Installation](../get_started/installation.md).
+
+Fish Audio uses the Descript DAC codec, which is not included in the base
+`sglang-omni` package. From the SGLang-Omni repository root, install its
+model-specific dependencies:
+
+```bash
+uv pip install \
+  "descript-audiotools==0.7.2" \
+  "descript-audio-codec==1.0.0"
+```
+
+Then download the model:
 
 ```bash
 hf download fishaudio/s2-pro

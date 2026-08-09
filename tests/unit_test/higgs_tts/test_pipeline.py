@@ -2320,6 +2320,9 @@ def test_higgs_mem_fraction_role_to_stage_targets_tts_engine() -> None:
     assert HiggsTtsPipelineConfig.mem_fraction_role_to_stage() == {
         "talker": "tts_engine"
     }
+    assert HiggsTtsPipelineConfig.talker_sglang_role_to_stage() == {
+        "talker": "tts_engine"
+    }
 
 
 def test_higgs_cli_mem_fraction_static_pins_tts_engine() -> None:

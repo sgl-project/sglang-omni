@@ -14,6 +14,14 @@ from urllib.parse import quote, urlsplit
 from sglang_omni_router.config import Capability, WorkerConfig
 
 WorkerState = Literal["dead", "healthy", "unknown", "unhealthy"]
+ServiceClass = Literal[
+    "generation",
+    "speech_http",
+    "speech_batch",
+    "voice_control",
+    "tts_websocket",
+    "transcription",
+]
 HEALTH_STATE_DEAD: WorkerState = "dead"
 HEALTH_STATE_HEALTHY: WorkerState = "healthy"
 HEALTH_STATE_UNKNOWN: WorkerState = "unknown"
@@ -50,6 +58,9 @@ class Worker:
     routed_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
+    routed_requests_by_class: dict[str, int] = field(default_factory=dict)
+    successful_requests_by_class: dict[str, int] = field(default_factory=dict)
+    failed_requests_by_class: dict[str, int] = field(default_factory=dict)
     last_status_code: int | None = None
     last_error: str | None = None
     last_checked_at: datetime | None = None
@@ -121,12 +132,20 @@ class Worker:
         assert self.active_requests > 0, "active request count cannot be negative"
         self.active_requests -= 1
 
-    def record_routed_request(self, *, status_code: int | None = None) -> None:
+    def record_routed_request(
+        self,
+        *,
+        status_code: int | None = None,
+        service_class: ServiceClass = "generation",
+    ) -> None:
         self.routed_requests += 1
+        _increment_counter(self.routed_requests_by_class, service_class)
         if status_code is not None and 200 <= status_code < 400:
             self.successful_requests += 1
+            _increment_counter(self.successful_requests_by_class, service_class)
             return
         self.failed_requests += 1
+        _increment_counter(self.failed_requests_by_class, service_class)
 
     @contextmanager
     def request_guard(self) -> Iterator[None]:
@@ -253,6 +272,9 @@ class Worker:
             "routed_requests": self.routed_requests,
             "successful_requests": self.successful_requests,
             "failed_requests": self.failed_requests,
+            "routed_requests_by_class": dict(self.routed_requests_by_class),
+            "successful_requests_by_class": dict(self.successful_requests_by_class),
+            "failed_requests_by_class": dict(self.failed_requests_by_class),
             "last_status_code": self.last_status_code,
             "last_error": self.last_error,
             "last_checked_at": (
@@ -263,6 +285,10 @@ class Worker:
 
 def build_workers(configs: list[WorkerConfig]) -> list[Worker]:
     return [Worker(config=config) for config in configs]
+
+
+def _increment_counter(counters: dict[str, int], key: str) -> None:
+    counters[key] = counters.get(key, 0) + 1
 
 
 def _format_state_for_log(state: WorkerState) -> str:
