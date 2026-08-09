@@ -12,6 +12,7 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 DEFAULT_MOSS_TD_PREFILL_CUDA_GRAPH_BS = [128, 192, 384, 768, 1536, 2048, 4096]
 
@@ -98,7 +99,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
-            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
             "cuda_graph_bs_prefill": DEFAULT_MOSS_TD_PREFILL_CUDA_GRAPH_BS,
             "dtype": dtype,
         }
