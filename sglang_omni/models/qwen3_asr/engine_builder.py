@@ -15,6 +15,8 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
+        else:
+            sm_version = get_visible_gpu_sm_version(self.gpu_id)
+            if sm_version is not None and sm_version >= 100:
+                defaults["mm_attention_backend"] = "triton_attn"
         return defaults
 
     def _log_memory_checkpoint(self, checkpoint: str) -> None:
@@ -117,7 +123,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             getattr(server_args, "attention_backend", None),
             getattr(server_args, "mm_attention_backend", None),
             not getattr(server_args, "disable_cuda_graph", False),
-            getattr(server_args, "cuda_graph_bs", None),
+            get_decode_cuda_graph_bs(server_args),
             getattr(server_args, "enable_torch_compile", False),
             getattr(server_args, "max_running_requests", None),
             getattr(server_args, "mem_fraction_static", None),

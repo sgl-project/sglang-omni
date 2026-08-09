@@ -23,6 +23,68 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from tests.unit_test.fakes import FakeServerArgs
 
 
+def _make_engine_builder(
+    *, mm_attention_backend: str | None = None
+) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
+    return qwen3_asr_builder.Qwen3ASREngineBuilder(
+        max_running_requests=32,
+        max_new_tokens=128,
+        enable_async_decode=True,
+        async_decode_min_batch_size=2,
+        mem_fraction_static=None,
+        mm_embedding_cache_size_bytes=0,
+        enable_torch_compile=False,
+        mm_attention_backend=mm_attention_backend,
+        request_build_max_workers=8,
+        request_build_max_pending=32,
+    )
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_backend"),
+    [(89, None), (100, "triton_attn"), (120, "triton_attn")],
+)
+def test_qwen3_asr_default_mm_attention_backend_by_sm(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int,
+    expected_backend: str | None,
+) -> None:
+    queried_gpu_ids: list[int] = []
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: queried_gpu_ids.append(gpu_id) or sm_version,
+        raising=False,
+    )
+    builder = _make_engine_builder()
+    builder.gpu_id = 3
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert queried_gpu_ids == [3]
+    if expected_backend is None:
+        assert "mm_attention_backend" not in defaults
+    else:
+        assert defaults["mm_attention_backend"] == expected_backend
+
+
+def test_qwen3_asr_explicit_mm_attention_backend_overrides_sm_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
+        raising=False,
+    )
+    builder = _make_engine_builder(mm_attention_backend="fa3")
+    builder.gpu_id = 0
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["mm_attention_backend"] == "fa3"
+
+
 def test_qwen3_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
 
@@ -135,7 +197,7 @@ def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
     assert factory_args["server_args_overrides"]["mem_fraction_static"] == 0.65
 
 
-def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
+def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     build_kwargs: dict[str, object] = {}
     adapter_kwargs: dict[str, object] = {}
     memory_queries: list[int] = []
@@ -149,6 +211,11 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         qwen3_asr_builder.AutoFeatureExtractor,
         "from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(nb_max_frames=3000),
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: 89,
     )
     monkeypatch.setattr(
         qwen3_asr_builder,
@@ -190,7 +257,14 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs.update(overrides)
-        server_args = FakeServerArgs(context_length=context_length, **overrides)
+        normalized_overrides = {
+            key: value
+            for key, value in overrides.items()
+            if key not in {"cuda_graph_bs", "cuda_graph_max_bs"}
+        }
+        server_args = FakeServerArgs(
+            context_length=context_length, **normalized_overrides
+        )
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -226,15 +300,17 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         _fake_create_infrastructure,
     )
 
-    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
-        "dummy",
-        enable_async_decode=False,
-        async_decode_min_batch_size=4,
-        server_args_overrides={"context_length": 2048},
-    )
+    with caplog.at_level("INFO", logger=qwen3_asr_builder.__name__):
+        scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+            "dummy",
+            enable_async_decode=False,
+            async_decode_min_batch_size=4,
+            server_args_overrides={"context_length": 2048},
+        )
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32]" in caplog.text
     assert "mm_attention_backend" not in build_kwargs
     assert memory_queries == [0, 0, 0]
     assert adapter_kwargs["context_length"] == 2048

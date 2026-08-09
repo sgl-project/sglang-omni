@@ -19,6 +19,78 @@ import torchaudio
 _DEFAULT_REQUEST_TIMEOUT = 5
 
 
+class AudioDecodeError(ValueError):
+    """Raised when supplied encoded audio cannot be decoded."""
+
+
+def _ensure_torchaudio_decoder_ready() -> None:
+    from torchcodec.decoders import AudioDecoder
+
+    del AudioDecoder
+
+
+def _has_operational_decoder_cause(exc: BaseException) -> bool:
+    current = exc.__cause__ or exc.__context__
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, torch.OutOfMemoryError):
+            return True
+        if not isinstance(current, (RuntimeError, ValueError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_invalid_audio_source(source: bytes | str) -> bool:
+    try:
+        import av
+    except (ImportError, RuntimeError):
+        return False
+
+    candidate = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        container = av.open(candidate)
+    except (av.error.InvalidDataError, av.error.EOFError, ValueError):
+        return True
+    except Exception:
+        return False
+
+    try:
+        audio_stream = next(
+            (stream for stream in container.streams if stream.type == "audio"),
+            None,
+        )
+        if audio_stream is None:
+            return True
+        try:
+            decoded_frame = False
+            for _frame in container.decode(audio_stream):
+                decoded_frame = True
+            return not decoded_frame
+        except (av.error.InvalidDataError, av.error.EOFError, ValueError):
+            return True
+        except Exception:
+            return False
+    finally:
+        container.close()
+
+
+def _load_with_torchaudio(
+    source: bytes | str, *, source_name: str
+) -> tuple[torch.Tensor, int]:
+    _ensure_torchaudio_decoder_ready()
+    decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        return torchaudio.load(decoder_source)
+    except (ImportError, MemoryError, torch.OutOfMemoryError):
+        raise
+    except RuntimeError as exc:
+        if _has_operational_decoder_cause(exc) or not _is_invalid_audio_source(source):
+            raise
+        raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
+
+
 def _is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
@@ -56,11 +128,11 @@ def decode_audio_data_uri(value: str) -> bytes | None:
         return None
     header, separator, payload = value.partition(",")
     if not separator or ";base64" not in header.lower() or not payload:
-        raise ValueError("Invalid base64 audio data URI")
+        raise AudioDecodeError("Invalid base64 audio data URI")
     try:
         return pybase64.b64decode(payload, validate=True)
     except Exception as exc:
-        raise ValueError("Invalid base64 audio data URI") from exc
+        raise AudioDecodeError("Invalid base64 audio data URI") from exc
 
 
 def load_audio(
@@ -103,9 +175,9 @@ def load_audio(
             )
             if fast is not None:
                 return fast
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
+        audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
+        audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     else:
         raise ValueError(
             f"Unsupported {source_name} audio input: {type(source).__name__}"

@@ -31,6 +31,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.utils.audio import AudioDecodeError
 
 from .audio_lengths import qwen3_asr_num_audio_tokens
 from .languages import resolve_language
@@ -146,7 +147,7 @@ def make_qwen3_asr_scheduler_adapters(
             prepared = prepare_audio(
                 payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
             )
-        except Exception as exc:
+        except AudioDecodeError as exc:
             raise ValueError(
                 "Qwen3-ASR could not decode the uploaded audio; provide a valid "
                 "audio file."

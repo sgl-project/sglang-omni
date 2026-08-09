@@ -28,6 +28,19 @@ sgl-omni serve \
   --port 8000
 ```
 
+For a single 24 GB RTX 4090 (SM89), use the checked-in consumer profile:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_rtx4090.yaml \
+  --port 8000
+```
+
+This qualified profile keeps the model in BF16, limits the stage to 16 running
+requests, and sets `mem_fraction_static` to `0.65`. Its bounds are specific to
+the validated RTX 4090 layout; use the default configuration or a separately
+qualified profile on other GPU architectures.
+
 For example, force synchronous decode when comparing modes:
 
 ```bash

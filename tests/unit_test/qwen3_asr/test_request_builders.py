@@ -24,6 +24,8 @@ from sglang_omni.models.qwen3_asr.request_builders import (
     make_qwen3_asr_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.utils import audio as audio_utils
+from sglang_omni.utils.audio import AudioDecodeError
 
 
 class _FakeTokenizer:
@@ -357,7 +359,9 @@ def test_qwen3_asr_request_builder_rejects_undecodable_audio(monkeypatch) -> Non
     monkeypatch.setattr(
         transcription,
         "load_audio",
-        lambda source, **kwargs: (_ for _ in ()).throw(RuntimeError("decode failed")),
+        lambda source, **kwargs: (_ for _ in ()).throw(
+            AudioDecodeError("decode failed")
+        ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -371,6 +375,59 @@ def test_qwen3_asr_request_builder_rejects_undecodable_audio(monkeypatch) -> Non
     )
 
     with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        request_builder(payload)
+
+
+def test_qwen3_asr_request_builder_rejects_corrupt_local_audio_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    corrupt_path = tmp_path / "corrupt.wav"
+    corrupt_path.write_bytes(b"not-audio")
+
+    def raise_decode_error(source):
+        assert source == str(corrupt_path)
+        raise RuntimeError("invalid audio data")
+
+    monkeypatch.setattr(audio_utils, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio_utils.torchaudio, "load", raise_decode_error)
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-invalid-path",
+        request=OmniRequest(inputs={"audio_path": str(corrupt_path)}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="could not decode the uploaded audio"):
+        request_builder(payload)
+
+
+def test_qwen3_asr_request_builder_preserves_operational_audio_failure(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("decoder backend unavailable")
+        ),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-loader-failure",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    with pytest.raises(RuntimeError, match="decoder backend unavailable"):
         request_builder(payload)
 
 
