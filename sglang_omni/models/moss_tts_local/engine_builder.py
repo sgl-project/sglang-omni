@@ -21,12 +21,16 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         *,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
         process_total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.process_total_gpu_memory_fraction = process_total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
@@ -152,6 +156,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:

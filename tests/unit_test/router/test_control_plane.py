@@ -442,6 +442,9 @@ def test_cp_aggregates_dp_counters_into_worker_listings(tmp_path: Path) -> None:
                         "successful_total": ok,
                         "failed_total": bad,
                         "current_active": active,
+                        "routed_requests_by_class": {"speech_http": routed},
+                        "successful_requests_by_class": {"speech_http": ok},
+                        "failed_requests_by_class": {"speech_http": bad},
                     }
                 ],
             }
@@ -462,6 +465,9 @@ def test_cp_aggregates_dp_counters_into_worker_listings(tmp_path: Path) -> None:
         assert listed["successful_requests"] == 6
         assert listed["failed_requests"] == 1
         assert listed["active_requests"] == 2
+        assert listed["routed_requests_by_class"] == {"speech_http": 7}
+        assert listed["successful_requests_by_class"] == {"speech_http": 6}
+        assert listed["failed_requests_by_class"] == {"speech_http": 1}
 
         # Note (Jiaxin Deng): the detail endpoint carries the same DP-counter overlay:
         # the CP-local worker object never handles data traffic

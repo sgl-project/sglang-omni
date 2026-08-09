@@ -274,6 +274,14 @@ class StreamingSimpleScheduler:
             if self._is_aborted(msg.request_id):
                 continue
             if msg.type != "new_request":
+                if (
+                    msg.type == "stream_done"
+                    and msg.request_id not in self._stream_payloads
+                ):
+                    # Note(Chenchen Hong): Done-before-payload only latches state,
+                    # so defer it and keep looking for terminal payloads that can batch.
+                    self._pending_messages.append(msg)
+                    continue
                 self._pending_messages.append(msg)
                 break
             try:

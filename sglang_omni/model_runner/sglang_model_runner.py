@@ -13,6 +13,7 @@ from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -228,6 +229,29 @@ class SGLModelRunner(ModelRunner):
             nccl_port=nccl_port,
             server_args=server_args,
         )
+
+    def _extend_forward_kwargs(self, forward_batch, pp_proxy_tensors):
+        """Expose Omni's private prefill sidecar after graph admission.
+
+        Upstream owns ``mm_inputs`` and the official ``input_embeds`` batch
+        field. Keeping both untouched during admission preserves their
+        contracts; model kwargs are the supported late-bound transport used by
+        both eager execution and breakable prefill graph capture/replay.
+        """
+        kwargs = super()._extend_forward_kwargs(forward_batch, pp_proxy_tensors)
+        prefill_inputs = get_omni_prefill_inputs(forward_batch)
+        if prefill_inputs is None:
+            return kwargs
+
+        if "input_embeds" in kwargs:
+            raise RuntimeError(
+                "Omni prefill sidecar conflicts with an upstream input_embeds "
+                "forward kwarg"
+            )
+
+        kwargs["input_embeds"] = prefill_inputs.input_embeds
+        kwargs["omni_prefill_rids"] = forward_batch.rids
+        return kwargs
 
     def load_model(self):
         """Load weights, honoring the same-GPU weight-share role, if any.

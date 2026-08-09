@@ -167,7 +167,8 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
-            )
+            ),
+            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
         )
         return server_args
 
