@@ -1474,6 +1474,7 @@ def _chunking_test_client(
     transcription_client: Any,
     *,
     max_total_audio_s: float | None = None,
+    max_native_clip_s: float | None = None,
 ) -> TestClient:
     from sglang_omni.config import AudioChunkingConfig
 
@@ -1481,6 +1482,7 @@ def _chunking_test_client(
         allow_audio_chunking=True,
         max_audio_clip_s=1.0,
         max_total_audio_s=max_total_audio_s,
+        max_native_clip_s=max_native_clip_s,
     )
     return TestClient(
         create_app(transcription_client, model_name="asr", audio_chunking=policy)
@@ -1517,10 +1519,10 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
 
 
 def test_streamed_long_audio_is_rejected_explicitly() -> None:
-    # Streaming is not chunked yet; without this 400 a long upload would run
-    # as a single request and the 640-token output budget would silently cut
-    # the transcript tail (observed live: 243s audio came back 20% short with
-    # HTTP 200).
+    # Streaming cannot chunk; without this 400 a too-long upload would run
+    # as a single request and truncate (observed live: 243s audio came back
+    # 20% short with HTTP 200). No native limit declared here, so the guard
+    # falls back to the chunk length.
     transcription_client = ChunkRecordingTranscriptionClient()
     client = _chunking_test_client(transcription_client)
 
@@ -1532,6 +1534,39 @@ def test_streamed_long_audio_is_rejected_explicitly() -> None:
 
     assert response.status_code == 400
     assert "stream=false" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
+def test_streamed_audio_within_the_native_limit_streams_whole() -> None:
+    # The chunk length is a scheduling choice for the non-stream path; a
+    # stream request only needs to fit the engine natively. 2.5s is past the
+    # 1s chunk length but under the 3s native limit, so it streams as one
+    # engine request instead of getting a 400.
+    transcription_client = SuccessfulTranscriptionClient()
+    client = _chunking_test_client(transcription_client, max_native_clip_s=3.0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert "transcript.text.done" in response.text
+
+
+def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client, max_native_clip_s=2.0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "2 seconds" in response.json()["detail"]
     assert transcription_client.requests == []
 
 

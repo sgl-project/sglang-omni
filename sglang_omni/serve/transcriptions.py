@@ -148,16 +148,17 @@ def register_transcriptions(app: FastAPI) -> None:
                         f"'text', got {response_format!r}"
                     ),
                 )
-            # Chunking does not cover the streaming path yet. Without this
-            # guard a long upload would run as one request and the output
-            # budget would silently cut the transcript tail.
             stream_chunking: AudioChunkingConfig = app.state.audio_chunking
-            if needs_chunking(_probe_audio_duration(audio_bytes), stream_chunking):
+            duration_s = _probe_audio_duration(audio_bytes)
+            if (
+                stream_chunking.allow_audio_chunking
+                and duration_s > stream_chunking.stream_clip_limit_s
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         "stream=true does not support audio longer than "
-                        f"{stream_chunking.max_audio_clip_s:g} seconds yet; "
+                        f"{stream_chunking.stream_clip_limit_s:g} seconds; "
                         "use stream=false, which transcribes long audio in "
                         "chunks"
                     ),
@@ -174,7 +175,6 @@ def register_transcriptions(app: FastAPI) -> None:
                 stream=True,
             )
             adapter = resolve_adapter(getattr(app.state, "architectures", None))
-            duration_s = _probe_audio_duration(audio_bytes)
             chunk_stream = client.generate(gen_req, request_id=request_id)
             # Pull the first chunk before sending response headers so admission
             # failures map to HTTP statuses rather than SSE error payloads.

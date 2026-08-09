@@ -232,6 +232,8 @@ class AudioChunkingConfig(BaseModel):
     # long upload from monopolizing the engine, at the cost of more seams.
     max_audio_clip_s: float = Field(default=60.0, gt=0)
 
+    max_native_clip_s: float | None = Field(default=None, gt=0)
+
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)
 
     # Shortest final chunk worth transcribing.
@@ -252,6 +254,23 @@ class AudioChunkingConfig(BaseModel):
                 f"max_total_audio_s={self.max_total_audio_s} must be at least "
                 f"max_audio_clip_s={self.max_audio_clip_s}"
             )
+        if (
+            self.max_native_clip_s is not None
+            and self.max_native_clip_s < self.max_audio_clip_s
+        ):
+            raise ValueError(
+                f"max_native_clip_s={self.max_native_clip_s} must be at least "
+                f"max_audio_clip_s={self.max_audio_clip_s}"
+            )
+
+    @property
+    def stream_clip_limit_s(self) -> float:
+        """Longest clip the un-chunkable streaming path accepts."""
+        return (
+            self.max_native_clip_s
+            if self.max_native_clip_s is not None
+            else self.max_audio_clip_s
+        )
 
     def chunk_samples(self, sample_rate: int) -> int:
         """Chunk length in samples, at least one sample."""

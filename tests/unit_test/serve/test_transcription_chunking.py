@@ -83,6 +83,9 @@ def test_qwen3_asr_pipeline_declares_chunking() -> None:
     # for the model's native 1,200s): short chunks batch well and keep one
     # long upload from monopolizing the engine.
     assert declared.max_audio_clip_s == 60.0
+    # The native limit feeds the streaming path, which cannot chunk and so
+    # accepts single requests up to what the engine context fits.
+    assert declared.max_native_clip_s == 1200.0
 
 
 def test_disabled_config_never_chunks() -> None:
@@ -143,12 +146,29 @@ def test_total_limit_below_clip_limit_is_rejected_at_config_time() -> None:
         AudioChunkingConfig(max_audio_clip_s=60.0, max_total_audio_s=30.0)
 
 
+def test_native_limit_below_clip_limit_is_rejected_at_config_time() -> None:
+    # Chunks are engine requests, so the chunk length must fit natively.
+    with pytest.raises(ValueError, match="max_native_clip_s"):
+        AudioChunkingConfig(max_audio_clip_s=60.0, max_native_clip_s=30.0)
+
+
+def test_stream_clip_limit_falls_back_to_the_chunk_length() -> None:
+    assert AudioChunkingConfig(max_audio_clip_s=60.0).stream_clip_limit_s == 60.0
+    assert (
+        AudioChunkingConfig(
+            max_audio_clip_s=60.0, max_native_clip_s=1200.0
+        ).stream_clip_limit_s
+        == 1200.0
+    )
+
+
 @pytest.mark.parametrize(
     "field, value",
     [
         ("max_audio_clip_s", 0.0),
         ("max_audio_clip_s", -1.0),
         ("max_total_audio_s", 0.0),
+        ("max_native_clip_s", 0.0),
         ("min_tail_s", -0.5),
     ],
 )

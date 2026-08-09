@@ -110,7 +110,8 @@ order. The key settings, declared by `Qwen3ASRPipelineConfig.audio_chunking`
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. The engine context is sized for the model's native 1,200s maximum, so you can raise this up to 1,200 (raise the stage `max_new_tokens` along with it). |
+| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. The engine context is sized for the model's native 1,200s maximum, so you can raise this up to 1,200; the output-token budget scales with clip length on its own. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff. |
 | `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
 | `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
 | `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length, so you shouldn't need to change it. |
@@ -122,8 +123,10 @@ Behavior notes:
   does not emit word timestamps).
 - A few unusual audio formats may not expose a readable duration; we fall
   back to the non-chunked path for those uploads.
-- Streamed responses (`stream=true`) do not support chunking yet; a long
-  upload with `stream=true` gets HTTP 400 -- use `stream=false`.
+- Streamed responses (`stream=true`) do not support chunking yet; a stream
+  request runs as one engine request, so it takes audio up to
+  `max_native_clip_s` (1,200s) and gets HTTP 400 above that -- use
+  `stream=false` for longer uploads.
 
 ## Benchmarking
 
@@ -220,6 +223,6 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 - The endpoint accepts one uploaded file per request.
 - Non-streaming uploads up to `max_total_audio_s` (default one hour) are
   transcribed in full via chunking; see Long Audio above. Streaming requests
-  are limited to `max_audio_clip_s`.
+  are limited to `max_native_clip_s` (1,200s).
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.
