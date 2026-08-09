@@ -7,6 +7,7 @@ import hashlib
 import io
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -93,6 +94,17 @@ def load_audio(
             source = response.content
         elif source.startswith("file://"):
             source = unquote(urlparse(source).path)
+
+    if isinstance(source, str) and mono and trim_top_db is None:
+        path = Path(source)
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(12)
+                if _is_riff_wav(header):
+                    source = header + handle.read()
+        except OSError:
+            # Preserve torchaudio's existing error behavior for invalid paths.
+            pass
 
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder

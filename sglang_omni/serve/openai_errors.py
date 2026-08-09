@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 _BAD_REQUEST_MARKERS = (
+    "Invalid Kimi-Audio request:",
     "Unsupported language:",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",

@@ -15,6 +15,10 @@ from sglang_omni.utils import (
 
 def resolve_config_cls_for_model_path(model_path: str):
     """Resolve a PipelineConfig class from HF config metadata."""
+    config_cls = PIPELINE_CONFIG_REGISTRY.get_config_for_model_id(model_path)
+    if config_cls is not None:
+        return config_cls
+
     hf_config = None
     try:
         hf_config = AutoConfig.from_pretrained(model_path)
