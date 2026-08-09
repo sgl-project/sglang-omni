@@ -263,8 +263,6 @@ jobs:
             */benchmark_validation.json
             */router_validation.json
             */cleanup_validation.json
-            */topology/router.log
-            */topology/launcher.yaml
           artifact-upload-name: tts-stage-serving-results
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}

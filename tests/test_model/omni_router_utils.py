@@ -100,11 +100,8 @@ def launch_managed_router(
     startup_timeout: int | None = None,
     log_prefix: str = "omni_router_logs",
     external_worker_urls: list[str] | None = None,
-    artifact_dir: Path | None = None,
     process_env: dict[str, str] | None = None,
 ) -> Iterator[ManagedRouterHandle]:
-    if artifact_dir is not None:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
     if external_worker_urls is None:
         worker_base_port = _find_available_port_range(num_workers)
         worker_ports = [worker_base_port + offset for offset in range(num_workers)]
@@ -117,9 +114,6 @@ def launch_managed_router(
             worker_base_port=worker_base_port,
             worker_extra_args=worker_extra_args,
             wait_timeout=wait_timeout,
-            output_path=(
-                artifact_dir / "launcher.yaml" if artifact_dir is not None else None
-            ),
         )
     else:
         if len(external_worker_urls) != num_workers:
@@ -133,11 +127,7 @@ def launch_managed_router(
     cleanup_manifest = (
         tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
     )
-    router_log = (
-        artifact_dir / "router.log"
-        if artifact_dir is not None
-        else server_log_file(tmp_path_factory, log_prefix)
-    )
+    router_log = server_log_file(tmp_path_factory, log_prefix)
     router_proc: subprocess.Popen | None = None
     handle: ManagedRouterHandle | None = None
 
@@ -404,11 +394,8 @@ def _write_launcher_config(
     worker_base_port: int,
     worker_extra_args: str,
     wait_timeout: int,
-    output_path: Path | None = None,
 ) -> Path:
-    config_path = output_path or (
-        tmp_path_factory.mktemp("omni_router_launcher") / "launcher.yaml"
-    )
+    config_path = tmp_path_factory.mktemp("omni_router_launcher") / "launcher.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {

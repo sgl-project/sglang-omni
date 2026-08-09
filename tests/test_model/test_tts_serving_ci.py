@@ -285,7 +285,6 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
     else:
         run_dir = tmp_path_factory.mktemp("tts-serving-ci")
     benchmark_dir = run_dir / "benchmark"
-    topology_dir = run_dir / "topology"
     speaker_dir = tmp_path_factory.mktemp("tts-serving-speakers")
     benchmark_dir.mkdir(parents=True, exist_ok=True)
     worker_args = [
@@ -309,7 +308,6 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             num_workers=2,
             num_gpus_per_worker=1,
             wait_timeout=MODEL_PRESET.startup_timeout,
-            artifact_dir=topology_dir,
             process_env=process_env,
         ) as router:
             base_url = f"http://127.0.0.1:{router.port}"
@@ -363,24 +361,20 @@ def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
         str(run.benchmark_dir),
     ]
     started = time.perf_counter()
-    with (run.run_dir / "benchmark.stdout.log").open("w", encoding="utf-8") as stdout:
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=PROJECT_ROOT,
-                env={**no_proxy_env(), "PYTHONPATH": str(PROJECT_ROOT)},
-                stdout=stdout,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-                timeout=BENCHMARK_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            stdout.write(f"\nbenchmark killed after {BENCHMARK_TIMEOUT_S}s timeout\n")
-            completed = subprocess.CompletedProcess(
-                command,
-                returncode=BENCHMARK_TIMEOUT_RETURNCODE,
-            )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            env={**no_proxy_env(), "PYTHONPATH": str(PROJECT_ROOT)},
+            check=False,
+            timeout=BENCHMARK_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"benchmark killed after {BENCHMARK_TIMEOUT_S}s timeout", flush=True)
+        completed = subprocess.CompletedProcess(
+            command,
+            returncode=BENCHMARK_TIMEOUT_RETURNCODE,
+        )
     (run.run_dir / "benchmark.wall_time.json").write_text(
         json.dumps(
             {
