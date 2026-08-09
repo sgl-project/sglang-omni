@@ -40,6 +40,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from sglang_omni import __version__
 from sglang_omni.client import (
     Client,
     ClientError,
@@ -102,8 +103,12 @@ from sglang_omni.serve.speech_errors import (
     openai_error_payload,
     speech_error_response,
 )
+from sglang_omni.serve.speech_limits import (
+    MAX_VOICE_UPLOAD_BODY_BYTES,
+    MAX_VOICE_UPLOAD_BYTES,
+)
 from sglang_omni.serve.speech_service import SpeechRequestValidator
-from sglang_omni.serve.speech_voices import MAX_VOICE_UPLOAD_BYTES, SpeakerSampleStore
+from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
 from sglang_omni.serve.streaming import STREAM_DONE_SENTINEL
 from sglang_omni.serve.streaming import (
@@ -117,10 +122,6 @@ from sglang_omni.serve.transcriptions import register_transcriptions
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
-VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
-MAX_VOICE_UPLOAD_BODY_BYTES = (
-    MAX_VOICE_UPLOAD_BYTES + VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES
-)
 
 
 class _RequestBodyTooLarge(Exception):
@@ -211,7 +212,7 @@ def create_app(
     Returns:
         Configured FastAPI application.
     """
-    app = FastAPI(title="sglang-omni", version="0.1.0")
+    app = FastAPI(title="sglang-omni", version=__version__)
 
     app.add_middleware(
         CORSMiddleware,
@@ -269,8 +270,12 @@ def create_app(
 
 def _register_voices(app: FastAPI) -> None:
     @app.get("/v1/audio/voices")
-    async def list_voices() -> JSONResponse:
+    async def list_voices(names_only: bool = False) -> JSONResponse:
         voice_store: SpeakerSampleStore = app.state.speaker_sample_store
+        if names_only:
+            return JSONResponse(
+                content={"uploaded_voice_names": voice_store.uploaded_voice_names()}
+            )
         response = VoiceListResponse.model_validate(voice_store.list_response())
         return JSONResponse(content=response.model_dump(exclude_none=True))
 

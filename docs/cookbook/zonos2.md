@@ -11,16 +11,27 @@ vocoder` pipeline and is served through the OpenAI-compatible
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then
-download the model:
+Install `sglang-omni` by following [Installation](../get_started/installation.md).
+
+ZONOS2 uses the Descript DAC codec, which is not included in the base
+`sglang-omni` package. From the SGLang-Omni repository root, install its
+model-specific dependencies:
+
+```bash
+uv pip install \
+  "descript-audiotools==0.7.2" \
+  "descript-audio-codec==1.0.0"
+```
+
+Then download the model:
 
 ```bash
 hf download Zyphra/zonos2
 ```
 
-The processor ships with the checkpoint, so no extra TTS package is needed. Voice cloning
-transcodes reference audio (file, URL, or base64 data-URI) with **ffmpeg**, so `ffmpeg` must
-be on the server's `PATH` (e.g. `apt-get install ffmpeg`).
+The processor ships with the checkpoint. Voice cloning transcodes reference audio
+(file, URL, or base64 data-URI) with **ffmpeg**, so `ffmpeg` must be on the
+server's `PATH` (e.g. `apt-get install ffmpeg`).
 
 ## Server Configuration
 

@@ -8,16 +8,16 @@ command for your hardware, then check the tables to confirm your combination is 
 ## Prerequisites
 
 ```bash
-docker pull frankleeeee/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
+docker pull hongccc/sglang-omni:dev
+docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
 ```
 
 ```bash
-git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v .
+uv pip install "sglang-omni==0.1.1"
 ```
+
+See [Installation](../get_started/installation.md) for Docker digests and source installs.
 
 ## Server Configuration
 

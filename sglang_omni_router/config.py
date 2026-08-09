@@ -39,6 +39,7 @@ DEFAULT_CAPABILITIES: set[Capability] = {
     "video_input",
     "audio_output",
 }
+VOICE_OWNER_CAPABILITIES: frozenset[Capability] = frozenset({"speech", "audio_input"})
 CLOUD_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 
 # Note: (Jiaxin Deng) the cap is pool-wide (one shared client): it must exceed the
@@ -48,6 +49,10 @@ MAX_AUTO_CONNECTIONS = 4096
 MIN_CONNECTIONS_PER_WORKER = 64
 
 logger = logging.getLogger(__name__)
+
+
+def can_own_uploaded_voices(capabilities: set[Capability]) -> bool:
+    return VOICE_OWNER_CAPABILITIES.issubset(capabilities)
 
 
 def normalize_worker_url(url: str) -> str:
@@ -143,6 +148,7 @@ class RouterConfig(BaseModel):
     health_check_timeout_secs: int = 5
     health_check_interval_secs: int = 10
     health_check_endpoint: str = "/health"
+    voice_owner_worker_url: str | None = None
     router_state_dir: str | None = None
 
     @field_validator("port")
@@ -219,6 +225,11 @@ class RouterConfig(BaseModel):
             raise ValueError("health_check_endpoint must not include query or fragment")
         return value
 
+    @field_validator("voice_owner_worker_url")
+    @classmethod
+    def _normalize_voice_owner_worker_url(cls, value: str | None) -> str | None:
+        return normalize_worker_url(value) if value is not None else None
+
     @model_validator(mode="after")
     def _validate_workers(self) -> "RouterConfig":
         if not self.workers:
@@ -227,6 +238,23 @@ class RouterConfig(BaseModel):
         duplicates = sorted({url for url in urls if urls.count(url) > 1})
         if duplicates:
             raise ValueError(f"duplicate worker URLs: {', '.join(duplicates)}")
+        if (
+            self.voice_owner_worker_url is not None
+            and self.voice_owner_worker_url not in urls
+        ):
+            raise ValueError("voice_owner_worker_url must identify a configured worker")
+        if self.voice_owner_worker_url is not None:
+            owner = next(
+                worker
+                for worker in self.workers
+                if worker.url == self.voice_owner_worker_url
+            )
+            if not can_own_uploaded_voices(owner.capabilities):
+                required = ", ".join(sorted(VOICE_OWNER_CAPABILITIES))
+                raise ValueError(
+                    "voice_owner_worker_url must identify a worker with "
+                    f"capabilities: {required}"
+                )
         return self
 
     @model_validator(mode="after")
@@ -263,6 +291,7 @@ def build_router_config(
     health_check_timeout_secs: int = 5,
     health_check_interval_secs: int = 10,
     health_check_endpoint: str = "/health",
+    voice_owner_worker_url: str | None = None,
     router_state_dir: str | None = None,
 ) -> RouterConfig:
     if workers is not None and worker_urls:
@@ -288,6 +317,7 @@ def build_router_config(
         health_check_timeout_secs=health_check_timeout_secs,
         health_check_interval_secs=health_check_interval_secs,
         health_check_endpoint=health_check_endpoint,
+        voice_owner_worker_url=voice_owner_worker_url,
         router_state_dir=router_state_dir,
     )
 

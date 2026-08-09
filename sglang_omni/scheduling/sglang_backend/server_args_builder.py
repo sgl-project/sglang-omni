@@ -6,6 +6,7 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 _DECODE_CUDA_GRAPH_ALIASES = {
@@ -57,7 +58,7 @@ def build_sglang_server_args(
     # Existing Omni models remain eager-prefill by default. Models that have
     # adapted SGLang's phase-specific prefill contract opt in explicitly
     # through their generation defaults / server overrides.
-    kwargs.setdefault("cuda_graph_backend_prefill", "disabled")
+    kwargs.setdefault("cuda_graph_backend_prefill", CudaGraphBackend.DISABLED)
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
     server_args = ServerArgs(**kwargs)

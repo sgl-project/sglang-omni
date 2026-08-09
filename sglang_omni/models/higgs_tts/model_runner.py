@@ -18,6 +18,10 @@ import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.higgs_tts.sampler import K_MAX, selected_token_logprobs
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
@@ -79,13 +83,15 @@ class HiggsTTSModelRunner(ModelRunner):
 
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
-        forward_batch.req_ids = [req.request_id for req in requests]
         for req in requests:
             self.model.set_request_seed(
                 req.request_id, req.data.req.sampling_params.sampling_seed
             )
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+            ),
         )
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
@@ -101,7 +107,6 @@ class HiggsTTSModelRunner(ModelRunner):
         is_lookahead: bool = False,
     ):
         del schedule_batch
-        forward_batch.req_ids = [req.request_id for req in requests]
         self._populate_cg_buffers(forward_batch, requests, is_lookahead=is_lookahead)
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):

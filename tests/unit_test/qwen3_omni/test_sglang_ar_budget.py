@@ -46,7 +46,8 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],
                     bs=overrides["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=overrides["disable_cuda_graph"],
             enable_torch_compile=overrides.get("enable_torch_compile", False),
@@ -282,7 +283,8 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],
                     bs=overrides["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=overrides["disable_cuda_graph"],
             enable_torch_compile=overrides.get("enable_torch_compile", False),
@@ -349,7 +351,8 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],
                     bs=overrides["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=overrides["disable_cuda_graph"],
             enable_torch_compile=overrides.get("enable_torch_compile", False),
@@ -428,7 +431,8 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],
                     bs=overrides["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=overrides["disable_cuda_graph"],
             enable_torch_compile=overrides.get("enable_torch_compile", False),

@@ -650,6 +650,7 @@ def _run_s2pro_engine_with_fake_buffers(
     class _FakeWorker:
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = _FakeSGLangRunner(server_args)
+            self.enable_prefill_input_embeds = False
 
     monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
     monkeypatch.setattr(fish_bootstrap, "truncate_rope_to_bf16", lambda model: None)
@@ -692,7 +693,8 @@ def _run_s2pro_engine_with_fake_buffers(
                 decode=SimpleNamespace(
                     max_bs=kwargs["cuda_graph_max_bs"],
                     bs=kwargs["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],

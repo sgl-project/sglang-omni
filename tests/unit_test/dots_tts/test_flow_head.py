@@ -235,6 +235,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
         eos_thresholds=[2.0, 2.0],
         append_hidden=False,
     )
+    assert flow.resolve_batched_eos() == [False, False]
     torch.testing.assert_close(
         first_steps[0].latent_patch,
         first_steps[1].latent_patch,
@@ -280,6 +281,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
         eos_thresholds=[2.0],
         append_hidden=True,
     )
+    assert flow.resolve_batched_eos() == [False]
     [actual] = flow.decode_batch(
         [rematerialized],
         hidden_states=next_hidden,
@@ -289,6 +291,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
         eos_thresholds=[2.0],
         append_hidden=False,
     )
+    assert flow.resolve_batched_eos() == [False]
 
     torch.testing.assert_close(
         actual.latent_patch,
@@ -409,3 +412,150 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
     assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
     assert torch.isfinite(step.latent_patch).all()
     assert torch.isfinite(step.feedback_embedding).all()
+
+
+def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
+    torch.manual_seed(7)
+    flow = _flow_head(tmp_path)
+    flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
+    prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
+    states = []
+    for seed in (11, 12):
+        state, _ = flow.new_request(
+            max_audio_patch_count=6,
+            prompt_latents=prompt_latents,
+            speaker_embedding=None,
+            speaker_scale=1.0,
+            rng=seed,
+        )
+        flow.initialize_history(
+            state,
+            hidden_states=torch.randn(1, 3, LLM_HIDDEN),
+            prompt_span_positions=torch.tensor([1, 2]),
+            audio_span_token_ids={1},
+            generation_schedule=torch.tensor([[0, 1, 1, 1]]),
+            prefill_end=3,
+            decoded_latent_patches=[],
+        )
+        states.append(state)
+
+    steps = flow.decode_batch(
+        states,
+        hidden_states=torch.randn(2, LLM_HIDDEN),
+        num_steps=[NFE, NFE],
+        ode_methods=["euler", "euler"],
+        guidance_scales=[1.0, 1.0],
+        eos_thresholds=[2.0, 2.0],
+        append_hidden=False,
+    )
+    assert all(not step.finished for step in steps)
+    assert flow.has_pending_batched_eos
+    assert flow.resolve_batched_eos() == [False, False]
+    assert not flow.has_pending_batched_eos
+    assert flow.resolve_batched_eos() == []
+
+
+def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
+    torch.manual_seed(8)
+    flow = _flow_head(tmp_path)
+    flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
+    state, _ = flow.new_request(
+        max_audio_patch_count=6,
+        prompt_latents=torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM),
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=3,
+    )
+    flow.initialize_history(
+        state,
+        hidden_states=torch.randn(1, 3, LLM_HIDDEN),
+        prompt_span_positions=torch.tensor([1, 2]),
+        audio_span_token_ids={1},
+        generation_schedule=torch.tensor([[0, 1, 1, 1]]),
+        prefill_end=3,
+        decoded_latent_patches=[],
+    )
+    flow.decode_batch(
+        [state],
+        hidden_states=torch.randn(1, LLM_HIDDEN),
+        num_steps=[NFE],
+        ode_methods=["euler"],
+        guidance_scales=[1.0],
+        eos_thresholds=[2.0],
+        append_hidden=False,
+    )
+    slot = state.slot
+    assert slot is not None
+    tail = flow._tail
+    fm_seq_len = tail.fm_seq_len(slot)
+    encoder_seq_len = tail._encoder_seq_len[slot]
+    rng_state = tail.slot_rng_state(slot)
+    assert rng_state is not None
+    decoded_patches = state.decoded_patches
+
+    with pytest.raises(RuntimeError, match="before resolve_batched_eos"):
+        flow.decode_batch(
+            [state],
+            hidden_states=torch.randn(1, LLM_HIDDEN),
+            num_steps=[NFE],
+            ode_methods=["euler"],
+            guidance_scales=[1.0],
+            eos_thresholds=[2.0],
+            append_hidden=True,
+        )
+    assert tail.fm_seq_len(slot) == fm_seq_len
+    assert tail._encoder_seq_len[slot] == encoder_seq_len
+    actual_rng_state = tail.slot_rng_state(slot)
+    assert actual_rng_state is not None
+    torch.testing.assert_close(actual_rng_state, rng_state, rtol=0, atol=0)
+    assert state.decoded_patches == decoded_patches
+    assert flow.resolve_batched_eos() == [False]
+
+
+def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
+    torch.manual_seed(9)
+    flow = _flow_head(tmp_path)
+    flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
+    state, _ = flow.new_request(
+        max_audio_patch_count=6,
+        prompt_latents=torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM),
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=5,
+    )
+    flow.initialize_history(
+        state,
+        hidden_states=torch.randn(1, 3, LLM_HIDDEN),
+        prompt_span_positions=torch.tensor([1, 2]),
+        audio_span_token_ids={1},
+        generation_schedule=torch.tensor([[0, 1, 1, 1]]),
+        prefill_end=3,
+        decoded_latent_patches=[],
+    )
+
+    state.suppress_first_eos_check = True
+    state.decoded_patches = 0
+    with torch.no_grad():
+        final = flow.eos_proj[-1]
+        final.weight.zero_()
+        final.bias[:] = torch.tensor([-10.0, 10.0])
+    flow.decode_batch(
+        [state],
+        hidden_states=torch.randn(1, LLM_HIDDEN),
+        num_steps=[NFE],
+        ode_methods=["euler"],
+        guidance_scales=[1.0],
+        eos_thresholds=[0.1],
+        append_hidden=False,
+    )
+    assert flow.resolve_batched_eos() == [False]
+    flow.decode_batch(
+        [state],
+        hidden_states=torch.randn(1, LLM_HIDDEN),
+        num_steps=[NFE],
+        ode_methods=["euler"],
+        guidance_scales=[1.0],
+        eos_thresholds=[0.1],
+        append_hidden=True,
+    )
+    assert flow.resolve_batched_eos() == [True]
