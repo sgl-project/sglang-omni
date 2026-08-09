@@ -308,6 +308,7 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             num_workers=2,
             num_gpus_per_worker=1,
             wait_timeout=MODEL_PRESET.startup_timeout,
+            force_log=True,
             process_env=process_env,
         ) as router:
             base_url = f"http://127.0.0.1:{router.port}"

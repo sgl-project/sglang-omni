@@ -99,6 +99,7 @@ def launch_managed_router(
     wait_timeout: int = 900,
     startup_timeout: int | None = None,
     log_prefix: str = "omni_router_logs",
+    force_log: bool = False,
     external_worker_urls: list[str] | None = None,
     process_env: dict[str, str] | None = None,
 ) -> Iterator[ManagedRouterHandle]:
@@ -127,7 +128,11 @@ def launch_managed_router(
     cleanup_manifest = (
         tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
     )
-    router_log = server_log_file(tmp_path_factory, log_prefix)
+    router_log = (
+        tmp_path_factory.mktemp(log_prefix) / "server.log"
+        if force_log
+        else server_log_file(tmp_path_factory, log_prefix)
+    )
     router_proc: subprocess.Popen | None = None
     handle: ManagedRouterHandle | None = None
 
@@ -175,6 +180,7 @@ def launch_managed_router(
                 **(process_env or {}),
                 ROUTER_CLEANUP_MANIFEST_ENV: str(cleanup_manifest),
             },
+            tee=force_log,
         )
         _record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
         wait_for_all_router_workers(
