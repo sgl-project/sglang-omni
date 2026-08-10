@@ -44,6 +44,7 @@ class LLaDA2MoeAttention(nn.Module):
         config: PretrainedConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.config = config
@@ -67,12 +68,14 @@ class LLaDA2MoeAttention(nn.Module):
             self.num_kv_heads,
             bias=config.use_qkv_bias,
             quant_config=quant_config,
+            prefix=f"{prefix}.query_key_value",
         )
         self.dense = RowParallelLinear(
             self.num_heads * self.head_dim,
             self.hidden_size,
             bias=False,
             quant_config=quant_config,
+            prefix=f"{prefix}.dense",
         )
 
         if hasattr(config, "partial_rotary_factor"):
@@ -166,6 +169,7 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -173,12 +177,14 @@ class LLaDA2MoeMLP(nn.Module):
             [intermediate_size] * 2,
             bias=False,
             quant_config=quant_config,
+            prefix=f"{prefix}.gate_up_proj",
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            prefix=f"{prefix}.down_proj",
         )
         self.act_fn = SiluAndMul()
 
@@ -227,6 +233,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         config: PretrainedConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.config = config
@@ -261,6 +268,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             layer_id=layer_id,
             quant_config=quant_config,
             reduce_results=False,
+            prefix=f"{prefix}.experts",
         )
 
         # Shared expert
@@ -269,7 +277,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config,
+                shared_intermediate,
+                quant_config,
+                prefix=f"{prefix}.shared_experts",
             )
         else:
             self.shared_experts = None
@@ -361,6 +372,7 @@ class LLaDA2MoeBlock(nn.Module):
         config: PretrainedConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
         super().__init__()
         self.layer_id = layer_id
@@ -369,16 +381,22 @@ class LLaDA2MoeBlock(nn.Module):
 
         # Attention
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.attention = LLaDA2MoeAttention(config, layer_id, quant_config)
+        self.attention = LLaDA2MoeAttention(
+            config, layer_id, quant_config, prefix=f"{prefix}.attention"
+        )
 
         # FFN: dense MLP for first_k_dense_replace layers, MoE for rest
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
         if self.is_dense:
-            self.mlp = LLaDA2MoeMLP(config, config.intermediate_size, quant_config)
+            self.mlp = LLaDA2MoeMLP(
+                config, config.intermediate_size, quant_config, prefix=f"{prefix}.mlp"
+            )
         else:
-            self.mlp = LLaDA2MoeSparseMoeBlock(config, layer_id, quant_config)
+            self.mlp = LLaDA2MoeSparseMoeBlock(
+                config, layer_id, quant_config, prefix=f"{prefix}.mlp"
+            )
 
     def forward(
         self,
@@ -417,7 +435,9 @@ class LLaDA2MoeTextModel(nn.Module):
         )
         self.layers = make_layers(
             config.num_hidden_layers,
-            lambda idx, prefix="": LLaDA2MoeBlock(config, idx, quant_config),
+            lambda idx, prefix="": LLaDA2MoeBlock(
+                config, idx, quant_config, prefix=prefix
+            ),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 

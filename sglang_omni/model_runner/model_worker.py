@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from sglang_omni.quantization import (
+    inject_fp8_experts_quant_config,
     needs_quant_config_normalization,
     normalize_quant_config,
     resolve_quant_config,
@@ -609,6 +610,8 @@ def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     against runtime module names, currently AutoRound.
     """
     quant_dict = resolve_quant_config(model_config.hf_config)
+    if quant_dict is None:
+        quant_dict = inject_fp8_experts_quant_config(model_config)
     if quant_dict is None:
         return
 
