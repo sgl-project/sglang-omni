@@ -16,10 +16,10 @@ MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
 Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows
 the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
 `--stages.asr.factory-args.dtype float16` to force FP16.
-Async decode is enabled by default for decode batches of at least two requests,
-allowing the shared one-step-lookahead path to overlap host-side result
-processing with the next GPU decode forward. Use `--decode-mode sync` to disable
-it, or tune the crossover with `--async-lookahead-min-batch-size`.
+Async decode is enabled by default for all decode batch sizes, allowing the
+shared one-step-lookahead path to overlap host-side result processing with the
+next GPU decode forward even for a single request. Use `--decode-mode sync` to
+disable it, or tune the crossover with `--async-lookahead-min-batch-size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 24 ms. Once request-build work drains, a ready prefill is released immediately

@@ -1276,7 +1276,8 @@ def serve(
             "--async_lookahead_min_batch_size",
             help=(
                 "Decode batches smaller than this bypass async lookahead and "
-                "run synchronously (fast path). Default 2."
+                "run synchronously (fast path). Model default: 1 for "
+                "Qwen3-ASR and 2 for other supported models."
             ),
         ),
     ] = None,
