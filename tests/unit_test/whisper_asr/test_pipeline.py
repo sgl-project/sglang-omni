@@ -35,12 +35,12 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
         max_new_tokens=32,
         mem_fraction_static=0.2,
         enable_encoder_cuda_graph=True,
-        encoder_graph_batch_buckets=[1, 4, 4],
     )
     builder.processor = SimpleNamespace(
         feature_extractor=SimpleNamespace(nb_max_frames=3000)
     )
-    assert builder.encoder_graph_batch_buckets == (1, 4)
+    builder.encoder_token_count = 1500
+    assert builder.encoder_graph_batch_buckets == (1, 2, 4, 8, 12, 16)
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(
             (list(buckets), feature_len)
@@ -49,17 +49,45 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
 
     builder.setup_model_resources(
         model,
-        server_args=None,
+        server_args=SimpleNamespace(max_prefill_tokens=4096),
         generation_cuda_graph_enabled=True,
     )
-    assert calls == [([1, 4], 3000)]
+    assert calls == [([1, 2], 3000)]
 
     builder.setup_model_resources(
         model,
-        server_args=None,
+        server_args=SimpleNamespace(max_prefill_tokens=4096),
         generation_cuda_graph_enabled=False,
     )
-    assert calls == [([1, 4], 3000)]
+    assert calls == [([1, 2], 3000)]
+
+
+def test_whisper_encoder_cuda_graph_buckets_follow_final_prefill_budget() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    calls: list[list[int]] = []
+    builder = WhisperASREngineBuilder(
+        max_running_requests=16,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+        enable_encoder_cuda_graph=True,
+        encoder_graph_batch_buckets=[8, 1, 4, 4, 16],
+    )
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    builder.encoder_token_count = 1500
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(max_prefill_tokens=8192),
+        generation_cuda_graph_enabled=True,
+    )
+
+    assert calls == [[1, 4]]
 
 
 def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:

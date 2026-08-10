@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
 
@@ -14,6 +17,21 @@ def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ..
     values = _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS if buckets is None else buckets
     normalized = {int(value) for value in values}
     return tuple(sorted(value for value in normalized if value >= 1))
+
+
+def _resolve_encoder_graph_buckets(
+    buckets: tuple[int, ...],
+    *,
+    max_prefill_tokens: int,
+    encoder_token_count: int,
+) -> tuple[int, ...]:
+    """Filter capture buckets to batches reachable by atomic prefill."""
+    if max_prefill_tokens < 1:
+        raise ValueError(f"max_prefill_tokens must be >= 1, got {max_prefill_tokens}")
+    if encoder_token_count < 1:
+        raise ValueError(f"encoder_token_count must be >= 1, got {encoder_token_count}")
+    max_encoder_batch_size = max_prefill_tokens // encoder_token_count
+    return tuple(bucket for bucket in buckets if bucket <= max_encoder_batch_size)
 
 
 class WhisperASREngineBuilder(AsrEngineBuilder):
@@ -74,10 +92,23 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        del server_args
         if self.enable_encoder_cuda_graph and generation_cuda_graph_enabled:
-            model.init_encoder_graphs(
+            max_prefill_tokens = int(server_args.max_prefill_tokens)
+            resolved_buckets = _resolve_encoder_graph_buckets(
                 self.encoder_graph_batch_buckets,
+                max_prefill_tokens=max_prefill_tokens,
+                encoder_token_count=self.encoder_token_count,
+            )
+            logger.info(
+                "Resolved Whisper encoder CUDA graph buckets configured=%s "
+                "reachable=%s max_prefill_tokens=%d encoder_token_count=%d",
+                self.encoder_graph_batch_buckets,
+                resolved_buckets,
+                max_prefill_tokens,
+                self.encoder_token_count,
+            )
+            model.init_encoder_graphs(
+                resolved_buckets,
                 int(self.processor.feature_extractor.nb_max_frames),
             )
 
