@@ -6,6 +6,7 @@ from benchmarks.eval.benchmark_tts_seedtts import (
     _build_results_config,
     _config_from_args,
 )
+from benchmarks.tasks.asr import normalize_text
 
 
 def _config_from_cli(*args: str) -> TtsSeedttsBenchmarkConfig:
@@ -44,3 +45,21 @@ def test_seedtts_benchmark_batch_args_are_independent() -> None:
     )
     assert results_config["max_running_requests"] == 32
     assert results_config["cuda_graph_max_bs"] == 128
+
+
+def test_seedtts_benchmark_accepts_arabic() -> None:
+    config = _config_from_cli(
+        "--transcribe-only",
+        "--skip-gpu-cleanup",
+        "--meta",
+        "google/fleurs",
+        "--lang",
+        "ar",
+    )
+
+    assert config.lang == "ar"
+    assert config.meta == "google/fleurs"
+
+
+def test_arabic_wer_normalization() -> None:
+    assert normalize_text("إِنَّ ٱلْعَرَبِيَّةَ — جَمِيلَةٌ! ١٢٣", "ar") == ("ان العربية جميلة 123")

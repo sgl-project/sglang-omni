@@ -177,6 +177,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 
 | Script | Task | Model | API |
 |--------|------|-------|-----|
+| `audar_tts/run_quality_benchmark.py` | Informal Arabic intelligibility smoke benchmark on a fixed FLEURS-derived HF set | Audar-TTS-V1 Turbo | Direct pipeline stages, then shared ASR pipeline |
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
@@ -190,6 +191,8 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
+See [audar_tts/README.md](audar_tts/README.md) for the lightweight Arabic
+intelligibility workflow and its limitations.
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1

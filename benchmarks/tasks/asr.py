@@ -18,6 +18,7 @@ import logging
 import os
 import string
 import time
+import unicodedata
 import wave
 
 import aiohttp
@@ -89,6 +90,35 @@ def normalize_text(text: str, lang: str) -> str:
         text = text.replace(" ", "").replace("\u3000", "").strip()
         text = " ".join(list(text))
         return text
+
+    if lang == "ar":
+        normalized = unicodedata.normalize("NFKC", text).translate(
+            str.maketrans(
+                {
+                    "أ": "ا",
+                    "إ": "ا",
+                    "آ": "ا",
+                    "ٱ": "ا",
+                    "ى": "ي",
+                    "٠": "0",
+                    "١": "1",
+                    "٢": "2",
+                    "٣": "3",
+                    "٤": "4",
+                    "٥": "5",
+                    "٦": "6",
+                    "٧": "7",
+                    "٨": "8",
+                    "٩": "9",
+                }
+            )
+        )
+        normalized = "".join(
+            " " if unicodedata.category(char).startswith("P") else char
+            for char in normalized
+            if char != "ـ" and not unicodedata.combining(char)
+        )
+        return " ".join(normalized.split())
 
     normalizer = _get_en_normalizer()
     return normalizer(text)
@@ -262,7 +292,7 @@ def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
     del device
-    if lang not in {"en", "zh"}:
+    if lang not in {"ar", "en", "zh"}:
         raise ValueError(f"Unsupported language: {lang}")
     raise ValueError(
         "WER transcription requires a running SGLang Omni ASR server"
