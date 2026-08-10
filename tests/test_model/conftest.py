@@ -64,16 +64,17 @@ def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
     calibrated floors. Child processes inherit the affinity, which keeps the
     managed router, its workers, and the bench client on the reserved cores.
     Pinning restrains only this session, so a contention sampler reports
-    foreign load on the reserved cores at session end. On CI heavy intrusion
-    fails the session after results are written, so the stage retry
-    re-measures on a clean window instead of gating on polluted numbers;
-    calibration handles the same signal itself by rejecting the round.
+    foreign load on the reserved cores at session end. The report is
+    advisory, never fatal: contention can only depress perf numbers, so a
+    gate that passed under intrusion passed for real, and a gate that failed
+    carries the contention line for triage while retrying through the normal
+    failure path. Calibration is stricter and rejects the round itself.
     """
     cpus = _apply_omni_ci_cpuset()
     if cpus is None:
         yield
         return
-    from tests.utils.ci_cpu_contention import FAIL_FOREIGN_CORES, ContentionSampler
+    from tests.utils.ci_cpu_contention import ContentionSampler
 
     sampler = ContentionSampler(cpus)
     sampler.start()
@@ -82,12 +83,6 @@ def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
     finally:
         sampler.stop()
         print(sampler.summary())
-        peak = sampler.peak_foreign_cores()
-        if os.environ.get("GITHUB_ACTIONS") == "true" and peak > FAIL_FOREIGN_CORES:
-            pytest.fail(
-                f"cpuset contention: foreign load peaked at {peak:.2f} cores "
-                f"on the pinned cpuset; failing so the stage retry re-measures"
-            )
 
 
 TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)

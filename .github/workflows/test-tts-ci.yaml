@@ -235,7 +235,7 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run TTS serving stress stage
+      - name: Run TTS serving stress stage through router DP2
         shell: bash
         run: |
           source omni/bin/activate
@@ -245,7 +245,8 @@ jobs:
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TTS_SERVING_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          TTS_SERVING_STAGE_OUTPUT_ROOT: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -253,13 +254,18 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 4 (serving stress)
-          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-search-root: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */benchmark/results.json
             */benchmark/manifest.json
             */benchmark.wall_time.json
+            */benchmark_validation.json
+            */router_validation.json
+            */cleanup_validation.json
           artifact-upload-name: tts-stage-serving-results
-          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-upload-path: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-if-no-files-found: error
           summary-only: "true"
 
