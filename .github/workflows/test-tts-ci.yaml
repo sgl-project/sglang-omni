@@ -212,7 +212,7 @@ jobs:
           stage-label: TTS stage 3 (consistency)
 
   stage-4-serving:
-    name: stage 4 - serving stress (router DP2)
+    name: stage 4 - serving stress
     needs: stage-3-consistency
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
