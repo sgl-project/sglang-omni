@@ -196,6 +196,7 @@ class OmniScheduler:
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
         prefill_coalesce_requires_pending_builds: bool = False,
+        prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
@@ -301,6 +302,9 @@ class OmniScheduler:
         self.prefill_coalesce_when_idle = bool(prefill_coalesce_when_idle)
         self.prefill_coalesce_requires_pending_builds = bool(
             prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = bool(
+            prefill_coalesce_after_builds_during_decode
         )
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
@@ -1162,9 +1166,8 @@ class OmniScheduler:
         # so the coalesce hold-off returns an empty plan rather than None.
         if self.prefill_coalesce_requests <= 1 or self.chunked_req is not None:
             return _Upstream.get_new_batch_prefill(self, running_batch)
-        if not self.prefill_coalesce_when_idle and (
-            running_batch is None or running_batch.is_empty()
-        ):
+        decode_is_idle = running_batch is None or running_batch.is_empty()
+        if not self.prefill_coalesce_when_idle and decode_is_idle:
             return _Upstream.get_new_batch_prefill(self, running_batch)
         if self.prefill_coalesce_requires_pending_builds:
             with self._request_admission_lock:
@@ -1172,7 +1175,9 @@ class OmniScheduler:
                     self._pending_request_builds
                     or self._backlogged_request_build_payloads
                 )
-            if not build_work_pending:
+            if not build_work_pending and not (
+                self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
+            ):
                 return _Upstream.get_new_batch_prefill(self, running_batch)
         waiting = self.waiting_queue
         if not waiting or len(waiting) >= self.prefill_coalesce_requests:

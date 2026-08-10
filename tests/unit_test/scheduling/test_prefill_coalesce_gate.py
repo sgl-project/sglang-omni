@@ -44,11 +44,15 @@ class _StubScheduler:
         wait_ms: float = 60.0,
         coalesce_when_idle: bool = False,
         requires_pending_builds: bool = False,
+        coalesce_after_builds_during_decode: bool = False,
     ) -> None:
         self.prefill_coalesce_requests = coalesce_requests
         self.prefill_coalesce_wait_s = wait_ms / 1e3
         self.prefill_coalesce_when_idle = coalesce_when_idle
         self.prefill_coalesce_requires_pending_builds = requires_pending_builds
+        self.prefill_coalesce_after_builds_during_decode = (
+            coalesce_after_builds_during_decode
+        )
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
@@ -244,6 +248,35 @@ def test_pending_build_gate_does_not_wait_without_build_work(upstream, clock):
         wait_ms=6.0,
         coalesce_when_idle=True,
         requires_pending_builds=True,
+    )
+    sched.running_batch = None
+    sched.waiting_queue = [_req(100.0)]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+def test_decode_can_coalesce_after_build_work_drains(upstream, clock):
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    sched.waiting_queue = [_req(100.0)]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+
+def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
     )
     sched.running_batch = None
     sched.waiting_queue = [_req(100.0)]

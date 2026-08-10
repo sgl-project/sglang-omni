@@ -18,12 +18,36 @@ in place:
 
 ```bash
 apt-get update && apt-get install -y sox
-uv pip install sox einops onnxruntime
+uv pip install --no-deps sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
+`--no-deps` is required on **both** lines, for two different reasons.
+
+`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.12.1.
+And resolving `sox` normally pulls `numpy` past the ceiling `numba==0.65.1`
+imposes (numba requires `numpy<=2.4`); the upgraded `numpy` then breaks
+`librosa`, so `import qwen_tts` fails with `Numba needs NumPy 2.4 or less`
+before the server can start.
+
+Do not add `onnxruntime` to that line either — it is already a SGLang-Omni
+dependency, and resolving it pulls `numpy` the same way.
+
 > Do **not** install `qwen-tts` with dependencies here. Its declared dependency
 > set can pull a different Transformers/Torch stack than the SGLang-Omni runtime.
+
+Concretely, `qwen-tts` 0.1.1 pins Transformers 4.57.3, and its model code calls
+APIs that Transformers 5.12 has since renamed or removed — most visibly the mask
+factories (`create_causal_mask` and friends), which now spell `input_embeds` as
+`inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
+differences in
+`sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.16
+stack is therefore the supported configuration, not a workaround.
+
+If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
+installing the package's own Transformers pin — that breaks the rest of the
+runtime. Report it instead, so the shim can cover it.
 
 The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
 

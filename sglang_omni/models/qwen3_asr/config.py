@@ -40,6 +40,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 "prefill_coalesce_wait_ms": 24,
                 "prefill_coalesce_when_idle": True,
                 "prefill_coalesce_requires_pending_builds": True,
+                "prefill_coalesce_after_builds_during_decode": True,
                 "enable_pre_lm_encoder": True,
                 "pre_lm_cache_max_entries": 4096,
                 "pre_lm_cache_size_bytes": 2 * 1024**3,
