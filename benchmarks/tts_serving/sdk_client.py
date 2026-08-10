@@ -17,6 +17,7 @@ from benchmarks.tts_serving.error_contract import is_openai_error_response
 from benchmarks.tts_serving.http_contracts import (
     MAX_HTTP_RESPONSE_BYTES,
     UNSUPPORTED_HTTP_STATUSES,
+    mark_unexpected_success,
 )
 from benchmarks.tts_serving.metrics import ScenarioResult, finish_timing
 from benchmarks.tts_serving.scenarios import Scenario
@@ -128,6 +129,11 @@ def _run_openai_speech_create(
         return
     result.audio_bytes = len(body)
     result.audio_duration_s = validation.duration_s
+    if not scenario.expect_success:
+        result.http_status = 200
+        result.http_status_class = "2xx"
+        mark_unexpected_success(result, scenario)
+        return
     result.status = "ok"
     result.success = True
     result.capability = "pass"

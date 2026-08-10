@@ -7,17 +7,21 @@ import base64
 import hashlib
 import json
 import random
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from benchmarks.tts_serving.spec import BenchmarkSpec, LoadStage
+from benchmarks.tts_serving.spec import BenchmarkSpec, LoadStage, SpecError
+from benchmarks.tts_serving.text_corpus import (
+    SEEDTTS_TEXT_CORPUS_REVISION,
+    load_seedtts_target_texts,
+)
 from benchmarks.tts_serving.voice_upload_fixtures import (
     VOICE_UPLOAD_FIXTURE_SIZES,
     VOICE_UPLOAD_WAV_FIXTURE_SIZE,
     get_wav_upload_fixture,
 )
 
-SCENARIO_SCHEMA_VERSION = 3
+SCENARIO_SCHEMA_VERSION = 4
 
 MULTILINGUAL_TEXTS = (
     ("Auto", "This sentence lets the model auto-detect the target language."),
@@ -77,6 +81,9 @@ VOICE_DESIGN_INSTRUCTIONS = (
     "A warm, steady adult voice with precise articulation and no dramatic affect."
 )
 INITIAL_CODEC_CHUNK_FRAMES = 4
+TEXT_CORPUS_SINGLE_REQUEST_WORKLOADS = frozenset(
+    {"speech_normal", "rest_stream", "ws_normal"}
+)
 
 PROFILE_MIXES = {
     "stress": (
@@ -237,6 +244,8 @@ class Scenario:
     upload_size_bytes: int = 0
     script: list[dict[str, Any]] = field(default_factory=list)
     planned_metadata: dict[str, Any] = field(default_factory=dict)
+    t_offset_s: float | None = None
+    collision_epoch_s: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -339,6 +348,12 @@ def _build_stage_scenarios(spec: BenchmarkSpec, stage: LoadStage) -> list[Scenar
     rng = random.Random(f"{spec.seed}:{stage.id}")
     endpoint_set = set(stage.enabled_endpoints or spec.params.enabled_endpoints)
     required_scenarios = _required_stage_scenarios(spec, stage, endpoint_set)
+    if stage.mode == "scheduled":
+        return _build_scheduled_stage_scenarios(
+            spec,
+            stage,
+            required_scenarios,
+        )
     if _stage_voice_speaker_cap_count(spec, stage):
         return required_scenarios
     scenarios = list(required_scenarios)
@@ -353,6 +368,268 @@ def _build_stage_scenarios(spec: BenchmarkSpec, stage: LoadStage) -> list[Scenar
             )
         )
     return scenarios
+
+
+def _build_scheduled_stage_scenarios(
+    spec: BenchmarkSpec,
+    stage: LoadStage,
+    required_scenarios: list[Scenario],
+) -> list[Scenario]:
+    assert stage.coverage_schedule is not None
+    scheduled_workloads = {schedule.workload for schedule in stage.workload_schedules}
+    required_by_workload = {
+        workload: [
+            scenario for scenario in required_scenarios if scenario.workload == workload
+        ]
+        for workload in scheduled_workloads
+    }
+    coverage_scenarios = [
+        scenario
+        for scenario in required_scenarios
+        if scenario.workload not in scheduled_workloads
+    ]
+    resolved: list[tuple[float, int, int, Scenario]] = []
+    next_index = len(required_scenarios)
+    for source_rank, schedule in enumerate(stage.workload_schedules):
+        events = sorted(
+            (
+                *(
+                    (offset, True, index)
+                    for index, offset in enumerate(schedule.collision_offsets_s)
+                ),
+                *(
+                    (offset, False, index)
+                    for index, offset in enumerate(schedule.background_offsets_s)
+                ),
+            ),
+            key=lambda item: (item[0], not item[1], item[2]),
+        )
+        required = required_by_workload[schedule.workload]
+        if len(required) > len(events):
+            raise SpecError(
+                f"scheduled workload {schedule.workload!r} has "
+                f"{len(required)} required scenarios but only {len(events)} offsets"
+            )
+        for source_index, (offset, collision, _) in enumerate(events):
+            if source_index < len(required):
+                scenario = required[source_index]
+            else:
+                scenario = _scheduled_workload_scenario(
+                    schedule.workload,
+                    next_index,
+                    spec,
+                    stage,
+                )
+                next_index += 1
+            resolved.append(
+                (
+                    offset,
+                    source_rank,
+                    source_index,
+                    replace(
+                        scenario,
+                        t_offset_s=offset,
+                        collision_epoch_s=offset if collision else None,
+                    ),
+                )
+            )
+
+    coverage_offsets = _coverage_offsets(
+        stage.coverage_schedule.start_s,
+        stage.coverage_schedule.end_s,
+        len(coverage_scenarios),
+    )
+    collision_offsets = {
+        offset
+        for schedule in stage.workload_schedules
+        for offset in schedule.collision_offsets_s
+    }
+    coverage_at_collision = sorted(collision_offsets.intersection(coverage_offsets))
+    if coverage_at_collision:
+        raise SpecError(
+            "scheduled coverage offsets must not equal collision offsets: "
+            f"{coverage_at_collision}"
+        )
+    coverage_rank = len(stage.workload_schedules)
+    for source_index, (scenario, offset) in enumerate(
+        zip(coverage_scenarios, coverage_offsets, strict=True)
+    ):
+        resolved.append(
+            (
+                offset,
+                coverage_rank,
+                source_index,
+                replace(scenario, t_offset_s=offset),
+            )
+        )
+
+    resolved.sort(key=lambda item: item[:3])
+    for collision_offset in sorted(collision_offsets):
+        cohort = [
+            scenario
+            for offset, _, _, scenario in resolved
+            if offset == collision_offset
+        ]
+        observed_workloads = [scenario.workload for scenario in cohort]
+        if (
+            len(cohort) != len(scheduled_workloads)
+            or set(observed_workloads) != scheduled_workloads
+        ):
+            raise SpecError(
+                f"collision offset {collision_offset} must resolve to exactly one "
+                f"request per scheduled workload; observed={observed_workloads}"
+            )
+    if stage.text_corpus is not None:
+        resolved = _assign_text_corpus(spec, stage, resolved)
+    return [scenario for _, _, _, scenario in resolved]
+
+
+def _coverage_offsets(start_s: float, end_s: float, count: int) -> list[float]:
+    if count == 0:
+        return []
+    if count == 1:
+        return [(start_s + end_s) / 2.0]
+    step = (end_s - start_s) / (count - 1)
+    return [start_s + index * step for index in range(count)]
+
+
+def _scheduled_workload_scenario(
+    workload: str,
+    index: int,
+    spec: BenchmarkSpec,
+    stage: LoadStage,
+) -> Scenario:
+    if workload == "speech_normal":
+        return _speech_baseline(
+            index,
+            spec,
+            stage,
+            random.Random(f"{spec.seed}:{stage.id}:{index}:scheduled"),
+        )
+    if workload == "rest_stream":
+        return _speech_raw_pcm_stream(index, spec, stage)
+    if workload == "batch_32_all_valid":
+        return _batch_request(index, spec, stage, batch_size=32)
+    if workload == "long_prefill_decode":
+        return _speech_long_prefill_decode(index, spec, stage)
+    if workload == "ws_normal":
+        return _websocket_normal(index, spec, stage)
+    if workload == "ws_stream_audio":
+        return _websocket_stream_audio(index, spec, stage)
+    raise ValueError(f"unsupported scheduled workload: {workload}")
+
+
+def _assign_text_corpus(
+    spec: BenchmarkSpec,
+    stage: LoadStage,
+    resolved: list[tuple[float, int, int, Scenario]],
+) -> list[tuple[float, int, int, Scenario]]:
+    assert stage.text_corpus is not None
+    texts = list(_load_text_corpus(stage.text_corpus))
+    random.Random(f"{spec.seed}:{stage.id}:{stage.text_corpus}").shuffle(texts)
+    required_text_count = 0
+    for _, _, _, scenario in resolved:
+        if scenario.workload in TEXT_CORPUS_SINGLE_REQUEST_WORKLOADS:
+            required_text_count += 1
+        elif scenario.workload == "batch_32_all_valid":
+            batch_size = scenario.planned_metadata["batch_size"]
+            assert isinstance(batch_size, int)
+            required_text_count += batch_size
+    if required_text_count > len(texts):
+        raise SpecError(
+            f"text corpus {stage.text_corpus!r} has {len(texts)} unique texts but "
+            f"the scheduled stage requires {required_text_count}"
+        )
+
+    text_index = 0
+    assigned: list[tuple[float, int, int, Scenario]] = []
+    for offset, source_rank, source_index, scenario in resolved:
+        if scenario.workload in TEXT_CORPUS_SINGLE_REQUEST_WORKLOADS:
+            scenario = _with_target_text(
+                scenario,
+                stage.text_corpus,
+                texts[text_index],
+            )
+            text_index += 1
+        elif scenario.workload == "batch_32_all_valid":
+            batch_size = scenario.planned_metadata["batch_size"]
+            assert isinstance(batch_size, int)
+            scenario = _with_batch_target_texts(
+                scenario,
+                stage.text_corpus,
+                texts[text_index : text_index + batch_size],
+            )
+            text_index += batch_size
+        assigned.append((offset, source_rank, source_index, scenario))
+    assert text_index == required_text_count
+    return assigned
+
+
+def _with_target_text(
+    scenario: Scenario,
+    corpus_name: str,
+    target_text: str,
+) -> Scenario:
+    if scenario.workload in {"speech_normal", "rest_stream"}:
+        payload = {**scenario.payload, "input": target_text}
+        script = scenario.script
+    elif scenario.workload == "ws_normal":
+        input_step = scenario.script[1]
+        script = [
+            scenario.script[0],
+            {
+                **input_step,
+                "payload": {
+                    **input_step["payload"],
+                    "text": target_text,
+                },
+            },
+            *scenario.script[2:],
+        ]
+        payload = scenario.payload
+    else:
+        raise ValueError(f"unsupported corpus-backed workload: {scenario.workload}")
+    return replace(
+        scenario,
+        payload=payload,
+        script=script,
+        planned_metadata={
+            **scenario.planned_metadata,
+            "text_corpus": corpus_name,
+            "text_corpus_revision": SEEDTTS_TEXT_CORPUS_REVISION,
+        },
+    )
+
+
+def _with_batch_target_texts(
+    scenario: Scenario,
+    corpus_name: str,
+    target_texts: list[str],
+) -> Scenario:
+    items = scenario.payload["items"]
+    assert isinstance(items, list)
+    assert len(items) == len(target_texts)
+    return replace(
+        scenario,
+        payload={
+            **scenario.payload,
+            "items": [
+                {**item, "input": target_text}
+                for item, target_text in zip(items, target_texts, strict=True)
+            ],
+        },
+        planned_metadata={
+            **scenario.planned_metadata,
+            "text_corpus": corpus_name,
+            "text_corpus_revision": SEEDTTS_TEXT_CORPUS_REVISION,
+        },
+    )
+
+
+def _load_text_corpus(name: str) -> tuple[str, ...]:
+    if name != "seedtts-en":
+        raise SpecError(f"unsupported text corpus: {name}")
+    return load_seedtts_target_texts()
 
 
 def _required_stage_scenarios(
@@ -2016,9 +2293,7 @@ def _websocket_normal(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scen
                 "payload": {"type": "input.text", "text": "Hello."},
             },
             {"action": "send_json", "payload": {"type": "input.done"}},
-            {"action": "expect", "event": "audio.start"},
-            {"action": "expect_audio_until_done"},
-            {"action": "expect", "event": "session.done"},
+            {"action": "expect_audio_until_session_done", "min_binary_frames": 1},
         ],
         description="stateful WebSocket speech stream",
     )

@@ -368,12 +368,23 @@ def create_reference_encode_executor(
     *,
     device: str | None = "cuda",
     gpu_id: int | None = None,
-    max_concurrency: int = 1,
+    max_concurrency: int = 8,
+    max_batch_size: int = 1,
+    max_batch_wait_ms: float = 4.0,
 ) -> SimpleScheduler:
     worker_device = _device(device, gpu_id)
     codec = load_dots_audio_codec(model_path, device=worker_device)
-    encoder = DotsReferenceEncoder(codec, model_id=str(model_path))
-    return SimpleScheduler(encoder.encode_payload, max_concurrency=max_concurrency)
+    encoder = DotsReferenceEncoder(
+        codec,
+        model_id=str(model_path),
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
+    return SimpleScheduler(
+        encoder.encode_payload,
+        max_concurrency=max_concurrency,
+        shutdown_callback=encoder.close,
+    )
 
 
 def create_sglang_latent_engine_executor(

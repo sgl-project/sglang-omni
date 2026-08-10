@@ -11,7 +11,7 @@ import pybase64
 import pytest
 
 from sglang_omni.utils import audio
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import AudioDecodeError, load_audio
 
 
 def _wav_bytes(
@@ -37,6 +37,104 @@ def test_load_audio_accepts_base64_data_uri() -> None:
 def test_load_audio_rejects_non_base64_data_uri() -> None:
     with pytest.raises(ValueError, match="Invalid base64 audio data URI"):
         load_audio("data:audio/wav,not-base64")
+
+
+def test_load_audio_raises_typed_error_for_undecodable_bytes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        audio,
+        "_ensure_torchaudio_decoder_ready",
+        lambda: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audio,
+        "_is_invalid_audio_source",
+        lambda source: True,
+        raising=False,
+    )
+
+    def raise_invalid_audio(source):
+        del source
+        raise RuntimeError("invalid audio data")
+
+    monkeypatch.setattr(
+        audio.torchaudio,
+        "load",
+        raise_invalid_audio,
+    )
+
+    with pytest.raises(AudioDecodeError, match="Could not decode Qwen3-ASR"):
+        load_audio(b"not-audio", source_name="Qwen3-ASR")
+
+
+def test_load_audio_preserves_decoder_backend_failure(monkeypatch) -> None:
+    backend_error = RuntimeError("TorchCodec backend is unavailable")
+
+    def raise_backend_error():
+        raise backend_error
+
+    def unexpected_decoder(source):
+        del source
+        pytest.fail("decoder should not run without its backend")
+
+    monkeypatch.setattr(
+        audio,
+        "_ensure_torchaudio_decoder_ready",
+        raise_backend_error,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audio.torchaudio,
+        "load",
+        unexpected_decoder,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load_audio(b"encoded-audio")
+
+    assert exc_info.value is backend_error
+
+
+def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
+    decoder_oom = audio.torch.OutOfMemoryError("decoder out of memory")
+
+    def raise_wrapped_oom(source):
+        del source
+        try:
+            raise decoder_oom
+        except audio.torch.OutOfMemoryError as exc:
+            raise RuntimeError("decoder failed") from exc
+
+    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(
+        audio,
+        "_is_invalid_audio_source",
+        lambda source: pytest.fail("OOM must not be classified as invalid media"),
+        raising=False,
+    )
+    monkeypatch.setattr(audio.torchaudio, "load", raise_wrapped_oom)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load_audio(b"encoded-audio")
+
+    assert exc_info.value.__cause__ is decoder_oom
+
+
+def test_load_audio_classifies_corrupt_local_path(monkeypatch, tmp_path) -> None:
+    corrupt_path = tmp_path / "corrupt.wav"
+    corrupt_path.write_bytes(b"not-audio")
+
+    def raise_decode_error(source):
+        assert source == str(corrupt_path)
+        raise RuntimeError("invalid audio data")
+
+    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio.torchaudio, "load", raise_decode_error)
+
+    with pytest.raises(AudioDecodeError, match="Could not decode Test"):
+        load_audio(str(corrupt_path), source_name="Test")
 
 
 def test_load_audio_can_preserve_channels() -> None:

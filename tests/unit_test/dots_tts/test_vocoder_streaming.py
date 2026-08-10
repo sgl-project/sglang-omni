@@ -18,6 +18,7 @@ class _RecordingInference:
         self.stream_calls.append(
             {
                 "frames": int(latents.shape[1]),
+                "data_ptr": latents.data_ptr(),
                 "optimize": optimize,
                 "use_compiled": use_compiled,
             }
@@ -53,3 +54,15 @@ def test_streaming_never_uses_the_compiled_stream_step() -> None:
     assert codec.inference.stream_calls, "streaming produced no vocoder steps"
     assert all(not call["use_compiled"] for call in codec.inference.stream_calls)
     assert all(call["optimize"] for call in codec.inference.stream_calls)
+
+
+def test_streaming_single_patch_reuses_input_storage() -> None:
+    codec = _FakeCodec()
+    vocoder = DotsTTSStreamingVocoder(codec, optimize=True, merge_steps=2)
+    state = vocoder.create_stream_state("req")
+    patch = torch.zeros(1, 3, 5)
+
+    vocoder.ingest("req", state, patch)
+    vocoder.decode_delta("req", state, is_final=False)
+
+    assert codec.inference.stream_calls[0]["data_ptr"] == patch.data_ptr()

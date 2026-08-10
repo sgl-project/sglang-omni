@@ -56,15 +56,33 @@ def _apply_omni_ci_cpuset() -> set[int] | None:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def pin_omni_ci_cpuset() -> None:
+def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
     """Pin the test session, and every server it spawns, to OMNI_CI_CPUSET.
 
     The gates in this directory measure host-bound serving stacks, so on a
     shared runner concurrent jobs inflate per-request CPU cost and shift
     calibrated floors. Child processes inherit the affinity, which keeps the
     managed router, its workers, and the bench client on the reserved cores.
+    Pinning restrains only this session, so a contention sampler reports
+    foreign load on the reserved cores at session end. The report is
+    advisory, never fatal: contention can only depress perf numbers, so a
+    gate that passed under intrusion passed for real, and a gate that failed
+    carries the contention line for triage while retrying through the normal
+    failure path. Calibration is stricter and rejects the round itself.
     """
-    _apply_omni_ci_cpuset()
+    cpus = _apply_omni_ci_cpuset()
+    if cpus is None:
+        yield
+        return
+    from tests.utils.ci_cpu_contention import ContentionSampler
+
+    sampler = ContentionSampler(cpus)
+    sampler.start()
+    try:
+        yield
+    finally:
+        sampler.stop()
+        print(sampler.summary())
 
 
 TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)

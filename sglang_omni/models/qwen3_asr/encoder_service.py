@@ -195,20 +195,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
 
-        cached = self._cache.get(key)
+        cached = self.lookup_cached_embedding(
+            getattr(item, "audio_fingerprint", None), expected_tokens
+        )
         if cached is not None:
-            if self._is_valid(cached, expected_tokens):
-                with self._lock:
-                    self._hits += 1
-                self.attach_embedding(item, cached)
-                return
-            logger.warning(
-                f"Qwen3-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self._cache.remove_if_same(key, cached)
-            cached = None
+            self.attach_embedding(item, cached)
+            return
 
         leader = False
         with self._lock:
@@ -257,6 +249,30 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             )
         self.attach_embedding(item, embedding)
 
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated cached embedding without starting an encode."""
+        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        if self._is_valid(cached, expected_tokens):
+            with self._lock:
+                self._hits += 1
+            return cached
+        logger.warning(
+            "Qwen3-ASR pre-LM cache entry %s failed validation "
+            "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
+            key,
+            getattr(cached, "shape", None),
+            getattr(cached, "dtype", None),
+        )
+        self._cache.remove_if_same(key, cached)
+        return None
+
     def stats(self) -> dict[str, int | float]:
         with self._lock:
             cache_lookups = self._hits + self._misses
@@ -284,10 +300,14 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             }
 
     def _cache_key(self, item: Any) -> str | None:
-        item_hash = getattr(item, "audio_fingerprint", None)
-        if item_hash is None:
+        return self._cache_key_from_fingerprint(
+            getattr(item, "audio_fingerprint", None)
+        )
+
+    def _cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+        if audio_fingerprint is None:
             return None
-        return f"{self._namespace}:{item_hash}"
+        return f"{self._namespace}:{audio_fingerprint}"
 
     def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (

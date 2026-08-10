@@ -186,6 +186,161 @@ class DotsTtsTailSpec:
         return self.patch_capacity * self.unit_len
 
 
+def _dtype_nbytes(dtype: torch.dtype) -> int:
+    return torch.empty((), dtype=dtype).element_size()
+
+
+def _gib(num_bytes: int) -> float:
+    return float(num_bytes) / float(1 << 30)
+
+
+@dataclass(frozen=True)
+class AcousticPoolMemoryEstimate:
+    """Eager acoustic-tail pool byte budget matching _allocate_pools shapes."""
+
+    dit_kv_bytes: int
+    encoder_kv_bytes: int
+    scratch_bytes: int
+    aux_bytes: int
+    total_bytes: int
+    num_slots: int
+    patch_capacity: int
+    nfe: int
+    dtype: torch.dtype
+
+    @property
+    def bytes_per_slot(self) -> int:
+        return self.total_bytes // max(int(self.num_slots), 1)
+
+
+def estimate_acoustic_pool_bytes(
+    *,
+    spec: DotsTtsTailSpec,
+    dit_layers: int,
+    dit_heads: int,
+    dit_head_dim: int,
+    encoder_layers: int,
+    encoder_heads: int,
+    encoder_head_dim: int,
+    encoder_block: int,
+    encoder_conv_channels: int,
+    encoder_conv_padding: int,
+    mods_width: int,
+    dtype: torch.dtype,
+) -> AcousticPoolMemoryEstimate:
+    """Sum pool tensor bytes; excludes weights, backbone KV, and graph workspace."""
+    elem = _dtype_nbytes(dtype)
+    bool_elem = _dtype_nbytes(torch.bool)
+    slots = int(spec.num_slots)
+    nfe = int(spec.nfe)
+    dit_tokens = int(spec.dit_cache_tokens) + int(spec.unit_len)
+    dit_query = 2 * int(spec.unit_len)
+    dit_scratch_tokens = int(spec.dit_cache_tokens) + dit_query
+    encoder_tokens = int(spec.patch_capacity) * int(encoder_block)
+
+    dit_kv = (
+        2
+        * nfe
+        * int(dit_layers)
+        * slots
+        * int(dit_heads)
+        * dit_tokens
+        * int(dit_head_dim)
+        * elem
+    )
+    encoder_kv = (
+        2
+        * int(encoder_layers)
+        * slots
+        * int(encoder_heads)
+        * encoder_tokens
+        * int(encoder_head_dim)
+        * elem
+    )
+    dit_scratch = (
+        2
+        * int(dit_layers)
+        * slots
+        * int(dit_heads)
+        * dit_scratch_tokens
+        * int(dit_head_dim)
+        * elem
+    )
+    encoder_scratch = (
+        2
+        * int(encoder_layers)
+        * slots
+        * int(encoder_heads)
+        * (encoder_tokens + int(encoder_block))
+        * int(encoder_head_dim)
+        * elem
+    )
+    dit_mask = slots * 1 * dit_query * dit_scratch_tokens * bool_elem
+    encoder_mask = (
+        slots
+        * 1
+        * int(encoder_block)
+        * (encoder_tokens + int(encoder_block))
+        * bool_elem
+    )
+    window = slots * int(spec.window_len) * int(spec.fm_hidden_size) * elem
+    all_mods = nfe * slots * int(mods_width) * elem
+    conv_tail = slots * int(encoder_conv_channels) * int(encoder_conv_padding) * elem
+
+    scratch = dit_scratch + encoder_scratch
+    aux = dit_mask + encoder_mask + window + all_mods + conv_tail
+    total = dit_kv + encoder_kv + scratch + aux
+    return AcousticPoolMemoryEstimate(
+        dit_kv_bytes=dit_kv,
+        encoder_kv_bytes=encoder_kv,
+        scratch_bytes=scratch,
+        aux_bytes=aux,
+        total_bytes=total,
+        num_slots=slots,
+        patch_capacity=int(spec.patch_capacity),
+        nfe=nfe,
+        dtype=dtype,
+    )
+
+
+def validate_acoustic_pool_memory(
+    estimate: AcousticPoolMemoryEstimate,
+    *,
+    device: torch.device,
+    headroom_ratio: float = 0.15,
+) -> None:
+    """Raise if free CUDA memory cannot hold the pools plus headroom."""
+    # note (guozhihao-224): CPU paths skip this gate so unit tests can allocate
+    # tiny pools; never silently lower max_running_requests or patch capacity.
+    if device.type != "cuda":
+        return
+    if headroom_ratio < 0.0:
+        raise ValueError("dots.tts acoustic pool headroom_ratio must be non-negative")
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    # note (guozhihao-224): 15% headroom covers CUDA-graph capture and scratch
+    # beyond the eager pool tensors themselves.
+    required = int(estimate.total_bytes * (1.0 + float(headroom_ratio)))
+    if free_bytes >= required:
+        return
+    slot_required = estimate.bytes_per_slot * (1.0 + float(headroom_ratio))
+    fit_slots = max(int(free_bytes // max(slot_required, 1.0)), 0)
+    raise ValueError(
+        "dots.tts acoustic-tail admission failed at startup: estimated pools need "
+        f"{_gib(required):.2f} GiB "
+        f"(pools={_gib(estimate.total_bytes):.2f} GiB + "
+        f"{headroom_ratio:.0%} headroom for graphs/workspace) but only "
+        f"{_gib(free_bytes):.2f} GiB is free on {device} "
+        f"(GPU total {_gib(total_bytes):.2f} GiB). "
+        f"Configured slots={estimate.num_slots} patch_capacity={estimate.patch_capacity} "
+        f"nfe={estimate.nfe} dtype={estimate.dtype}. "
+        "Lower max_running_requests and/or max_generate_length "
+        f"(about {fit_slots} full-length slot(s) would fit at this capacity). "
+        "Parameters are not changed automatically."
+    )
+
+
 @dataclass
 class _CapturedTailGraph:
     graph: torch.cuda.CUDAGraph
@@ -265,7 +420,8 @@ class DotsTtsAcousticTail:
         self._encoder_heads = int(encoder_attention.num_heads)
         self._encoder_head_dim = int(encoder_attention.head_dim)
 
-        self._allocate_pools(int(dit.fused_adaln[-1].out_features))
+        self._mods_width = int(dit.fused_adaln[-1].out_features)
+        self._allocate_pools(self._mods_width)
         self._times = torch.linspace(0.0, 1.0, spec.nfe + 1, device=device, dtype=dtype)
         self._dit_layer_index = torch.arange(self._dit_layers, device=device)
         self._encoder_layer_index = torch.arange(self._encoder_layers, device=device)
@@ -283,8 +439,74 @@ class DotsTtsAcousticTail:
         if optimize and device.type == "cuda":
             self._capture_cuda_graphs()
 
+    def _pool_tensors(self) -> tuple[torch.Tensor, ...]:
+        return (
+            self._dit_k,
+            self._dit_v,
+            self._encoder_k,
+            self._encoder_v,
+            self._encoder_conv_tail,
+            self._window,
+            self._all_mods,
+            self._dit_scratch_k,
+            self._dit_scratch_v,
+            self._dit_mask,
+            self._encoder_scratch_k,
+            self._encoder_scratch_v,
+            self._encoder_mask,
+        )
+
+    def _pool_memory_estimate(self, mods_width: int) -> AcousticPoolMemoryEstimate:
+        return estimate_acoustic_pool_bytes(
+            spec=self.spec,
+            dit_layers=self._dit_layers,
+            dit_heads=self._dit_heads,
+            dit_head_dim=self._dit_head_dim,
+            encoder_layers=self._encoder_layers,
+            encoder_heads=self._encoder_heads,
+            encoder_head_dim=self._encoder_head_dim,
+            encoder_block=self._encoder_block,
+            encoder_conv_channels=int(self._encoder.ds_proj.in_channels),
+            encoder_conv_padding=int(self._encoder.ds_proj.left_padding),
+            mods_width=int(mods_width),
+            dtype=self.dtype,
+        )
+
+    def _allocated_pool_bytes(self) -> int:
+        return sum(int(tensor.nbytes) for tensor in self._pool_tensors())
+
     def _allocate_pools(self, mods_width: int) -> None:
+        # note (guozhihao-224): pools are num_slots x full patch_capacity; log the
+        # formula then fail fast if free VRAM cannot cover pools + headroom.
         spec = self.spec
+        estimate = self._pool_memory_estimate(mods_width)
+        free_bytes = total_bytes = None
+        if self.device.type == "cuda":
+            free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+        logger.info(
+            "dots.tts acoustic pools (estimate): slots=%d nfe=%d patch_capacity=%d "
+            "dtype=%s total=%.2f GiB "
+            "(dit_kv=%.2f encoder_kv=%.2f scratch=%.2f aux=%.2f)%s",
+            estimate.num_slots,
+            estimate.nfe,
+            estimate.patch_capacity,
+            estimate.dtype,
+            _gib(estimate.total_bytes),
+            _gib(estimate.dit_kv_bytes),
+            _gib(estimate.encoder_kv_bytes),
+            _gib(estimate.scratch_bytes),
+            _gib(estimate.aux_bytes),
+            (
+                ""
+                if free_bytes is None or total_bytes is None
+                else (
+                    f" cuda_free={_gib(free_bytes):.2f} GiB "
+                    f"cuda_total={_gib(total_bytes):.2f} GiB"
+                )
+            ),
+        )
+        validate_acoustic_pool_memory(estimate, device=self.device)
+
         zeros = partial(torch.zeros, device=self.device, dtype=self.dtype)
         self._dit_k = zeros(
             spec.nfe,
@@ -344,17 +566,32 @@ class DotsTtsAcousticTail:
             device=self.device,
             dtype=torch.bool,
         )
+        pool_tensors = self._pool_tensors()
+        allocated = sum(int(tensor.nbytes) for tensor in pool_tensors)
+        if allocated != estimate.total_bytes:
+            logger.warning(
+                "dots.tts acoustic pool nbytes mismatch: estimated=%d allocated=%d",
+                estimate.total_bytes,
+                allocated,
+            )
         logger.info(
-            "dots.tts acoustic pools: slots=%s nfe=%s patch_capacity=%s",
+            "dots.tts acoustic pools allocated: %.2f GiB across %d tensors "
+            "(slots=%d patch_capacity=%d)",
+            _gib(allocated),
+            len(pool_tensors),
             spec.num_slots,
-            spec.nfe,
             spec.patch_capacity,
         )
 
     def acquire_slot(self) -> int:
         if not self._free_slots:
+            # note (guozhihao-224): slot exhaustion is an admission failure, not a
+            # cue to resize the pool under a live request.
+            in_use = int(self.spec.num_slots)
             raise RuntimeError(
-                "dots.tts acoustic tail ran out of slots; lower concurrency"
+                "dots.tts acoustic tail admission failed: ran out of slots "
+                f"({in_use}/{in_use} in use). Lower client concurrency or "
+                "raise max_running_requests; the engine does not silently shrink capacity."
             )
         slot = self._free_slots.pop()
         self._fm_seq_len[slot] = 0
@@ -958,8 +1195,11 @@ class DotsTtsAcousticTail:
 
 
 __all__ = [
+    "AcousticPoolMemoryEstimate",
     "DotsTtsAcousticTail",
     "DotsTtsTailSpec",
     "batched_causal_update_mask",
+    "estimate_acoustic_pool_bytes",
     "fuse_dit_for_inference",
+    "validate_acoustic_pool_memory",
 ]
