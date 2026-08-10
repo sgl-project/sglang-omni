@@ -13,6 +13,7 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     IMAGE_TOKEN_OFFSET,
 )
 from sglang_omni.models.llada2_uni.config import (
+    DECODE_STAGE,
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
     THINKER_STAGE,
@@ -22,6 +23,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     ThinkerOutput,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
 
 
@@ -168,6 +170,7 @@ def apply_dllm_thinker_result(
     stage_name: str,
     output_ids: list[int],
     finish_reason: str | None = None,
+    finish_reason_data: dict[str, Any] | None = None,
 ) -> ThinkerOutput:
     """Apply DLLM thinker result to pipeline state."""
     thinker_out: ThinkerOutput = {
@@ -176,10 +179,41 @@ def apply_dllm_thinker_result(
     }
     if finish_reason is not None:
         thinker_out["finish_reason"] = finish_reason
+    if finish_reason_data is not None:
+        thinker_out["finish_reason_data"] = dict(finish_reason_data)
 
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
     return thinker_out
+
+
+def make_dllm_thinker_stream_output_builder(*, target: str = DECODE_STAGE):
+    """Build accepted dLLM token blocks for the streaming decode stage."""
+
+    def build_stream_output(
+        request_id: str,
+        req_data: SGLangDLLMRequestData,
+        token_ids: list[int],
+    ) -> list[OutgoingMessage]:
+        payload = req_data.stage_payload
+        if not isinstance(payload, StagePayload):
+            return []
+        if not (payload.request.params or {}).get("stream", False):
+            return []
+        if not token_ids:
+            return []
+
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.tensor(token_ids, dtype=torch.long),
+                target=target,
+                metadata={"modality": "text"},
+            )
+        ]
+
+    return build_stream_output
 
 
 def make_dllm_thinker_scheduler_adapters(
@@ -212,6 +246,7 @@ def make_dllm_thinker_scheduler_adapters(
             stage_name=stage_name,
             output_ids=data.output_ids,
             finish_reason=data.finish_reason,
+            finish_reason_data=data.finish_reason_data,
         )
         return StagePayload(
             request_id=payload.request_id,

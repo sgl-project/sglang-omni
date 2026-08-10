@@ -6,18 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
+from sglang_omni.models.llada2_uni.config import IMAGE_STAGE
 
 logger = logging.getLogger(__name__)
-
-
-def _event_to_dict(event) -> dict[str, Any]:
-    return {
-        "type": event.type,
-        "modality": event.modality,
-        "payload": dict(event.payload),
-        "is_final": bool(event.is_final),
-    }
 
 
 def create_preprocessing_executor(
@@ -116,65 +107,8 @@ def create_sglang_dllm_thinker_executor_from_config(
 
 
 def create_decode_executor(model_path: str):
-    from sglang_omni.models.llada2_uni.components.common import load_llada2_tokenizer
-    from sglang_omni.models.llada2_uni.merge import decode_events
-    from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.models.llada2_uni.components.streaming_detokenizer import (
+        create_streaming_detokenize_scheduler,
+    )
 
-    tokenizer = load_llada2_tokenizer(model_path)
-
-    def _decode(payload):
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
-        thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
-        if not isinstance(thinker_out, dict):
-            logger.warning(
-                "request %s: thinker produced no output (got %s), returning empty text",
-                payload.request_id,
-                type(thinker_out).__name__,
-            )
-            thinker_out = {
-                "output_ids": [],
-                "is_final": True,
-            }
-
-        events = decode_events(
-            thinker_out=thinker_out,
-            tokenizer=tokenizer,
-        )
-        event_dicts = [_event_to_dict(event) for event in events]
-
-        result: dict[str, Any] = {"events": event_dicts}
-        if events:
-            result.update(events[0].payload)
-            result.setdefault("modality", events[0].modality)
-
-        finish_reason = thinker_out.get("finish_reason")
-        if finish_reason is not None:
-            result.setdefault("finish_reason", finish_reason)
-
-        input_ids = (
-            state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
-        )
-        if input_ids is None:
-            prompt_tokens = 0
-        elif hasattr(input_ids, "numel"):
-            prompt_tokens = int(input_ids.numel())
-        else:
-            prompt_tokens = len(input_ids)
-
-        completion_ids = thinker_out.get("output_ids") or []
-        completion_tokens = len(completion_ids)
-
-        result.setdefault(
-            "usage",
-            {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-        )
-
-        payload.data = result
-        return payload
-
-    return SimpleScheduler(_decode)
+    return create_streaming_detokenize_scheduler(model_path)

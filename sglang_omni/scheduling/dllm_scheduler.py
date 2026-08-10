@@ -45,12 +45,14 @@ class DllmScheduler:
         *,
         request_builder: Callable,
         result_adapter: Callable,
+        stream_output_builder: Callable | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
         self._request_builder = request_builder
         self._result_adapter = result_adapter
+        self._stream_output_builder = stream_output_builder
 
         self.tp_worker = tp_worker
         self.tree_cache = tree_cache
@@ -315,17 +317,45 @@ class DllmScheduler:
             req.output_ids.extend(req_token_ids)
             req.update_finish_state(new_accepted_len=new_tokens)
 
+            req_data = self._rid_to_req_data.get(req.rid)
+            finished_reason = req.finished_reason
+            finish_reason_data = (
+                finished_reason.to_json() if finished_reason is not None else None
+            )
+            terminal_needs_stop_trim = bool(
+                finish_reason_data
+                and finish_reason_data.get("type") == "stop"
+                and finish_reason_data.get("matched") is not None
+            )
+            should_stream = not terminal_needs_stop_trim and (
+                req.finished() or not req.check_match_stop_str_prefix()
+            )
+            if (
+                req_data is not None
+                and self._stream_output_builder is not None
+                and should_stream
+            ):
+                output_ids_through_stop = req.output_ids_through_stop
+                send_token_offset = req.send_token_offset
+                visible_token_ids = list(output_ids_through_stop[send_token_offset:])
+                req.send_token_offset = len(output_ids_through_stop)
+                messages = self._stream_output_builder(
+                    req.rid,
+                    req_data,
+                    visible_token_ids,
+                )
+                for message in messages:
+                    self.outbox.put(message)
+
             if req.finished():
                 req_data = self._rid_to_req_data.pop(req.rid, None)
                 if req_data is None:
                     continue
                 req_data.output_ids = list(req.output_ids_through_stop)
-                finished_reason = req.finished_reason
                 req_data.finish_reason = (
-                    finished_reason.to_json().get("type")
-                    if finished_reason is not None
-                    else None
+                    finish_reason_data.get("type") if finish_reason_data else None
                 )
+                req_data.finish_reason_data = finish_reason_data
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=req.rid,

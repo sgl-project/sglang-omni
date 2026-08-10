@@ -25,6 +25,7 @@ def create_dllm_thinker_scheduler(
 
     from sglang_omni.models.llada2_uni.request_builders import (
         make_dllm_thinker_scheduler_adapters,
+        make_dllm_thinker_stream_output_builder,
     )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
@@ -62,6 +63,7 @@ def create_dllm_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         dllm_config=dllm_config,
     )
+    stream_output_builder = make_dllm_thinker_stream_output_builder()
 
     return DllmScheduler(
         tp_worker=model_worker,
@@ -73,4 +75,5 @@ def create_dllm_thinker_scheduler(
         dllm_config=dllm_config,
         request_builder=request_builder,
         result_adapter=result_adapter,
+        stream_output_builder=stream_output_builder,
     )

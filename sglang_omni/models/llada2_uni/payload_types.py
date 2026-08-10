@@ -13,6 +13,7 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     is_final: bool
     finish_reason: str | None
+    finish_reason_data: dict[str, Any] | None
 
 
 @dataclass
