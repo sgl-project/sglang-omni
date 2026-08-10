@@ -17,7 +17,7 @@ def create_sglang_qwen3_asr_executor(
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 32,
@@ -25,6 +25,7 @@ def create_sglang_qwen3_asr_executor(
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -50,6 +51,9 @@ def create_sglang_qwen3_asr_executor(
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
         prefill_coalesce_requires_pending_builds=(
             prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
         ),
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,

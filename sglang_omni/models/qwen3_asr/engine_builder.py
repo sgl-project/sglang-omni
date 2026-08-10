@@ -43,6 +43,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
+        prefill_coalesce_after_builds_during_decode: bool,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -72,6 +73,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
         self.prefill_coalesce_requires_pending_builds = (
             prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = (
+            prefill_coalesce_after_builds_during_decode
         )
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
@@ -212,5 +216,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
+            ),
+            "prefill_coalesce_after_builds_during_decode": (
+                self.prefill_coalesce_after_builds_during_decode
             ),
         }

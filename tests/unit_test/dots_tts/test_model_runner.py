@@ -201,8 +201,18 @@ def _decode_request(request_id: str, fill: float):
     )
 
 
-def test_dots_before_decode_writes_graph_feedback_buffer_in_batch_order() -> None:
+def test_dots_before_decode_writes_graph_feedback_buffer_in_batch_order(
+    monkeypatch,
+) -> None:
     buffer = torch.zeros(4, 4)
+    stack_outputs = []
+    stack = torch.stack
+
+    def record_stack(values, *args, **kwargs):
+        stack_outputs.append(kwargs.get("out"))
+        return stack(values, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "stack", record_stack)
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(
         graph_feedback_buffer=buffer,
@@ -217,6 +227,8 @@ def test_dots_before_decode_writes_graph_feedback_buffer_in_batch_order() -> Non
     torch.testing.assert_close(buffer[0], torch.full((4,), 5.0))
     torch.testing.assert_close(buffer[1], torch.full((4,), 6.0))
     torch.testing.assert_close(buffer[2], torch.zeros(4))
+    assert len(stack_outputs) == 1
+    assert stack_outputs[0].data_ptr() == buffer.data_ptr()
     assert forward_batch.input_embeds is None
 
 
