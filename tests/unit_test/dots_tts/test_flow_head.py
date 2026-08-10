@@ -91,6 +91,30 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
     assert state.decoded_patches == 2
 
 
+def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
+    flow = _flow_head(tmp_path)
+    state, _ = flow.new_request(
+        max_audio_patch_count=2,
+        prompt_latents=None,
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=None,
+    )
+    projection_calls = []
+    hook = flow.hidden_proj.register_forward_hook(
+        lambda _module, inputs, _output: projection_calls.append(inputs[0])
+    )
+    try:
+        flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
+    finally:
+        hook.remove()
+
+    assert len(projection_calls) == 1
+    torch.testing.assert_close(
+        state.fm_cfg_sequence[0, 0], flow.hidden_proj.bias, rtol=0, atol=0
+    )
+
+
 def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
     torch.manual_seed(1618)
     flow = _flow_head(tmp_path)
@@ -439,6 +463,14 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
         )
         states.append(state)
 
+    denormalize_shapes = []
+    denormalize = flow.io.denormalize
+
+    def record_denormalize(value):
+        denormalize_shapes.append(tuple(value.shape))
+        return denormalize(value)
+
+    flow.io.denormalize = record_denormalize
     steps = flow.decode_batch(
         states,
         hidden_states=torch.randn(2, LLM_HIDDEN),
@@ -448,6 +480,7 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
         eos_thresholds=[2.0, 2.0],
         append_hidden=False,
     )
+    assert denormalize_shapes == [(2, PATCH_SIZE, LATENT_DIM)]
     assert all(not step.finished for step in steps)
     assert flow.has_pending_batched_eos
     assert flow.resolve_batched_eos() == [False, False]

@@ -55,16 +55,25 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
 
         with self.codec.lock:
             for bucket_items in buckets.values():
-                max_frames = max(int(latents.shape[1]) for _, latents in bucket_items)
-                padded = bucket_items[0][1].new_zeros(
-                    len(bucket_items),
-                    max_frames,
-                    self.codec.latent_dim,
-                    device=self.codec.device,
-                )
-                for row, (_index, latents) in enumerate(bucket_items):
-                    frames = int(latents.shape[1])
-                    padded[row, :frames].copy_(latents[0].to(self.codec.device))
+                frame_counts = [int(latents.shape[1]) for _, latents in bucket_items]
+                max_frames = max(frame_counts)
+                if len(bucket_items) == 1:
+                    padded = bucket_items[0][1].to(self.codec.device)
+                elif min(frame_counts) == max_frames:
+                    padded = torch.cat(
+                        [latents for _, latents in bucket_items], dim=0
+                    ).to(self.codec.device)
+                else:
+                    padded = bucket_items[0][1].new_zeros(
+                        len(bucket_items),
+                        max_frames,
+                        self.codec.latent_dim,
+                        device=self.codec.device,
+                    )
+                    for row, ((_index, latents), frames) in enumerate(
+                        zip(bucket_items, frame_counts, strict=True)
+                    ):
+                        padded[row, :frames].copy_(latents[0].to(self.codec.device))
 
                 waveform_batch = self.codec.inference.decode_latents(padded)
                 if waveform_batch.shape[0] != len(bucket_items):
@@ -215,11 +224,14 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
                 else (1 if state.received_patches <= 2 else self.merge_steps)
             )
             patches, state.pending = state.pending[:take], state.pending[take:]
+            latent_chunk = (
+                patches[0] if len(patches) == 1 else torch.cat(patches, dim=1)
+            )
             # note (db-ol): compiled stream step cudagraph trees corrupt the
             # backbone decode graph replay in this process, see issue 1392.
             with self.codec.lock:
                 chunk = self.codec.inference.stream_step(
-                    torch.cat(patches, dim=1),
+                    latent_chunk,
                     stream_state=state.codec_state,
                     optimize=self.optimize,
                     use_compiled=False,

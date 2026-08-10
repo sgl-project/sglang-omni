@@ -17,41 +17,45 @@
     "file_ref_text": "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time.",
     "load_stages": [
       {
-        "id": "closed-1",
-        "mode": "closed_loop",
-        "request_count": 32,
-        "max_concurrency": 1
-      },
-      {
-        "id": "closed-16",
-        "mode": "closed_loop",
-        "request_count": 128,
-        "max_concurrency": 16
-      },
-      {
-        "id": "ramp-128",
-        "mode": "ramp",
-        "request_count": 256,
+        "id": "mixed-production",
+        "mode": "scheduled",
         "max_concurrency": 128,
-        "start_request_rate": 2,
-        "request_rate": 64,
-        "arrival_distribution": "poisson"
-      },
-      {
-        "id": "soak-300s",
-        "mode": "soak",
-        "request_count": 512,
-        "duration_s": 300,
-        "max_concurrency": 128,
-        "arrival_distribution": "poisson"
-      },
-      {
-        "id": "ws-burst-512",
-        "mode": "burst",
-        "request_count": 512,
-        "max_concurrency": 512,
-        "enabled_endpoints": [
-          "websocket"
+        "text_corpus": "seedtts-en",
+        "coverage_schedule": {
+          "start_s": 0.625,
+          "end_s": 299.375
+        },
+        "workload_schedules": [
+          {
+            "workload": "speech_normal",
+            "background_offsets_s": [3.75, 14.375, 18.75, 33.75, 44.375, 48.75, 63.75, 74.375, 78.75, 93.75, 104.375, 108.75, 123.75, 134.375, 138.75, 153.75, 164.375, 168.75, 183.75, 194.375, 198.75, 213.75, 224.375, 228.75, 243.75, 254.375, 258.75, 273.75, 284.375, 288.75],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          },
+          {
+            "workload": "rest_stream",
+            "background_offsets_s": [1.25, 12.5, 16.25, 31.25, 42.5, 46.25, 61.25, 72.5, 76.25, 91.25, 102.5, 106.25, 121.25, 132.5, 136.25, 151.25, 162.5, 166.25, 181.25, 192.5, 196.25, 211.25, 222.5, 226.25, 241.25, 252.5, 256.25, 271.25, 282.5, 286.25],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          },
+          {
+            "workload": "ws_normal",
+            "background_offsets_s": [1.875, 13.125, 16.875, 31.875, 43.125, 46.875, 61.875, 73.125, 76.875, 91.875, 103.125, 106.875, 121.875, 133.125, 136.875, 151.875, 163.125, 166.875, 181.875, 193.125, 196.875, 211.875, 223.125, 226.875, 241.875, 253.125, 256.875, 271.875, 283.125, 286.875],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          },
+          {
+            "workload": "ws_stream_audio",
+            "background_offsets_s": [6.25, 21.25, 36.25, 51.25, 66.25, 81.25, 96.25, 111.25, 126.25, 141.25, 156.25, 171.25, 186.25, 201.25, 216.25, 231.25, 246.25, 261.25, 276.25, 291.25],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          },
+          {
+            "workload": "batch_32_all_valid",
+            "background_offsets_s": [],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          },
+          {
+            "workload": "long_prefill_decode",
+            "background_offsets_s": [],
+            "collision_offsets_s": [7.5, 22.5, 37.5, 52.5, 67.5, 82.5, 97.5, 112.5, 127.5, 142.5, 157.5, 172.5, 187.5, 202.5, 217.5, 232.5, 247.5, 262.5, 277.5, 292.5]
+          }
         ]
       },
       {
@@ -76,12 +80,6 @@
         "voice_cache_pressure_voice_count": 0,
         "voice_speaker_cap_count": 1001,
         "speaker_max_uploaded": 1000
-      },
-      {
-        "id": "mixed-burst-512",
-        "mode": "burst",
-        "request_count": 512,
-        "max_concurrency": 512
       }
     ]
   }
