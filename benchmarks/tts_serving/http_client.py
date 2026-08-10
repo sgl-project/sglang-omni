@@ -18,12 +18,12 @@ from benchmarks.tts_serving.batch_client import handle_batch_success
 from benchmarks.tts_serving.http_contracts import (
     MAX_HTTP_RESPONSE_BYTES,
     ResponseBodyTooLarge,
-    _classify_http_failure,
-    _is_unsupported_http_status,
-    _mark_protocol_error,
-    _mark_success,
-    _mark_unexpected_success,
-    _mark_unsupported_contract,
+    classify_http_failure,
+    is_unsupported_http_status,
+    mark_protocol_error,
+    mark_success,
+    mark_unexpected_success,
+    mark_unsupported_contract,
     read_response_body,
 )
 from benchmarks.tts_serving.metrics import (
@@ -201,7 +201,7 @@ async def _disconnect_before_response(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                _mark_protocol_error(
+                mark_protocol_error(
                     result,
                     status="disconnect_not_reached",
                     error="request body was not sent before the configured request timeout",
@@ -212,7 +212,7 @@ async def _disconnect_before_response(
                 result.http_status = response.status
                 result.http_status_class = classify_http_status(response.status)
                 response.close()
-                _mark_protocol_error(
+                mark_protocol_error(
                     result,
                     status="disconnect_completed_too_early",
                     error="request completed before the benchmark client disconnected",
@@ -247,14 +247,14 @@ async def _disconnect_streaming_response(
         if response.status != 200:
             body, body_text = await _response_body_and_text(response)
             result.response_bytes = len(body)
-            _classify_http_failure(response.status, body_text, result, scenario)
+            classify_http_failure(response.status, body_text, result, scenario)
             return False
 
         chunk_iterator = _iter_response_http_chunks(response)
         try:
             chunk, _ = await anext(chunk_iterator)
         except StopAsyncIteration:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_missing_audio",
                 error="streaming response ended before producing an audio chunk",
@@ -266,14 +266,14 @@ async def _disconnect_streaming_response(
             sample_rate=_response_sample_rate(response),
         )
         if not validation.ok:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_invalid_audio",
                 error=f"first streaming audio chunk is invalid: {validation.error}",
             )
             return False
         if response.content.at_eof():
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_completed_too_early",
                 error="streaming response completed before the client disconnected",
@@ -306,14 +306,14 @@ async def _run_speech_liveness_probe(
         try:
             body = await read_response_body(response)
         except ResponseBodyTooLarge as exc:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_liveness_response_too_large",
                 error=str(exc),
             )
             return
         if response.status < 200 or response.status >= 300:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_liveness_failed",
                 error=(
@@ -332,13 +332,13 @@ async def _run_speech_liveness_probe(
             sample_rate=_response_sample_rate(response),
         )
         if not validation.ok:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="disconnect_liveness_invalid_audio",
                 error=f"post-disconnect speech probe returned invalid audio: {validation.error}",
             )
             return
-        _mark_success(result)
+        mark_success(result)
 
 
 async def _handle_probe_response(
@@ -355,8 +355,8 @@ async def _handle_probe_response(
         _mark_response_body_too_large(result, exc)
         return
     result.response_bytes = len(body)
-    if _is_unsupported_http_status(response.status, scenario):
-        _mark_unsupported_contract(
+    if is_unsupported_http_status(response.status, scenario):
+        mark_unsupported_contract(
             result,
             scenario,
             body=body_text,
@@ -366,9 +366,9 @@ async def _handle_probe_response(
         if scenario.endpoint == "voices":
             handle_voice_success(body, result, scenario)
             return
-        _mark_success(result, capability="pass")
+        mark_success(result, capability="pass")
         return
-    _classify_http_failure(response.status, body_text, result, scenario)
+    classify_http_failure(response.status, body_text, result, scenario)
 
 
 async def _handle_binary_response(
@@ -388,8 +388,8 @@ async def _handle_binary_response(
         return
     finish_timing(result, start)
     result.response_bytes = len(body)
-    if _is_unsupported_http_status(response.status, scenario):
-        _mark_unsupported_contract(
+    if is_unsupported_http_status(response.status, scenario):
+        mark_unsupported_contract(
             result,
             scenario,
             body=body.decode("utf-8", errors="replace"),
@@ -397,7 +397,7 @@ async def _handle_binary_response(
         return
     if 200 <= response.status < 300:
         if not scenario.expect_success:
-            _mark_unexpected_success(result, scenario)
+            mark_unexpected_success(result, scenario)
             return
         if scenario.endpoint == "batch":
             await asyncio.to_thread(handle_batch_success, body, result, scenario)
@@ -414,7 +414,7 @@ async def _handle_binary_response(
             sample_rate=_response_sample_rate(response),
         )
         if not validation.ok:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_audio_response",
                 error=(
@@ -429,9 +429,9 @@ async def _handle_binary_response(
         result.audio_duration_s = validation.duration_s
         if not _parse_sglang_usage_headers(response, result):
             return
-        _mark_success(result)
+        mark_success(result)
         return
-    _classify_http_failure(
+    classify_http_failure(
         response.status, body.decode("utf-8", errors="replace"), result, scenario
     )
 
@@ -452,10 +452,10 @@ async def _handle_streaming_audio_response(
             _mark_response_body_too_large(result, exc)
             return
         result.response_bytes = len(body)
-        if _is_unsupported_http_status(response.status, scenario):
-            _mark_unsupported_contract(result, scenario, body=body_text)
+        if is_unsupported_http_status(response.status, scenario):
+            mark_unsupported_contract(result, scenario, body=body_text)
             return
-        _classify_http_failure(response.status, body_text, result, scenario)
+        classify_http_failure(response.status, body_text, result, scenario)
         return
 
     if not scenario.expect_success:
@@ -465,7 +465,7 @@ async def _handle_streaming_audio_response(
             _mark_response_body_too_large(result, exc)
             return
         result.response_bytes = len(body)
-        _mark_unexpected_success(result, scenario)
+        mark_unexpected_success(result, scenario)
         return
 
     body = bytearray()
@@ -502,7 +502,7 @@ async def _handle_streaming_audio_response(
         sample_rate=_response_sample_rate(response),
     )
     if not validation.ok:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_streaming_audio_response",
             error=(
@@ -515,7 +515,7 @@ async def _handle_streaming_audio_response(
         return
     result.audio_bytes = len(body)
     result.audio_duration_s = validation.duration_s
-    _mark_success(result)
+    mark_success(result)
 
 
 async def _response_body_and_text(
@@ -530,7 +530,7 @@ def _mark_response_body_too_large(
     exc: ResponseBodyTooLarge,
 ) -> None:
     result.response_bytes = exc.bytes_read
-    _mark_protocol_error(
+    mark_protocol_error(
         result,
         status="response_too_large",
         error=(
@@ -568,21 +568,21 @@ def _parse_sglang_usage_headers(
         try:
             value = parser(raw_value)
         except (TypeError, ValueError):
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_usage_headers",
                 error=f"{header_name} must be numeric, observed={raw_value!r}",
             )
             return False
         if isinstance(value, float) and not math.isfinite(value):
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_usage_headers",
                 error=f"{header_name} must be finite, observed={raw_value!r}",
             )
             return False
         if value < 0:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_usage_headers",
                 error=f"{header_name} must be non-negative, observed={raw_value!r}",

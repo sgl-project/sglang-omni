@@ -686,6 +686,8 @@ def test_reference_encoder_reports_cache_stats() -> None:
         "evictions": 0,
         "failed": 0,
         "uncacheable": 0,
+        "batches": 0,
+        "batched_items": 0,
     }
 
 

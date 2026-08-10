@@ -51,7 +51,32 @@ SOAR is a flow-matching checkpoint. It runs the single-request solver with class
 
 `examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
+If startup fails with `dots.tts acoustic-tail admission failed at startup`, the GPU cannot hold `max_running_requests × max_generate_length` full-length acoustic pools — lower those knobs yourself. The engine never silently shrinks them.
+
 The examples below read local clips from `docs/_static/audio`. To fetch reference audio over HTTP instead, allow the domains you need, e.g. `--allowed-media-domain huggingface.co`.
+
+## Memory and capacity
+
+Continuous batching eagerly allocates acoustic-tail state for every slot at the full generate length:
+
+```text
+patch_capacity = max_generate_length + 1
+dit_cache_tokens = patch_capacity × (hidden_patch_size + latent_patch_size)   # MF: ×5
+```
+
+Pool bytes scale roughly as `max_running_requests × patch_capacity` and include DiT KV (per NFE), semantic-encoder KV, scratch K/V, masks, window, and AdaLN mods. Startup logs the estimated breakdown and free CUDA memory, then refuses to allocate when free VRAM is below the estimate plus a 15% headroom for graphs and workspace.
+
+`mem_fraction_static` (default `0.20` in `examples/configs/dots_tts.yaml`) only budgets the **SGLang backbone** KV cache. Acoustic-tail pools are separate and are **not** covered by that fraction.
+
+| Knob | Effect on pool size |
+|---|---|
+| `max_running_requests` | Number of full-length slots |
+| `max_generate_length` | `patch_capacity` (and therefore DiT / encoder sequence length) |
+| `num_steps` | DiT KV is replicated per NFE step |
+
+On a full GPU the default `16 × 500` layout is intended. On tighter cards, lower `max_running_requests` and/or `max_generate_length` explicitly rather than hoping for automatic downsizing. A live request that needs a free slot when all are busy fails with `dots.tts acoustic tail admission failed: ran out of slots` — lower client concurrency or raise `max_running_requests` (if memory allows).
+
+Incremental / bucketed tail-KV allocation is not implemented yet; capacity is still the eager full-length pool.
 
 ## Synthesizing Speech
 

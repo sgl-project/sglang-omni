@@ -1,6 +1,10 @@
 config_cls: DotsTTSPipelineConfig
 model_path: dots-studio/dots.tts-mf
 runtime_overrides:
+  reference_encode:
+    max_concurrency: 8
+    max_batch_size: 1
+    max_batch_wait_ms: 4
   latent_engine:
     optimize: true
     num_steps: 4

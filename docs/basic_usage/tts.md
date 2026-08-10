@@ -18,9 +18,19 @@ Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
 so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
 
 ```bash
-uv pip install --upgrade sox einops
+apt-get update && apt-get install -y sox
+uv pip install --no-deps sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
+
+`--no-deps` is required on both lines. `qwen-tts` 0.1.1 pins Transformers 4.57.3,
+and letting it install that pin replaces the stack the rest of SGLang-Omni is
+built against; resolving `sox` normally pulls `numpy` past the ceiling
+`numba==0.65.1` imposes, which breaks `librosa` and with it `import qwen_tts`.
+SGLang-Omni shims the API differences between the two Transformers versions in
+`sglang_omni/models/qwen3_tts/compat.py`, so the pinned 5.12 stack is the
+supported configuration — see the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md)
+for details.
 
 ## Supported TTS Models
 
