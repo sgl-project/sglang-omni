@@ -128,12 +128,142 @@ class _DotsStreamState:
     received_patches: int = 0
 
 
+@dataclass
+class _CapturedVocoderGraph:
+    graph: torch.cuda.CUDAGraph
+    latents: torch.Tensor
+    hidden_h: torch.Tensor
+    hidden_c: torch.Tensor
+    window: torch.Tensor
+    valid_frames: torch.Tensor
+    output: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
+
+class _DotsVocoderCudaGraphs:
+    """Native exact-shape graphs that coexist with the backbone CUDA Graph."""
+
+    def __init__(self, codec: DotsAudioCodec, *, chunk_size: int) -> None:
+        self._codec = codec
+        self._chunk_size = int(chunk_size)
+        self._graphs: dict[int, _CapturedVocoderGraph] = {}
+        self._replays = 0
+        self._fallbacks = 0
+        try:
+            self._capture(
+                tuple(range(codec.patch_size, chunk_size + 1, codec.patch_size))
+            )
+        except Exception:
+            logger.warning(
+                "dots.tts vocoder CUDA graph setup failed; using eager fallback",
+                exc_info=True,
+            )
+
+    @torch.no_grad()
+    def _capture(self, frame_counts: tuple[int, ...]) -> None:
+        device = torch.device(self._codec.device)
+        if device.type != "cuda":
+            return
+        inference = self._codec.inference
+        with torch.cuda.device(device):
+            current_stream = torch.cuda.current_stream(device)
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(current_stream)
+            graph_pool = torch.cuda.graph_pool_handle()
+            for frames in sorted(frame_counts, reverse=True):
+                state = inference.init_stream_state(
+                    batch_size=1, chunk_size=self._chunk_size
+                )
+                hidden_h, hidden_c = state.lstm_hidden
+                latents = hidden_h.new_zeros(1, self._codec.latent_dim, frames)
+                window = state.decoder.window
+                valid_frames = window.new_zeros((), dtype=torch.int64)
+                run = lambda: inference._compiled_stream_step(
+                    latents, hidden_h, hidden_c, window, valid_frames
+                )
+                graph = torch.cuda.CUDAGraph()
+                try:
+                    with torch.cuda.stream(capture_stream):
+                        for _ in range(2):
+                            run()
+                    capture_stream.synchronize()
+                    with torch.cuda.graph(
+                        graph,
+                        pool=graph_pool,
+                        stream=capture_stream,
+                        capture_error_mode="thread_local",
+                    ):
+                        output = run()
+                    self._graphs[frames] = _CapturedVocoderGraph(
+                        graph,
+                        latents,
+                        hidden_h,
+                        hidden_c,
+                        window,
+                        valid_frames,
+                        output,
+                    )
+                except Exception as exc:
+                    graph.reset()
+                    logger.warning(
+                        "dots.tts vocoder CUDA graph capture failed for frames=%d: "
+                        "%s; using eager fallback",
+                        frames,
+                        exc,
+                    )
+            current_stream.wait_stream(capture_stream)
+            torch.cuda.synchronize(device)
+        logger.info(
+            "dots.tts streaming vocoder CUDA graphs: frames=%s",
+            sorted(self._graphs),
+        )
+
+    @torch.no_grad()
+    def decode(self, latents: torch.Tensor, state: Any) -> torch.Tensor | None:
+        captured = self._graphs.get(int(latents.shape[1]))
+        if captured is None or captured.window.shape != state.decoder.window.shape:
+            self._fallbacks += 1
+            if self._fallbacks == 1 or (self._replays + self._fallbacks) % 1024 == 0:
+                self._log_hit_rate()
+            return None
+        self._replays += 1
+        if self._replays == 1 or (self._replays + self._fallbacks) % 1024 == 0:
+            self._log_hit_rate()
+        captured.latents.copy_(latents.transpose(1, 2))
+        captured.hidden_h.copy_(state.lstm_hidden[0])
+        captured.hidden_c.copy_(state.lstm_hidden[1])
+        captured.window.copy_(state.decoder.window)
+        captured.valid_frames.fill_(
+            min(state.decoder.total_frames, state.decoder.window.size(-1))
+        )
+        captured.graph.replay()
+        audio_window, hidden_h, hidden_c, window = captured.output
+        state.lstm_hidden = (hidden_h.clone(), hidden_c.clone())
+        state.decoder.window = window.clone()
+        state.decoder.total_frames += int(latents.shape[1])
+        return self._codec.inference._slice_stream_audio_window(
+            audio_window, state, final=False
+        ).clone()
+
+    def __len__(self) -> int:
+        return len(self._graphs)
+
+    def _log_hit_rate(self) -> None:
+        calls = self._replays + self._fallbacks
+        logger.info(
+            "dots.tts vocoder CUDA graph hit rate: %.1f%% (%d/%d)",
+            100.0 * self._replays / calls,
+            self._replays,
+            calls,
+        )
+
+
 class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
     def __init__(
         self,
         codec: DotsAudioCodec,
         *,
         optimize: bool,
+        enable_streaming_audio_vae_cuda_graph: bool = False,
         merge_steps: int = 4,
         max_batch_size: int = 4,
         max_batch_wait_ms: int = 2,
@@ -148,6 +278,13 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
         self._batch_vocoder = DotsTTSBatchVocoder(codec)
+        self._cuda_graphs = (
+            _DotsVocoderCudaGraphs(
+                codec, chunk_size=codec.patch_size * self.merge_steps
+            )
+            if self.optimize and enable_streaming_audio_vae_cuda_graph
+            else None
+        )
         super().__init__(
             self._batch_vocoder.decode_payload,
             batch_compute_fn=self._batch_vocoder.decode_payloads,
@@ -217,13 +354,21 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
             patches, state.pending = state.pending[:take], state.pending[take:]
             # note (db-ol): compiled stream step cudagraph trees corrupt the
             # backbone decode graph replay in this process, see issue 1392.
+            # Native graphs above do not use Inductor allocator checkpointing.
             with self.codec.lock:
-                chunk = self.codec.inference.stream_step(
-                    torch.cat(patches, dim=1),
-                    stream_state=state.codec_state,
-                    optimize=self.optimize,
-                    use_compiled=False,
+                latents = torch.cat(patches, dim=1)
+                chunk = (
+                    self._cuda_graphs.decode(latents, state.codec_state)
+                    if self._cuda_graphs is not None
+                    else None
                 )
+                if chunk is None:
+                    chunk = self.codec.inference.stream_step(
+                        latents,
+                        stream_state=state.codec_state,
+                        optimize=self.optimize,
+                        use_compiled=False,
+                    )
             if chunk.numel():
                 chunks.append(chunk)
         if is_final:
@@ -260,6 +405,10 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
             return self.codec.inference.decode_latents(
                 tts_state.generated_latents.to(self.codec.device)
             )
+
+    @property
+    def cuda_graph_count(self) -> int:
+        return len(self._cuda_graphs) if self._cuda_graphs is not None else 0
 
 
 __all__ = ["DotsTTSBatchVocoder", "DotsTTSStreamingVocoder"]

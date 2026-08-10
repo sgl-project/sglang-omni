@@ -19,5 +19,8 @@ runtime_overrides:
       cuda_graph_max_bs: 16
   vocoder:
     optimize: true
+    # Opt in to native graphs for streaming AudioVAE decode. This improves
+    # throughput and TTFC, but can increase ITL when playback starts immediately.
+    enable_streaming_audio_vae_cuda_graph: false
     max_batch_size: 4
     max_batch_wait_ms: 2
