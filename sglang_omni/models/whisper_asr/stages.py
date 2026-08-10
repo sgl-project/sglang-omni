@@ -14,6 +14,7 @@ def create_sglang_whisper_asr_executor(
     max_running_requests: int = 16,
     max_new_tokens: int = 256,
     mem_fraction_static: float = 0.85,
+    enable_torch_compile: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
@@ -22,6 +23,7 @@ def create_sglang_whisper_asr_executor(
         max_running_requests=max_running_requests,
         mem_fraction_static=mem_fraction_static,
         max_new_tokens=max_new_tokens,
+        enable_torch_compile=enable_torch_compile,
     ).build(
         model_path,
         device=device,
