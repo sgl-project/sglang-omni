@@ -30,11 +30,20 @@ writing reports.
   and `TUNE_GPU_EXCLUDE` explicitly.
 - Every two-GPU calibration group must be pinned to exactly 32 logical cores
   (16 physical plus their HT siblings), matching the runner-side bundle for
-  that lane. Inside a two-GPU container the picked ids are always `0,1`, so
-  the host table cannot resolve the physical lane; export `OMNI_CI_CPUSET`
-  with the borrowed lane's cores explicitly. `tune.py` warns and runs
-  unpinned when neither source provides a cpuset; such numbers must not
-  drive thresholds.
+  that lane (`0,1` → `0-15,64-79`, `2,3` → `16-31,80-95`, `4,5` →
+  `48-63,112-127`, `6,7` → `32-47,96-111`). `tune.py` resolves this from
+  `hosts/*/gpu_group_cpusets` when `TUNE_GPU_INCLUDE` is set.
+- Inside a two-GPU container the picked ids are always `0,1`, so the host
+  table cannot resolve the physical lane; export `OMNI_CI_CPUSET` with the
+  borrowed lane's cores explicitly.
+- Missing both the table entry and `OMNI_CI_CPUSET` is a hard precheck /
+  launch error — calibration never runs unpinned.
+- If precheck finds the lane cpuset already busy (`>` 20% foreign), it
+  **refuses** the session and reports the busy fraction. Do not start `run`
+  until those cores are free (typically: stop CI first, see above).
+- Mid-run intrusion does **not** stop the calibration: the live monitor
+  aborts that stage attempt, discards its artifacts, waits for CPU+GPU
+  recovery, and retries automatically.
 - Source `.github/scripts/ci_env.sh` for CI-comparable defaults when available.
 - Do **not** source `~/.zshrc` / `~/.bashrc` for calibration launches; they
   often override `CUDA_VISIBLE_DEVICES` and break multi-group pinning.
@@ -152,8 +161,9 @@ Pass criteria:
 - precheck exits zero;
 - core dependency pins match;
 - enough GPUs exist inside `TUNE_GPU_INCLUDE`;
+- lane `cpuset` resolved and idle (busy ≤ 20%); busy → refuse;
 - required models/datasets and metric assets are present;
-- `environment-fingerprint.json` is written;
+- `environment-fingerprint.json` is written (includes cpuset detail);
 - any unverified image identity is explicitly visible.
 
 ## 7. Active supervision
@@ -170,17 +180,28 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_group.sh \
 # Tab B: dynamically follows server.log (or local pytest runN.log fallback).
 bash .claude/skills/tune-ci-thresholds/watch_calibration_servers.sh \
   <gpu-group> <run-dir> [<run-dir> ...]
+
+# Tab C: operator-visible cpuset busy fraction for THIS group's lane
+# (pass the same pair as TUNE_GPU_INCLUDE: 0,1 / 2,3 / 4,5 / 6,7).
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh \
+  "$TUNE_GPU_INCLUDE"
 ```
 
 The number of Tab A terminals and Tab B terminals must each equal the number of
-GPU groups (one pair per group; no duplicates). Tab B must switch away from
-killed servers and attach logs from each new server launch in the same
-terminal. Locally, expect `runN.log` fallback because `server_log_file()` only
-creates `server.log` when `GITHUB_ACTIONS=true`. Durable filtered Tab B output
-is teed under `/tmp/calibration_tabB_<group>.log` as a backup.
+GPU groups (one pair per group; no duplicates). Start one Tab C per active
+cpuset. Tab B must switch away from killed servers and attach logs from each
+new server launch in the same terminal. Locally, expect `runN.log` fallback
+because `server_log_file()` only creates `server.log` when
+`GITHUB_ACTIONS=true`. Durable filtered Tab B output is teed under
+`/tmp/calibration_tabB_<group>.log` as a backup.
 
 During a run, also poll at most every 120 seconds with `status`, `strict-audit`,
 and `nvidia-smi`.
+
+A `cpuset_contention` abort is **not** a stop condition — `run` discards that
+attempt, waits for CPU+GPU recovery, and retries the stage on its own.
+Intervene only for setup errors (missing cpuset mapping) or when an infra
+unit hits the ordinary restart cap.
 
 Stop on CUDA initialization failure, extraction warnings, wrong sample scope,
 or cleanup affecting GPUs outside the configured group.

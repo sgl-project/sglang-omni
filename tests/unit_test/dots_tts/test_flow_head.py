@@ -439,6 +439,14 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
         )
         states.append(state)
 
+    denormalize_shapes = []
+    denormalize = flow.io.denormalize
+
+    def record_denormalize(value):
+        denormalize_shapes.append(tuple(value.shape))
+        return denormalize(value)
+
+    flow.io.denormalize = record_denormalize
     steps = flow.decode_batch(
         states,
         hidden_states=torch.randn(2, LLM_HIDDEN),
@@ -448,6 +456,7 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
         eos_thresholds=[2.0, 2.0],
         append_hidden=False,
     )
+    assert denormalize_shapes == [(2, PATCH_SIZE, LATENT_DIM)]
     assert all(not step.finished for step in steps)
     assert flow.has_pending_batched_eos
     assert flow.resolve_batched_eos() == [False, False]

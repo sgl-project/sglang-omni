@@ -26,8 +26,10 @@ from dataclasses import dataclass
 
 _SAMPLE_INTERVAL_S = 30.0
 _WARN_FOREIGN_CORES = 1.0
-# note (Jiaxin Deng): above this, the session's speed numbers describe the
-# intruder, not the model; CI fails the stage so its retry re-measures.
+# note (Jiaxin Deng): above this a round measured the intruder, not the
+# model. Calibration rejects such rounds (tune.py). CI only reports:
+# contention can only depress perf numbers, so a passing gate is real and
+# failing a passing stage would spend its retries on nothing (PR 1379).
 FAIL_FOREIGN_CORES = 2.0
 
 

@@ -63,7 +63,7 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
   log_file="${log_root}/${slug}-attempt-${attempt}.log"
 
   echo "::group::${stage_label} attempt ${attempt}/${max_attempts}"
-  "$@" 2>&1 | tee "${log_file}"
+  OMNI_CI_ATTEMPT="${attempt}" "$@" 2>&1 | tee "${log_file}"
   last_status="${PIPESTATUS[0]}"
   echo "::endgroup::"
 
