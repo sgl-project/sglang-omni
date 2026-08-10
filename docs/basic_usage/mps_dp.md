@@ -10,7 +10,7 @@ Same-GPU data parallelism runs several complete serving replicas on one GPU and 
 
 ## Deploy
 
-The steps below are one continuous flow. We provide `examples/mps_dp/launch.sh` to manage the private MPS daemon and serving replicas for one run. It records replica processes, ports, and logs, starts replicas sequentially, verifies their KV capacity and MPS attachment, and tears down only the run it recorded. Detailed instructions are as follows:
+The steps below are one continuous flow. We provide `examples/mps_dp/launch.sh` to manage the private MPS daemon, serving replicas, a local Omni Router, and (for unshared weights) a replica lifecycle supervisor for one run. It records owned processes, ports, and logs, starts replicas sequentially, verifies their KV capacity and MPS attachment, and tears down only the run it recorded. Detailed instructions are as follows:
 
 1. **Choose the GPU and NUMA node.**
 
@@ -37,9 +37,11 @@ The command above is the validated H100 Higgs DP3 recipe. For the validated H200
 CONFIG=examples/mps_dp/configs/higgs_h200_dp8.yaml N=8 CORE_BLOCKS="0-3 4-7 8-11 12-15 16-19 20-23 24-27 28-31" bash examples/mps_dp/launch.sh up
 ```
 
-The pipeline config supplies the model and per-replica runtime settings. The launcher environment supplies host-local placement, including the GPU, replica count, and CPU blocks. The launcher resolves the GPU's NUMA node, assigns local ports automatically, starts a private MPS daemon, waits for each replica's health check before starting the next, and verifies MPS attachment. The CPU blocks above are specific to the tested hosts; derive the correct non-overlapping blocks for your own CPU topology.
+The pipeline config supplies the model and per-replica runtime settings. The launcher environment supplies host-local placement, including the GPU, replica count, and CPU blocks. The launcher resolves the GPU's NUMA node, assigns local ports automatically, starts a private MPS daemon, waits for each replica's health check before starting the next, verifies MPS attachment, and then exposes shared ingress at `http://127.0.0.1:8799`. The CPU blocks above are specific to the tested hosts; derive the correct non-overlapping blocks for your own CPU topology.
 
 Both profiles set `mem_fraction_static` to `0.85`; `MF` can override it. When `CONFIG` is unset, the existing `MODEL` and `MAX_TOTAL_TOKENS` interface remains available. Launching replicas sequentially avoids overlapping memory profiling and CUDA-graph capture during startup.
+
+The router defaults to `least_request` for this colocated pool. It counts active requests and avoids assigning new work to a replica that is already carrying a longer request while its peer is idle. Override this with `ROUTER_POLICY=round_robin` or `ROUTER_POLICY=random` only after validating the policy against your request-length distribution. `ROUTER_PORT` changes the shared-ingress port, and `ROUTER_ENABLED=0` preserves direct per-replica endpoints without starting the router.
 
 Identical `--mem-fraction-static` flags do **not** mean identical KV capacity. `--mem-fraction-static` budgets model weights and the KV pool against the GPU memory available when each replica starts. Roughly, the profiled KV memory is the requested fraction of free memory measured before model loading, minus model and fixed runtime allocations. It is a per-replica budget, not an additive share of the card. Because replicas start sequentially, earlier ones have already reserved memory, so later ones see a smaller free pool and allocate fewer KV tokens even when every flag is the same (in one run, three sequential `mf=0.27` replicas received 97,503 / 53,149 / 20,961 KV tokens).
 
@@ -51,9 +53,9 @@ The H100 Higgs DP3 profile uses `100000` tokens per replica. The H200 Higgs DP8 
 
 The H200 profile's `30000`-token KV pool is smaller than the worst-case demand from 64 requests each generating up to 2048 new tokens, even before accounting for input tokens. Therefore, `max_running_requests=64` is an admission ceiling rather than a guarantee that 64 long requests can decode concurrently. If the pool fills, SGLang retracts requests and returns them to the waiting queue until KV capacity becomes available.
 
-3. **Drive every replica to saturation.**
+3. **Drive the pool to saturation.**
 
-The case study used one dedicated client per replica and drove all replicas in parallel. The measured goal is to keep every replica saturated. With equivalent replicas, random or round-robin routing can distribute a shared ingress across the pool; fill-one-then-next is another possible strategy, but the study did not compare them. Equal KV capacity makes the replicas comparable, but it does not by itself balance their queues. Validate the routing policy and per-replica saturation under your workload.
+The historical case study used one dedicated client per replica and drove all replicas in parallel. The supported launcher path now starts an Omni Router with all replica URLs and `least_request` selection after every startup gate has passed. The measured goal remains to keep every replica saturated. Equal KV capacity makes replicas comparable, but it does not by itself balance their queues. Compare the shared ingress with direct per-replica clients under your workload before making a performance claim.
 
 4. **Verify MPS attachment.**
 
@@ -61,7 +63,11 @@ MPS should be verified carefully. Four things are easy to conflate: environment 
 
 5. **Route traffic.**
 
-For easy deployment, you can register each replica endpoint with the [Omni Router](omni_router.md). Keep the router's `--max-connections` at least as large as the total offered concurrency. The case study did not benchmark router scheduling policies, so confirm that the selected policy keeps every replica driven and meets your workload's latency and throughput requirements.
+Send traffic to the shared ingress printed by `launch.sh` (default `http://127.0.0.1:8799`). The launcher registers the fixed replica URLs with the [Omni Router](omni_router.md) only after health, KV, and MPS-attachment startup checks pass.
+
+For unshared weights, the launcher also starts a separate lifecycle supervisor by default. After the configured consecutive health failures, it disables the worker in the router, terminates only the recorded process group, and restarts the replica with its original port, NUMA binding, CPU block, MPS pipe, and serve arguments. A single-instance restart lock preserves the sequential capture/profiling rule. Before launching a replacement, the supervisor writes a pending ownership record; the replacement fills in its process identity before executing the serve command, and the record is cleared only after the normal replica record is committed. The replacement must pass health, the expected KV `#tokens:` check, and whole-pool MPS attachment before the supervisor enables it in the router. A failed gate leaves the worker disabled and stops the unverified replacement so the next attempt repeats the full chain. Events are appended to `<state>/supervisor-events.jsonl`.
+
+Set `SUPERVISE=0` to keep the router but disable automatic restart. `SUPERVISOR_INTERVAL` and `SUPERVISOR_FAILURE_THRESHOLD` control detection. Individual restart is unsafe when `WEIGHT_SHARE=1`, because followers alias storage owned by replica 0; the supervisor therefore defaults off for shared weights and rejects `SUPERVISE=1`. Restart that topology as a whole with `down` followed by `up`.
 
 6. **Tear down safely.**
 
@@ -71,7 +77,7 @@ Stop new traffic, then run the teardown command printed by the launcher:
 bash examples/mps_dp/launch.sh down <RUN_ID>
 ```
 
-On a shared host, only touch processes you launched, and never treat "the GPU is empty" as the success condition. The launcher stops only the replica processes recorded for the selected run, waits for their MPS clients to detach, and then stops the private MPS daemon. It keeps the run state whenever cleanup cannot be confirmed.
+On a shared host, only touch processes you launched, and never treat "the GPU is empty" as the success condition. The launcher first stops the recorded supervisor and router so teardown cannot race a restart. It then consumes both pending-restart and active-replica ownership records, waits for their MPS clients to detach, and stops the private MPS daemon. If a pre-identification pending record requires fixed-port discovery, teardown terminates the listener only when its complete command line matches that replica's recorded serve command; a different or unverifiable command is recorded and left running. It keeps the run state whenever cleanup cannot be confirmed.
 
 Setting up and tearing down MPS is more involved than running a single replica, but in the pinned H100 Higgs tests the throughput gain was substantial. The table below shows the nominal completed-run ranges; the full accounting, including the failed and degraded runs, is in the case study.
 
@@ -232,6 +238,6 @@ Low SM activity at the tuned single replica's peak may indicate reclaimable head
 
 2. **KV sizing is hardware- and workload-specific.** The launcher enforces equal per-replica KV capacity through a common `--max-total-tokens`. A sizing procedure that generalizes across models, runtimes, and GPU configurations still requires further study.
 
-3. **Router and scheduler still need a deeper dive.** Both the router and the SGLang Omni scheduler need further optimization. On the router side, better routing strategies for a colocated pool are clearly required. On the scheduler side, a more ambitious question is whether we can borrow the spirit of LLM prefill–decode (PD) disaggregation: keep one large shared KV cache and let multiple replicas share it. That direction is extremely challenging, and we believe the potential payoff is correspondingly large.
+3. **Router policy measurement and scheduler design still need a deeper dive.** The launcher now provides a supported shared ingress, defaults the colocated pool to `least_request`, and restores failed unshared replicas through health, KV, and MPS gates. That closes the deployment wiring and lifecycle gap, not the performance question: least-request versus round-robin versus dedicated clients still requires pinned workload measurements. On the scheduler side, a more ambitious question is whether we can borrow the spirit of LLM prefill–decode (PD) disaggregation: keep one large shared KV cache and let multiple replicas share it. That direction is extremely challenging, and we believe the potential payoff is correspondingly large.
 
 Same-GPU DP with MPS can recover idle GPU time on host- or dispatch-bound serving today, but broader validation and the work above are still unfinished. If this direction interests you, or you have results from other models, GPUs, or workloads that confirm or challenge these findings, we would like to work with you.

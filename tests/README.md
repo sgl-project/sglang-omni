@@ -138,6 +138,8 @@ tests/
     ├── serve/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
+    │   ├── test_mps_dp_supervisor.py
+    │   ├── test_mps_dp_support.py
     │   └── test_openai_api.py
     ├── scheduling/
     │   ├── test_engine_factory.py
@@ -551,7 +553,22 @@ that happened to contain an older version of the test.
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
-  - streaming response framing and failure semantics.
+  - streaming response framing and failure semantics
+  - `test_mps_dp_supervisor.py` owns the `examples/mps_dp/` lifecycle supervisor
+    (loaded by path, not imported as a package): restart gate ordering, pending
+    restart ownership and reconciliation, sweep rotation, MPS attach scoping,
+    and complete process-group termination. Cases that create real process
+    groups are skipped off POSIX, and the ones that read `/proc` for port or
+    group ownership are skipped off Linux.
+  - `test_mps_dp_support.py` owns the same example's model-support and shared
+    weight preconditions; it imports `sglang_omni`, so unlike the supervisor
+    file it needs the full runtime installed (PyTorch included).
+
+  Run the process-lifecycle file on its own — it needs no model dependencies:
+
+  ```bash
+  pytest tests/unit_test/serve/test_mps_dp_supervisor.py -q
+  ```
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
   - inference prompt segmentation, reference VQ edge cases, and state contracts

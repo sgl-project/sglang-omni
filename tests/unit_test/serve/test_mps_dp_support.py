@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -192,8 +191,37 @@ class TestLaunchFailsClosedBeforeResources:
         )
         assert proc.returncode != 0
         assert not state_root.exists()
-        # Note (Jiaxin Deng): the RUN_ID check sits after the GPU probes, so
-        # only assert its message where nvidia-smi exists; without a GPU the
-        # launch still fails closed before any state is created.
-        if shutil.which("nvidia-smi"):
-            assert "RUN_ID must be a single" in proc.stdout + proc.stderr
+        assert "RUN_ID must be a single" in proc.stdout + proc.stderr
+
+    def test_shared_weight_individual_supervision_fails_before_resources(
+        self,
+        tmp_path,
+    ):
+        yaml_path = (
+            REPO_ROOT / "examples" / "mps_dp" / "configs" / "higgs_h100_dp3.yaml"
+        )
+        proc, state_root = self._run(
+            tmp_path,
+            yaml_path,
+            WEIGHT_SHARE="1",
+            SUPERVISE="1",
+        )
+
+        assert proc.returncode != 0
+        assert "unsafe with WEIGHT_SHARE=1" in proc.stdout + proc.stderr
+        assert not state_root.exists()
+
+    def test_router_port_overlap_fails_before_resources(self, tmp_path):
+        yaml_path = (
+            REPO_ROOT / "examples" / "mps_dp" / "configs" / "higgs_h100_dp3.yaml"
+        )
+        proc, state_root = self._run(
+            tmp_path,
+            yaml_path,
+            BASE_PORT="29411",
+            ROUTER_PORT="29411",
+        )
+
+        assert proc.returncode != 0
+        assert "overlaps replica ports" in proc.stdout + proc.stderr
+        assert not state_root.exists()
