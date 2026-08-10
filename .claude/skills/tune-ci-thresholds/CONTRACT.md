@@ -62,6 +62,21 @@ reports `missing=[]`.
 Infrastructure crashes, OOMs, timeouts, missing output, SIGKILL from foreign
 cleanup, and partial samples are not valid metric observations.
 
+## Lane cpuset binding
+
+Every calibration process must pin to the runner-lane cpuset that owns its
+`TUNE_GPU_INCLUDE` GPUs (or an explicit `OMNI_CI_CPUSET`). Unpinned runs are
+refused.
+
+- **Precheck:** a cpuset already busy with foreign load is a hard error; the
+  session must not start.
+- **Mid-run intrusion:** aborting a stage attempt on foreign-load is an
+  infrastructure discard, not a metric observation and not a destructive
+  round. Contaminated basetemp artifacts are wiped so they never appear in
+  `run{k}.json` or the report. `run` waits for CPU and GPU recovery and
+  retries the same stage without stopping the calibration. Contention
+  retries do not consume the ordinary infra attempt budget.
+
 ## Destructive observations
 
 A third category, distinct from infrastructure failure (not an observation) and

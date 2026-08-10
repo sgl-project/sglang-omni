@@ -206,7 +206,7 @@ def test_qwen3_asr_stage_default_enables_async_decode() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def test_qwen3_asr_rtx4090_profile_is_bf16_and_bounded() -> None:
