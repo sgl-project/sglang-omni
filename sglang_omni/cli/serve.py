@@ -53,11 +53,12 @@ _PREFILL_COALESCE_FACTORIES = frozenset(
         "sglang_omni.models.moss_transcribe_diarize.stages."
         "create_sglang_moss_transcribe_diarize_executor",
         "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
+        "sglang_omni.models.qwen3_asr.stages.create_sglang_qwen3_asr_executor",
     }
 )
 _PREFILL_COALESCE_SUPPORTED_MODELS = (
     "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-    "and the Qwen3-Omni thinker"
+    "Qwen3-ASR, and the Qwen3-Omni thinker"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -1275,7 +1276,8 @@ def serve(
             "--async_lookahead_min_batch_size",
             help=(
                 "Decode batches smaller than this bypass async lookahead and "
-                "run synchronously (fast path). Default 2."
+                "run synchronously (fast path). Model default: 1 for "
+                "Qwen3-ASR and 2 for other supported models."
             ),
         ),
     ] = None,

@@ -1452,6 +1452,48 @@ def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
     assert "accepts audio up to" in response.json()["detail"]
 
 
+def test_transcription_endpoint_maps_invalid_audio_error_to_400() -> None:
+    client = TestClient(
+        create_app(
+            _fault_client(
+                "qwen3-omni",
+                error=(
+                    "Qwen3-ASR could not decode the uploaded audio; "
+                    "provide a valid audio file."
+                ),
+            ),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "could not decode the uploaded audio" in response.json()["detail"]
+
+
+def test_transcription_endpoint_preserves_audio_backend_error_as_500() -> None:
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error="audio decoder backend unavailable"),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
+    assert "audio decoder backend unavailable" in response.json()["detail"]
+
+
 def test_transcription_endpoint_maps_kv_capacity_error_to_400() -> None:
     bad_request_error = (
         "Request requires more tokens than the thinker KV cache can hold "

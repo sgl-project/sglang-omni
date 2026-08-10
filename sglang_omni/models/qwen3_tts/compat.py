@@ -11,6 +11,13 @@ import torch
 
 _APPLY_LOCK = threading.Lock()
 _PATCHED_FLAG = "_sglang_omni_qwen_tts_compat_patched"
+# Note (Akazaakane): the factories qwen-tts 0.1.1 imports. It splats one
+# mask_kwargs dict into both, so shimming create_causal_mask alone just moves
+# the failure to the next line.
+_MASK_FACTORY_NAMES = (
+    "create_causal_mask",
+    "create_sliding_window_causal_mask",
+)
 
 
 def _compute_default_rope_parameters(
@@ -38,6 +45,41 @@ def _compute_default_rope_parameters(
     return inv_freq, 1.0
 
 
+def _make_mask_factory_compat(
+    original: Callable[..., Any], name: str
+) -> Callable[..., Any]:
+    def mask_factory_compat(*args: Any, **kwargs: Any) -> Any:
+        if "input_embeds" in kwargs:
+            kwargs.setdefault("inputs_embeds", kwargs.pop("input_embeds"))
+        kwargs.pop("cache_position", None)
+        return original(*args, **kwargs)
+
+    mask_factory_compat.__name__ = getattr(original, "__name__", name)
+    mask_factory_compat.__doc__ = getattr(original, "__doc__", None)
+    setattr(mask_factory_compat, _PATCHED_FLAG, True)
+    return mask_factory_compat
+
+
+def _patch_mask_factories() -> None:
+    """Accept the qwen-tts call shape for the Transformers mask factories."""
+    from transformers import masking_utils
+
+    for name in _MASK_FACTORY_NAMES:
+        original = getattr(masking_utils, name, None)
+        if original is None or getattr(original, _PATCHED_FLAG, False):
+            continue
+
+        try:
+            parameters = inspect.signature(original).parameters
+        except (TypeError, ValueError):
+            continue
+
+        if "inputs_embeds" not in parameters or "input_embeds" in parameters:
+            continue
+
+        setattr(masking_utils, name, _make_mask_factory_compat(original, name))
+
+
 def apply_qwen_tts_transformers_compatibility_patches() -> None:
     """Patch Transformers APIs expected by qwen-tts."""
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
@@ -45,6 +87,7 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
 
     with _APPLY_LOCK:
         ROPE_INIT_FUNCTIONS.setdefault("default", _compute_default_rope_parameters)
+        _patch_mask_factories()
 
         current = generic.check_model_inputs
         if getattr(current, _PATCHED_FLAG, False):

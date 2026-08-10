@@ -26,6 +26,7 @@ import os
 import random
 import time
 from collections.abc import Iterable
+from itertools import groupby
 from pathlib import Path
 
 import aiohttp
@@ -95,7 +96,7 @@ async def _run_stage(
     scenarios: list[Scenario],
     harness_log: list[str],
 ) -> list[ScenarioResult]:
-    if len(scenarios) > stage.request_count:
+    if stage.mode != "scheduled" and len(scenarios) > stage.request_count:
         harness_log.append(
             f"stage={stage.id} scheduled {len(scenarios)} scenarios although "
             f"request_count={stage.request_count}; required benchmark contracts "
@@ -160,7 +161,11 @@ async def _run_scheduled_stage(
     harness_log: list[str],
 ) -> list[ScenarioResult]:
     stage_start = time.perf_counter()
-    offsets = _planned_offsets(stage, len(scenarios), seed=spec.seed)
+    offsets = (
+        [_scheduled_offset(scenario) for scenario in scenarios]
+        if stage.mode == "scheduled"
+        else _planned_offsets(stage, len(scenarios), seed=spec.seed)
+    )
     active_requests = 0
     peak_inflight = 0
 
@@ -178,6 +183,8 @@ async def _run_scheduled_stage(
             planned_start=planned_start,
             actual_start=actual_start,
             generator_lag=max(0.0, actual_start - planned_start),
+            configured_offset=offset,
+            collision_epoch=scenario.collision_epoch_s,
         )
         return result
 
@@ -186,7 +193,18 @@ async def _run_scheduled_stage(
     results: list[ScenarioResult] = []
     peak_pending_tasks = 0
     scheduled_task_count = 0
-    for scenario, offset in zip(scenarios, offsets, strict=True):
+    arrivals = list(zip(scenarios, offsets, strict=True))
+    if stage.mode == "scheduled":
+        arrival_groups: Iterable[tuple[float, list[Scenario]]] = (
+            (offset, [scenario for scenario, _ in grouped_arrivals])
+            for offset, grouped_arrivals in groupby(
+                arrivals,
+                key=lambda item: item[1],
+            )
+        )
+    else:
+        arrival_groups = ((offset, [scenario]) for scenario, offset in arrivals)
+    for offset, group in arrival_groups:
         planned_start = stage_start + offset
         delay_s = planned_start - time.perf_counter()
         if delay_s > 0:
@@ -195,10 +213,10 @@ async def _run_scheduled_stage(
         if done:
             pending.difference_update(done)
             results.extend(_harvest_completed_tasks(done))
-        scheduled_task_count += 1
-        if active_requests >= stage.max_concurrency:
+        scheduled_task_count += len(group)
+        if active_requests + len(group) > stage.max_concurrency:
             actual_start = time.perf_counter()
-            results.append(
+            results.extend(
                 _load_generator_saturated_result(
                     scenario,
                     stage=stage,
@@ -206,12 +224,16 @@ async def _run_scheduled_stage(
                     actual_start=actual_start,
                     active_requests=active_requests,
                     generator_lag=max(0.0, actual_start - planned_start),
+                    configured_offset=offset,
                 )
+                for scenario in group
             )
             continue
-        active_requests += 1
+        active_requests += len(group)
         peak_inflight = max(peak_inflight, active_requests)
-        pending.add(asyncio.create_task(run_planned(scenario, offset)))
+        pending.update(
+            asyncio.create_task(run_planned(scenario, offset)) for scenario in group
+        )
         peak_pending_tasks = max(peak_pending_tasks, len(pending))
     if pending:
         results.extend(await _gather_pending_tasks(pending))
@@ -248,6 +270,7 @@ def _load_generator_saturated_result(
     actual_start: float,
     active_requests: int,
     generator_lag: float,
+    configured_offset: float,
 ) -> ScenarioResult:
     result = ScenarioResult(
         scenario_id=scenario.id,
@@ -276,6 +299,8 @@ def _load_generator_saturated_result(
         actual_start=actual_start,
         peak_inflight=active_requests,
         generator_lag=generator_lag,
+        configured_offset=configured_offset,
+        collision_epoch=scenario.collision_epoch_s,
     )
     return result
 
@@ -362,16 +387,26 @@ def _attach_schedule_metadata(
     actual_start: float,
     peak_inflight: int | None = None,
     generator_lag: float | None = None,
+    configured_offset: float | None = None,
+    collision_epoch: float | None = None,
 ) -> None:
     result.stage_id = stage.id
     result.load_mode = stage.mode
     result.load_concurrency = stage.max_concurrency
     result.configured_max_concurrency = stage.max_concurrency
     result.peak_inflight = peak_inflight
+    result.configured_offset_s = configured_offset
+    result.collision_epoch_s = collision_epoch
     result.planned_start_s = planned_start
     result.actual_start_s = actual_start
     result.queue_wait_s = max(0.0, actual_start - planned_start)
     result.generator_lag_s = generator_lag
+
+
+def _scheduled_offset(scenario: Scenario) -> float:
+    if scenario.t_offset_s is None:
+        raise ValueError(f"scheduled scenario {scenario.id!r} is missing t_offset_s")
+    return scenario.t_offset_s
 
 
 def _planned_offsets(stage: LoadStage, request_count: int, *, seed: int) -> list[float]:
@@ -723,14 +758,17 @@ def main() -> int:
         print(f"benchmark harness failed: {exc}")
         return 2
 
-    scenarios = build_scenarios(spec)
-    stage_request_total = sum(stage.request_count for stage in spec.params.load_stages)
-    harness_log.append(
-        f"loaded spec={Path(args.spec)} profile={spec.params.profile} "
-        f"stage_requests={stage_request_total} scenarios={len(scenarios)} "
-        f"load_stages={[stage.id for stage in spec.params.load_stages]}"
-    )
+    scenarios: list[Scenario] = []
     try:
+        scenarios = build_scenarios(spec)
+        stage_request_total = sum(
+            stage.request_count for stage in spec.params.load_stages
+        )
+        harness_log.append(
+            f"loaded spec={Path(args.spec)} profile={spec.params.profile} "
+            f"stage_requests={stage_request_total} scenarios={len(scenarios)} "
+            f"load_stages={[stage.id for stage in spec.params.load_stages]}"
+        )
         results = asyncio.run(_run_benchmark(spec, scenarios, harness_log))
         report = build_results_report(spec, results, scenarios=scenarios)
         write_artifacts(out_dir, spec, scenarios, results, report)

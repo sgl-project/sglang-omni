@@ -7,7 +7,7 @@ import importlib
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, TypedDict
@@ -141,6 +141,127 @@ def load_movies800_samples(
             f"Expected {expected_sample_count} samples for the full {repo_id} run, got {len(samples)}"
         )
     return samples
+
+
+CONCAT_SEGMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\[(\d+(?:\.\d+)?)\]\[S0*(\d+)\](.*?)\[(\d+(?:\.\d+)?)\]", re.DOTALL
+)
+
+
+def merge_concat_references(
+    clip_references: Sequence[str],
+    clip_offsets_s: Sequence[float],
+    keep_until_s: Sequence[float | None],
+) -> str:
+    # note (db-ol): speaker labels are per clip ordinals, so the same tag in
+    # two clips names two different people. Remapping each clip to a disjoint
+    # range keeps the merged reference readable as one meeting.
+    merged: list[str] = []
+    speaker_base = 0
+    for reference, offset_s, limit_s in zip(
+        clip_references, clip_offsets_s, keep_until_s, strict=True
+    ):
+        max_speaker = 0
+        for match in CONCAT_SEGMENT_RE.finditer(reference):
+            start = float(match.group(1))
+            speaker = int(match.group(2))
+            end = float(match.group(4))
+            max_speaker = max(max_speaker, speaker)
+            if limit_s is not None and end > limit_s:
+                continue
+            merged.append(
+                f"[{start + offset_s:.2f}][S{speaker + speaker_base:02d}]"
+                f"{match.group(3)}[{end + offset_s:.2f}]"
+            )
+        if max_speaker == 0:
+            raise ValueError("Clip reference has no parseable timestamped segments")
+        speaker_base += max_speaker
+    return "".join(merged)
+
+
+def _filler_cut_boundary_s(reference: str, limit_s: float) -> float:
+    ends = [
+        end
+        for match in CONCAT_SEGMENT_RE.finditer(reference)
+        if (end := float(match.group(4))) <= limit_s
+    ]
+    if not ends:
+        raise ValueError(
+            f"filler clip has no reference segment ending within {limit_s:.2f}s"
+        )
+    return max(ends)
+
+
+def build_long_audio_concat_sample(
+    clips: Sequence[Movies800Sample],
+    target_duration_s: float,
+    gap_s: float = 0.8,
+    sample_id: str = "long_audio_concat",
+) -> Movies800Sample:
+    # note (db-ol): the first clip is the filler, cut at a reference boundary
+    # and silence padded so the total lands on target_duration_s. Later clips
+    # are appended whole, so their content sits at the deepest positions.
+    import numpy as np
+    import soundfile as sf
+
+    waveforms = []
+    sample_rate = None
+    for clip in clips:
+        waveform, rate = sf.read(clip.audio_path)
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=1)
+        if sample_rate is None:
+            sample_rate = rate
+        elif rate != sample_rate:
+            raise ValueError(
+                f"Clip {clip.sample_id} sample rate {rate} != {sample_rate}"
+            )
+        waveforms.append(waveform.astype(np.float32))
+
+    tail_s = sum(len(w) for w in waveforms[1:]) / sample_rate
+    filler_s = target_duration_s - tail_s - gap_s * (len(waveforms) - 1)
+    if filler_s <= 0:
+        raise ValueError(
+            f"target_duration_s={target_duration_s} leaves no room for the "
+            f"filler clip ({tail_s:.1f}s of whole clips already)"
+        )
+    if filler_s > len(waveforms[0]) / sample_rate:
+        raise ValueError(
+            f"filler clip is {len(waveforms[0]) / sample_rate:.1f}s but "
+            f"{filler_s:.1f}s are needed to reach target_duration_s"
+        )
+    cut_s = _filler_cut_boundary_s(clips[0].expected_text, filler_s)
+    kept = waveforms[0][: int(cut_s * sample_rate)]
+    padding = np.zeros(int(filler_s * sample_rate) - len(kept), dtype=np.float32)
+    waveforms[0] = np.concatenate([kept, padding])
+
+    gap = np.zeros(int(gap_s * sample_rate), dtype=np.float32)
+    parts: list[np.ndarray] = []
+    offsets: list[float] = []
+    cursor = 0.0
+    for position, waveform in enumerate(waveforms):
+        if position > 0:
+            parts.append(gap)
+            cursor += gap_s
+        offsets.append(cursor)
+        parts.append(waveform)
+        cursor += len(waveform) / sample_rate
+
+    merged_reference = merge_concat_references(
+        [clip.expected_text for clip in clips],
+        offsets,
+        [cut_s] + [None] * (len(clips) - 1),
+    )
+
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{sample_id}_"))
+    atexit.register(shutil.rmtree, str(staging_dir), True)
+    audio_path = staging_dir / f"{sample_id}.wav"
+    sf.write(str(audio_path), np.concatenate(parts), sample_rate)
+    return Movies800Sample(
+        sample_id=sample_id,
+        audio_path=str(audio_path),
+        expected_text=merged_reference,
+    )
 
 
 def extract_prediction_text(payload: Mapping[str, JSONValue]) -> str:
