@@ -17,7 +17,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
         allow_audio_chunking=True,
-        max_audio_clip_s=float(QWEN3_ASR_MAX_INPUT_SECONDS),
+        max_audio_clip_s=60.0,
         max_native_clip_s=float(QWEN3_ASR_MAX_INPUT_SECONDS),
     )
 

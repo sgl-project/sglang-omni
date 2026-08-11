@@ -79,10 +79,10 @@ def test_qwen3_asr_pipeline_declares_chunking() -> None:
 
     declared = Qwen3ASRPipelineConfig.audio_chunking
     assert declared.allow_audio_chunking is True
-    assert declared.max_audio_clip_s == 1200.0
+    assert declared.max_audio_clip_s == 60.0
     assert declared.max_native_clip_s == 1200.0
-    assert needs_chunking(1200.0, declared) is False
-    assert needs_chunking(1200.001, declared) is True
+    assert needs_chunking(60.0, declared) is False
+    assert needs_chunking(60.001, declared) is True
     config = Qwen3ASRPipelineConfig(model_path="test")
     assert config.stages[0].factory_args["max_new_tokens"] == 4096
 
