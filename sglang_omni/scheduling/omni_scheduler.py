@@ -608,6 +608,7 @@ class OmniScheduler:
             ps=self.ps,
             server_args=self.server_args,
             model_config=self.model_config,
+            model_runner=self.tp_worker.model_runner,
             enable_overlap=self.enable_overlap,
             spec_algorithm=self.spec_algorithm,
             get_require_mlp_sync=lambda: self.require_mlp_sync,
@@ -654,6 +655,9 @@ class OmniScheduler:
             get_spec_total_num_forward_ct=lambda: (
                 self.metrics_reporter.spec_total_num_forward_ct
             ),
+            get_total_prefill_uncached_tokens=lambda: 0,
+            get_total_prefill_busy_us=lambda: 0,
+            get_decode_moment_totals=lambda: [0.0] * 6,
         )
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
@@ -678,7 +682,6 @@ class OmniScheduler:
             draft_worker=self.draft_worker,
             model_worker=self.model_worker,
             logprob_result_processor=SchedulerLogprobResultProcessor(
-                server_args=self.server_args,
                 model_config=self.model_config,
             ),
             output_streamer=self.output_streamer,
