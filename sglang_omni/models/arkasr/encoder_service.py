@@ -218,36 +218,46 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 self._queue_full_waits += 1
             self._queue_depth_max = max(self._queue_depth_max, queue_depth)
 
-    def submit_item(self, item: Any) -> concurrent.futures.Future[torch.Tensor]:
+    def submit_item(
+        self,
+        item: Any,
+        *,
+        cached_embedding: torch.Tensor | None = None,
+    ) -> concurrent.futures.Future[torch.Tensor]:
         """Return when the item has been queued for LM-ready encoding."""
         expected_tokens = _expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
                 "ARK-ASR pre-LM encode requires the item's num_audio_tokens"
             )
+        if cached_embedding is not None:
+            if not self._is_valid(cached_embedding, expected_tokens):
+                raise RuntimeError(
+                    "ARK-ASR pre-LM cached embedding does not match the item's "
+                    "expected shape or dtype"
+                )
+            self.attach_embedding(item, cached_embedding)
+            completed: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
+            )
+            completed.set_result(cached_embedding)
+            return self._track_submission(completed)
+
         key = self._cache_key(item)
 
         if key is None:
             return self._track_submission(self._submit(item))
 
-        cached = self._cache.get(key)
+        cached = self.lookup_cached_embedding(
+            getattr(item, "audio_fingerprint", None), expected_tokens
+        )
         if cached is not None:
-            if self._is_valid(cached, expected_tokens):
-                with self._lock:
-                    self._hits += 1
-                self.attach_embedding(item, cached)
-                future: concurrent.futures.Future[torch.Tensor] = (
-                    concurrent.futures.Future()
-                )
-                future.set_result(cached)
-                return self._track_submission(future)
-            logger.warning(
-                f"ARK-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
+            self.attach_embedding(item, cached)
+            completed: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
             )
-            self._cache.remove_if_same(key, cached)
-            cached = None
+            completed.set_result(cached)
+            return self._track_submission(completed)
 
         follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
@@ -345,6 +355,30 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if self._inflight.get(key) is future:
                 del self._inflight[key]
 
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated cached embedding without starting an encode."""
+        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        if self._is_valid(cached, expected_tokens):
+            with self._lock:
+                self._hits += 1
+            return cached
+        logger.warning(
+            "ARK-ASR pre-LM cache entry %s failed validation "
+            "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
+            key,
+            getattr(cached, "shape", None),
+            getattr(cached, "dtype", None),
+        )
+        self._cache.remove_if_same(key, cached)
+        return None
+
     def stats(self) -> dict[str, int | float]:
         with self._lock:
             cache_lookups = self._hits + self._misses
@@ -376,10 +410,14 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             }
 
     def _cache_key(self, item: Any) -> str | None:
-        item_hash = getattr(item, "audio_fingerprint", None)
-        if item_hash is None:
+        return self._cache_key_from_fingerprint(
+            getattr(item, "audio_fingerprint", None)
+        )
+
+    def _cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+        if audio_fingerprint is None:
             return None
-        return f"{self._namespace}:{item_hash}"
+        return f"{self._namespace}:{audio_fingerprint}"
 
     def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
