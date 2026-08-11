@@ -19,7 +19,7 @@ import torch
 from torch import nn
 
 try:
-    from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+    from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
 except ImportError:
     flash_attn_varlen_func = None
 
