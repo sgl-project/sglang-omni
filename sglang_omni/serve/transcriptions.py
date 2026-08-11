@@ -22,6 +22,7 @@ from sglang_omni.serve.transcription_chunking import (
     decode_audio_chunks,
     join_transcript_parts,
 )
+from sglang_omni.utils.audio import AudioDecodeError
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +106,20 @@ def register_transcriptions(app: FastAPI) -> None:
                 duration_s=duration_s,
             )
 
-        duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
-        duration_s, plan = await _prepare_transcription_audio(
-            audio_bytes,
-            chunking,
-            duration_s=duration_s,
-        )
+        try:
+            duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
+            duration_s, plan = await _prepare_transcription_audio(
+                audio_bytes,
+                chunking,
+                duration_s=duration_s,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            logger.exception("Error transcribing audio for request %s", request_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         if plan is None:
             gen_req = speech_to_text.build_speech_to_text_generate_request(
@@ -336,7 +345,7 @@ async def _prepare_transcription_audio(
             audio_bytes,
             chunking,
         )
-    except (RuntimeError, ValueError) as exc:
+    except AudioDecodeError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"Could not decode uploaded audio: {exc}",

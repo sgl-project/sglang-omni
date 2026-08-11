@@ -7,6 +7,7 @@ import base64
 from typing import Any
 
 import pytest
+import torch
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
@@ -2119,6 +2120,55 @@ def test_unknown_probed_invalid_audio_returns_400(
 
     assert response.status_code == 400
     assert "Could not decode uploaded audio" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
+@pytest.mark.parametrize(
+    "decode_error",
+    [
+        RuntimeError("audio decoder backend unavailable"),
+        torch.OutOfMemoryError("audio decoder out of memory"),
+    ],
+    ids=["runtime-error", "out-of-memory"],
+)
+def test_unknown_probed_operational_decode_error_returns_500(
+    monkeypatch: pytest.MonkeyPatch,
+    decode_error: RuntimeError,
+) -> None:
+    from sglang_omni.config import AudioChunkingConfig
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", lambda _: 0.0)
+
+    def raise_decode_error(*args: Any, **kwargs: Any) -> None:
+        raise decode_error
+
+    monkeypatch.setattr(
+        transcriptions,
+        "decode_audio_chunks",
+        raise_decode_error,
+    )
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="asr",
+            audio_chunking=AudioChunkingConfig(
+                allow_audio_chunking=True,
+                max_audio_clip_s=1.0,
+            ),
+        ),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("audio.wav", _wav_upload(0.5), "audio/wav")},
+    )
+
+    assert response.status_code == 500
+    assert str(decode_error) in response.json()["detail"]
     assert transcription_client.requests == []
 
 
