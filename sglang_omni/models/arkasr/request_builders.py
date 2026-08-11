@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """StagePayload <-> SGLang request adapters for ARK-ASR-3B.
 
-Mirrors the checkpoint's processor: mel features via WhisperFeatureExtractor,
-prompt = ``<|user|>...<|begin_of_audio|>{N audio tokens}<|end_of_audio|>
+Mirrors the checkpoint's processor: reuse a cached LM-ready embedding when
+available, otherwise extract mel features via WhisperFeatureExtractor. The
+prompt is ``<|user|>...<|begin_of_audio|>{N audio tokens}<|end_of_audio|>
 Please transcribe this audio.<|assistant|>``, then the ``<|audio|>`` (id
 151663) placeholders are scattered with encoder output by the model's
 general_mm_embed_routine. ARK's LM is a dense Qwen2 (1-D RoPE, no MRoPE).
@@ -12,8 +13,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -88,6 +90,25 @@ def _build_suppressed_token_ids(tokenizer: Any) -> list[int]:
     return sorted(bad)
 
 
+def _estimate_audio_tokens(
+    num_samples: int,
+    feature_extractor: Any,
+    merge_factor: int,
+) -> int:
+    """Predict the truncated Whisper mel length without computing the FFT."""
+    try:
+        hop_length = int(feature_extractor.hop_length)
+        max_mel_frames = int(feature_extractor.nb_max_frames)
+    except AttributeError as exc:
+        raise ValueError(
+            "ARK-ASR feature extractor is missing audio length metadata"
+        ) from exc
+    if hop_length <= 0 or max_mel_frames <= 0:
+        raise ValueError("ARK-ASR feature extractor has invalid audio length metadata")
+    mel_frames = min(int(num_samples) // hop_length, max_mel_frames)
+    return arkasr_num_audio_tokens(mel_frames, merge_factor)
+
+
 def make_arkasr_scheduler_adapters(
     *,
     tokenizer: Any,
@@ -134,25 +155,40 @@ def make_arkasr_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        # mel: pad to the clip's true length (short clips do not pay the full
-        # 30s of FFT). ARK's WhisperEncoder is variable-length; conv2 stride-2
-        # then merge_factor determines the audio-token count.
-        extracted = feature_extractor(
-            audio,
-            sampling_rate=_SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-            padding="longest",
-            truncation=True,
-        )
-        features = extracted.input_features  # [num_mel_bins, T]
-        feature_attention_mask = getattr(extracted, "attention_mask", None)
-        if feature_attention_mask is None:
-            feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+        estimated_audio_tokens = None
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            estimated_audio_tokens = _estimate_audio_tokens(
+                len(audio), feature_extractor, merge_factor
             )
-        num_mel_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint, estimated_audio_tokens
+            )
+
+        if cached_embedding is None:
+            # Pad to the clip's true length (short clips do not pay the full
+            # 30s FFT), while preserving the checkpoint's 30s truncation.
+            extracted = feature_extractor(
+                audio,
+                sampling_rate=_SAMPLE_RATE,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding="longest",
+                truncation=True,
+            )
+            features = extracted.input_features  # [num_mel_bins, T]
+            feature_attention_mask = getattr(extracted, "attention_mask", None)
+            if feature_attention_mask is None:
+                feature_attention_mask = torch.ones(
+                    (features.shape[0], features.shape[-1]), dtype=torch.long
+                )
+            num_mel_frames = int(feature_attention_mask.sum().item())
+            num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+        else:
+            features = None
+            feature_attention_mask = None
+            assert estimated_audio_tokens is not None
+            num_audio_tokens = estimated_audio_tokens
 
         input_ids = _build_prompt_ids(num_audio_tokens)
 
@@ -197,6 +233,9 @@ def make_arkasr_scheduler_adapters(
         )
         sampling_params.normalize(tokenizer=None)
 
+        if cached_embedding is not None:
+            audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+
         req = Req(
             rid=payload.request_id,
             origin_input_text="",
@@ -219,7 +258,7 @@ def make_arkasr_scheduler_adapters(
             engine_start_s=time.perf_counter(),
             stage_payload=payload,
         )
-        if audio_encoder_service is None:
+        if audio_encoder_service is None or cached_embedding is not None:
             return req_data
         return DeferredAdmission(
             value=req_data,
