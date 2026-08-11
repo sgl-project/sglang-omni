@@ -1004,6 +1004,13 @@ def serve(
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
         ),
     ] = False,
+    variant: Annotated[
+        str | None,
+        typer.Option(
+            "--variant",
+            help="Select a named pipeline variant from the model's config module.",
+        ),
+    ] = None,
     colocate: Annotated[
         bool,
         typer.Option(
@@ -1371,10 +1378,14 @@ def serve(
     # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
-    elif text_only:
+    elif text_only or variant:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
-        config_manager = ConfigManager.from_model_path(model_path, variant="text")
+        if text_only and variant and variant != "text":
+            raise typer.BadParameter("--text-only cannot be combined with --variant")
+        config_manager = ConfigManager.from_model_path(
+            model_path, variant=variant or "text"
+        )
     else:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")

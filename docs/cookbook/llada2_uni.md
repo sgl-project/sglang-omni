@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output and text-to-image serving paths.
 
 ## Highlights
 
@@ -127,6 +127,59 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
+## Text-to-Image Generation
+
+Send a text prompt and get an image response. This requires serving the
+experimental `t2i` pipeline variant (`t2i_generator → image_decoder`) on a
+single GPU:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni-FP8 --variant t2i --port 8000
+```
+
+**cURL**
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "inclusionAI/LLaDA2.0-Uni-FP8",
+    "messages": [{"role": "user", "content": "A cat on a table"}],
+    "modalities": ["image"]
+  }'
+```
+
+**Python**
+
+```python
+import base64
+
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/LLaDA2.0-Uni-FP8",
+        "messages": [{"role": "user", "content": "A cat on a table"}],
+        "modalities": ["image"],
+    },
+)
+resp.raise_for_status()
+for part in resp.json()["choices"][0]["message"]["content"]:
+    if part["type"] == "image_url":
+        b64 = part["image_url"]["url"].split(",", 1)[1]
+        open("output.png", "wb").write(base64.b64decode(b64))
+```
+
+The `t2i` variant additionally accepts these parameters:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `image_h` | int | `512` | Output image height in pixels |
+| `image_w` | int | `512` | Output image width in pixels |
+| `t2i_steps` | int | `16` | Denoising steps for VQ token generation |
+| `cfg_scale` | float | `4.0` | Classifier-free guidance scale |
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for LLaDA2.0-Uni.
@@ -135,18 +188,17 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Output modalities: `["text"]` on the default pipeline, `["image"]` on the `t2i` variant |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
 ### Incoming Features
 
-- Text-to-image generation
 - Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- The `t2i` variant serves one request at a time and reloads decoder weights
+  per request.
+- Interleaved generation and image streaming are not supported yet.

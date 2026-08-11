@@ -714,6 +714,19 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
+    if "image" in requested_modalities and result.images:
+        parts: list[dict[str, Any]] = []
+        if result.text:
+            parts.append({"type": "text", "text": result.text})
+        parts.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+            }
+            for image_b64 in result.images
+        )
+        message["content"] = parts
+
     if "content" not in message and "audio" not in message:
         message["content"] = result.text
 
@@ -958,6 +971,10 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         ("talker_top_k", req.talker_top_k),
         ("talker_repetition_penalty", req.talker_repetition_penalty),
         ("talker_max_new_tokens", req.talker_max_new_tokens),
+        ("image_h", req.image_h),
+        ("image_w", req.image_w),
+        ("t2i_steps", req.t2i_steps),
+        ("cfg_scale", req.cfg_scale),
     ):
         if value is not None:
             extra_params[field_name] = value

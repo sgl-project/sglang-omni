@@ -94,6 +94,12 @@ class ChatCompletionRequest(BaseModel):
     talker_repetition_penalty: float | None = None
     talker_max_new_tokens: int | None = None
 
+    # Text-to-image overrides for LLaDA2-Uni t2i output
+    image_h: int | None = None
+    image_w: int | None = None
+    t2i_steps: int | None = None
+    cfg_scale: float | None = None
+
     # Misc
     request_id: str | None = None
     user: str | None = None
