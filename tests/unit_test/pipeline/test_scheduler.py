@@ -2165,6 +2165,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
+    scheduler.server_args = SimpleNamespace(dcp_size=1)
     _init_sync_request_build_state(scheduler)
 
     sampling_params = SimpleNamespace(max_new_tokens=10, min_new_tokens=0)
@@ -2202,6 +2203,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
+    scheduler.server_args = SimpleNamespace(dcp_size=1)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -2265,7 +2267,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
-    scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
+    scheduler.server_args = SimpleNamespace(dcp_size=1, mem_fraction_static=0.85)
     _init_sync_request_build_state(scheduler)
 
     over_context_req = SimpleNamespace(
@@ -2320,6 +2322,7 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
+    scheduler.server_args = SimpleNamespace(dcp_size=1)
     _init_sync_request_build_state(scheduler)
 
     sampling_params = SimpleNamespace(max_new_tokens=3, min_new_tokens=0)
