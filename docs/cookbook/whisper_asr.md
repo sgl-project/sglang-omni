@@ -82,18 +82,6 @@ configured another way. For smoke tests, keep the request minimal and use
 
 ## Benchmarking
 
-Use `benchmarks/eval/benchmark_whisper_encoder.py` to compare eager and
-encoder-graph execution for a checkpoint. The JSON result includes capture
-coverage, input/output shape, dtype, device, equality, and CUDA-event latency.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.benchmark_whisper_encoder \
-  --model-path openai/whisper-base \
-  --batch-sizes 1,2,4,8 \
-  --warmup 10 --iterations 50 \
-  --output whisper_encoder_graph.json
-```
-
 Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and throughput:
 
 ```bash
@@ -105,18 +93,7 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 
 ## Benchmark Results
 
-Measured on a single H200 with `openai/whisper-base` in FP16. Each row is the
-mean of 50 CUDA-event measurements after 10 warmup iterations. Eager and graph
-outputs were exactly equal for every batch size.
-
-| Batch size | Eager mean (ms) | CUDA Graph mean (ms) | Speedup |
-|---:|---:|---:|---:|
-| 1 | 2.108 | 0.706 | 2.98x |
-| 2 | 2.119 | 1.085 | 1.95x |
-| 4 | 2.210 | 1.774 | 1.25x |
-| 8 | 3.431 | 3.230 | 1.06x |
-
-End-to-end results used the 20-sample SeedTTS EN subset on the same H200. Each mode ran one discarded warmup and three measured repeats per concurrency.
+End-to-end results used the 20-sample SeedTTS EN subset on a single H200 with `openai/whisper-base` in FP16. Each mode ran one discarded warmup and three measured repeats per concurrency.
 
 | Concurrency | Eager req/s | CUDA Graph req/s | Throughput gain | Eager mean latency (s) | CUDA Graph mean latency (s) | Corpus WER |
 |---:|---:|---:|---:|---:|---:|---:|
