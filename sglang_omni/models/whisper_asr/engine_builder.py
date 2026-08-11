@@ -47,7 +47,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "enable_torch_compile": True,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
-            "chunked_prefill_size": 4096,
+            "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }

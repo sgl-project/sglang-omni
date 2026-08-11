@@ -13,6 +13,7 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 from tests.unit_test.fakes import FakeServerArgs
 
 
@@ -29,6 +30,16 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("WhisperForConditionalGeneration")
         is WhisperASRPipelineConfig
     )
+
+
+def test_whisper_asr_engine_builder_disables_chunked_prefill() -> None:
+    builder = WhisperASREngineBuilder(
+        max_running_requests=16,
+        max_new_tokens=448,
+        mem_fraction_static=0.8,
+    )
+
+    assert builder.generation_defaults(dtype="bfloat16")["chunked_prefill_size"] == 0
 
 
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
