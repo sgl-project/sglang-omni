@@ -29,7 +29,7 @@ def qwen3_asr_num_audio_tokens(num_mel_frames: int) -> int:
 
 
 # Longest clip the model natively accepts, per the official wrapper's
-# ``MAX_ASR_INPUT_SECONDS`` (QwenLM/Qwen3-ASR).
+# MAX_ASR_INPUT_SECONDS (QwenLM/Qwen3-ASR).
 QWEN3_ASR_MAX_INPUT_SECONDS = 1200
 
 # Mel frames per second of audio (16 kHz, hop 160).

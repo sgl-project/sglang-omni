@@ -125,16 +125,17 @@ are not supported as forced `language` hints; use `Chinese`/`zh` for them.
 The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
 request, so we transcribe longer uploads in chunks: we split the audio, run
 each chunk as its own engine request, and join the transcripts back in
-order. The key settings, declared by `Qwen3ASRPipelineConfig.audio_chunking`
-(`AudioChunkingConfig`):
+order. The behavior follows these values, which Qwen3-ASR declares in code
+(`Qwen3ASRPipelineConfig.audio_chunking`). They are fixed model defaults in
+this release:
 
-| Setting | Default | Meaning |
+| Name | Value | Meaning |
 |---|---|---|
-| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. The engine context is sized for the model's native 1,200s maximum, so you can raise this up to 1,200; the output-token budget scales with clip length on its own. |
+| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. |
 | `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff. |
 | `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
 | `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
-| `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length, so you shouldn't need to change it. |
+| `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
 
 Behavior notes:
 

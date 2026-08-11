@@ -407,9 +407,9 @@ async def _transcribe_audio_chunks(
     """Transcribe the chunks of a plan, returning one text per chunk.
 
     Texts come back in span order no matter which chunk finishes first
-    (``asyncio.gather`` preserves input order); the caller joins them and,
+    (asyncio.gather preserves input order); the caller joins them and,
     for verbose_json, pairs them with the spans' timestamps. Up to
-    ``max_concurrent`` chunks run in the engine at once.
+    max_concurrent chunks run in the engine at once.
 
     Any chunk failing fails the whole request. The error names the chunk and
     its time range to make sure the failure is diagnosable.

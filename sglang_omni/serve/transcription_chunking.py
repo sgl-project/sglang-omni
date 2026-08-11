@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Long-audio chunking for ``/v1/audio/transcriptions``.
+"""Long-audio chunking for /v1/audio/transcriptions.
 
 Chunking is opt-in per model, declared via sglang_omni.config.AudioChunkingConfig.
 Audio longer than max_audio_clip_s is split into non-overlapping chunks at the quietest point near each nominal boundary.
@@ -21,15 +21,15 @@ logger = logging.getLogger(__name__)
 
 TARGET_SAMPLE_RATE = 16000
 
-# Half-open ``[start, end)`` sample range of one chunk.
+# Half-open [start, end) sample range of one chunk.
 Span = tuple[int, int]
 
 
 def needs_chunking(duration_s: float, config: AudioChunkingConfig) -> bool:
     """Whether a probed clip duration calls for splitting.
 
-    ``duration_s <= 0`` means the duration probe failed (``soundfile`` could
-    not read the container). Such uploads keep today's behaviour rather than
+    duration_s <= 0 means the duration probe failed (PyAV could not read
+    the container). Such uploads keep today's behaviour rather than
     paying a full decode just to find out how long they are.
     """
     if not config.allow_audio_chunking:
@@ -41,10 +41,10 @@ def needs_chunking(duration_s: float, config: AudioChunkingConfig) -> bool:
 
 
 def check_total_duration(duration_s: float, config: AudioChunkingConfig) -> None:
-    """Reject uploads past ``max_total_audio_s``.
+    """Reject uploads past max_total_audio_s.
 
-    Raises ``ValueError``; the handler maps it to HTTP 400. The wording matches
-    the engine-side limit message in ``preprocessing.transcription`` so both
+    Raises ValueError; the handler maps it to HTTP 400. The wording matches
+    the engine-side limit message in preprocessing.transcription so both
     surface identically to callers.
     """
     limit = config.max_total_audio_s
@@ -80,9 +80,9 @@ class RMSSplitter:
         *,
         min_tail_s: float = 0.0,
     ) -> list[Span]:
-        """Split ``waveform`` into the spans that become chunk requests.
+        """Split the waveform into the spans that become chunk requests.
 
-        ``min_tail_s`` is the model's floor for a worth-transcribing final
+        min_tail_s is the model's floor for a worth-transcribing final
         chunk (AudioChunkingConfig.min_tail_s); 0 disables the guard.
         """
         total_samples = int(waveform.shape[-1])
@@ -119,7 +119,7 @@ class RMSSplitter:
     def _find_split_point(
         self, waveform: np.ndarray, search_start: int, search_end: int
     ) -> int:
-        """Return the sample index to cut at, within ``[search_start, search_end]``."""
+        """Return the sample index to cut at, within [search_start, search_end]."""
         region = waveform[search_start:search_end]
         window = self.energy_window_samples
         window_count = int(region.shape[-1]) // window
@@ -174,7 +174,7 @@ def encode_wav(waveform: np.ndarray, sample_rate: int) -> bytes:
     """Encode a mono float32 waveform as a 32-bit float WAV.
 
     Float rather than PCM_16 keeps the split lossless, and the engine-side
-    ``load_audio`` has a dependency-free parser for float WAV, so chunks decode
+    load_audio has a dependency-free parser for float WAV, so chunks decode
     without going back through torchaudio.
     """
     import soundfile as sf
@@ -199,7 +199,7 @@ def plan_audio_chunks(
 ) -> ChunkPlan | None:
     """Decode an upload and split it, or return None to leave it untouched.
 
-    return ``None`` means "send the original upload as one request".
+    Returning None means "send the original upload as one request".
 
     Blocking: decodes the whole file, so callers on the event loop must run it
     in a thread.
