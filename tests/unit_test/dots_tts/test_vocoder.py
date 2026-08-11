@@ -22,8 +22,10 @@ class _FakeInference:
     def __init__(self, hop_size: int) -> None:
         self.hop_size = hop_size
         self.inputs: list[torch.Tensor] = []
+        self.input_data_ptrs: list[int] = []
 
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        self.input_data_ptrs.append(latents.data_ptr())
         self.inputs.append(latents.clone())
         rows = []
         for row in latents:
@@ -109,9 +111,11 @@ def test_multiple_buckets_restore_original_request_order() -> None:
 def test_single_input_preserves_batch_and_waveform_shapes() -> None:
     codec = _codec()
     vocoder = DotsTTSBatchVocoder(codec)
-    [output] = _decode(vocoder, [_latents(12, 5)])
+    latents = _latents(12, 5)
+    [output] = _decode(vocoder, [latents])
 
     assert not vocoder._logged_batch
+    assert codec.inference.input_data_ptrs == [latents.data_ptr()]
     assert codec.inference.inputs[0].shape == (1, 12, 3)
     assert output[0].shape == (1, 1, 24)
     assert output[1] == 48000

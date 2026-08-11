@@ -125,18 +125,17 @@ class DotsTTSModelRunner(ModelRunner):
             if feedback.ndim > 1:
                 feedback = feedback.reshape(-1, feedback.shape[-1])[-1]
             rows.append(feedback)
-        stacked = torch.stack(rows).to(
-            device=forward_batch.input_ids.device,
-            dtype=next(self.model.parameters()).dtype,
-        )
         buffer = self.model.graph_feedback_buffer
         if buffer is not None:
-            # note (luojiaxuan): row order matches the forward batch; the copy runs on the same
-            # stream as the (graph or eager) forward, so it is ordered ahead
-            # of the launch. forward() reads the buffer for decode directly.
-            buffer[: stacked.shape[0]].copy_(stacked)
+            # note (luojiaxuan): stack writes in forward-batch row order on the
+            # same stream as the graph or eager forward. forward() reads this
+            # persistent buffer directly.
+            torch.stack(rows, out=buffer[: len(rows)])
         else:
-            forward_batch.input_embeds = stacked
+            forward_batch.input_embeds = torch.stack(rows).to(
+                device=forward_batch.input_ids.device,
+                dtype=next(self.model.parameters()).dtype,
+            )
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
