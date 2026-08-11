@@ -73,11 +73,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 stream=True,
                 endpoint_path=TRANSCRIPTIONS_ENDPOINT,
             )
-            # Streaming cannot chunk (one SSE stream, one engine request), so
-            # it serves clips up to the model's native limit as a single
-            # request and rejects longer ones loudly -- without this guard
-            # they would run anyway and truncate.
-            duration_s = _probe_audio_duration(audio_bytes)
+            duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
             if (
                 chunking.allow_audio_chunking
                 and duration_s > chunking.stream_clip_limit_s
@@ -109,9 +105,10 @@ def register_transcriptions(app: FastAPI) -> None:
                 request_id=request_id,
                 audio_bytes=audio_bytes,
                 architectures=getattr(app.state, "architectures", None),
+                duration_s=duration_s,
             )
 
-        duration_s = _probe_audio_duration(audio_bytes)
+        duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
         plan: ChunkPlan | None = None
         if needs_chunking(duration_s, chunking):
             try:
@@ -149,6 +146,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 language=form.language,
                 audio_bytes=audio_bytes,
                 architectures=getattr(app.state, "architectures", None),
+                duration_s=duration_s,
             )
 
         try:

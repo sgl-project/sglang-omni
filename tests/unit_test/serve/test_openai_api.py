@@ -1537,6 +1537,53 @@ def test_streamed_long_audio_is_rejected_explicitly() -> None:
     assert transcription_client.requests == []
 
 
+def _count_duration_probes(monkeypatch) -> list[int]:
+    from sglang_omni.serve import speech_to_text, transcriptions
+
+    calls: list[int] = []
+    real_probe = speech_to_text.probe_audio_duration
+
+    def counting_probe(audio_bytes: bytes) -> float:
+        calls.append(1)
+        return real_probe(audio_bytes)
+
+    monkeypatch.setattr(speech_to_text, "probe_audio_duration", counting_probe)
+    monkeypatch.setattr(transcriptions, "_probe_audio_duration", counting_probe)
+    return calls
+
+
+def test_non_streaming_transcription_probes_the_upload_once(monkeypatch) -> None:
+    # The handler probes in a worker thread and hands the duration to the
+    # response assembly. A second probe per request was measurable: SeedTTS
+    # CI runs ~150 short requests/s, and each sync probe blocks the event
+    # loop for the whole process.
+    calls = _count_duration_probes(monkeypatch)
+    client = _chunking_test_client(SuccessfulTranscriptionClient())
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("short.wav", _wav_upload(0.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+
+
+def test_streaming_transcription_probes_the_upload_once(monkeypatch) -> None:
+    calls = _count_duration_probes(monkeypatch)
+    client = _chunking_test_client(SuccessfulTranscriptionClient())
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("short.wav", _wav_upload(0.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+
+
 def test_streamed_audio_within_the_native_limit_streams_whole() -> None:
     # The chunk length is a scheduling choice for the non-stream path; a
     # stream request only needs to fit the engine natively. 2.5s is past the

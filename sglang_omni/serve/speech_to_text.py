@@ -230,6 +230,7 @@ def assemble_speech_to_text_response(
     language: str | None,
     audio_bytes: bytes,
     architectures: list[str] | None,
+    duration_s: float | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -242,7 +243,8 @@ def assemble_speech_to_text_response(
 
     adapter = resolve_speech_to_text_adapter(architectures)
     text = adapter.postprocess_text(text)
-    duration_s = probe_audio_duration(audio_bytes)
+    if duration_s is None:
+        duration_s = probe_audio_duration(audio_bytes)
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
@@ -385,10 +387,12 @@ async def create_speech_to_text_streaming_response(
     audio_bytes: bytes,
     architectures: list[str] | None,
     operation_name: str = "transcription",
+    duration_s: float | None = None,
 ) -> Response:
     """Delay headers until backend admission can still return an HTTP error."""
     adapter = resolve_speech_to_text_adapter(architectures)
-    duration_s = probe_audio_duration(audio_bytes)
+    if duration_s is None:
+        duration_s = await asyncio.to_thread(probe_audio_duration, audio_bytes)
     chunk_stream = client.generate(gen_req, request_id=request_id)
     try:
         first_chunk = await _first_speech_to_text_chunk(
