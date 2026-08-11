@@ -458,6 +458,29 @@ def test_non_oom_failure_is_detached_before_future_and_logging(
     )
 
 
+@pytest.mark.parametrize("error_type", [ValueError, torch.OutOfMemoryError])
+def test_failure_arguments_do_not_retain_tensors_in_future(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    service = _make_service()
+    retained_tensors: list[weakref.ReferenceType[torch.Tensor]] = []
+
+    def raise_with_tensor(_items: list[object]) -> torch.Tensor:
+        failed_tensor = torch.ones(1)
+        retained_tensors.append(weakref.ref(failed_tensor))
+        raise error_type("failed tensor", failed_tensor)
+
+    monkeypatch.setattr(service, "encode_batch", raise_with_tensor)
+    future = service._submit(object())
+
+    failure = future.exception(timeout=2)
+    assert isinstance(failure, error_type)
+    assert all(not isinstance(arg, torch.Tensor) for arg in failure.args)
+    gc.collect()
+    assert retained_tensors[0]() is None
+
+
 def test_batched_oom_recovers_before_per_item_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

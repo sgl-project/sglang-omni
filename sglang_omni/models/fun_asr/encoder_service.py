@@ -362,17 +362,17 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
     @staticmethod
     def _detach_failure(exc: Exception) -> _DetachedFailure:
         formatted_traceback = "".join(traceback.format_exception(exc)).rstrip()
+        message = str(exc)
         traceback.clear_frames(exc.__traceback__)
         exc.__traceback__ = None
         exc.__cause__ = None
         exc.__context__ = None
-        try:
-            detached = type(exc)(*exc.args)
-        except Exception:
-            detached = RuntimeError(f"{type(exc).__name__}: {exc}")
-        detached.__traceback__ = None
-        detached.__cause__ = None
-        detached.__context__ = None
+        if isinstance(exc, torch.OutOfMemoryError):
+            detached = torch.OutOfMemoryError(message)
+        elif isinstance(exc, ValueError):
+            detached = ValueError(message)
+        else:
+            detached = RuntimeError(f"{type(exc).__name__}: {message}")
         return _DetachedFailure(
             exception=detached,
             formatted_traceback=formatted_traceback,
