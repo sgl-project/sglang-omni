@@ -7,6 +7,8 @@
 # Does not require .omni-env-complete (downstream jobs use this gate; setup writes marker).
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <venv-name>" >&2
   exit 1

@@ -1,43 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OpenAI-compatible audio transcription route and request helpers."""
+"""OpenAI-compatible audio transcription endpoint."""
 
 from __future__ import annotations
 
 import asyncio
-import io
-import json
 import logging
 import math
 import uuid
-from collections.abc import AsyncIterator, Awaitable
-from contextlib import aclosing
-from typing import Any
+from collections.abc import Awaitable
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from sglang_omni.client import (
-    Client,
-    ClientError,
-    GenerateChunk,
-    GenerateRequest,
-    SamplingParams,
-)
+from sglang_omni.client import Client, ClientError, GenerateRequest
 from sglang_omni.config import AudioChunkingConfig
-from sglang_omni.serve.generation_params import record_explicit_generation_params
+from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import is_bad_request_error
-from sglang_omni.serve.protocol import (
-    TranscriptionResponse,
-    TranscriptionTextDeltaEvent,
-    TranscriptionTextDoneEvent,
-    TranscriptionUsage,
-)
-from sglang_omni.serve.streaming import (
-    STREAM_DONE_SENTINEL,
-    ClosableStreamingResponse,
-    close_async_iterator_if_supported,
-)
-from sglang_omni.serve.transcription_adapters import resolve_adapter
+from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
     ChunkSpan,
@@ -48,85 +27,33 @@ from sglang_omni.serve.transcription_chunking import (
 )
 
 logger = logging.getLogger(__name__)
-HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
-HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
 
+TRANSCRIPTIONS_ENDPOINT = "/v1/audio/transcriptions"
 
-async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
-    task.cancel()
-    done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
-    if done:
-        await asyncio.gather(*done, return_exceptions=True)
-    else:
-        task.add_done_callback(_discard_cancelled_task_result)
+_first_transcription_chunk = speech_to_text._first_speech_to_text_chunk
+_transcription_stream = speech_to_text.speech_to_text_stream
+_cancel_task_bounded = speech_to_text._cancel_task_bounded
+_wait_for_request_disconnect = speech_to_text._wait_for_request_disconnect
+_probe_audio_duration = speech_to_text.probe_audio_duration
+build_transcription_generate_request = (
+    speech_to_text.build_speech_to_text_generate_request
+)
 
-
-def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
-    try:
-        task.result()
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        logger.debug("Cancelled request task finished with an error", exc_info=True)
-
-
-async def _wait_for_request_disconnect(request: Request) -> None:
-    while not await request.is_disconnected():
-        await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
-
-
-async def _abort_and_close_transcription_stream(
-    client: Client,
-    request_id: str,
-    stream: AsyncIterator[Any],
-) -> None:
-    try:
-        await client.abort(request_id)
-    finally:
-        await close_async_iterator_if_supported(stream)
-
-
-async def _first_transcription_chunk(
-    request: Request,
-    client: Client,
-    chunk_stream: AsyncIterator[GenerateChunk],
-    request_id: str,
-) -> GenerateChunk | None:
-    """Wait for the first stream chunk while watching for client disconnect."""
-    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
-    first_chunk_task = asyncio.create_task(anext(chunk_stream))
-    try:
-        done, _ = await asyncio.wait(
-            {first_chunk_task, disconnect_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if disconnect_task in done:
-            await _cancel_task_bounded(first_chunk_task)
-            await _abort_and_close_transcription_stream(
-                client, request_id, chunk_stream
-            )
-            raise asyncio.CancelledError
-        try:
-            return first_chunk_task.result()
-        except StopAsyncIteration:
-            return None
-    finally:
-        if not disconnect_task.done():
-            await _cancel_task_bounded(disconnect_task)
+__all__ = [
+    "_first_transcription_chunk",
+    "_transcription_stream",
+    "build_transcription_generate_request",
+    "register_transcriptions",
+]
 
 
 def register_transcriptions(app: FastAPI) -> None:
-    @app.post("/v1/audio/transcriptions")
+    @app.post(TRANSCRIPTIONS_ENDPOINT)
     async def create_transcription(
         request: Request,
-        file: UploadFile = File(...),
-        model: str | None = Form(default=None),
-        language: str | None = Form(default=None),
-        prompt: str | None = Form(default=None),
-        response_format: str = Form(default="json"),
-        temperature: float | None = Form(default=None),
-        max_new_tokens: int | None = Form(default=None, ge=1),
-        stream: bool = Form(default=False),
+        form: speech_to_text.SpeechToTextForm = Depends(
+            speech_to_text.parse_speech_to_text_form
+        ),
     ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
@@ -134,82 +61,57 @@ def register_transcriptions(app: FastAPI) -> None:
 
         # TODO(Ratish): add the same pre-parser body limit used by voice uploads
         # once transcription upload limits are defined.
-        audio_bytes = await file.read()
-        if not audio_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+        audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+            form.file
+        )
 
-        normalized_response_format = response_format.strip().lower()
-        if stream:
-            if normalized_response_format not in {"json", "text"}:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "stream=true supports only response_format 'json' or "
-                        f"'text', got {response_format!r}"
-                    ),
-                )
-            stream_chunking: AudioChunkingConfig = app.state.audio_chunking
+        chunking: AudioChunkingConfig = app.state.audio_chunking
+
+        if form.stream:
+            speech_to_text.validate_speech_to_text_response_format(
+                form.response_format,
+                stream=True,
+                endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+            )
+            # Streaming cannot chunk (one SSE stream, one engine request), so
+            # it serves clips up to the model's native limit as a single
+            # request and rejects longer ones loudly -- without this guard
+            # they would run anyway and truncate.
             duration_s = _probe_audio_duration(audio_bytes)
             if (
-                stream_chunking.allow_audio_chunking
-                and duration_s > stream_chunking.stream_clip_limit_s
+                chunking.allow_audio_chunking
+                and duration_s > chunking.stream_clip_limit_s
             ):
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         "stream=true does not support audio longer than "
-                        f"{stream_chunking.stream_clip_limit_s:g} seconds; "
+                        f"{chunking.stream_clip_limit_s:g} seconds; "
                         "use stream=false, which transcribes long audio in "
                         "chunks"
                     ),
                 )
-            gen_req = build_transcription_generate_request(
+            gen_req = speech_to_text.build_speech_to_text_generate_request(
                 audio_bytes=audio_bytes,
-                filename=file.filename,
-                content_type=file.content_type,
-                model=model or default_model,
-                language=language,
-                prompt=prompt,
-                temperature=temperature,
-                max_new_tokens=max_new_tokens,
+                filename=form.file.filename,
+                content_type=form.file.content_type,
+                model=form.model or default_model,
+                language=form.language,
+                prompt=form.prompt,
+                temperature=form.temperature,
+                max_new_tokens=form.max_new_tokens,
                 stream=True,
             )
-            adapter = resolve_adapter(getattr(app.state, "architectures", None))
-            chunk_stream = client.generate(gen_req, request_id=request_id)
-            # Pull the first chunk before sending response headers so admission
-            # failures map to HTTP statuses rather than SSE error payloads.
-            try:
-                first_chunk = await _first_transcription_chunk(
-                    request, client, chunk_stream, request_id
-                )
-            except ClientError as exc:
-                await close_async_iterator_if_supported(chunk_stream)
-                if is_bad_request_error(exc):
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            except Exception as exc:
-                await close_async_iterator_if_supported(chunk_stream)
-                if is_bad_request_error(exc):
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-                logger.exception(
-                    "Error starting transcription stream for request %s",
-                    request_id,
-                )
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            return ClosableStreamingResponse(
-                _transcription_stream(
-                    chunk_stream,
-                    first_chunk=first_chunk,
-                    request_id=request_id,
-                    adapter=adapter,
-                    duration_s=duration_s,
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},
+            return await speech_to_text.create_speech_to_text_streaming_response(
+                request=request,
+                client=client,
+                gen_req=gen_req,
+                request_id=request_id,
+                audio_bytes=audio_bytes,
+                architectures=getattr(app.state, "architectures", None),
             )
 
         duration_s = _probe_audio_duration(audio_bytes)
-        chunking: AudioChunkingConfig = app.state.audio_chunking
         plan: ChunkPlan | None = None
         if needs_chunking(duration_s, chunking):
             try:
@@ -222,147 +124,119 @@ def register_transcriptions(app: FastAPI) -> None:
             # CPU and would stall the event loop.
             plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
 
-        chunk_texts: list[str] | None = None
+        if plan is None:
+            gen_req = speech_to_text.build_speech_to_text_generate_request(
+                audio_bytes=audio_bytes,
+                filename=form.file.filename,
+                content_type=form.file.content_type,
+                model=form.model or default_model,
+                language=form.language,
+                prompt=form.prompt,
+                temperature=form.temperature,
+                max_new_tokens=form.max_new_tokens,
+            )
+            result = await speech_to_text.complete_speech_to_text_request(
+                client,
+                gen_req,
+                request_id=request_id,
+                error_log_message="Error transcribing audio for request %s",
+            )
+            return speech_to_text.assemble_speech_to_text_response(
+                text=result.text,
+                response_format=form.response_format,
+                endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+                task="transcribe",
+                language=form.language,
+                audio_bytes=audio_bytes,
+                architectures=getattr(app.state, "architectures", None),
+            )
+
         try:
-            if plan is not None:
-                duration_s = plan.duration_s
-                chunk_texts = await _await_transcription_with_disconnect_abort(
-                    request,
-                    _transcribe_audio_chunks(
-                        client,
-                        plan,
-                        request_id=request_id,
-                        model=model or default_model,
-                        filename=file.filename,
-                        language=language,
-                        prompt=prompt,
-                        temperature=temperature,
-                        max_new_tokens=max_new_tokens,
-                        max_concurrent=chunking.max_concurrent_chunks,
-                    ),
-                )
-                text = join_transcript_parts(chunk_texts)
-            else:
-                gen_req = build_transcription_generate_request(
-                    audio_bytes=audio_bytes,
-                    filename=file.filename,
-                    content_type=file.content_type,
-                    model=model or default_model,
-                    language=language,
-                    prompt=prompt,
-                    temperature=temperature,
-                    max_new_tokens=max_new_tokens,
-                )
-                result = await client.completion(gen_req, request_id=request_id)
-                text = result.text
+            chunk_texts = await _await_transcription_with_disconnect_abort(
+                request,
+                _transcribe_audio_chunks(
+                    client,
+                    plan,
+                    request_id=request_id,
+                    model=form.model or default_model,
+                    filename=form.file.filename,
+                    language=form.language,
+                    prompt=form.prompt,
+                    temperature=form.temperature,
+                    max_new_tokens=form.max_new_tokens,
+                    max_concurrent=chunking.max_concurrent_chunks,
+                ),
+            )
         except ClientError as exc:
             if is_bad_request_error(exc):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except (HTTPException, asyncio.CancelledError):
+            raise
         except Exception as exc:
             if is_bad_request_error(exc):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             logger.exception("Error transcribing audio for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        if normalized_response_format == "text":
-            return PlainTextResponse(text)
-        if normalized_response_format not in {"json", "verbose_json"}:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Unsupported response_format for /v1/audio/transcriptions: "
-                    f"{response_format!r}"
-                ),
-            )
-
-        adapter = resolve_adapter(getattr(app.state, "architectures", None))
-        text = adapter.postprocess_text(text)
-        usage = (
-            TranscriptionUsage(seconds=math.ceil(duration_s))
-            if duration_s > 0
-            else None
-        )
-        if normalized_response_format == "verbose_json":
-            if plan is not None and chunk_texts is not None:
-                # Chunked path: the split already knows where each chunk sits
-                # in the upload, so segments get real (chunk-level) timestamps
-                # instead of one segment spanning the whole file.
-                response = adapter.build_verbose_response_from_chunks(
-                    text=text,
-                    chunks=[
-                        (span.start_s, span.end_s, chunk_text)
-                        for span, chunk_text in zip(plan.spans, chunk_texts)
-                    ],
-                    language=language,
-                    audio_duration_s=duration_s,
-                )
-            else:
-                response = adapter.build_verbose_response(
-                    text=text,
-                    language=language,
-                    audio_duration_s=duration_s,
-                )
-            response.usage = usage
-            return JSONResponse(content=response.model_dump(exclude_none=True))
-        return JSONResponse(
-            content=TranscriptionResponse(text=text, usage=usage).model_dump(
-                exclude_none=True
-            )
+        text = join_transcript_parts(chunk_texts)
+        return _assemble_chunked_response(
+            text=text,
+            response_format=form.response_format,
+            language=form.language,
+            plan=plan,
+            chunk_texts=chunk_texts,
+            architectures=getattr(app.state, "architectures", None),
         )
 
 
-async def _transcription_stream(
-    chunk_stream: AsyncIterator[GenerateChunk],
+def _assemble_chunked_response(
     *,
-    first_chunk: GenerateChunk | None,
-    request_id: str,
-    adapter: Any,
-    duration_s: float,
-) -> AsyncIterator[str]:
-    """SSE generator for streaming transcriptions.
+    text: str,
+    response_format: str,
+    language: str | None,
+    plan: ChunkPlan,
+    chunk_texts: list[str],
+    architectures: list[str] | None,
+) -> Response:
+    """Chunk-aware sibling of speech_to_text.assemble_speech_to_text_response.
 
-    Emits OpenAI-style transcript.text.delta events for each partial text
-    chunk, then a terminal transcript.text.done event carrying the full
-    post-processed transcript. The caller already pulled first_chunk from
-    chunk_stream so admission failures map to HTTP statuses before response
-    headers go out.
+    The shared assembler probes the upload for a duration and builds one
+    verbose segment for the whole file; here the plan already knows the exact
+    duration and where each chunk sits, so verbose_json gets one segment per
+    chunk with real timestamps.
     """
-    final_text: str | None = None
+    normalized_response_format = speech_to_text.validate_speech_to_text_response_format(
+        response_format,
+        stream=False,
+        endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+    )
+    if normalized_response_format == "text":
+        return PlainTextResponse(text)
 
-    def _event_for(chunk: GenerateChunk) -> str | None:
-        nonlocal final_text
-        if chunk.finish_reason is not None:
-            if isinstance(chunk.text, str) and chunk.text:
-                final_text = chunk.text
-            return None
-        if chunk.modality == "text" and chunk.text:
-            event = TranscriptionTextDeltaEvent(delta=chunk.text)
-            return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
-        return None
-
-    try:
-        async with aclosing(chunk_stream):
-            if first_chunk is not None:
-                line = _event_for(first_chunk)
-                if line is not None:
-                    yield line
-            async for chunk in chunk_stream:
-                line = _event_for(chunk)
-                if line is not None:
-                    yield line
-    except Exception as exc:
-        logger.exception("Error streaming transcription for request %s", request_id)
-        payload = {"type": "error", "error": {"message": str(exc)}}
-        yield f"data: {json.dumps(payload)}\n\n"
-        return
-
-    text = adapter.postprocess_text(final_text or "")
+    adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
+    text = adapter.postprocess_text(text)
+    duration_s = plan.duration_s
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    done_event = TranscriptionTextDoneEvent(text=text, usage=usage)
-    yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
-    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+    if normalized_response_format == "verbose_json":
+        response = adapter.build_verbose_response_from_chunks(
+            text=text,
+            chunks=[
+                (span.start_s, span.end_s, chunk_text)
+                for span, chunk_text in zip(plan.spans, chunk_texts)
+            ],
+            language=language,
+            audio_duration_s=duration_s,
+        )
+        response.task = "transcribe"
+        response.usage = usage
+        return JSONResponse(content=response.model_dump(exclude_none=True))
+    return JSONResponse(
+        content=TranscriptionResponse(text=text, usage=usage).model_dump(
+            exclude_none=True
+        )
+    )
 
 
 def _build_chunk_generate_request(
@@ -501,65 +375,3 @@ async def _await_transcription_with_disconnect_abort(
             await _cancel_task_bounded(work_task)
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
-
-
-def _probe_audio_duration(audio_bytes: bytes) -> float:
-    """Best-effort audio duration (seconds) from raw upload bytes."""
-    try:
-        import av
-
-        with av.open(io.BytesIO(audio_bytes), metadata_errors="ignore") as container:
-            if container.duration:  # in av.time_base units (microseconds)
-                return max(container.duration / 1_000_000, 0.0)
-            for audio_stream in container.streams.audio:
-                if audio_stream.duration and audio_stream.time_base:
-                    return max(
-                        float(audio_stream.duration * audio_stream.time_base), 0.0
-                    )
-    except Exception:
-        logger.debug("Could not probe audio duration", exc_info=True)
-    return 0.0
-
-
-def build_transcription_generate_request(
-    *,
-    audio_bytes: bytes,
-    filename: str | None,
-    content_type: str | None,
-    model: str,
-    language: str | None,
-    prompt: str | None,
-    temperature: float | None,
-    max_new_tokens: int | None = None,
-    stream: bool = False,
-) -> GenerateRequest:
-    params: dict[str, Any] = {"task": "transcribe"}
-    metadata: dict[str, Any] = {"task": "asr"}
-    explicit_fields: list[str] = []
-    if language is not None:
-        params["language"] = language
-    if prompt is not None:
-        params["prompt"] = prompt
-    if temperature is not None:
-        explicit_fields.append("temperature")
-    if max_new_tokens is not None:
-        explicit_fields.append("max_new_tokens")
-    record_explicit_generation_params(metadata, sorted(explicit_fields))
-    sampling = SamplingParams(
-        temperature=temperature if temperature is not None else 0.0,
-        max_new_tokens=max_new_tokens,
-    )
-
-    return GenerateRequest(
-        model=model,
-        prompt={
-            "audio_bytes": audio_bytes,
-            "filename": filename,
-            "content_type": content_type,
-        },
-        sampling=sampling,
-        extra_params=params,
-        stream=stream,
-        output_modalities=["text"],
-        metadata=metadata,
-    )

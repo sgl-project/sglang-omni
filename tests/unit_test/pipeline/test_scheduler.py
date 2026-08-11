@@ -63,6 +63,46 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
+def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_builds = {}
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
+
+    scheduler._sleep_during_idle()
+    scheduler._pending_request_builds["req"] = object()
+    scheduler._sleep_during_idle()
+
+    assert sleep_calls == [0.001, 0.0001]
+
+
+def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._running = True
+    scheduler._engine_paused = False
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_builds = {"req": object()}
+    scheduler._process_admin_requests = lambda: None
+    scheduler.recv_requests = lambda: []
+    scheduler._take_deferred_request_payloads = lambda: []
+    scheduler.process_input_requests = lambda _requests: None
+    scheduler.self_check_during_idle = lambda: None
+    scheduler.self_check_during_busy = lambda: None
+
+    def get_next_batch_to_run():
+        scheduler._running = False
+        return None
+
+    scheduler.get_next_batch_to_run = get_next_batch_to_run
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
+
+    scheduler._event_loop_normal()
+
+    assert sleep_calls == [0.0001]
+
+
 def test_simple_scheduler_batch_and_error_contracts() -> None:
     """Preserves batched success output and per-request batch failure emission."""
     good = SimpleScheduler(

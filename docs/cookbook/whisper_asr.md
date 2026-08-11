@@ -54,6 +54,7 @@ print(resp.json()["text"])
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Optional language hint |
+| `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
 | `response_format` | string | `json` | Use `json` for the current Whisper path |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
@@ -73,5 +74,9 @@ configured another way. For smoke tests, keep the request minimal and use
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but
-  Whisper ASR currently does not pass it into decoding.
+- `prompt` conditions decoding via Whisper prev-context tokens. Only the last
+  223 prompt tokens are kept (224 prev-context tokens including
+  `<|startofprev|>`) — fewer when `max_new_tokens` is large, since prompt,
+  task prefix, and output share Whisper's 448-token decoder context.
+  `max_new_tokens` is likewise clamped to that context. The prompt must not
+  contain Whisper special tokens.

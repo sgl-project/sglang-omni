@@ -14,6 +14,7 @@ _BAD_REQUEST_MARKERS = (
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",
+    "disallowed special token",
 )
 
 

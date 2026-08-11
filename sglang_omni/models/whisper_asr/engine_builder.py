@@ -27,9 +27,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.generation_config: Any = None
         self.encoder_token_count = 0
         self.context_length = 0
+        self.decoder_context_len = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        from transformers import AutoProcessor, GenerationConfig
+        from transformers import AutoConfig, AutoProcessor, GenerationConfig
+
+        from sglang_omni.models.whisper_asr.request_builders import (
+            MAX_PREV_CONTEXT_TOKENS,
+        )
 
         self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
         self.tokenizer = self.processor.tokenizer
@@ -37,7 +42,16 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.encoder_token_count = int(
             self.processor.feature_extractor.nb_max_frames // 2
         )
-        self.context_length = self.encoder_token_count + self.max_new_tokens + 8
+        self.context_length = (
+            self.encoder_token_count + MAX_PREV_CONTEXT_TOKENS + self.max_new_tokens + 8
+        )
+        # note (jiannan-17): prev_len + prefix_len + max_new_tokens <= decoder_context_len
+        self.decoder_context_len = int(
+            getattr(
+                AutoConfig.from_pretrained(checkpoint_dir), "max_target_positions", 0
+            )
+            or 448
+        )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -64,4 +78,5 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             generation_config=self.generation_config,
             encoder_token_count=self.encoder_token_count,
             max_new_tokens=self.max_new_tokens,
+            decoder_context_len=self.decoder_context_len,
         )

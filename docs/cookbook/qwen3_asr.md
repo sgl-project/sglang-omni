@@ -22,7 +22,7 @@ next GPU decode forward even for a single request. Use `--decode-mode sync` to
 disable it, or tune the crossover with `--async-lookahead-min-batch-size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
-24 ms. Once request-build work drains, a ready prefill is released immediately
+40 ms. Once request-build work drains, a ready prefill is released immediately
 if decode is idle; while decode is active, it continues coalescing until the
 same request target or deadline.
 

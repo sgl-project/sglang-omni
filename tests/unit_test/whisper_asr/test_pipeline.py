@@ -41,6 +41,11 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         sys.modules,
         "transformers",
         SimpleNamespace(
+            AutoConfig=SimpleNamespace(
+                from_pretrained=lambda *args, **kwargs: SimpleNamespace(
+                    max_target_positions=448
+                )
+            ),
             AutoProcessor=SimpleNamespace(
                 from_pretrained=lambda *args, **kwargs: fake_processor
             ),
@@ -71,6 +76,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
+        build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         server_args = FakeServerArgs(**overrides)
         server_args.cuda_graph_config = SimpleNamespace(
@@ -109,3 +115,5 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
 
     assert build_kwargs["cuda_graph_max_bs"] == 16
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
+    # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
+    assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
