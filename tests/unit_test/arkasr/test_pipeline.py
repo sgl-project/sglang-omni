@@ -8,7 +8,11 @@ import pytest
 import torch
 from transformers import WhisperConfig
 
-from sglang_omni.models.arkasr import stages
+import sglang_omni.models.arkasr.engine_builder as arkasr_builder
+import sglang_omni.scheduling.bootstrap as bootstrap
+import sglang_omni.scheduling.omni_scheduler as omni_scheduler
+import sglang_omni.scheduling.sglang_backend as sglang_backend
+from sglang_omni.models.arkasr import request_builders
 from sglang_omni.models.arkasr.audio_lengths import (
     arkasr_audio_token_lengths,
     arkasr_num_audio_tokens,
@@ -19,6 +23,7 @@ from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
 from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_ids
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.fakes import FakeServerArgs
 
 
 def _tiny_config():
@@ -66,60 +71,104 @@ def test_arkasr_stage_defaults():
 def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
 ) -> None:
-    """The factory defers capture, then calls the runner's init_cuda_graphs
-    exactly when the deferred-capture probe asked for graphs. The fake runner
-    exposes only the 0.5.16 method name, so a stale call site fails loudly."""
-    calls = {"init_cuda_graphs": 0}
+    """The factory defers capture, then calls bootstrap.init_sglang_cuda_graphs
+    exactly when the deferred-capture probe asked for graphs. The worker stub
+    stays minimal: helper internals are already covered in
+    tests/unit_test/serve/test_sglang_bootstrap.py."""
+    graph_init_workers: list[object] = []
+    adapter_kwargs: dict[str, object] = {}
 
-    def _bump_init_cuda_graphs() -> None:
-        calls["init_cuda_graphs"] += 1
-
-    model_runner = SimpleNamespace(
-        model=object(), init_cuda_graphs=_bump_init_cuda_graphs
+    model_worker = SimpleNamespace(
+        gpu_id=0, model_runner=SimpleNamespace(model=object())
     )
-    model_worker = SimpleNamespace(model_runner=model_runner)
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
     monkeypatch.setattr(
-        stages,
+        arkasr_builder,
         "AutoTokenizer",
         SimpleNamespace(from_pretrained=lambda *a, **k: object()),
     )
     monkeypatch.setattr(
-        stages,
+        arkasr_builder,
         "WhisperFeatureExtractor",
         SimpleNamespace(
-            from_pretrained=lambda *a, **k: SimpleNamespace(nb_max_frames=3000)
+            # note (jiannan-17): 2000 differs from the 3000 fallback, so the
+            # context_length assertion below fails if the builder stops
+            # reading nb_max_frames from the extractor.
+            from_pretrained=lambda *a, **k: SimpleNamespace(nb_max_frames=2000)
         ),
     )
     monkeypatch.setattr(
-        stages,
+        arkasr_builder,
         "AutoConfig",
         SimpleNamespace(
+            # note (jiannan-17): sentinels differ from the builder fallbacks
+            # (4 / 151663) so the assertions below prove the values were read
+            # from the checkpoint config.
             from_pretrained=lambda *a, **k: SimpleNamespace(
-                merge_factor=4, audio_token_id=151663
+                merge_factor=7, audio_token_id=4242
             )
         ),
     )
-    monkeypatch.setattr(stages, "build_generation_batch_overrides", lambda **k: {})
-    monkeypatch.setattr(stages, "build_sglang_server_args", lambda *a, **k: object())
-    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **k: None)
+    monkeypatch.setattr(arkasr_builder, "init_mm_embedding_cache", lambda n: None)
     monkeypatch.setattr(
-        stages, "create_sglang_infrastructure_defer_cuda_graph", lambda *a, **k: infra
+        request_builders,
+        "make_arkasr_scheduler_adapters",
+        lambda **k: (adapter_kwargs.update(k) or object(), object()),
     )
-    monkeypatch.setattr(stages, "init_mm_embedding_cache", lambda n: None)
-    monkeypatch.setattr(stages, "SGLangOutputProcessor", lambda **k: object())
-    monkeypatch.setattr(
-        stages, "make_arkasr_scheduler_adapters", lambda **k: (object(), object())
-    )
-    monkeypatch.setattr(stages, "ModelRunner", lambda *a, **k: object())
-    monkeypatch.setattr(stages, "OmniScheduler", lambda **k: SimpleNamespace())
 
-    create_sglang_arkasr_executor(
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        server_args = FakeServerArgs(context_length=context_length, **overrides)
+        server_args.cuda_graph_config = SimpleNamespace(
+            decode=SimpleNamespace(
+                max_bs=overrides["cuda_graph_max_bs"],
+                bs=overrides["cuda_graph_bs"],
+            ),
+            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+        )
+        return server_args
+
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", _fake_server_args_builder
+    )
+    infra_kwargs_seen: dict[str, object] = {}
+
+    def _fake_defer_infra(server_args, gpu_id, **kwargs):
+        infra_kwargs_seen.update(kwargs)
+        return infra
+
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        _fake_defer_infra,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "init_sglang_cuda_graphs",
+        lambda worker: graph_init_workers.append(worker),
+    )
+    monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
+    monkeypatch.setattr(
+        omni_scheduler, "OmniScheduler", lambda **k: SimpleNamespace(**k)
+    )
+
+    scheduler = create_sglang_arkasr_executor(
         "AutoArk-AI/ARK-ASR-3B", mm_attention_backend="triton_attn"
     )
 
-    assert calls["init_cuda_graphs"] == (1 if want_cuda_graph else 0)
+    assert graph_init_workers == ([model_worker] if want_cuda_graph else [])
+    # note (jiannan-17): the scheduler fake records its kwargs, proving the
+    # builder forwards the stage knobs instead of dropping them.
+    assert scheduler.request_build_max_workers == 2
+    assert scheduler.request_build_max_pending == 16
+    assert adapter_kwargs["merge_factor"] == 7
+    assert adapter_kwargs["audio_token_id"] == 4242
+    assert adapter_kwargs["max_new_tokens"] == 256
+    # note (jiannan-17): context_length and model_arch_override moved from
+    # stages.py into the builder. Keep both pinned so a missing value fails
+    # here instead of at serve time.
+    assert scheduler.server_args.context_length == 2000 // 2 + 256 + 8
+    assert infra_kwargs_seen["model_arch_override"] == "ArkasrForConditionalGeneration"
 
 
 def test_arkasr_audio_token_count():

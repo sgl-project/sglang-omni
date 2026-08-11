@@ -237,6 +237,9 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert config.stages[1].stream_to == ["vocoder"]
     assert config.stages[2].can_accept_stream_before_payload is True
+    assert Qwen3TTSPipelineConfig.talker_sglang_role_to_stage() == {
+        "talker": "tts_engine"
+    }
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
         is Qwen3TTSPipelineConfig
@@ -2218,6 +2221,72 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
     assert isinstance(result.data["audio_codes"], torch.Tensor)
     assert result.data["audio_codes"].tolist() == [[9, 9], [1, 2], [3, 4]]
     assert result.data["completion_tokens"] == 2
+    assert result.data["finish_reason"] == "stop"
+
+
+def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
+    """A length-capped generation must be distinguishable from natural EOS."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+        finish_reason="length",
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(
+            output_ids=[],
+            finished_reason=SimpleNamespace(
+                to_json=lambda: {"type": "stop", "matched": 2150}
+            ),
+        ),
+        output_codes=[torch.tensor([1, 2])],
+        stage_payload=payload,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "stop"
+
+
+def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
+    """Without a scheduler reason, reaching the budget is still a length stop."""
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
+        stage_payload=payload,
+        max_new_tokens=2,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["finish_reason"] == "length"
+
+
+def test_qwen3_tts_state_round_trips_finish_reason() -> None:
+    """The reason must survive the stage-payload state round trip."""
+    state = Qwen3TTSState.from_dict({"finish_reason": "length"})
+
+    assert state.finish_reason == "length"
+    assert state.to_dict()["finish_reason"] == "length"
+
+
+def test_speech_batch_result_exposes_finish_reason() -> None:
+    """Batch JSON results carry the reason the single-item header carries."""
+    from sglang_omni.serve.protocol import SpeechBatchResult
+
+    result = SpeechBatchResult(index=0, status="success", finish_reason="length")
+
+    assert result.model_dump(exclude_none=True)["finish_reason"] == "length"
 
 
 def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
@@ -2590,6 +2659,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler._dirty_deferred_request_ids = set()
         scheduler._first_emit_done = set()
         scheduler._prefill_start_done = set()
+        scheduler._prefill_end_done = set()
         scheduler.waiting_queue = []
         scheduler._request_admission_lock = threading.RLock()
         scheduler._request_build_executor = None
@@ -3223,7 +3293,7 @@ def test_qwen3_tts_compile_backbone_compiles_every_layer(
     ]
 
 
-def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
+def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
@@ -3242,6 +3312,20 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     from sglang_omni.scheduling import sglang_backend
 
     check_model_inputs_calls = []
+    expected_cuda_graph_bs = [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
 
     def transformers_56_check_model_inputs(func):
         check_model_inputs_calls.append(func)
@@ -3268,12 +3352,13 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
 
         def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
-            assert self.server_args.torch_compile_max_bs == 32
+            assert self.server_args.torch_compile_max_bs == 64
             init_graph_calls.append(True)
 
     class FakeWorker:
         def __init__(self, server_args) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
+            self.enable_prefill_input_embeds = False
 
     class FakeQwen3TTSModel:
         def __init__(self, **kwargs) -> None:
@@ -3284,11 +3369,42 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
 
     from sglang_omni.scheduling import engine_factory
+    from sglang_omni.scheduling.generation_batch_policy import (
+        validate_generation_batch_policy as validate_generation_batch_policy_impl,
+    )
 
     monkeypatch.setattr(stages, "_register_qwen3_tts_hf_config", lambda: None)
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
+    )
+
+    validation_state: dict[str, object] = {}
+
+    def record_generation_batch_validation(
+        *, model_name, server_args, model_buffer_bs=None
+    ):
+        decode_config = server_args.cuda_graph_config.decode
+        validation_state.update(
+            {
+                "model_name": model_name,
+                "max_running_requests": server_args.max_running_requests,
+                "cuda_graph_max_bs": decode_config.max_bs,
+                "cuda_graph_bs": list(decode_config.bs),
+                "torch_compile_max_bs": server_args.torch_compile_max_bs,
+                "enable_torch_compile": server_args.enable_torch_compile,
+            }
+        )
+        return validate_generation_batch_policy_impl(
+            model_name=model_name,
+            server_args=server_args,
+            model_buffer_bs=model_buffer_bs,
+        )
+
+    monkeypatch.setattr(
+        engine_factory,
+        "validate_generation_batch_policy",
+        record_generation_batch_validation,
     )
     monkeypatch.setattr(
         stages,
@@ -3325,7 +3441,8 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
                 decode=SimpleNamespace(
                     max_bs=kwargs["cuda_graph_max_bs"],
                     bs=kwargs["cuda_graph_bs"],
-                )
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
             ),
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=kwargs["disable_overlap_schedule"],
@@ -3380,20 +3497,29 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
         "model",
         device="cuda:0",
         server_args_overrides={
-            "cuda_graph_max_bs": 32,
+            "cuda_graph_max_bs": 64,
+            "torch_compile_max_bs": 64,
             "mem_fraction_static": 0.7,
-            "max_running_requests": 2,
+            "max_running_requests": 64,
         },
     )
 
     assert build_kwargs["disable_cuda_graph"] is False
-    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
-    assert build_kwargs["cuda_graph_max_bs"] == 32
+    assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
+    assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["mem_fraction_static"] == 0.7
-    assert build_kwargs["max_running_requests"] == 2
-    assert build_kwargs["torch_compile_max_bs"] == 32
+    assert build_kwargs["max_running_requests"] == 64
+    assert build_kwargs["torch_compile_max_bs"] == 64
+    assert validation_state == {
+        "model_name": "Qwen3-TTS",
+        "max_running_requests": 64,
+        "cuda_graph_max_bs": 64,
+        "cuda_graph_bs": expected_cuda_graph_bs,
+        "torch_compile_max_bs": 64,
+        "enable_torch_compile": True,
+    }
 
     def target():
         return None
@@ -3420,11 +3546,11 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     assert infrastructure_saw_graph_disabled == [True]
     assert len(compile_calls) == 1
     assert init_graph_calls == [True]
-    assert scheduler.server_args.cuda_graph_bs == [1, 2, 4, 8, 12, 16, 24, 32]
-    assert scheduler.server_args.cuda_graph_max_bs == 32
+    assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
+    assert scheduler.server_args.cuda_graph_max_bs == 64
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False
-    assert scheduler.server_args.torch_compile_max_bs == 32
+    assert scheduler.server_args.torch_compile_max_bs == 64
     clear_qwen3_tts_preprocessing_context()
 
 

@@ -7,6 +7,7 @@ import argparse
 import copy
 import logging
 import logging.config
+import os
 import shlex
 from collections.abc import Sequence
 from typing import Any, get_args
@@ -28,6 +29,15 @@ from sglang_omni_router.launcher import (
     LocalLauncher,
     LocalLauncherConfig,
     load_launcher_config,
+)
+from sglang_omni_router.supervisor import (
+    RouterSupervisor,
+    validate_multiprocess_settings,
+)
+from sglang_omni_router.update_journal import (
+    JournalUnwritableError,
+    ensure_state_dir,
+    resolve_state_dir,
 )
 
 logger = logging.getLogger("sglang_omni_router.serve")
@@ -150,11 +160,55 @@ def build_parser() -> argparse.ArgumentParser:
             "sized to the larger of the two."
         ),
     )
+    parser.add_argument(
+        "--router-processes",
+        type=int,
+        default=1,
+        help=(
+            "Number of data-plane processes. 1 (default) keeps the current "
+            "single-process router. Values >= 2 run the multi-process "
+            "control-plane/data-plane split (x86-64 Linux only)."
+        ),
+    )
+    parser.add_argument(
+        "--shutdown-drain-secs",
+        type=int,
+        default=None,
+        help=(
+            "Multi-process only: seconds a stopping data-plane process waits "
+            "for in-flight requests before cancelling them (default: "
+            "--request-timeout-secs, so a routine shutdown never truncates a "
+            "request its own timeout would have allowed)."
+        ),
+    )
+    parser.add_argument(
+        "--router-state-dir",
+        default=None,
+        help=(
+            "Directory for durable control-plane state (currently the "
+            "weight-update journal), which must outlive a host reboot. "
+            "Default: $SGLANG_OMNI_ROUTER_STATE_DIR, else "
+            "$XDG_STATE_HOME/sglang-omni-router, else "
+            "~/.local/state/sglang-omni-router. In a container, mount this on "
+            "a persistent volume. Per-run sockets, snapshots, and shared "
+            "memory stay in a temporary workdir."
+        ),
+    )
     parser.add_argument("--health-failure-threshold", type=int, default=3)
     parser.add_argument("--health-success-threshold", type=int, default=2)
     parser.add_argument("--health-check-timeout-secs", type=int, default=5)
     parser.add_argument("--health-check-interval-secs", type=int, default=10)
     parser.add_argument("--health-check-endpoint", default="/health")
+    parser.add_argument(
+        "--voice-owner-worker-url",
+        default=None,
+        help=(
+            "Single-process mode only: worker that owns uploaded-voice state. "
+            "Defaults to the first worker with speech and audio_input "
+            "capabilities. Voice management and requests using uploaded voices "
+            "are pinned to this worker."
+        ),
+    )
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--strict-limits",
@@ -227,11 +281,14 @@ def build_config_from_args(
         max_payload_size=args.max_payload_size,
         max_connections=args.max_connections,
         max_inflight=args.max_inflight,
+        shutdown_drain_secs=args.shutdown_drain_secs,
         health_failure_threshold=args.health_failure_threshold,
         health_success_threshold=args.health_success_threshold,
         health_check_timeout_secs=args.health_check_timeout_secs,
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
+        voice_owner_worker_url=args.voice_owner_worker_url,
+        router_state_dir=args.router_state_dir,
     )
 
 
@@ -251,12 +308,29 @@ def resolve_managed_worker_capabilities(
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.router_processes < 1:
+        parser.error("--router-processes must be >= 1")
+    if args.router_processes > 1 and args.voice_owner_worker_url is not None:
+        parser.error("--voice-owner-worker-url requires --router-processes 1")
     log_level = normalize_log_level(args.log_level)
     log_config = build_log_config(args.log_level)
     logging.config.dictConfig(log_config)
     launcher: LocalLauncher | None = None
     try:
         validate_worker_source_args(args)
+        if args.router_processes > 1:
+            # Note (Jiaxin Deng): these rejects are deterministic from the CLI
+            # alone; failing here keeps an invalid multiprocess invocation from
+            # launching (and then tearing down) real GPU workers first.
+            validate_multiprocess_settings(
+                router_processes=args.router_processes,
+                effective_max_inflight=(
+                    args.max_inflight
+                    if args.max_inflight is not None
+                    else args.max_connections
+                ),
+                policy=args.policy,
+            )
         if args.launcher_config:
             launcher_config = load_launcher_config(args.launcher_config)
             launcher = LocalLauncher(launcher_config)
@@ -274,7 +348,47 @@ def main(argv: Sequence[str] | None = None) -> None:
             config = build_config_from_args(args)
 
         check_file_descriptor_limit(config, strict=args.strict_limits)
+        # Note (Jiaxin Deng): the multi-process router exists to serve weight
+        # updates, so a state directory it cannot use is a startup error rather
+        # than a surprise on the first update. The single-process relay predates
+        # the journal and must still start read-only or home-less; there an
+        # update refuses instead, with this warning as the early signal.
+        try:
+            state_dir = ensure_state_dir(resolve_state_dir(config.router_state_dir))
+            logger.info(f"Router durable state directory: {state_dir}")
+        except JournalUnwritableError:
+            if args.router_processes > 1:
+                raise
+            logger.warning(
+                "no durable state directory; weight updates will be refused "
+                "until --router-state-dir points at a writable persistent path"
+            )
+        if args.router_processes > 1:
+            # Note (Jiaxin Deng): the children rebuild the app from the config
+            # file, so the admin key and log level travel via the environment.
+            if args.admin_api_key:
+                os.environ["SGLANG_OMNI_ADMIN_KEY"] = args.admin_api_key
+            os.environ["SGLANG_OMNI_ROUTER_LOG_LEVEL"] = log_level
+            logger.info(
+                f"Starting SGLang-Omni Router (multi-process) on "
+                f"{config.host}:{config.port} with "
+                f"{args.router_processes} data planes"
+            )
+            supervisor = RouterSupervisor(
+                config, router_processes=args.router_processes
+            )
+            supervisor.start()
+            try:
+                supervisor.run_forever()
+            except KeyboardInterrupt:
+                parser.exit(130)
+            # Note (Jiaxin Deng): run_forever absorbs SIGINT and returns
+            # cleanly; preserve the interrupted exit status (130).
+            if supervisor.stopped_by_interrupt:
+                parser.exit(130)
+            return
         logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
+        voice_owner = config.voice_owner_worker_url or "auto:first-capable"
         logger.info(
             f"Router configuration: workers={len(config.workers)} | "
             f"policy={config.policy} | "
@@ -287,6 +401,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"health_check_endpoint={config.health_check_endpoint} | "
             f"health_check_interval_secs={config.health_check_interval_secs} | "
             f"health_check_timeout_secs={config.health_check_timeout_secs} | "
+            f"voice_owner_worker={voice_owner} | "
             f"readiness_requires_routable_worker=true"
         )
         uvicorn.run(
@@ -298,7 +413,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     except (ValueError, ValidationError) as exc:
         parser.error(str(exc))
-    except (RuntimeError, TimeoutError) as exc:
+    except (RuntimeError, TimeoutError, JournalUnwritableError) as exc:
         parser.exit(1, f"error: {exc}\n")
     except KeyboardInterrupt:
         parser.exit(130)

@@ -110,7 +110,47 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_servers.sh \
   <gpu-group> <group-run-1> [<group-run-2> ...]
 ```
 
-Behavior:
+Tab C — cpuset foreign-load supervisor (**one per GPU group**, matching that
+group's lane — not only `0,1`):
+
+```bash
+# Prefer the GPU group; the script resolves the matching 32-core cpuset.
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 0,1
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 2,3
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 4,5
+bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 6,7
+# Or pass the cpulist explicitly: "16-31,80-95"
+```
+
+| `TUNE_GPU_INCLUDE` | Tab C argument / cpuset |
+|---|---|
+| `0,1` | `0,1` → `0-15,64-79` |
+| `2,3` | `2,3` → `16-31,80-95` |
+| `4,5` | `4,5` → `48-63,112-127` |
+| `6,7` | `6,7` → `32-47,96-111` |
+
+`tune.py` already binds and monitors from the **picked** GPUs via
+`gpu_group_cpusets` (same table). Concurrent Mode C runs need one Tab C per
+active include set, each watching that lane only.
+
+Tab C is operator-visible only. Enforcement lives in `tune.py`:
+
+- **Precheck** refuses the session when **that process's** lane cpuset is
+  already busy.
+- **Before each launch** waits (unbounded) until the cpuset is idle — never
+  launches under intrusion.
+- **During a stage** a live foreign-load monitor aborts that attempt when
+  foreign cores exceed the contention limit, wipes its basetemp so
+  contaminated metrics never enter the report, waits until CPU **and** GPU
+  recover, then retries the same stage. The overall calibration does not
+  stop; contention retries are unbounded.
+
+Start Tab A/B (and Tab C when supervising a cpuset) before that group’s first
+job. Pass all run directories assigned to the group, including queued dirs whose
+`plan.json` does not exist yet. Keep watchers alive until the group’s queue is
+complete.
+
+Tab B behavior:
 
 - Resolves the active pytest from its process and `--basetemp`.
 - Prefers `server.log` under that basetemp. Locally (non-CI),
@@ -123,10 +163,6 @@ Behavior:
   `/tmp/calibration_tabB_<gpu-group>.log` (example:
   `/tmp/calibration_tabB_0_1.log`). Set `CALIBRATION_SERVER_WATCH_VERBOSE=1`
   for the raw terminal stream.
-
-Start both watchers before that group’s first job. Pass all run directories
-assigned to the group, including queued dirs whose `plan.json` does not exist
-yet. Keep watchers alive until the group’s queue is complete.
 
 Also poll `status`, `strict-audit`, and `nvidia-smi` at least every 120 seconds
 while work is active. The legacy `tail_calibration_pytest.sh` is a debugging

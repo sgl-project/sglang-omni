@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from importlib import import_module
 
-__version__ = "0.1.0"
+# This is the single source for both runtime and distribution metadata. Keep
+# release bumps here; setuptools reads it through tool.setuptools.dynamic.
+__version__ = "0.1.1"
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     # client

@@ -65,6 +65,7 @@ The Docker image installs `ffmpeg`.
 benchmark_tts_serving.py       # entry point under benchmarks/eval/
 spec.py                        # spec schema and load-stage defaults
 scenarios.py                   # deterministic scenario matrix
+text_corpus.py                 # pinned target-text corpus loading
 http_client.py                 # HTTP request dispatch
 sdk_client.py                  # OpenAI SDK compatibility path
 ws_client.py                   # WebSocket speech-stream path
@@ -112,14 +113,22 @@ Load-stage fields:
 | Field | Description |
 |-------|-------------|
 | `id` | Stable stage id used in scenario ids and artifacts. |
-| `mode` | `closed_loop`, `open_loop`, `ramp`, `burst`, or `soak`. |
-| `request_count` | Number of scheduled scenarios for the stage. |
+| `mode` | `closed_loop`, `open_loop`, `ramp`, `burst`, `soak`, or `scheduled`. |
+| `request_count` | Number of scenarios for non-`scheduled` stages. |
 | `max_concurrency` | Maximum in-flight requests for the stage. |
 | `request_rate` | Requests per second for `open_loop` and `ramp`. Do not set this for `soak` because it is derived from `request_count / duration_s`. |
 | `start_request_rate` | Initial requests per second for `ramp`. |
 | `duration_s` | Wall-clock duration for `soak`. |
+| `text_corpus` | Target-text corpus for supported workloads in a `scheduled` stage. `seedtts-en` allocates deterministic, non-overlapping texts from pinned SeedTTS English metadata. |
 | `arrival_distribution` | `deterministic` or `poisson`. |
 | `enabled_endpoints` | Optional per-stage endpoint override. |
+| `coverage_schedule` | Start and end offsets used to spread required contract scenarios across a `scheduled` stage. |
+| `workload_schedules` | Per-workload background and collision offsets for a `scheduled` stage. These offsets are the arrival authority, so rate, duration, distribution, and request-count fields are not accepted with this mode. |
+
+Scheduled offsets must be strictly increasing. Every collision offset must
+contain exactly one request from every configured workload, and background or
+coverage requests cannot use the same offset. The report validates both this
+membership and a common client-observed in-flight interval for each cohort.
 
 ## Endpoint Contracts
 
@@ -201,6 +210,9 @@ docker build -f benchmarks/tts_serving/Dockerfile \
 
 Run the image with a spec mounted at the contract path:
 
+Specs using `text_corpus: seedtts-en` download the pinned SeedTTS metadata to
+the container's temporary Hugging Face cache on first use.
+
 ```bash
 docker run --rm \
   --user "$(id -u):$(id -g)" \
@@ -245,18 +257,19 @@ headers or placeholder bytes cannot pass as generated audio.
 
 | Stage | Purpose |
 |-------|---------|
-| `closed-1` | Serial baseline that isolates contract failures from concurrency effects. |
-| `closed-16` | Moderate closed-loop concurrency. |
-| `ramp-128` | Poisson ramp from low request rate to high request rate. |
-| `soak-300s` | Sustained load over a fixed duration. |
-| `ws-burst-512` | WebSocket-only burst pressure. |
+| `mixed-production` | Deterministic mixed REST, streaming REST, WebSocket, batch-32, and long-prefill traffic over 300 seconds. |
 | `voice-cache-pressure` | Uploaded-voice cache pressure below the speaker cap. |
 | `voice-speaker-cap` | State-aware speaker-cap validation. |
-| `mixed-burst-512` | Full-endpoint burst with `request_count=512` and `max_concurrency=512`. |
 
-The mixed burst intentionally matches request count and concurrency so the
-client can emit the full burst without creating artificial
-`load_generator_saturated` records.
+The mixed stage schedules 50 normal speech requests, 50 streaming REST
+requests, 50 normal WebSocket requests, 40 audio-streaming WebSocket requests,
+20 batch-32 requests, and 20 long-prefill requests. Every 15 seconds, one
+request from each workload starts as an atomic six-way cohort. Background
+arrivals and 102 required API-coverage requests run between those cohorts, so
+the measured workloads contend with valid and expected-error serving traffic.
+Coverage traffic is counted explicitly but excluded from per-workload
+percentiles. Corpus-backed requests consume globally distinct target texts;
+each batch item also receives its own text, avoiding exact-prompt cache replay.
 
 Speaker-cap stages list existing uploaded voices first, upload only the names
 needed to reach `speaker_max_uploaded`, and require the first overflow upload
@@ -286,7 +299,11 @@ logs/harness.log      # load-stage execution notes
 | `harness_status` | Whether the harness ran successfully. |
 | `overall.coverage_contract_valid` | Whether required scenario coverage was achieved. |
 | `overall.load_generation_valid` | Whether the client emitted the intended load without saturation or excessive lag. |
+| `overall.mixed_arrival_valid` | Whether scheduled workload counts and collision evidence passed. |
 | `metrics.status_counts` | Count of `ok`, protocol failures, unsupported contracts, and load-generator failures. |
 | `metrics.endpoint_mix` | Executed scenario count by endpoint family. |
+| `metrics.by_stage` | Operational metrics across all successful traffic in each stage, including coverage traffic. |
+| `metrics.by_stage_and_workload` | Performance metrics for each workload within a load stage. |
+| `metrics.mixed_arrival` | Workload counts, coverage counts, and per-collision overlap evidence. |
 | `unsupported_contracts` | Enabled API contracts that were missing or unsupported. |
 | `coverage_failures` | Coverage requirements that traffic alone could not prove. |

@@ -40,6 +40,7 @@ from sglang_omni.serve.speech_errors import (
     openai_error_payload,
     service_unavailable,
 )
+from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
 
 if TYPE_CHECKING:
     from sglang_omni.client import Client
@@ -55,7 +56,6 @@ _TTS_TASK_TYPE_ALIASES = {
     for task_type in SUPPORTED_TTS_TASK_TYPES
 }
 MAX_SPEECH_INPUT_CHARS = 4096
-MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 _ReferenceCacheKey = tuple[Any, ...]
 
@@ -459,6 +459,7 @@ class SpeechRequestValidator:
             audio_data=base64.b64encode(result.audio_bytes).decode("ascii"),
             format=result.format,
             media_type=result.mime_type,
+            finish_reason=result.finish_reason,
         )
 
     async def _prepare_batch_item_request(

@@ -61,7 +61,7 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0218
+VC_WER_BELOW_50_CORPUS_MAX = 0.016
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
 VC_N_ABOVE_50_MAX = 1
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
@@ -77,7 +77,7 @@ VC_N_ABOVE_50_MAX = 1
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.2463
+VC_UTMOS_MEAN_REFERENCE = 4.4497
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Strict worst-of-5 references from #1021's published 8xH100 calibration report.

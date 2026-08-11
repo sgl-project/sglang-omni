@@ -47,6 +47,19 @@ def run_scheduler(
         thread.join(timeout=2.0)
 
 
+def test_stop_runs_shutdown_callback_once() -> None:
+    shutdowns: list[None] = []
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        shutdown_callback=lambda: shutdowns.append(None),
+    )
+
+    scheduler.stop()
+    scheduler.stop()
+
+    assert shutdowns == [None]
+
+
 def test_max_concurrency_runs_sync_fn_in_parallel() -> None:
     """Two sync ``compute_fn`` invocations must be in flight simultaneously
     when ``max_concurrency=2``, not serialized."""

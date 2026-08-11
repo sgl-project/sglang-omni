@@ -1403,6 +1403,64 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
     assert captured["input_ids"].tolist() == input_ids.tolist()
 
 
+def test_qwen_sglang_request_records_mm_token_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build records per-modality placeholder positions so the thinker prefill
+    merge never has to derive placement from GPU tensors."""
+    monkeypatch.setattr(
+        "sglang.srt.sampling.sampling_params.SamplingParams.normalize",
+        lambda self, tokenizer: None,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.sampling.sampling_params.SamplingParams.verify",
+        lambda self, vocab_size: None,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.request_builders._compute_mrope_positions",
+        lambda input_ids, model_inputs, thinker_config: (
+            torch.zeros((3, input_ids.numel()), dtype=torch.long),
+            torch.tensor(0),
+        ),
+    )
+
+    image_token_id, audio_token_id = 55, 77
+    input_ids = torch.tensor(
+        [10, image_token_id, image_token_id, 11, audio_token_id, 12],
+        dtype=torch.long,
+    )
+    state = make_qwen_state(
+        prompt={"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)},
+        thinker_inputs={
+            "model_inputs": {
+                "image_embeds": torch.ones((2, 4)),
+                "audio_embeds": torch.ones((1, 4)),
+            },
+            "media_cache_keys": {"audio": "audio:cache"},
+        },
+    )
+    req_data = build_sglang_thinker_request(
+        state,
+        params={"max_new_tokens": 3},
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        request_id="rid-mm-pos",
+        thinker_config=SimpleNamespace(
+            image_token_id=image_token_id,
+            video_token_id=66,
+            audio_token_id=audio_token_id,
+        ),
+    )
+
+    positions = req_data.req._omni_mm_positions
+    assert {k: v.tolist() for k, v in positions.items()} == {
+        "image": [1, 2],
+        "video": [],
+        "audio": [4],
+    }
+    assert all(v.dtype == torch.int64 and not v.is_cuda for v in positions.values())
+
+
 def _encode_processed_tensor(tensor: torch.Tensor) -> dict[str, object]:
     tensor = tensor.contiguous()
     raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()

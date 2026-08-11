@@ -15,6 +15,8 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -30,6 +32,8 @@ ControlMessage = (
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | KVTransferPrepareMessage
+    | KVTransferReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -265,6 +269,8 @@ class StageControlPlane:
         AdminMessage
         | DataAckMessage
         | DataReadyMessage
+        | KVTransferPrepareMessage
+        | KVTransferReadyMessage
         | SubmitMessage
         | ShutdownMessage
         | ProfilerStartMessage
@@ -279,6 +285,8 @@ class StageControlPlane:
             (
                 DataReadyMessage,
                 DataAckMessage,
+                KVTransferPrepareMessage,
+                KVTransferReadyMessage,
                 SubmitMessage,
                 ShutdownMessage,
                 ProfilerStartMessage,
@@ -293,7 +301,12 @@ class StageControlPlane:
         self,
         next_stage: str,
         next_stage_endpoint: str,
-        msg: DataReadyMessage | DataAckMessage,
+        msg: (
+            DataReadyMessage
+            | DataAckMessage
+            | KVTransferPrepareMessage
+            | KVTransferReadyMessage
+        ),
     ) -> None:
         """Send a stage-to-stage control message."""
         if next_stage not in self._next_stage_sockets:

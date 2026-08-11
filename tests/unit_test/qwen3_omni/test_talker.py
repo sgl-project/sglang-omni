@@ -36,6 +36,9 @@ from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
+from tests.unit_test.fixtures.qwen_predictor import (
+    build_real_step_predictor_graph_talker,
+)
 
 
 def _sched_req(**data_kwargs: object) -> SimpleNamespace:
@@ -581,109 +584,6 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
-class _TupleLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int) -> None:
-        super().__init__()
-        self.proj = nn.Linear(in_features, out_features, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor):
-        return self.proj(hidden_states), None
-
-
-class _IdentityRotary(nn.Module):
-    def forward(
-        self,
-        positions: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        fused_set_kv_buffer_arg=None,
-    ):
-        del positions, fused_set_kv_buffer_arg
-        return q, k
-
-
-def _build_real_step_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
-    torch.manual_seed(1)
-    hidden_size = 8
-    num_heads = 2
-    num_kv_heads = 1
-    head_dim = 4
-    num_code_groups = 4
-    vocab_size = 16
-    max_batch_size = 4
-    predictor_len = num_code_groups + 1
-
-    talker = object.__new__(Qwen3OmniTalker)
-    talker.training = False
-    talker.config = SimpleNamespace(num_code_groups=num_code_groups)
-    talker._predictor_input_buffer = torch.zeros(
-        max_batch_size,
-        predictor_len,
-        hidden_size,
-        device=device,
-    )
-    talker._output_codes = torch.zeros(
-        max_batch_size,
-        num_code_groups,
-        dtype=torch.long,
-        device=device,
-    )
-    talker._output_embeds = torch.zeros(max_batch_size, hidden_size, device=device)
-    talker._predictor_positions = torch.arange(
-        predictor_len,
-        device=device,
-        dtype=torch.long,
-    )
-    talker._predictor_k_cache = torch.zeros(
-        1,
-        max_batch_size,
-        num_kv_heads,
-        predictor_len,
-        head_dim,
-        device=device,
-    )
-    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    talker._predictor_decode_graph_batch_sizes = (1, 2, 4)
-    talker._predictor_decode_graphs = {}
-    talker._predictor_decode_graph_disabled = set()
-
-    layer = SimpleNamespace(
-        input_layernorm=nn.Identity(),
-        post_attention_layernorm=nn.Identity(),
-        mlp=nn.Linear(hidden_size, hidden_size, bias=False).to(device),
-    )
-    layer.self_attn = SimpleNamespace(
-        q_size=num_heads * head_dim,
-        kv_size=num_kv_heads * head_dim,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        q_norm=nn.Identity(),
-        k_norm=nn.Identity(),
-        alt_stream=None,
-        qkv_proj=_TupleLinear(
-            hidden_size, (num_heads + 2 * num_kv_heads) * head_dim
-        ).to(device),
-        o_proj=_TupleLinear(num_heads * head_dim, hidden_size).to(device),
-        rotary_emb=_IdentityRotary(),
-    )
-    talker.code_predictor = SimpleNamespace(
-        model=SimpleNamespace(
-            layers=[layer],
-            norm=nn.Identity(),
-            codec_embedding=nn.ModuleList(
-                [nn.Embedding(vocab_size, hidden_size).to(device) for _ in range(3)]
-            ),
-        ),
-        lm_head=nn.ModuleList(
-            [_TupleLinear(hidden_size, vocab_size).to(device) for _ in range(3)]
-        ),
-    )
-    layer0_embedding = nn.Embedding(vocab_size, hidden_size).to(device)
-    talker.get_input_embeddings = lambda: layer0_embedding
-    return talker
-
-
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -698,7 +598,7 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     )
 
     device = torch.device("cuda")
-    talker = _build_real_step_predictor_graph_talker(device)
+    talker = build_real_step_predictor_graph_talker(device)
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
@@ -1644,10 +1544,19 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
             "pad_values": {"audio": 999},
         },
         _omni_consumed=None,
+        _omni_mm_positions={
+            "image": torch.empty(0, dtype=torch.long),
+            "video": torch.empty(0, dtype=torch.long),
+            "audio": torch.tensor([1]),
+        },
         inflight_middle_chunks=0,
     )
     input_embeds, _, _ = runner._inject_multimodal_embeds(
-        SimpleNamespace(input_ids=torch.tensor([1, 999, 2]), extend_seq_lens_cpu=[3]),
+        SimpleNamespace(
+            input_ids=torch.tensor([1, 999, 2]),
+            extend_seq_lens_cpu=[3],
+            extend_prefix_lens_cpu=[0],
+        ),
         SimpleNamespace(reqs=[req]),
     )
 

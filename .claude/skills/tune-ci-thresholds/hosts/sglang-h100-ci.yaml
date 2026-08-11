@@ -20,6 +20,16 @@ venv_python: /github/home/calibration/omni/bin/python
 # On 8× H100 shared hosts, GPU 6–7 run CI continuously — never pick or kill them.
 gpu_exclude: [6, 7]
 
+# note (Jiaxin Deng): lane bundles must match the runner-side .env; precheck
+# refuses a busy cpuset rather than measuring under intrusion. Lane 0,1
+# excludes system cores 0,1,64,65 (categraf/dockerd confined there), so its
+# 28-core thresholds are conservative for the 32-core lanes.
+gpu_group_cpusets:
+  "0,1": "2-15,66-79"
+  "2,3": "16-31,80-95"
+  "4,5": "48-63,112-127"
+  "6,7": "32-47,96-111"
+
 physical:
   hf_hub: /root/.cache/huggingface
   speaker_sim: /root/.cache/huggingface/speaker_sim

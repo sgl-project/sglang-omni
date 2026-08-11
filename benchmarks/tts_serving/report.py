@@ -86,15 +86,18 @@ def build_results_report(
         coverage_matrix,
     )
     coverage_contract_valid = not coverage_failures
+    mixed_arrival, mixed_arrival_failures = _mixed_arrival_evidence(spec, results)
+    mixed_arrival_valid = not mixed_arrival_failures
     passed = (
         harness_status == "ok"
         and total > 0
         and load_generation_valid
         and coverage_contract_valid
+        and mixed_arrival_valid
         and _is_benchmark_passed(spec, results, capabilities)
     )
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "scenario_schema_version": SCENARIO_SCHEMA_VERSION,
         "scenario_set_hash": scenario_set_hash(scenarios) if scenarios else None,
         "workload_spec_hash": workload_spec_hash(spec),
@@ -109,6 +112,7 @@ def build_results_report(
             "failed": failed,
             "load_generation_valid": load_generation_valid,
             "coverage_contract_valid": coverage_contract_valid,
+            "mixed_arrival_valid": mixed_arrival_valid,
         },
         "config": {
             "test_type": spec.test_type,
@@ -200,6 +204,7 @@ def build_results_report(
             "by_operation": _by_operation(spec, results),
             "by_configured_concurrency": _by_configured_concurrency(spec, results),
             "by_peak_inflight": _by_peak_inflight(spec, results),
+            "mixed_arrival": mixed_arrival,
         },
         "failures": [
             result.to_json() for result in results if not _result_passed(spec, result)
@@ -209,6 +214,7 @@ def build_results_report(
             scenarios or [],
         ),
         "coverage_failures": coverage_failures,
+        "mixed_arrival_failures": mixed_arrival_failures,
         "coverage_matrix": coverage_matrix,
         "planned_coverage_matrix": planned_coverage_matrix,
     }
@@ -1839,6 +1845,189 @@ def _admission_status_counts(results: list[ScenarioResult]) -> dict[str, int]:
         if result.error_type and "Timeout" in result.error_type:
             counts["timeout"] += 1
     return dict(counts)
+
+
+def _mixed_arrival_evidence(
+    spec: BenchmarkSpec,
+    results: list[ScenarioResult],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    evidence: dict[str, Any] = {}
+    failures: list[dict[str, Any]] = []
+    for stage in spec.params.load_stages:
+        if stage.mode != "scheduled":
+            continue
+        stage_results = [result for result in results if result.stage_id == stage.id]
+        performance = _performance_results(stage_results)
+        coverage_results = [
+            result for result in stage_results if result.workload is None
+        ]
+        schedule_by_workload = {
+            schedule.workload: schedule for schedule in stage.workload_schedules
+        }
+        by_workload: dict[str, Any] = {}
+        for workload, schedule in schedule_by_workload.items():
+            workload_results = [
+                result for result in performance if result.workload == workload
+            ]
+            peers = Counter()
+            overlapping = 0
+            for result in workload_results:
+                result_peers = {
+                    peer.workload
+                    for peer in performance
+                    if peer.workload != workload and _results_overlap(result, peer)
+                }
+                if result_peers:
+                    overlapping += 1
+                peers.update(peer for peer in result_peers if peer is not None)
+            target = schedule.request_count
+            if len(workload_results) != target:
+                failures.append(
+                    {
+                        "stage": stage.id,
+                        "workload": workload,
+                        "contract": "successful_sample_count",
+                        "expected": target,
+                        "observed": len(workload_results),
+                    }
+                )
+            by_workload[workload] = {
+                "configured_request_count": target,
+                "successful_request_count": len(workload_results),
+                "overlapping_request_count": overlapping,
+                "overlapping_request_fraction": (
+                    overlapping / len(workload_results) if workload_results else 0.0
+                ),
+                "overlapping_peer_counts": dict(sorted(peers.items())),
+                "configured_collision_count": len(schedule.collision_offsets_s),
+            }
+
+        collision_epochs = sorted(
+            {
+                offset
+                for schedule in stage.workload_schedules
+                for offset in schedule.collision_offsets_s
+            }
+        )
+        epoch_evidence: list[dict[str, Any]] = []
+        for epoch in collision_epochs:
+            expected_workloads = {
+                schedule.workload
+                for schedule in stage.workload_schedules
+                if epoch in schedule.collision_offsets_s
+            }
+            offset_members = [
+                result
+                for result in stage_results
+                if result.configured_offset_s == epoch
+            ]
+            members = [
+                result
+                for result in performance
+                if result.collision_epoch_s == epoch
+                and result.workload in expected_workloads
+            ]
+            member_counts = Counter(result.workload for result in members)
+            observed_workloads = set(member_counts)
+            invalid_membership = {
+                workload: member_counts.get(workload, 0)
+                for workload in sorted(expected_workloads)
+                if member_counts.get(workload, 0) != 1
+            }
+            unexpected_member_count = len(offset_members) != len(expected_workloads)
+            if invalid_membership or unexpected_member_count:
+                failures.append(
+                    {
+                        "stage": stage.id,
+                        "collision_epoch_s": epoch,
+                        "contract": "collision_membership",
+                        "expected_count_per_workload": 1,
+                        "observed_counts": invalid_membership,
+                        "expected_request_count_at_offset": len(expected_workloads),
+                        "observed_request_count_at_offset": len(offset_members),
+                    }
+                )
+            common_overlap_s = (
+                _common_overlap_s(members)
+                if not invalid_membership and not unexpected_member_count
+                else None
+            )
+            if (
+                not invalid_membership
+                and not unexpected_member_count
+                and (common_overlap_s is None or common_overlap_s <= 0)
+            ):
+                failures.append(
+                    {
+                        "stage": stage.id,
+                        "collision_epoch_s": epoch,
+                        "contract": "collision_cohort_overlap",
+                        "observed_common_overlap_s": common_overlap_s,
+                    }
+                )
+            epoch_valid = (
+                not invalid_membership
+                and not unexpected_member_count
+                and common_overlap_s is not None
+                and common_overlap_s > 0
+            )
+            epoch_evidence.append(
+                {
+                    "offset_s": epoch,
+                    "expected_workloads": sorted(expected_workloads),
+                    "observed_workloads": sorted(
+                        workload
+                        for workload in observed_workloads
+                        if workload is not None
+                    ),
+                    "request_count_at_offset": len(offset_members),
+                    "common_overlap_s": common_overlap_s,
+                    "valid": epoch_valid,
+                }
+            )
+        evidence[stage.id] = {
+            "workloads": by_workload,
+            "coverage_request_count": len(coverage_results),
+            "coverage_passed_count": sum(
+                _result_passed(spec, result) for result in coverage_results
+            ),
+            "expected_error_request_count": sum(
+                not result.expected_success for result in coverage_results
+            ),
+            "configured_collision_epoch_count": len(collision_epochs),
+            "observed_collision_epoch_count": sum(
+                epoch["valid"] for epoch in epoch_evidence
+            ),
+            "collision_epochs": epoch_evidence,
+        }
+    return evidence, failures
+
+
+def _results_overlap(left: ScenarioResult, right: ScenarioResult) -> bool:
+    if (
+        left.actual_start_s is None
+        or left.completed_s is None
+        or right.actual_start_s is None
+        or right.completed_s is None
+    ):
+        return False
+    return (
+        left.actual_start_s < right.completed_s
+        and right.actual_start_s < left.completed_s
+    )
+
+
+def _common_overlap_s(results: list[ScenarioResult]) -> float | None:
+    if not results:
+        return None
+    starts: list[float] = []
+    completions: list[float] = []
+    for result in results:
+        if result.actual_start_s is None or result.completed_s is None:
+            return None
+        starts.append(result.actual_start_s)
+        completions.append(result.completed_s)
+    return min(completions) - max(starts)
 
 
 def _performance_results(results: list[ScenarioResult]) -> list[ScenarioResult]:

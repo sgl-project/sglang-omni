@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.sglang_model import Qwen3ASRForConditionalGeneration
 
 
@@ -25,6 +26,114 @@ class _RecordingAudioTower(nn.Module):
         self.seen_features = input_features
         self.seen_lengths = feature_lens
         return SimpleNamespace(last_hidden_state=input_features)
+
+
+@pytest.mark.parametrize("use_mrope_positions", [True, False])
+def test_forward_uses_available_mrope_positions(
+    monkeypatch: pytest.MonkeyPatch,
+    use_mrope_positions: bool,
+) -> None:
+    positions = torch.tensor([4, 5])
+    mrope_positions = torch.tensor([[4, 5], [4, 5], [4, 5]])
+    forward_batch = SimpleNamespace(
+        mrope_positions=mrope_positions if use_mrope_positions else None
+    )
+    output = torch.tensor([1.0])
+    seen_positions = None
+
+    def fake_general_mm_embed_routine(**kwargs):
+        nonlocal seen_positions
+        seen_positions = kwargs["positions"]
+        return output
+
+    monkeypatch.setattr(
+        sglang_model,
+        "general_mm_embed_routine",
+        fake_general_mm_embed_routine,
+    )
+    model = SimpleNamespace(language_model=object(), get_audio_feature=object())
+
+    actual = Qwen3ASRForConditionalGeneration.forward(
+        model,
+        input_ids=torch.tensor([1, 2]),
+        positions=positions,
+        forward_batch=forward_batch,
+    )
+
+    expected_positions = mrope_positions[0] if use_mrope_positions else positions
+    assert torch.equal(seen_positions, expected_positions)
+    assert seen_positions.dtype == torch.int32
+    assert actual is output
+
+
+def test_asr_text_rope_drops_only_multimodal_parameters() -> None:
+    original = {
+        "rope_type": "default",
+        "rope_theta": 1_000_000,
+        "interleaved": True,
+        "mrope_interleaved": True,
+        "mrope_section": [24, 20, 20],
+    }
+    config = SimpleNamespace(
+        rope_parameters=original,
+        rope_scaling=original,
+    )
+
+    sglang_model._normalize_asr_text_rope(config)
+
+    expected = {"rope_type": "default", "rope_theta": 1_000_000}
+    assert config.rope_parameters == expected
+    assert config.rope_scaling == expected
+    assert original["mrope_section"] == [24, 20, 20]
+
+
+def test_fused_asr_qk_norm_rope_is_bound_per_attention() -> None:
+    def original(positions, hidden_states):
+        return positions, hidden_states
+
+    supported = SimpleNamespace(
+        head_dim=128,
+        forward_prepare_native=original,
+    )
+    unsupported = SimpleNamespace(
+        head_dim=96,
+        forward_prepare_native=original,
+    )
+    language_model = SimpleNamespace(
+        model=SimpleNamespace(
+            layers=[
+                SimpleNamespace(self_attn=supported),
+                SimpleNamespace(self_attn=unsupported),
+            ]
+        )
+    )
+
+    sglang_model._enable_fused_asr_qk_norm_rope(language_model)
+
+    assert supported._asr_unfused_forward_prepare_native is original
+    assert (
+        supported.forward_prepare_native.__func__
+        is sglang_model._fused_asr_forward_prepare_native
+    )
+    assert unsupported.forward_prepare_native is original
+
+
+def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:
+    expected = (object(), object(), object())
+    attention = SimpleNamespace(
+        qkv_proj=lambda hidden_states: pytest.fail(
+            f"unexpected projection for {hidden_states.dtype}"
+        ),
+        _asr_unfused_forward_prepare_native=lambda positions, hidden_states: expected,
+    )
+
+    actual = sglang_model._fused_asr_forward_prepare_native(
+        attention,
+        torch.tensor([0], dtype=torch.int32),
+        torch.zeros((1, 1, 8), dtype=torch.float16),
+    )
+
+    assert actual is expected
 
 
 def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:

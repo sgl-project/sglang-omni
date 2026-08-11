@@ -13,9 +13,9 @@ from benchmarks.tts_serving.audio_validation import (
     validate_audio_response,
 )
 from benchmarks.tts_serving.http_contracts import (
-    _json_from_bytes,
-    _mark_protocol_error,
-    _mark_success,
+    json_from_bytes,
+    mark_protocol_error,
+    mark_success,
 )
 from benchmarks.tts_serving.metrics import ScenarioResult
 from benchmarks.tts_serving.scenarios import Scenario
@@ -39,7 +39,7 @@ class BatchItemValidation:
 def handle_batch_success(
     body: bytes, result: ScenarioResult, scenario: Scenario
 ) -> None:
-    payload = _json_from_bytes(
+    payload = json_from_bytes(
         body,
         result,
         status="invalid_batch_response",
@@ -50,7 +50,7 @@ def handle_batch_success(
         return
     required_keys = {"id", "results", "total", "succeeded", "failed"}
     if not isinstance(payload, dict) or not required_keys <= set(payload):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error="batch endpoint returned JSON without id/results/total/succeeded/failed",
@@ -62,7 +62,7 @@ def handle_batch_success(
     succeeded = payload.get("succeeded")
     failed = payload.get("failed")
     if not isinstance(payload.get("id"), str) or not payload["id"]:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error="batch endpoint id must be a non-empty string",
@@ -74,14 +74,14 @@ def handle_batch_success(
         or not isinstance(succeeded, int)
         or not isinstance(failed, int)
     ):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error="batch endpoint returned non-integer counts or non-list results",
         )
         return
     if total != batch_size or len(results) != batch_size:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error=(
@@ -91,7 +91,7 @@ def handle_batch_success(
         )
         return
     if succeeded + failed != total:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error="batch endpoint succeeded + failed does not equal total",
@@ -102,7 +102,7 @@ def handle_batch_success(
         batch_size=batch_size,
     )
     if expected_item_failures is None:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_benchmark_scenario",
             error="batch scenario expected_item_failures must contain valid item indexes",
@@ -110,7 +110,7 @@ def handle_batch_success(
         return
     expected_failed = len(expected_item_failures)
     if failed != expected_failed or succeeded != total - expected_failed:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error=(
@@ -135,7 +135,7 @@ def handle_batch_success(
             expect_failure=expect_item_failure,
         )
         if validation_error.error is not None:
-            _mark_protocol_error(
+            mark_protocol_error(
                 result,
                 status="invalid_batch_response",
                 error=f"batch endpoint result item {index}: {validation_error.error}",
@@ -148,7 +148,7 @@ def handle_batch_success(
             successful_audio_bytes += validation_error.audio_bytes
             successful_audio_duration_s += validation_error.audio_duration_s
     if observed_success != succeeded or observed_failed != failed:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_batch_response",
             error=(
@@ -160,7 +160,7 @@ def handle_batch_success(
         return
     result.audio_bytes += successful_audio_bytes
     result.audio_duration_s += successful_audio_duration_s
-    _mark_success(result, capability="pass")
+    mark_success(result, capability="pass")
 
 
 def _expected_batch_item_failures(

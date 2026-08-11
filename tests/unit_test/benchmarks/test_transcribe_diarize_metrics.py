@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -71,6 +72,96 @@ def test_parse_args_uses_googletime_preset() -> None:
     assert args.max_samples is None
     assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
     assert args.output_dir == module.GOOGLETIME_OUTPUT_DIR
+
+
+def test_parse_args_supports_request_event_profiling() -> None:
+    module = _load_benchmark_module()
+
+    args = module.parse_args(
+        [
+            "--profile-events",
+            "--profile-urls",
+            "http://worker-0:8000,http://worker-1:8000",
+            "--profile-event-dir",
+            "/tmp/moss-profile",
+        ]
+    )
+
+    assert args.profile_events is True
+    assert args.profile_urls == "http://worker-0:8000,http://worker-1:8000"
+    assert args.profile_event_dir == "/tmp/moss-profile"
+
+
+def test_parse_args_rejects_profiling_reused_results() -> None:
+    module = _load_benchmark_module()
+
+    with pytest.raises(SystemExit, match="2"):
+        module.parse_args(
+            [
+                "--profile-events",
+                "--reuse-asr-results",
+                "/tmp/raw-results.json",
+            ]
+        )
+
+
+def test_profiled_pass_delegates_shared_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_benchmark_module()
+    args = module.parse_args(
+        [
+            "--dataset",
+            "aishell4_long",
+            "--concurrency",
+            "4",
+            "--profile-events",
+            "--profile-urls",
+            "http://worker-0:8000,http://worker-1:8000",
+            "--profile-event-dir",
+            "/tmp/moss-profile",
+        ]
+    )
+    lifecycle: dict[str, object] = {}
+    run_kwargs: dict[str, object] = {}
+
+    monkeypatch.setattr(module.time, "time", lambda: 123)
+
+    async def fake_run_eval(samples, **kwargs):
+        run_kwargs.update(kwargs)
+        return [
+            RequestResult(
+                request_id="sample-1",
+                is_success=True,
+                latency_s=1.0,
+                audio_duration_s=2.0,
+                rtf=0.5,
+            )
+        ], 2.0
+
+    monkeypatch.setattr(module, "run_eval", fake_run_eval)
+
+    async def fake_run_profiled_pass(**kwargs):
+        lifecycle.update(kwargs)
+        return {"pass_metrics": await kwargs["run_pass"]()}
+
+    monkeypatch.setattr(module, "run_profiled_pass", fake_run_profiled_pass)
+
+    profile = asyncio.run(module._run_profiled_pass(args, [], "http://router:8000"))
+
+    run_id = "moss-td-aishell4_long-c4-123"
+    event_dir = f"/tmp/moss-profile/{run_id}"
+    assert lifecycle["run_id"] == run_id
+    assert lifecycle["event_dir"] == event_dir
+    assert lifecycle["profile_urls"] == [
+        "http://worker-0:8000",
+        "http://worker-1:8000",
+    ]
+    assert lifecycle["log_prefix"] == "[conc=4]"
+    assert lifecycle["error_stream"] is module.sys.stderr
+    assert run_kwargs["warmup"] == 0
+    assert profile is not None
+    assert profile["pass_metrics"]["wall_clock_s"] == 2.0
 
 
 @pytest.mark.parametrize(
@@ -381,7 +472,14 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
         )
     ]
 
-    path = module._save_and_print_speed_results(args, outputs, wall_clock_s=2.0)
+    profile = {"run_id": "profile-1", "stage_breakdown": {"asr": {"count": 1}}}
+    path = module._save_and_print_speed_results(
+        args,
+        outputs,
+        wall_clock_s=2.0,
+        profile=profile,
+        include_profile=True,
+    )
     speed_payload = json.loads(Path(path).read_text())
     printed = capsys.readouterr().out
 
@@ -390,5 +488,99 @@ def test_eval_saves_speed_results_before_accuracy_metrics(
     assert speed_payload["speed"]["completed_requests"] == 1
     assert speed_payload["speed"]["throughput_qps"] == 0.5
     assert speed_payload["speed"]["rtf_mean"] == 0.3
+    assert speed_payload["profile"] == profile
     assert "ASR Speed Result" in printed
     assert "ASR requests only" in printed
+
+
+def test_eval_saves_profile_in_final_results(tmp_path: Path) -> None:
+    module = _load_benchmark_module()
+    profile = {"run_id": "profile-1", "hop_breakdown": {"asr->done": {"count": 1}}}
+    payload = {
+        "config": {},
+        "summary": {},
+        "speed": {},
+        "diarization_metrics": {},
+        "diarization_metrics_percent": {},
+        "per_sample": [],
+    }
+
+    path = module._save_payload(
+        Namespace(output_dir=str(tmp_path)),
+        payload,
+        profile=profile,
+        include_profile=True,
+    )
+
+    assert json.loads(Path(path).read_text())["profile"] == profile
+
+
+def test_merge_concat_references_shifts_and_remaps() -> None:
+    from benchmarks.tasks.transcribe_diarize import merge_concat_references
+
+    clip_a = "[0.00][S01]hello[2.00][3.00][S02]there[4.50]"
+    clip_b = "[1.00][S01]again[2.00]"
+
+    merged = merge_concat_references([clip_a, clip_b], [0.0, 10.0], [None, None])
+
+    assert merged == (
+        "[0.00][S01]hello[2.00]" "[3.00][S02]there[4.50]" "[11.00][S03]again[12.00]"
+    )
+
+
+def test_merge_concat_references_drops_segments_past_truncation() -> None:
+    from benchmarks.tasks.transcribe_diarize import merge_concat_references
+
+    clip_a = "[0.00][S01]kept[2.00][5.00][S01]dropped[9.00]"
+    clip_b = "[0.50][S01]tail[1.50]"
+
+    merged = merge_concat_references([clip_a, clip_b], [0.0, 4.0], [4.0, None])
+
+    assert merged == "[0.00][S01]kept[2.00][4.50][S02]tail[5.50]"
+
+
+def test_merge_concat_references_rejects_reference_without_segments() -> None:
+    from benchmarks.tasks.transcribe_diarize import merge_concat_references
+
+    with pytest.raises(ValueError, match="no parseable timestamped segments"):
+        merge_concat_references(["no markup here"], [0.0], [None])
+
+
+def test_concat_filler_cut_aligns_to_reference_boundary(tmp_path) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    from benchmarks.tasks.transcribe_diarize import (
+        Movies800Sample,
+        build_long_audio_concat_sample,
+    )
+
+    rate = 100
+    sf.write(tmp_path / "filler.wav", np.full(1000, 0.5, dtype=np.float32), rate)
+    sf.write(tmp_path / "tail.wav", np.full(200, 0.5, dtype=np.float32), rate)
+    clips = [
+        Movies800Sample(
+            sample_id="filler",
+            audio_path=str(tmp_path / "filler.wav"),
+            expected_text="[0.00][S01]hello[4.00][5.00][S01]world[9.50]",
+        ),
+        Movies800Sample(
+            sample_id="tail",
+            audio_path=str(tmp_path / "tail.wav"),
+            expected_text="[0.00][S01]tail[2.00]",
+        ),
+    ]
+
+    sample = build_long_audio_concat_sample(
+        clips, target_duration_s=10.0, gap_s=1.0, sample_id="t"
+    )
+
+    waveform, out_rate = sf.read(sample.audio_path)
+    assert out_rate == rate
+    assert len(waveform) == 1000
+    assert np.allclose(waveform[:400], 0.5, atol=1e-3)
+    assert np.allclose(waveform[400:800], 0.0, atol=1e-4)
+    assert np.allclose(waveform[800:], 0.5, atol=1e-3)
+    assert "world" not in sample.expected_text
+    assert "hello" in sample.expected_text
+    assert "[8.00][S02]tail[10.00]" in sample.expected_text

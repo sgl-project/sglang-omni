@@ -7,6 +7,10 @@ from typing import Any
 import msgspec
 
 from sglang_omni.proto.admin import AdminOperation, AdminResult
+from sglang_omni.proto.kv_transfer import (
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
+)
 from sglang_omni.proto.request import StagePayload
 
 
@@ -344,6 +348,8 @@ def parse_message(
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | KVTransferPrepareMessage
+    | KVTransferReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -358,6 +364,10 @@ def parse_message(
         return DataReadyMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
+    elif msg_type == "kv_transfer_prepare":
+        return KVTransferPrepareMessage.from_dict(d)
+    elif msg_type == "kv_transfer_ready":
+        return KVTransferReadyMessage.from_dict(d)
     elif msg_type == "abort":
         return AbortMessage.from_dict(d)
     elif msg_type == "complete":

@@ -10,6 +10,11 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+    get_omni_prefill_inputs,
+)
 from tests.unit_test.fakes import FakeExecutionBridge
 
 
@@ -201,6 +206,46 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     ]
     assert output.can_run_cuda_graph is False
     assert not hasattr(ModelRunner, "prepare_prefill")
+
+
+def _prefill_forward_batch() -> SimpleNamespace:
+    return SimpleNamespace(
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=[None],
+        input_ids=torch.tensor([1]),
+        batch_size=1,
+    )
+
+
+def test_prepare_and_forward_clears_sidecar_before_cleanup_on_forward_error() -> None:
+    runner = object.__new__(ModelRunner)
+    forward_batch = _prefill_forward_batch()
+    payload = OmniPrefillInputs(input_embeds=torch.zeros(1, 4))
+    cleanup_observations: list[object] = []
+
+    runner.before_prefill = lambda *_args: attach_omni_prefill_inputs(
+        forward_batch, payload
+    )
+
+    def fail_forward(*_args):
+        raise ValueError("forward failed")
+
+    runner.custom_prefill_forward = fail_forward
+    runner.cleanup_prefill = lambda *_args: cleanup_observations.append(
+        get_omni_prefill_inputs(forward_batch)
+    )
+
+    with pytest.raises(ValueError, match="forward failed"):
+        runner._prepare_and_forward(
+            forward_batch,
+            SimpleNamespace(is_prefill_only=True),
+            [],
+            True,
+        )
+
+    assert cleanup_observations == [None]
+    assert get_omni_prefill_inputs(forward_batch) is None
 
 
 def test_execute_isolates_scheduler_sampling_state(

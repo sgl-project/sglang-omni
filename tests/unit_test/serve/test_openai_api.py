@@ -25,13 +25,15 @@ from sglang_omni.serve.openai_api import (
     _build_chat_generate_request,
     _chat_stream,
     _ClosableStreamingResponse,
-    _first_transcription_chunk,
     _speech_audio_response,
-    _transcription_stream,
-    build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from sglang_omni.serve.transcriptions import (
+    _first_transcription_chunk,
+    _transcription_stream,
+    build_transcription_generate_request,
+)
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -109,8 +111,11 @@ def _fault_client(model_name: str, error: str = "cuda out of memory") -> Client:
 
 
 class SuccessfulSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -144,6 +149,7 @@ class SuccessfulSpeechClient:
             audio_bytes=b"RIFF",
             mime_type=f"audio/{response_format}",
             format=response_format,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -552,7 +558,7 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
 
 
 def test_speech_endpoint_returns_binary_audio() -> None:
-    speech_client = SuccessfulSpeechClient()
+    speech_client = SuccessfulSpeechClient(finish_reason="length")
     client = TestClient(create_app(speech_client, model_name="tts"))
 
     response = client.post(
@@ -566,6 +572,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.status_code == 200
     assert response.content == b"RIFF"
     assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
@@ -1349,6 +1356,22 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.stream is False
 
 
+def test_transcription_request_preserves_explicit_empty_language() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="Qwen/Qwen3-ASR-1.7B",
+        language="",
+        prompt=None,
+        temperature=None,
+    )
+
+    assert gen_req.extra_params["language"] == ""
+    omni_req = Client._build_omni_request(gen_req)
+    assert omni_req.params["language"] == ""
+
+
 def test_transcription_request_passes_explicit_temperature() -> None:
     gen_req = build_transcription_generate_request(
         audio_bytes=b"RIFF",
@@ -1406,6 +1429,31 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.extra_params["language"] == "en"
 
 
+def test_transcription_endpoint_maps_disallowed_special_token_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Encountered text in the prompt corresponding to disallowed "
+        "special token: <|startoftranscript|>."
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="openai/whisper-large-v3",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "openai/whisper-large-v3",
+            "prompt": "<|startoftranscript|> sneaky",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "disallowed special token" in response.json()["detail"]
+
+
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
 
     bad_request_error = (
@@ -1429,6 +1477,71 @@ def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
     assert "accepts audio up to" in response.json()["detail"]
 
 
+def test_transcription_endpoint_maps_invalid_audio_error_to_400() -> None:
+    client = TestClient(
+        create_app(
+            _fault_client(
+                "qwen3-omni",
+                error=(
+                    "Qwen3-ASR could not decode the uploaded audio; "
+                    "provide a valid audio file."
+                ),
+            ),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "could not decode the uploaded audio" in response.json()["detail"]
+
+
+def test_transcription_endpoint_preserves_audio_backend_error_as_500() -> None:
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error="audio decoder backend unavailable"),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 500
+    assert "audio decoder backend unavailable" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_kv_capacity_error_to_400() -> None:
+    bad_request_error = (
+        "Request requires more tokens than the thinker KV cache can hold "
+        "(input_tokens=1500, max_new_tokens=128, required_tokens=1628, "
+        "kv_capacity=1600)."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "thinker KV cache" in response.json()["detail"]
+
+
 def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
     bad_request_error = "max_new_tokens must be between 1 and 200, got 65536"
     client = TestClient(
@@ -1446,6 +1559,29 @@ def test_transcription_endpoint_maps_max_new_tokens_error_to_400() -> None:
 
     assert response.status_code == 400
     assert "max_new_tokens must be" in response.json()["detail"]
+
+
+def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None:
+    bad_request_error = (
+        "Unsupported language: 'Klingon'. Use a supported language code "
+        "(ar, en, zh) or canonical name."
+    )
+    client = TestClient(
+        create_app(
+            _fault_client("qwen3-omni", error=bad_request_error),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni", "language": "Klingon"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported language:" in response.json()["detail"]
+    assert "Use a supported language code" in response.json()["detail"]
 
 
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:

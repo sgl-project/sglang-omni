@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Production-mimic TTS serving benchmark CI on one direct Higgs server."""
+"""Production-mimic TTS serving benchmark CI through a two-worker router."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -17,18 +19,18 @@ from urllib.request import ProxyHandler, build_opener
 import pytest
 
 from benchmarks.tts_serving.spec import load_spec
-from sglang_omni.utils import find_available_port
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    launch_managed_router,
+    print_router_diagnostics,
+    router_get_json,
+)
 from tests.test_model.tts_ci_config import (
     THRESHOLD_SLACK_HIGHER,
     THRESHOLD_SLACK_LOWER,
     TTS_CI_PRESETS,
 )
-from tests.utils import (
-    MetricCheckCollector,
-    no_proxy_env,
-    start_server_from_cmd,
-    stop_server,
-)
+from tests.utils import MetricCheckCollector, no_proxy_env, wait_for_gpu_memory_release
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVING_SPEC = PROJECT_ROOT / "benchmarks/tts_serving/examples/stress.json"
@@ -37,48 +39,52 @@ OUTPUT_ROOT_ENV = "TTS_SERVING_STAGE_OUTPUT_ROOT"
 MODEL_PRESET = TTS_CI_PRESETS["higgs"].model
 MODEL_PATH = MODEL_PRESET.model_path
 BENCHMARK_VALIDATION_FILE = "benchmark_validation.json"
+CLEANUP_VALIDATION_FILE = "cleanup_validation.json"
 BENCHMARK_TIMEOUT_S = 1800
 BENCHMARK_TIMEOUT_RETURNCODE = 124
+MIXED_STAGE = "mixed-production"
+EXPECTED_WORKLOAD_SAMPLES = {
+    "speech_normal": 50,
+    "rest_stream": 50,
+    "ws_normal": 50,
+    "ws_stream_audio": 40,
+    "batch_32_all_valid": 20,
+    "long_prefill_decode": 20,
+}
+EXPECTED_COLLISION_EPOCHS = 20
+EXPECTED_COVERAGE_REQUESTS = 102
+EXPECTED_COVERAGE_ERRORS = 35
+WORKER_RESPONSE_HEADER = "x-sglang-omni-worker"
+WEBSOCKET_COMPLETION_RE = re.compile(
+    r"tts_websocket_completed request_id=(\S+) worker=(\S+)"
+)
 
-SERVING_CLOSED16_THROUGHPUT_QPS_REF: float | None = 4.7183825878522
-SERVING_CLOSED16_LATENCY_P95_S_REF: float | None = 9.420716097112745
-SERVING_RAMP_THROUGHPUT_QPS_REF: float | None = 4.480613583025352
-SERVING_RAMP_LATENCY_P95_S_REF: float | None = 10.387105653993785
-SERVING_SOAK_LATENCY_P95_S_REF: float | None = 7.185214316938072
-SERVING_SPEECH_NORMAL_LATENCY_P95_S_REF: float | None = 1.0761820641346276
-SERVING_SPEECH_NORMAL_RTF_P95_REF: float | None = 0.22862387411049115
-SERVING_REST_STREAM_TTFA_P95_S_REF: float | None = 0.3016385301016271
-SERVING_REST_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.6632563266903162
-SERVING_REST_STREAM_LATENCY_P95_S_REF: float | None = 0.9647539779543877
-SERVING_REST_STREAM_RTF_P95_REF: float | None = 0.22127384815467604
-SERVING_BATCH32_LATENCY_P95_S_REF: float | None = 10.222142587881535
-SERVING_WS_NORMAL_TTFA_P95_S_REF: float | None = 17.821007369086146
-SERVING_WS_NORMAL_LATENCY_P95_S_REF: float | None = 17.821333308238536
-SERVING_WS_STREAM_TTFA_P95_S_REF: float | None = 17.790006244089454
-SERVING_WS_STREAM_INTER_CHUNK_P95_S_REF: float | None = 7.149801335297525
-SERVING_WS_STREAM_LATENCY_P95_S_REF: float | None = 77.85023963311687
-SERVING_WS_STREAM_RTF_P95_REF: float | None = 1.2797559030279269
-SERVING_MIXED_BURST_THROUGHPUT_QPS_REF: float | None = 7.623061654152434
-SERVING_MIXED_BURST_LATENCY_P95_S_REF: float | None = 25.70939063001424
-SERVING_LONG_PROMPT_TOKENS_MIN_REF: float | None = 684.0
-SERVING_LONG_COMPLETION_TOKENS_MIN_REF: float | None = 94.0
-SERVING_LONG_LATENCY_P95_S_REF: float | None = 28.912055992987007
-SERVING_LONG_AUDIO_DURATION_MIN_S_REF: float | None = 3.48
-SERVING_LONG_OUTPUT_TOK_PER_REQ_S_REF: float | None = 123.20174934932271
-SERVING_LONG_BASELINE_LATENCY_MAX_S_REF: float | None = 11.957396121229976
-SERVING_LONG_BASELINE_OUTPUT_TOK_PER_REQ_S_REF: float | None = 174.08443741230965
+SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF: float | None = 0.986
+SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF: float | None = 0.1829
+SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF: float | None = 0.17961259232833982
+SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5103174657560885
+SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF: float | None = 0.757
+SERVING_MIXED_REST_STREAM_RTF_P95_REF: float | None = 0.15083047512330508
+SERVING_MIXED_BATCH32_LATENCY_P95_S_REF: float | None = 9.937432843726128
+SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF: float | None = 1.0611365572549403
+SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF: float | None = 1.0613179872743785
+SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF: float | None = 0.2034
+SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5921
+SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF: float | None = 8.048
+SERVING_MIXED_WS_STREAM_RTF_P95_REF: float | None = 0.1258
+SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF: float | None = 681.0
+SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF: float | None = 95.0
+SERVING_MIXED_LONG_LATENCY_P95_S_REF: float | None = 10.048347671981901
+SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF: float | None = 3.52
+SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF: float | None = 211.7
 
 
 def _minimum(reference: float | None) -> float | None:
-    if reference is None:
-        return None
-    return round(reference * THRESHOLD_SLACK_HIGHER, 6)
+    return None if reference is None else round(reference * THRESHOLD_SLACK_HIGHER, 6)
 
 
 def _maximum(reference: float | None) -> float | None:
-    if reference is None:
-        return None
-    return round(reference * THRESHOLD_SLACK_LOWER, 6)
+    return None if reference is None else round(reference * THRESHOLD_SLACK_LOWER, 6)
 
 
 @dataclass(frozen=True)
@@ -88,278 +94,165 @@ class ServingRun:
     benchmark_dir: Path
     spec_path: Path
     request_timeout_s: int
+    router: ManagedRouterHandle
+    workers_before: dict
+    health_before: dict
 
 
 @dataclass(frozen=True)
 class MetricGate:
     key: str
-    source: Literal["stage", "workload", "stage_workload"]
+    workload: str
     metric: str
-    statistic: Literal["value", "min", "max", "p95"]
+    statistic: Literal["value", "min", "p95"]
     direction: Literal["min", "max"]
     threshold: float | None
-    stage: str | None = None
-    workload: str | None = None
 
 
 METRIC_GATES = (
     MetricGate(
-        "closed16.throughput_qps_min",
-        "stage",
-        "achieved_rps",
-        "value",
-        "min",
-        _minimum(SERVING_CLOSED16_THROUGHPUT_QPS_REF),
-        stage="closed-16",
-    ),
-    MetricGate(
-        "closed16.latency_p95_s_max",
-        "stage",
-        "latency_s",
-        "p95",
-        "max",
-        _maximum(SERVING_CLOSED16_LATENCY_P95_S_REF),
-        stage="closed-16",
-    ),
-    MetricGate(
-        "ramp.throughput_qps_min",
-        "stage",
-        "achieved_rps",
-        "value",
-        "min",
-        _minimum(SERVING_RAMP_THROUGHPUT_QPS_REF),
-        stage="ramp-128",
-    ),
-    MetricGate(
-        "ramp.latency_p95_s_max",
-        "stage",
-        "latency_s",
-        "p95",
-        "max",
-        _maximum(SERVING_RAMP_LATENCY_P95_S_REF),
-        stage="ramp-128",
-    ),
-    MetricGate(
-        "soak.latency_p95_s_max",
-        "stage",
-        "latency_s",
-        "p95",
-        "max",
-        _maximum(SERVING_SOAK_LATENCY_P95_S_REF),
-        stage="soak-300s",
-    ),
-    MetricGate(
         "speech_normal.latency_p95_s_max",
-        "stage_workload",
+        "speech_normal",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_SPEECH_NORMAL_LATENCY_P95_S_REF),
-        stage="soak-300s",
-        workload="speech_normal",
+        _maximum(SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "speech_normal.rtf_p95_max",
-        "stage_workload",
+        "speech_normal",
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_SPEECH_NORMAL_RTF_P95_REF),
-        stage="soak-300s",
-        workload="speech_normal",
+        _maximum(SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF),
     ),
     MetricGate(
         "rest_stream.ttfa_p95_s_max",
-        "stage_workload",
+        "rest_stream",
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_REST_STREAM_TTFA_P95_S_REF),
-        stage="soak-300s",
-        workload="rest_stream",
+        _maximum(SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.inter_chunk_p95_s_max",
-        "stage_workload",
+        "rest_stream",
         "inter_chunk_s",
         "p95",
         "max",
-        _maximum(SERVING_REST_STREAM_INTER_CHUNK_P95_S_REF),
-        stage="soak-300s",
-        workload="rest_stream",
+        _maximum(SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.latency_p95_s_max",
-        "stage_workload",
+        "rest_stream",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_REST_STREAM_LATENCY_P95_S_REF),
-        stage="soak-300s",
-        workload="rest_stream",
+        _maximum(SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "rest_stream.rtf_p95_max",
-        "stage_workload",
+        "rest_stream",
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_REST_STREAM_RTF_P95_REF),
-        stage="soak-300s",
-        workload="rest_stream",
+        _maximum(SERVING_MIXED_REST_STREAM_RTF_P95_REF),
     ),
     MetricGate(
         "batch32.latency_p95_s_max",
-        "stage_workload",
+        "batch_32_all_valid",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_BATCH32_LATENCY_P95_S_REF),
-        stage="soak-300s",
-        workload="batch_32_all_valid",
+        _maximum(SERVING_MIXED_BATCH32_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_normal.ttfa_p95_s_max",
-        "stage_workload",
+        "ws_normal",
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_WS_NORMAL_TTFA_P95_S_REF),
-        stage="ws-burst-512",
-        workload="ws_normal",
+        _maximum(SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF),
     ),
     MetricGate(
         "ws_normal.latency_p95_s_max",
-        "stage_workload",
+        "ws_normal",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_WS_NORMAL_LATENCY_P95_S_REF),
-        stage="ws-burst-512",
-        workload="ws_normal",
+        _maximum(SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.ttfa_p95_s_max",
-        "stage_workload",
+        "ws_stream_audio",
         "ttfa_s",
         "p95",
         "max",
-        _maximum(SERVING_WS_STREAM_TTFA_P95_S_REF),
-        stage="ws-burst-512",
-        workload="ws_stream_audio",
+        _maximum(SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.inter_chunk_p95_s_max",
-        "stage_workload",
+        "ws_stream_audio",
         "inter_chunk_s",
         "p95",
         "max",
-        _maximum(SERVING_WS_STREAM_INTER_CHUNK_P95_S_REF),
-        stage="ws-burst-512",
-        workload="ws_stream_audio",
+        _maximum(SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.latency_p95_s_max",
-        "stage_workload",
+        "ws_stream_audio",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_WS_STREAM_LATENCY_P95_S_REF),
-        stage="ws-burst-512",
-        workload="ws_stream_audio",
+        _maximum(SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "ws_stream.rtf_p95_max",
-        "stage_workload",
+        "ws_stream_audio",
         "rtf",
         "p95",
         "max",
-        _maximum(SERVING_WS_STREAM_RTF_P95_REF),
-        stage="ws-burst-512",
-        workload="ws_stream_audio",
-    ),
-    MetricGate(
-        "mixed_burst.throughput_qps_min",
-        "stage",
-        "achieved_rps",
-        "value",
-        "min",
-        _minimum(SERVING_MIXED_BURST_THROUGHPUT_QPS_REF),
-        stage="mixed-burst-512",
-    ),
-    MetricGate(
-        "mixed_burst.latency_p95_s_max",
-        "stage",
-        "latency_s",
-        "p95",
-        "max",
-        _maximum(SERVING_MIXED_BURST_LATENCY_P95_S_REF),
-        stage="mixed-burst-512",
+        _maximum(SERVING_MIXED_WS_STREAM_RTF_P95_REF),
     ),
     MetricGate(
         "long.prompt_tokens_min",
-        "workload",
+        "long_prefill_decode",
         "prompt_tokens",
         "min",
         "min",
-        _minimum(SERVING_LONG_PROMPT_TOKENS_MIN_REF),
-        workload="long_prefill_decode",
+        _minimum(SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF),
     ),
     MetricGate(
         "long.completion_tokens_min",
-        "workload",
+        "long_prefill_decode",
         "completion_tokens",
         "min",
         "min",
-        _minimum(SERVING_LONG_COMPLETION_TOKENS_MIN_REF),
-        workload="long_prefill_decode",
+        _minimum(SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF),
     ),
     MetricGate(
         "long.latency_p95_s_max",
-        "workload",
+        "long_prefill_decode",
         "latency_s",
         "p95",
         "max",
-        _maximum(SERVING_LONG_LATENCY_P95_S_REF),
-        workload="long_prefill_decode",
+        _maximum(SERVING_MIXED_LONG_LATENCY_P95_S_REF),
     ),
     MetricGate(
         "long.audio_duration_s_min",
-        "workload",
+        "long_prefill_decode",
         "audio_duration_s",
         "min",
         "min",
-        _minimum(SERVING_LONG_AUDIO_DURATION_MIN_S_REF),
-        workload="long_prefill_decode",
+        _minimum(SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF),
     ),
     MetricGate(
         "long.output_tok_per_req_s_min",
-        "workload",
+        "long_prefill_decode",
         "output_tok_per_req_s",
         "value",
         "min",
-        _minimum(SERVING_LONG_OUTPUT_TOK_PER_REQ_S_REF),
-        workload="long_prefill_decode",
-    ),
-    MetricGate(
-        "long_baseline.latency_s_max",
-        "stage_workload",
-        "latency_s",
-        "max",
-        "max",
-        _maximum(SERVING_LONG_BASELINE_LATENCY_MAX_S_REF),
-        stage="closed-1",
-        workload="long_prefill_decode",
-    ),
-    MetricGate(
-        "long_baseline.output_tok_per_req_s_min",
-        "stage_workload",
-        "output_tok_per_req_s",
-        "value",
-        "min",
-        _minimum(SERVING_LONG_BASELINE_OUTPUT_TOK_PER_REQ_S_REF),
-        stage="closed-1",
-        workload="long_prefill_decode",
+        _minimum(SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF),
     ),
 )
 
@@ -380,61 +273,82 @@ def _materialize_spec(run_dir: Path, base_url: str) -> Path:
 def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun]:
     import torch
 
-    if not torch.cuda.is_available():
-        pytest.skip("TTS serving CI requires CUDA")
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
+        pytest.skip("TTS serving CI requires two CUDA devices")
 
     configured_root = os.environ.get(OUTPUT_ROOT_ENV)
-    run_dir = (
-        Path(configured_root).resolve()
-        if configured_root
-        else tmp_path_factory.mktemp("tts-serving-ci")
-    )
+    if configured_root:
+        run_dir = Path(configured_root).resolve()
+        retry_attempt = os.environ.get("OMNI_CI_ATTEMPT")
+        if retry_attempt:
+            run_dir /= f"attempt-{retry_attempt}"
+    else:
+        run_dir = tmp_path_factory.mktemp("tts-serving-ci")
     benchmark_dir = run_dir / "benchmark"
     speaker_dir = tmp_path_factory.mktemp("tts-serving-speakers")
     benchmark_dir.mkdir(parents=True, exist_ok=True)
-
-    port = find_available_port()
-    base_url = f"http://127.0.0.1:{port}"
-    spec_path = _materialize_spec(run_dir, base_url)
-    request_timeout_s = load_spec(spec_path).params.timeout_s
-    server_env = {
+    worker_args = [
+        "--allowed-local-media-path",
+        str(REFERENCE_AUDIO_ROOT),
+        *shlex.split(MODEL_PRESET.worker_extra_args),
+    ]
+    process_env = {
         "PYTHONPATH": str(PROJECT_ROOT),
         "SPEAKER_SAMPLES_DIR": str(speaker_dir),
         "SPEAKER_MAX_UPLOADED": "1000",
     }
-    command = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli",
-        "serve",
-        "--model-path",
-        MODEL_PATH,
-        "--model-name",
-        MODEL_PATH,
-        "--allowed-local-media-path",
-        str(REFERENCE_AUDIO_ROOT),
-        "--port",
-        str(port),
-    ]
-    process = start_server_from_cmd(
-        command,
-        run_dir / "server.log",
-        port,
-        timeout=MODEL_PRESET.startup_timeout,
-        env=server_env,
-        tee=True,
-        strip_proxy=True,
-    )
+    router: ManagedRouterHandle | None = None
+    cleanup_error: Exception | None = None
     try:
-        yield ServingRun(
-            base_url=base_url,
-            run_dir=run_dir,
-            benchmark_dir=benchmark_dir,
-            spec_path=spec_path,
-            request_timeout_s=request_timeout_s,
-        )
+        with launch_managed_router(
+            tmp_path_factory=tmp_path_factory,
+            model_path=MODEL_PATH,
+            model_name=MODEL_PATH,
+            worker_extra_args=shlex.join(worker_args),
+            num_workers=2,
+            num_gpus_per_worker=1,
+            wait_timeout=MODEL_PRESET.startup_timeout,
+            force_log=True,
+            process_env=process_env,
+        ) as router:
+            base_url = f"http://127.0.0.1:{router.port}"
+            spec_path = _materialize_spec(run_dir, base_url)
+            request_timeout_s = load_spec(spec_path).params.timeout_s
+            yield ServingRun(
+                base_url=base_url,
+                run_dir=run_dir,
+                benchmark_dir=benchmark_dir,
+                spec_path=spec_path,
+                request_timeout_s=request_timeout_s,
+                router=router,
+                workers_before=router_get_json(router.port, "/workers"),
+                health_before=router_get_json(router.port, "/health"),
+            )
+    except Exception as exc:
+        cleanup_error = exc
+        raise
     finally:
-        stop_server(process)
+        cleanup_payload = {
+            "valid": False,
+            "router_stopped": bool(router is None or router.stopped),
+            "gpu_memory_released": False,
+            "error": None,
+        }
+        try:
+            wait_for_gpu_memory_release()
+            cleanup_payload["gpu_memory_released"] = True
+            cleanup_payload["valid"] = cleanup_payload["router_stopped"]
+        except Exception as exc:
+            cleanup_payload["error"] = f"{type(exc).__name__}: {exc}"
+            if cleanup_error is None:
+                cleanup_error = exc
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / CLEANUP_VALIDATION_FILE).write_text(
+            json.dumps(cleanup_payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise cleanup_error
 
 
 def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
@@ -448,23 +362,20 @@ def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
         str(run.benchmark_dir),
     ]
     started = time.perf_counter()
-    with (run.run_dir / "benchmark.stdout.log").open("w", encoding="utf-8") as stdout:
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=PROJECT_ROOT,
-                env={**no_proxy_env(), "PYTHONPATH": str(PROJECT_ROOT)},
-                stdout=stdout,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-                timeout=BENCHMARK_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            stdout.write(f"\nbenchmark killed after {BENCHMARK_TIMEOUT_S}s timeout\n")
-            completed = subprocess.CompletedProcess(
-                command, returncode=BENCHMARK_TIMEOUT_RETURNCODE
-            )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            env={**no_proxy_env(), "PYTHONPATH": str(PROJECT_ROOT)},
+            check=False,
+            timeout=BENCHMARK_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"benchmark killed after {BENCHMARK_TIMEOUT_S}s timeout", flush=True)
+        completed = subprocess.CompletedProcess(
+            command,
+            returncode=BENCHMARK_TIMEOUT_RETURNCODE,
+        )
     (run.run_dir / "benchmark.wall_time.json").write_text(
         json.dumps(
             {
@@ -477,21 +388,6 @@ def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
         encoding="utf-8",
     )
     return completed
-
-
-def _gate_summary(report: dict, gate: MetricGate) -> dict | None:
-    metrics = report.get("metrics", {})
-    if gate.source == "stage":
-        summary = metrics.get("by_stage", {}).get(gate.stage)
-    elif gate.source == "workload":
-        summary = metrics.get("by_workload", {}).get(gate.workload)
-    else:
-        summary = (
-            metrics.get("by_stage_and_workload", {})
-            .get(gate.stage, {})
-            .get(gate.workload)
-        )
-    return summary if isinstance(summary, dict) else None
 
 
 def _metric_value(summary: dict, gate: MetricGate) -> float | None:
@@ -509,46 +405,264 @@ def _check_performance(
     measurement_checks: MetricCheckCollector,
     threshold_checks: MetricCheckCollector,
 ) -> None:
+    summaries = (
+        report.get("metrics", {}).get("by_stage_and_workload", {}).get(MIXED_STAGE, {})
+    )
     pending = sorted(gate.key for gate in METRIC_GATES if gate.threshold is None)
     threshold_checks.check(
         not pending,
         f"serving thresholds require calibration: {pending}",
     )
-
-    for gate in METRIC_GATES:
-        summary = _gate_summary(report, gate)
-        if summary is None:
-            measurement_checks.fail(f"missing result summary for {gate.key}")
+    workload_summaries: dict[str, dict] = {}
+    for workload, expected_samples in EXPECTED_WORKLOAD_SAMPLES.items():
+        summary = summaries.get(workload)
+        if not isinstance(summary, dict):
+            measurement_checks.fail(
+                f"missing result summary for {MIXED_STAGE}/{workload}"
+            )
             continue
-
+        workload_summaries[workload] = summary
         samples = summary.get("successful_request_count")
         measurement_checks.check(
-            isinstance(samples, int) and samples > 0,
-            f"{gate.key} has no successful samples",
+            samples == expected_samples,
+            f"{MIXED_STAGE}/{workload} successful samples={samples!r}, "
+            f"expected={expected_samples}",
         )
-        if gate.metric != "achieved_rps":
-            metric_samples = summary.get("metric_sample_counts", {}).get(gate.metric)
-            measurement_checks.check(
-                metric_samples == samples,
-                f"{gate.key} metric samples={metric_samples!r}, "
-                f"successful samples={samples!r}",
-            )
 
+    for gate in METRIC_GATES:
+        summary = workload_summaries.get(gate.workload)
+        if summary is None:
+            continue
+        expected_samples = EXPECTED_WORKLOAD_SAMPLES[gate.workload]
+        metric_samples = summary.get("metric_sample_counts", {}).get(gate.metric)
+        measurement_checks.check(
+            metric_samples == expected_samples,
+            f"{gate.key} metric samples={metric_samples!r}, "
+            f"expected={expected_samples}",
+        )
         value = _metric_value(summary, gate)
         measurement_checks.check(value is not None, f"{gate.key} is missing")
-        threshold = gate.threshold
-        if value is None or threshold is None:
+        if value is None or gate.threshold is None:
             continue
         if gate.direction == "min":
             threshold_checks.check(
-                value >= threshold,
-                f"{gate.key}={value} < {threshold}",
+                value >= gate.threshold,
+                f"{gate.key}={value} < {gate.threshold}",
             )
         else:
             threshold_checks.check(
-                value <= threshold,
-                f"{gate.key}={value} > {threshold}",
+                value <= gate.threshold,
+                f"{gate.key}={value} > {gate.threshold}",
             )
+
+
+def _worker_deltas(before: dict, after: dict) -> list[dict]:
+    before_by_id = {worker["worker_id"]: worker for worker in before["workers"]}
+    deltas: list[dict] = []
+    for worker in after["workers"]:
+        baseline = before_by_id.get(worker["worker_id"], {})
+        classes = {
+            key: int(value)
+            - int(baseline.get("routed_requests_by_class", {}).get(key, 0))
+            for key, value in worker.get("routed_requests_by_class", {}).items()
+        }
+        deltas.append(
+            {
+                "worker_id": worker["worker_id"],
+                "routed": int(worker.get("routed_requests", 0))
+                - int(baseline.get("routed_requests", 0)),
+                "classes": classes,
+                "healthy": worker.get("health_state") == "healthy",
+                "routable": worker.get("routable") is True,
+            }
+        )
+    return deltas
+
+
+def _mixed_worker_counts(
+    run: ServingRun,
+    workers_after: dict,
+) -> dict[str, int]:
+    worker_aliases = {
+        alias: worker["worker_id"]
+        for worker in workers_after["workers"]
+        for alias in (worker["worker_id"], worker["display_id"])
+    }
+    worker_counts = {worker["worker_id"]: 0 for worker in workers_after["workers"]}
+    events_path = run.benchmark_dir / "raw" / "events.jsonl"
+    results = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    mixed_results = [
+        result
+        for result in results
+        if result.get("stage_id") == MIXED_STAGE and result.get("workload") is not None
+    ]
+    expected_sample_count = sum(EXPECTED_WORKLOAD_SAMPLES.values())
+    assert (
+        len(mixed_results) == expected_sample_count
+    ), f"expected {expected_sample_count} mixed results, got {len(mixed_results)}"
+    scenario_ids = [result["scenario_id"] for result in mixed_results]
+    assert all(
+        isinstance(scenario_id, str) for scenario_id in scenario_ids
+    ), "mixed results contain an invalid scenario ID"
+    assert len(set(scenario_ids)) == len(
+        scenario_ids
+    ), "mixed results contain duplicate scenario IDs"
+
+    websocket_scenario_ids = {
+        result["scenario_id"]
+        for result in mixed_results
+        if result["endpoint"] == "websocket"
+    }
+    assert run.router.log_file is not None, "router log is unavailable"
+    websocket_workers: dict[str, str] = {}
+    for line in run.router.log_file.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines():
+        match = WEBSOCKET_COMPLETION_RE.search(line)
+        if match is None or match.group(1) not in websocket_scenario_ids:
+            continue
+        scenario_id, worker_alias = match.groups()
+        assert (
+            scenario_id not in websocket_workers
+        ), f"WebSocket scenario {scenario_id!r} has multiple completions"
+        assert (
+            worker_alias in worker_aliases
+        ), f"WebSocket scenario {scenario_id!r} names unknown worker {worker_alias!r}"
+        websocket_workers[scenario_id] = worker_aliases[worker_alias]
+
+    for result in mixed_results:
+        scenario_id = result["scenario_id"]
+        assert result["workload"] in EXPECTED_WORKLOAD_SAMPLES, (
+            f"mixed scenario {scenario_id!r} has unexpected workload "
+            f"{result['workload']!r}"
+        )
+        assert (
+            result["expected_success"] is True and result["success"] is True
+        ), f"mixed scenario {scenario_id!r} did not pass"
+        endpoint = result["endpoint"]
+        if endpoint == "websocket":
+            assert (
+                scenario_id in websocket_workers
+            ), f"WebSocket scenario {scenario_id!r} has no completion"
+            worker_id = websocket_workers[scenario_id]
+        elif endpoint in {"speech", "speech_stream", "batch"}:
+            headers = result["response_headers"]
+            assert isinstance(
+                headers, dict
+            ), f"mixed scenario {scenario_id!r} has invalid response headers"
+            worker_headers = [
+                value
+                for key, value in headers.items()
+                if key.lower() == WORKER_RESPONSE_HEADER
+            ]
+            assert (
+                len(worker_headers) == 1
+            ), f"mixed scenario {scenario_id!r} has no unique worker header"
+            worker_id = worker_headers[0]
+        else:
+            raise AssertionError(
+                f"mixed scenario {scenario_id!r} has unexpected endpoint {endpoint!r}"
+            )
+        assert (
+            worker_id in worker_counts
+        ), f"mixed scenario {scenario_id!r} names unknown worker {worker_id!r}"
+        worker_counts[worker_id] += 1
+
+    return worker_counts
+
+
+def _check_router(
+    run: ServingRun,
+    checks: MetricCheckCollector,
+) -> None:
+    try:
+        workers_after = router_get_json(run.router.port, "/workers")
+        health_after = router_get_json(run.router.port, "/health")
+    except Exception as exc:
+        checks.fail(f"router state probe failed: {exc}")
+        return
+    deltas = _worker_deltas(run.workers_before, workers_after)
+    try:
+        mixed_counts = _mixed_worker_counts(run, workers_after)
+    except (AssertionError, KeyError, json.JSONDecodeError, OSError) as exc:
+        checks.fail(f"mixed workload attribution failed: {exc}")
+        mixed_attribution = {"valid": False, "error": str(exc)}
+    else:
+        mixed_attribution = {
+            "valid": True,
+            "total_samples": sum(mixed_counts.values()),
+            "by_worker": mixed_counts,
+        }
+    (run.run_dir / "router_validation.json").write_text(
+        json.dumps(
+            {
+                "workers_before": run.workers_before,
+                "workers_after": workers_after,
+                "health_before": run.health_before,
+                "health_after": health_after,
+                "worker_deltas": deltas,
+                "mixed_workload_attribution": mixed_attribution,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    checks.check(len(deltas) == 2, f"expected two router workers: {deltas}")
+    checks.check(
+        all(item["healthy"] and item["routable"] for item in deltas),
+        f"router workers did not remain healthy and routable: {deltas}",
+    )
+    if mixed_attribution["valid"]:
+        worker_counts = list(mixed_attribution["by_worker"].values())
+        checks.check(
+            all(count > 0 for count in worker_counts),
+            f"both workers must serve mixed production traffic: {worker_counts}",
+        )
+    minimum_class_requests = {
+        "speech_http": (
+            EXPECTED_WORKLOAD_SAMPLES["speech_normal"]
+            + EXPECTED_WORKLOAD_SAMPLES["rest_stream"]
+            + EXPECTED_WORKLOAD_SAMPLES["long_prefill_decode"]
+        ),
+        "speech_batch": EXPECTED_WORKLOAD_SAMPLES["batch_32_all_valid"],
+        "tts_websocket": (
+            EXPECTED_WORKLOAD_SAMPLES["ws_normal"]
+            + EXPECTED_WORKLOAD_SAMPLES["ws_stream_audio"]
+        ),
+    }
+    for service_class, minimum_requests in minimum_class_requests.items():
+        class_counts = [item["classes"].get(service_class, 0) for item in deltas]
+        class_total = sum(class_counts)
+        checks.check(
+            class_total >= minimum_requests,
+            f"router served {class_total} {service_class} "
+            f"requests; expected at least {minimum_requests}",
+        )
+    voice_counts = {
+        item["worker_id"]: item["classes"].get("voice_control", 0) for item in deltas
+    }
+    owner_worker_id = run.workers_before["workers"][0]["worker_id"]
+    checks.check(
+        voice_counts.get(owner_worker_id, 0) > 0
+        and all(
+            count == 0
+            for worker_id, count in voice_counts.items()
+            if worker_id != owner_worker_id
+        ),
+        f"voice control did not remain on the exact owner: {voice_counts}",
+    )
+    rejected_delta = int(
+        health_after.get("admission", {}).get("rejected_total", 0)
+    ) - int(run.health_before.get("admission", {}).get("rejected_total", 0))
+    checks.check(
+        rejected_delta == 0,
+        f"router rejected valid scheduled traffic: delta={rejected_delta}",
+    )
 
 
 def _get_json(url: str, timeout_s: int) -> dict:
@@ -594,7 +708,8 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
 
     results_path = serving_run.benchmark_dir / "results.json"
     benchmark_checks.check(
-        results_path.is_file(), f"missing benchmark report: {results_path}"
+        results_path.is_file(),
+        f"missing benchmark report: {results_path}",
     )
     if results_path.is_file():
         try:
@@ -604,40 +719,71 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
         else:
             overall = report.get("overall", {})
             metrics = report.get("metrics", {})
+            mixed = metrics.get("mixed_arrival", {}).get(MIXED_STAGE, {})
             benchmark_checks.check(
-                report.get("harness_status") == "ok", "benchmark harness failed"
+                report.get("harness_status") == "ok",
+                "benchmark harness failed",
             )
             benchmark_checks.check(
-                overall.get("passed") is True, "benchmark did not pass"
+                report.get("schema_version") == 4,
+                "unexpected benchmark report schema",
             )
             benchmark_checks.check(
-                overall.get("failed") == 0, "benchmark contains failures"
+                overall.get("passed") is True,
+                "benchmark did not pass",
             )
             benchmark_checks.check(
-                overall.get("load_generation_valid") is True,
-                "load generation was invalid",
+                overall.get("failed") == 0,
+                "benchmark contains failures",
             )
-            benchmark_checks.check(
-                overall.get("coverage_contract_valid") is True,
-                "benchmark coverage was incomplete",
-            )
-            benchmark_checks.check(
-                not report.get("failures"), "scenario failures were reported"
-            )
-            benchmark_checks.check(
-                not report.get("unsupported_contracts"),
-                "unsupported contracts were reported",
-            )
-            benchmark_checks.check(
-                not report.get("coverage_failures"),
-                "coverage failures were reported",
-            )
+            for key in (
+                "load_generation_valid",
+                "coverage_contract_valid",
+                "mixed_arrival_valid",
+            ):
+                benchmark_checks.check(
+                    overall.get(key) is True,
+                    f"{key} is false",
+                )
+            for key in (
+                "failures",
+                "unsupported_contracts",
+                "coverage_failures",
+                "mixed_arrival_failures",
+            ):
+                benchmark_checks.check(
+                    not report.get(key),
+                    f"{key} were reported",
+                )
             benchmark_checks.check(
                 not metrics.get("admission_status_counts"),
-                "admission failures were reported",
+                "benchmark admission failures were reported",
+            )
+            benchmark_checks.check(
+                mixed.get("configured_collision_epoch_count")
+                == EXPECTED_COLLISION_EPOCHS,
+                "configured collision epoch count changed",
+            )
+            benchmark_checks.check(
+                mixed.get("observed_collision_epoch_count")
+                == EXPECTED_COLLISION_EPOCHS,
+                "not every collision epoch was observed",
+            )
+            benchmark_checks.check(
+                mixed.get("coverage_request_count") == EXPECTED_COVERAGE_REQUESTS,
+                "scheduled coverage population changed",
+            )
+            benchmark_checks.check(
+                mixed.get("coverage_passed_count") == EXPECTED_COVERAGE_REQUESTS,
+                "scheduled coverage traffic did not pass",
+            )
+            benchmark_checks.check(
+                mixed.get("expected_error_request_count") == EXPECTED_COVERAGE_ERRORS,
+                "scheduled expected-error population changed",
             )
             _check_performance(report, measurement_checks, threshold_checks)
 
+    _check_router(serving_run, benchmark_checks)
     try:
         health = _get_json(
             f"{serving_run.base_url}/health",
@@ -647,8 +793,8 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
         benchmark_checks.fail(f"post-benchmark health probe failed: {exc}")
     else:
         benchmark_checks.check(
-            str(health.get("status", "")).lower() == "healthy",
-            f"server is unhealthy after benchmark: {health}",
+            str(health.get("status", "")).lower() in {"healthy", "ok"},
+            f"router is unhealthy after benchmark: {health}",
         )
 
     try:
@@ -677,6 +823,8 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
         measurement_checks,
         threshold_checks,
     )
+    if benchmark_checks.failures or measurement_checks.failures:
+        print_router_diagnostics(serving_run.router)
     benchmark_checks.assert_all()
     measurement_checks.assert_all()
     threshold_checks.assert_all()

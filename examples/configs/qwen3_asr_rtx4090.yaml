@@ -1,0 +1,15 @@
+# Conservative single-GPU profile validated on one RTX 4090 (SM89, 24 GB).
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-rtx4090
+model_path: Qwen/Qwen3-ASR-1.7B
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 16
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.65

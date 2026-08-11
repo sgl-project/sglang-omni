@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-omni"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # Core dependencies
     "pyzmq>=25.0.0",          # ZMQ messaging for control plane
@@ -66,12 +67,12 @@ dependencies = [
     "tiktoken",
     "hydra-core",
     "omegaconf",
-    "descript-audiotools",
-    "descript-audio-codec==1.0.0",
     "torchaudio==2.11.0",
     "torchcodec==0.11.1",     # Matches torch 2.11.x / sglang 0.5.16
     # Gradio playground
     "gradio>=4.0.0",
+    # dots.tts model operators; serving/runtime stays owned by sglang-omni
+    "dots.tts==0.2.1",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
     "x-transformers",          # Ming talker rotary embeddings
@@ -88,6 +89,11 @@ audar-tts = [
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
+
+[project.urls]
+Documentation = "https://sgl-project.github.io/sglang-omni/"
+Issues = "https://github.com/sgl-project/sglang-omni/issues"
+Repository = "https://github.com/sgl-project/sglang-omni"
 
 [tool.uv]
 override-dependencies = [
@@ -106,7 +112,11 @@ markers = [
 where = ["."]
 include = ["sglang_omni*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
+
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

@@ -4,6 +4,8 @@
 # Always exits 0 only when validate_omni_env_reusable passes.
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <venv-name>" >&2
   exit 1
@@ -31,7 +33,7 @@ _link_workspace_venv() {
 
 _refresh_editable_install() {
   _link_workspace_venv
-  uv pip install --upgrade -e .
+  uv pip install --upgrade --no-deps -e .
 }
 
 _record_deps_hash_if_missing() {
