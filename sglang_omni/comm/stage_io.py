@@ -328,6 +328,7 @@ async def read_payload(
     relay: Relay,
     request_id: str,
     data_ref: DataRef,
+    local_device: str | None = None,
 ) -> StagePayload:
     if data_ref.kind is not DataKind.STAGE_PAYLOAD:
         raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
@@ -341,6 +342,7 @@ async def read_payload(
             .view(_torch_dtype(entry.dtype))
             .reshape(entry.shape),
             entry.device,
+            local_device,
         )
         for entry in data_ref.tensors
     }
@@ -367,6 +369,7 @@ async def write_tensor(
         raise TypeError(
             f"write_tensor requires torch.Tensor, got {type(tensor).__name__}"
         )
+    source_device = str(tensor.device)
     packed = tensor.contiguous().view(torch.uint8).reshape(-1)
     target_device = torch.device(relay_device(relay))
     if packed.device != target_device:
@@ -394,6 +397,7 @@ async def write_tensor(
             ),
             shape=tuple(int(dim) for dim in tensor.shape),
             dtype=str(tensor.dtype),
+            device=source_device,
             offset=offset,
         ),
         op,
@@ -457,14 +461,19 @@ async def write_stream_chunk(
 async def read_stream_chunk(
     relay: Relay,
     data_ref: DataRef,
+    local_device: str | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any] | None]:
     data = await read_tensor(relay, data_ref)
+    if data_ref.device is not None:
+        data = _restore_tensor_device(data, data_ref.device, local_device)
     metadata = dict(data_ref.metadata or {})
     if data_ref.metadata_tensors:
-        tensors = {
-            ref.path: await read_tensor(relay, ref.ref)
-            for ref in data_ref.metadata_tensors
-        }
+        tensors = {}
+        for ref in data_ref.metadata_tensors:
+            tensor = await read_tensor(relay, ref.ref)
+            if ref.ref.device is not None:
+                tensor = _restore_tensor_device(tensor, ref.ref.device, local_device)
+            tensors[ref.path] = tensor
         metadata = restore_tensors(metadata, tensors)
     return data, metadata or None
 
@@ -526,6 +535,7 @@ async def _with_stream_metadata(
         buffer=data_ref.buffer,
         shape=data_ref.shape,
         dtype=data_ref.dtype,
+        device=data_ref.device,
         offset=data_ref.offset,
         metadata=metadata_without_tensors,
         metadata_tensors=tuple(tensor_refs),
@@ -598,10 +608,23 @@ def _torch_dtype(dtype_str: str) -> torch.dtype:
     return dtype
 
 
-def _restore_tensor_device(tensor: torch.Tensor, device: str) -> torch.Tensor:
+def _restore_tensor_device(
+    tensor: torch.Tensor,
+    device: str,
+    local_device: str | None = None,
+) -> torch.Tensor:
+    """Put a received tensor back on the device its consumer expects.
+
+    An accelerator-origin tensor relayed over host shm arrives on the CPU, so it goes
+    to the receiver's own card, never the sender's index. A host-only stage keeps it.
+    """
     if torch.device(device).type == "cpu":
         return tensor.cpu()
-    return tensor
+    if tensor.device.type == torch.device(device).type:
+        return tensor
+    if local_device is None:
+        return tensor
+    return tensor.to(local_device)
 
 
 def _contains_cuda_tensor(obj: Any, seen: set[int] | None = None) -> bool:

@@ -15,9 +15,6 @@ class FakeExecutionBridge:
 
         self.published: list[tuple[object, object]] = []
         self.isolate_sampling_calls: list[bool] = []
-        # Mirror the real bridge: hold a device and take Event from its module, so
-        # the double works on any backend (a CUDA-only torch.cuda.Event raises on
-        # an +xpu build, and torch.cpu.Event is a working event too).
         self.device = (
             torch.device(device) if device is not None else torch.device("cpu")
         )

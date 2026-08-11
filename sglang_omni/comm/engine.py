@@ -28,6 +28,7 @@ from sglang_omni.comm.kv_transfer import (
 )
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import PullSocket, PushSocket, send_to_endpoint
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
@@ -231,6 +232,13 @@ class CommEngine:
         )
         return await ready
 
+    @property
+    def local_payload_device(self) -> str | None:
+        """This stage's own accelerator, or None for a host-only stage."""
+        if self.router.gpu_id is None:
+            return None
+        return f"{current_platform.device_type}:{self.router.gpu_id}"
+
     async def read_payload(
         self,
         *,
@@ -238,7 +246,9 @@ class CommEngine:
         request_id: str,
         data_ref: DataRef,
     ) -> StagePayload:
-        return await stage_io.read_payload(relay, request_id, data_ref)
+        return await stage_io.read_payload(
+            relay, request_id, data_ref, self.local_payload_device
+        )
 
     async def read_data(
         self,
@@ -324,7 +334,9 @@ class CommEngine:
         relay: Relay,
         data_ref: DataRef,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
-        return await stage_io.read_stream_chunk(relay, data_ref)
+        return await stage_io.read_stream_chunk(
+            relay, data_ref, self.local_payload_device
+        )
 
     def register_kv_pool(self, pool: KVPool) -> None:
         self._kv_pools[pool.pool_id] = pool

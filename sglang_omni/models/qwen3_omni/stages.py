@@ -787,13 +787,13 @@ def create_aggregate_executor():
 def create_image_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda",
+    device: str | None = None,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import remap_accelerator_spec
+    from sglang_omni.utils.device import resolve_device_spec
 
-    device = remap_accelerator_spec(device)
+    device = resolve_device_spec(device)
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
@@ -861,13 +861,13 @@ def create_image_encoder_executor(
 def create_audio_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda",
+    device: str | None = None,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import remap_accelerator_spec
+    from sglang_omni.utils.device import resolve_device_spec
 
-    device = remap_accelerator_spec(device)
+    device = resolve_device_spec(device)
     model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,

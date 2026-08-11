@@ -7,7 +7,6 @@ pass, sampling, logit post-processing, and output extraction.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -26,8 +25,6 @@ from sglang_omni.scheduling.types import (
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -286,7 +283,7 @@ class ModelRunner:
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
         ``post_decode_launch`` to publish a model-specific resolve payload
-        (returned as ``launch_buf``), and record a device event right after
+        (returned as launch_buf), and record a device event right after
         publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
@@ -394,7 +391,8 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        current_platform.set_device(self.device)
+        if self.device.type != "cpu":
+            torch.get_device_module(self.device).set_device(self.device.index or 0)
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:

@@ -1,6 +1,8 @@
 [build-system]
-# >=64 for PEP 660: the editable install paths need build_editable.
-requires = ["setuptools>=64"]
+# >=77 for the PEP 639 license fields below, which 76.1 and older reject; that also
+# covers the PEP 660 build_editable an editable install needs. Installs here pass
+# --no-build-isolation, so pip never enforces this -- scripts/xpu/install_xpu.sh does.
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 # Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
@@ -10,15 +12,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-omni"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Multi-stage pipeline framework for omni models (Intel XPU build)"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # --- Core framework (device-agnostic) ----------------------------------
     "pyzmq>=25.0.0",
     "msgpack>=1.0.0",
+    "msgspec",
     "numpy>=1.24.0",
     "pydantic>=2.0.0",
     "PyYAML>=6.0",
@@ -95,6 +99,9 @@ markers = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sglang_omni*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
 
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]

@@ -47,7 +47,7 @@ class SGLangGenerationEngineBuilder(ABC):
         self,
         model_path: str,
         *,
-        device: str = "cuda:0",
+        device: str | None = None,
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
         server_args_overrides: dict[str, Any] | None = None,
@@ -56,12 +56,14 @@ class SGLangGenerationEngineBuilder(ABC):
 
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
-        from sglang_omni.utils.device import remap_accelerator_spec
+        from sglang_omni.utils.device import place_device_spec, resolve_device_spec
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        # Retarget the literal "cuda:0" default at the live backend; gpu_id wins
-        # when given, else device's own index is kept.
-        device = remap_accelerator_spec(device, gpu_id)
+        device = (
+            resolve_device_spec(None, gpu_id)
+            if device is None
+            else place_device_spec(device, gpu_id)
+        )
         gpu_id = torch.device(device).index or 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
@@ -78,6 +80,17 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        # Left unset, SGLang re-detects off a CUDA-first ladder that can contradict
+        # placement. It owns the type, not the index.
+        resolved_type = torch.device(device).type
+        requested_type = overrides.get("device")
+        if requested_type is not None and requested_type != resolved_type:
+            raise ValueError(
+                f"server_args_overrides set device={requested_type!r}, but this stage "
+                f"resolved to {device!r}. Omni owns placement, so drop the override or "
+                f"set device={resolved_type!r}."
+            )
+        overrides["device"] = resolved_type
 
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,

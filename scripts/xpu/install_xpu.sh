@@ -66,14 +66,68 @@ PY
 # with build isolation, pip spins up an isolated build env whose fallback
 # setuptools emits a legacy in-tree egg-info instead of a PEP 660 editable .pth
 # — the package then isn't importable outside the repo and no sgl-omni console
-# script is created. Without isolation it uses this env's setuptools, so an
-# editable install needs PEP 660 support (setuptools>=64) here; check up front
-# rather than silently producing the legacy layout.
-if [[ -n "${EDITABLE}" ]]; then
-    "${PYBIN}" -c "import setuptools.build_meta as m, setuptools, sys; sys.exit(None if hasattr(m, 'build_editable') else f'setuptools {setuptools.__version__} lacks PEP 660 support; an editable install would emit a legacy egg-info. Upgrade setuptools to 64 or newer, or pass --no-editable.')" || exit 1
-fi
+# script is created. Without isolation the build uses this env's setuptools, so the
+# build requirement in pyproject_xpu.toml is never enforced by pip -- check it here
+# instead of failing later in metadata generation.
+"${PYBIN}" - <<'PY' || exit 1
+import sys
+
+import setuptools
+import setuptools.build_meta
+
+version = tuple(
+    int("".join(char for char in part if char.isdigit()) or 0)
+    for part in setuptools.__version__.split(".")[:2]
+)
+if version < (77, 0):
+    sys.exit(
+        f"setuptools {setuptools.__version__} is too old: pyproject_xpu.toml uses "
+        "the PEP 639 license fields, which 76.1 and older reject with 'invalid "
+        "pyproject.toml config: `project.license`'. --no-build-isolation means pip "
+        "will not upgrade it for you, so run: pip install -U 'setuptools>=77.0.0'"
+    )
+if not hasattr(setuptools.build_meta, "build_editable"):
+    sys.exit(
+        f"setuptools {setuptools.__version__} lacks PEP 660 support; an editable "
+        "install would emit a legacy egg-info."
+    )
+PY
 NOISO="--no-build-isolation"
 INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
+
+# Serialize the whole backup/swap/restore section. Without this the leftover-backup
+# check below is a TOCTOU guard: two runs both pass it, then the second overwrites the
+# first's backup after the swap and the original manifest is gone. The lock lives on a
+# file descriptor, so the kernel drops it even if this process is killed.
+LOCK="${REPO_ROOT}/.pyproject.xpu.lock"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ERROR: flock is required to serialize the pyproject swap" >&2
+  exit 1
+fi
+exec 9>"${LOCK}" || { echo "ERROR: cannot open lock ${LOCK}" >&2; exit 1; }
+if ! flock -n 9; then
+  echo "ERROR: another ${0##*/} holds ${LOCK}; wait for it to finish" >&2
+  exit 1
+fi
+
+# A leftover backup means a previous run died after the swap (SIGKILL, OOM, power
+# loss -- INT/TERM are trapped below). pyproject.toml is then the XPU manifest and
+# this backup holds the only copy of the original, so the cp below would destroy it.
+# Refuse instead, and hand back the recovery step. Checked before the trap is armed
+# so exiting here cannot itself touch either file.
+if [[ -e "${BACKUP}" ]]; then
+  {
+    echo "ERROR: leftover backup found: ${BACKUP}"
+    echo
+    echo "A previous run was interrupted after swapping pyproject.toml, so that"
+    echo "backup is the only copy of your original manifest. Restore it first:"
+    echo
+    echo "  cp ${BACKUP} ${PYPROJECT} && rm ${BACKUP}"
+    echo
+    echo "Then re-run this script."
+  } >&2
+  exit 1
+fi
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo

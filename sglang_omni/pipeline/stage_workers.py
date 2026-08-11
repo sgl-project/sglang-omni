@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
-
 from __future__ import annotations
 
 import asyncio
@@ -375,7 +374,7 @@ def stage_process_main(
 
     try:
         for stage_spec in spec.stage_specs:
-            _prepare_cuda_environment(stage_spec, log)
+            _prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
@@ -791,37 +790,20 @@ def _construct_scheduler(
         return factory(**factory_args)
 
 
-def _prepare_cuda_environment(
+def _prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
 ) -> None:
     """Map TP rank processes to their accelerator before torch init.
 
-    CUDA isolates each rank via CUDA_VISIBLE_DEVICES + local gpu_id=0 (set_device
-    alone would not hide peer cards). On XPU that isolation hides peers and hangs
-    XCCL discovery, so keep all cards visible and address them by gpu_id instead.
+    Which variables to set is platform policy; this only applies whatever the platform
+    returns, and normalizes gpu_id only when the platform narrowed the process to a
+    single visible device.
     """
-    if spec.tp_size > 1 and current_platform.device_type == "xpu":
-        # Clear inherited ZE_AFFINITY_MASK so all cards stay visible for XCCL.
-        inherited_mask = os.environ.pop("ZE_AFFINITY_MASK", None)
-        if inherited_mask is not None:
-            log.warning(
-                "TP stage %s rank %d: cleared inherited ZE_AFFINITY_MASK=%s "
-                "(XPU TP needs all cards visible for XCCL discovery)",
-                spec.stage_name,
-                spec.tp_rank,
-                inherited_mask,
-            )
-        log.info(
-            "TP stage %s rank %d: XPU keeps all cards visible, using gpu_id=%s "
-            "(no ZE_AFFINITY_MASK isolation, so XCCL can reach peers)",
-            spec.stage_name,
-            spec.tp_rank,
-            spec.gpu_id,
-        )
-        return
-
-    if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
+    if (
+        current_platform.is_cuda_alike()
+        and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
+    ):
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
@@ -836,9 +818,18 @@ def _prepare_cuda_environment(
     if not env_updates:
         return
 
-    mapped_gpu = env_updates["CUDA_VISIBLE_DEVICES"]
     for key, value in env_updates.items():
         os.environ[key] = value
+
+    mapped_gpu = env_updates.get("CUDA_VISIBLE_DEVICES")
+    if mapped_gpu is None:
+        log.info(
+            "TP stage %s rank %d keeps every card visible, using gpu_id=%s",
+            spec.stage_name,
+            spec.tp_rank,
+            spec.gpu_id,
+        )
+        return
 
     _normalize_spec_gpu_id_to_local_device(spec)
     log.info(

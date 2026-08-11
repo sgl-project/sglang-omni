@@ -3493,7 +3493,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
-        device="cuda:0",
+        device=None,
         server_args_overrides={
             "cuda_graph_max_bs": 64,
             "torch_compile_max_bs": 64,

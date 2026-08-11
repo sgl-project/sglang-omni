@@ -29,8 +29,6 @@ from sglang_omni.scheduling.types import (
 )
 from tests.unit_test.fakes import FakeExecutionBridge
 
-# The stub runner's device; the event patch below derives its target module from
-# this same value, so the two cannot drift apart.
 _STUB_DEVICE = torch.device("cpu")
 
 
@@ -38,7 +36,6 @@ class _StubRunner(ModelRunner):
     """ModelRunner with mocked sub-steps; exercises only execute_launch/resolve."""
 
     def __init__(self):
-        # Real runners set .device in ModelRunner.__init__, which this stub skips.
         self.device = _STUB_DEVICE
         self._async_enabled = True
         self._execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
@@ -112,8 +109,6 @@ def _patch_event(ready: bool):
         def synchronize(self):
             self.synced = True
 
-    # The bridge builds the event via torch.get_device_module(device).Event(), so
-    # patch Event on the module that lookup returns for the runner's device.
     return mock.patch.object(torch.get_device_module(_STUB_DEVICE), "Event", _FakeEvent)
 
 

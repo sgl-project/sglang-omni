@@ -70,7 +70,6 @@ def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:
 @pytest.mark.parametrize(
     ("argument", "expected_index"),
     [
-        # stage_workers passes a bare int; the rest come from get_device().
         (2, 2),
         (torch.device("xpu", 3), 3),
         (torch.device("xpu", 0), 0),  # index 0 must not read as "no index"
@@ -95,28 +94,21 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     assert seen == [expected_index]
 
 
-@pytest.mark.parametrize(
-    "broken",
-    [
-        pytest.param(None, id="torch_has_no_xpu_attribute"),
-        pytest.param(RuntimeError("Level Zero init failed"), id="driver_probe_raises"),
-    ],
-)
-def test_xpu_probe_never_breaks_platform_resolution(monkeypatch, broken) -> None:
-    """A misconfigured runtime must resolve to "not available", not propagate.
-
-    This probe runs at import time, so anything it raises would stop
-    sglang_omni.platforms from importing at all.
-    """
-    if broken is None:
-        monkeypatch.delattr(platforms.torch, "xpu", raising=False)
-    else:
-
-        def raise_it() -> bool:
-            raise broken
-
-        monkeypatch.setattr(
-            platforms.torch, "xpu", SimpleNamespace(is_available=raise_it)
-        )
+def test_xpu_probe_treats_a_missing_torch_xpu_as_unavailable(monkeypatch) -> None:
+    monkeypatch.delattr(platforms.torch, "xpu", raising=False)
 
     assert platforms._is_xpu_available() is False
+
+
+def test_xpu_probe_surfaces_a_driver_initialization_failure(monkeypatch) -> None:
+    """Swallowing it would resolve to the base path and fail later, cause lost."""
+
+    def raise_driver_error() -> bool:
+        raise RuntimeError("Level Zero init failed")
+
+    monkeypatch.setattr(
+        platforms.torch, "xpu", SimpleNamespace(is_available=raise_driver_error)
+    )
+
+    with pytest.raises(RuntimeError, match="Level Zero init failed"):
+        platforms._is_xpu_available()

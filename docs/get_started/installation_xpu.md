@@ -2,7 +2,7 @@
 
 Installs `sglang-omni` for **Intel GPUs (XPU)**. The default
 [installation](./installation.md) pins CUDA-only wheels and would clobber a `torch+xpu` stack.
-Mirroring upstream SGLang ([Intel XPU docs](https://docs.sglang.io/platforms/intel_xpu.html),
+Mirroring upstream SGLang ([Intel XPU docs](https://docs.sglang.io/docs/hardware-platforms/xpu),
 `docker/xpu.Dockerfile`), the XPU path uses a **separate `pyproject_xpu.toml`** plus the PyTorch
 XPU wheel index.
 
@@ -18,10 +18,16 @@ Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API serve
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
+> Because of that pip does not install build requirements either, so this
+> environment's own `setuptools` must be **≥ 77.0.0**: older releases reject the
+> PEP 639 license metadata with ``invalid pyproject.toml config: `project.license` ``.
+> The installer checks this before building; upgrade with
+> `pip install -U 'setuptools>=77.0.0'`.
 
 ## Prerequisites
 
 - Python ≥ 3.10, and an Intel GPU driver (`/dev/dri/renderD*` present).
+- `setuptools` ≥ 77.0.0 in the target environment (see the note above).
 - The **PyTorch XPU stack** and an **XPU SGLang build** — reuse an existing working
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
@@ -35,6 +41,16 @@ docker run -it --device /dev/dri --shm-size 32g --ipc host --network host sglang
 
 Built on Intel Deep Learning Essentials with the `+xpu` torch wheels. It deliberately does **not**
 source oneAPI — see [Runtime environment](#runtime-environment-important).
+
+Pinning SGLang does not pin the SYCL kernels: its XPU manifest requires `sgl-kernel-xpu`
+from git with no revision. The Dockerfile therefore pins that commit itself, so rebuilds
+are reproducible by default. Override it only to move deliberately:
+
+```bash
+docker build -f docker/xpu.Dockerfile \
+  --build-arg SGL_KERNEL_XPU_REF=<sgl-kernel-xpu commit sha> \
+  -t sglang-omni:xpu .
+```
 
 ## 🛠️ Option B: Install into an existing XPU env (recommended here)
 
@@ -122,6 +138,19 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
 ```
 
 ### Qwen3-TTS (text-to-speech, single XPU)
+
+Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
+Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
+`--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
+would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
+`numba==0.65.1` ceiling. See
+[docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
+
+```bash
+apt-get update && apt-get install -y sox   # the Python sox package shells out to it
+pip install --no-deps sox einops
+pip install --no-deps qwen-tts==0.1.1
+```
 
 ```bash
 sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000

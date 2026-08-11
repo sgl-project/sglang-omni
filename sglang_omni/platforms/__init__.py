@@ -22,9 +22,10 @@ def _is_npu_available() -> bool:
 
 def _is_xpu_available() -> bool:
     try:
-        return bool(torch.xpu.is_available())
-    except Exception:  # noqa: BLE001 - a probe must not break platform resolution
+        xpu = torch.xpu
+    except AttributeError:
         return False
+    return bool(xpu.is_available())
 
 
 def _load_platform_class(qualname: str) -> type[OmniPlatform]:

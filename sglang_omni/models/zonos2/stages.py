@@ -254,6 +254,9 @@ def create_sglang_omni_tts_engine_executor(
         mem_fraction_static=mem_fraction_static,
     ).build(
         model_path,
+        # CUDA-only model: keep the pre-existing device rather than resolving through
+        # the ambient platform.
+        device="cuda:0",
         gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,

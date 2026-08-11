@@ -29,6 +29,7 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -267,8 +268,6 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         with torch.no_grad():
-            # A cpu-resident code2wav has no per-device context to bind, and
-            # torch.cpu.set_device is only incidentally a tolerant no-op.
             if self._device.type != "cpu":
                 torch.get_device_module(self._device).set_device(self._device)
             if self._cuda_graph_runner is None:
@@ -514,7 +513,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 def create_code2wav_scheduler(
     model_path: str,
     *,
-    device: str = "cuda",
+    device: str | None = None,
     dtype: str | None = None,
     gpu_id: int | None = None,
     stream_chunk_size: int = 10,
@@ -534,26 +533,12 @@ def create_code2wav_scheduler(
             "Code2Wav CUDA graph requires "
             "runtime.resources.total_gpu_memory_fraction"
         )
-    from sglang.srt.utils import get_device
-
-    from sglang_omni.utils.device import remap_accelerator_spec
-
-    if gpu_id is not None:
-        concrete_device = current_platform.get_device(gpu_id)
-    else:
-        concrete_device = torch.device(device)
+    concrete_device = torch.device(resolve_device_spec(device, gpu_id))
     if concrete_device.type != "cpu" and concrete_device.index is None:
         concrete_device = current_platform.get_device(
             torch.get_device_module().current_device()
         )
     device = str(concrete_device)
-    if enable_cuda_graph and concrete_device.type != "cuda":
-        # Code2WavCudaGraphRunner is CUDA-only (torch.cuda mem_get_info/Stream).
-        logger.info(
-            "Code2Wav CUDA graph disabled on %s (CUDA-only runner); running eager",
-            concrete_device.type,
-        )
-        enable_cuda_graph = False
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
     model = load_code2wav_model(model_path, device=device, dtype=dtype)

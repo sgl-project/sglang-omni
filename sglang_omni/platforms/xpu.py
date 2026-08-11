@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -8,12 +8,12 @@ import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
-from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
-    from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.server_args import ServerArgs
 
-logger = logging.getLogger(__name__)
+    from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
 
 class XPUOmniPlatform(OmniPlatform):
@@ -25,10 +25,11 @@ class XPUOmniPlatform(OmniPlatform):
         return torch.device("xpu", local_rank)
 
     def set_device(self, device: "torch.device | int") -> None:
-        # torch.xpu wants an index, not a device object. Resolve it up front so a
-        # present index 0 is not confused with an absent one.
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
+
+    def enable_code2wav_graph(self):
+        return False
 
     def apply_model_worker_backend_policy(
         self,
@@ -40,32 +41,16 @@ class XPUOmniPlatform(OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
-        from sglang_omni.utils.xpu_sglang_compat import (
-            patch_available_gpu_memory_for_xpu,
-        )
-
-        # Correct XPU free memory before the KV pool is sized against it. Graph
-        # capture is left to SGLang, which dispatches XPUGraphRunner by device
-        # (model_runner_components/cuda_graph_setup.py).
-        patch_available_gpu_memory_for_xpu()
-
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and server_args.moe_runner_backend in (
-            "auto",
-            "flashinfer_cutlass",
-            "cutlass",
-        ):
-            # SGLang's XPU MoE path asserts the runner is 'triton' (see
-            # layers/quantization/unquant.py forward_xpu); 'auto' and the CUTLASS
-            # runners fail that assert, so pin triton here.
-            override_server_args(
-                server_args,
-                "sglang-omni-xpu-backend-policy",
-                moe_runner_backend="triton",
+        ) and server_args.moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+            raise ValueError(
+                f"Qwen3-Omni on Intel XPU cannot use "
+                f"moe_runner_backend={server_args.moe_runner_backend!r}; the CUTLASS "
+                "MoE runners are CUDA-only. Leave the backend as 'auto' or pass "
+                "'triton'."
             )
-            logger.info("Selecting 'triton' MoE runner (XPU MoE path requires it)")
 
         return effective_quantization
 
@@ -74,12 +59,31 @@ class XPUOmniPlatform(OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        """No per-rank visibility env: unlike CUDA_VISIBLE_DEVICES with NCCL,
-        ZE_AFFINITY_MASK isolation hides peer cards and hangs XCCL discovery, so
-        TP ranks keep every card visible and address theirs by gpu_id."""
-        del env
+        """Keep every card visible, preserving a group-wide ZE_AFFINITY_MASK."""
         if spec.tp_size <= 1:
             return {}
         if spec.gpu_id is None:
             raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
-        return {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"}
+
+        updates = {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"}
+        source_env = env if env is not None else os.environ
+        mask = (source_env.get("ZE_AFFINITY_MASK") or "").strip()
+        if not mask:
+            return updates
+
+        visible = [item.strip() for item in mask.split(",") if item.strip()]
+        if len(visible) < spec.tp_size:
+            raise ValueError(
+                f"tp stage {spec.stage_name!r} needs tp_size={spec.tp_size} cards, but "
+                f"ZE_AFFINITY_MASK={mask!r} exposes {len(visible)}. Widen the mask to "
+                "cover the whole TP group: every rank must see its peers for XCCL "
+                "discovery, and dropping the mask instead would relocate the stage "
+                "onto different physical cards."
+            )
+        if spec.gpu_id >= len(visible):
+            raise ValueError(
+                f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, but "
+                f"ZE_AFFINITY_MASK={mask!r} exposes only {len(visible)} cards "
+                f"({', '.join(visible)}). gpu_id indexes into the mask, not the host."
+            )
+        return updates
