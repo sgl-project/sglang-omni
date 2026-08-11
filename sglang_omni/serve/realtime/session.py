@@ -232,12 +232,26 @@ class RealtimeSession:
             start_byte=start_byte, end_byte=end_byte
         )
         item_id = self.utterance_item_id or new_id("item")
-        self.drop_buffer_and_reset_vad()
+
+        # Consume only the finalized prefix. Any uncommitted suffix (e.g. the
+        # beginning of the next utterance) stays in the buffer for segmentation.
+        suffix_bytes = self.audio_buffer.drop_prefix(end_byte)
+        self.buffer_origin_samples += end_sample_offset
+        self.utterance_start_byte = None
+        self.utterance_item_id = None
+        self.vad.reset()
+        reemits = self.vad.process(suffix_bytes) if suffix_bytes else []
 
         await self.send(make_event("input_audio_buffer.committed", item_id=item_id))
         await self.response_queue.put((item_id, payload))
         if self.queue_drainer is None or self.queue_drainer.done():
             self.queue_drainer = asyncio.create_task(self.drain_queue())
+
+        # Re-segment the surviving suffix against the new stream position. This
+        # yields the next utterance's speech_started (exactly once, at a correct
+        # offset) and recursively commits further complete turns if present.
+        for emit in reemits:
+            await self.handle_vad_emit(emit)
 
     async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
         self.drop_buffer_and_reset_vad()

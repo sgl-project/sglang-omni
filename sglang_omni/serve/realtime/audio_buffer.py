@@ -46,6 +46,20 @@ class RealtimeAudioBuffer:
     def clear(self) -> None:
         self.buf.clear()
 
+    def drop_prefix(self, num_bytes: int) -> bytes:
+        """Discard the first ``num_bytes`` and return the retained suffix.
+
+        Used at a turn commit to consume only the finalized audio range while
+        keeping any uncommitted suffix (the beginning of the next utterance)
+        available for segmentation. ``num_bytes`` must align to a whole number
+        of samples.
+        """
+        assert 0 <= num_bytes <= len(self.buf), "prefix must lie within the buffer"
+        assert num_bytes % (2 * self.channels) == 0, "prefix must be sample-aligned"
+        suffix = bytes(self.buf[num_bytes:])
+        del self.buf[:num_bytes]
+        return suffix
+
     @property
     def num_bytes(self) -> int:
         return len(self.buf)

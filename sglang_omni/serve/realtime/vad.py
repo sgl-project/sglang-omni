@@ -99,6 +99,13 @@ class StreamingVAD:
                                 sample_offset=self.last_speech_offset,
                             )
                         )
+                        # A turn just ended. Stop here and keep the remaining
+                        # bytes buffered so a later SPEECH_STARTED for the next
+                        # utterance is never emitted in the same call — the
+                        # caller may discard the finalized prefix at the commit
+                        # boundary, so any trailing audio must be re-segmented
+                        # against the new stream position.
+                        break
 
         return emits
 
