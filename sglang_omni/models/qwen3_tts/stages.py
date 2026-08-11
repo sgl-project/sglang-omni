@@ -12,35 +12,31 @@ import torch
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
-from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
 )
-from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.pipeline_state import build_usage
-from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
-from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
+from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+    DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
+    DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
+    DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+    Qwen3TTSStreamingVocoderScheduler,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
-from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
 
 _QWEN_TTS_INSTALL_HINT = (
-    "Qwen3-TTS support requires the official `qwen-tts` package. "
-    "Install `qwen-tts==0.1.1` and its Transformers 4.57.3 requirement "
-    "in the serving environment before launching Qwen3-TTS."
+    "Qwen3-TTS support requires the official `qwen-tts` package:\n"
+    "    apt-get update && apt-get install -y sox\n"
+    "    uv pip install --no-deps sox einops\n"
+    "    uv pip install --no-deps qwen-tts==0.1.1\n"
+    "`--no-deps` is required on both lines: qwen-tts pins Transformers 4.57.3, "
+    "and resolving sox lifts numpy past the numba==0.65.1 ceiling. See "
+    "docs/cookbook/qwen3_tts.md."
 )
-
-
-def load_state(payload: StagePayload) -> Qwen3TTSState:
-    return _load_pipeline_state(payload, Qwen3TTSState)
-
-
-def store_state(payload: StagePayload, state: Qwen3TTSState) -> StagePayload:
-    return _store_pipeline_state(payload, state)
 
 
 def _load_qwen3_tts_tokenizer(
@@ -123,10 +119,19 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     ]
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    max_concurrency: int = 8,
+) -> SimpleScheduler:
     del model_path
+    # note (luojiaxuan): preprocessing must admit several requests at once. A
+    # serial executor keeps at most one reference-code request in flight, so
+    # the speech-tokenizer batcher would only ever see batches of one; the
+    # default matches the batcher's max_batch_size.
     return SimpleScheduler(
         preprocess_qwen3_tts_payload,
+        max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
     )
 
@@ -156,59 +161,6 @@ def create_sglang_tts_engine_executor(
 create_tts_engine_executor = create_sglang_tts_engine_executor
 
 
-class _Qwen3TTSVocoder(BatchVocoderBase):
-    def __init__(self, tokenizer: Any) -> None:
-        self._tokenizer = tokenizer
-
-    def prepare_item(self, payload: StagePayload) -> tuple[Qwen3TTSState, torch.Tensor]:
-        state = load_state(payload)
-        if state.audio_codes is None:
-            raise RuntimeError("Qwen3-TTS vocoder requires audio_codes from tts_engine")
-
-        codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
-        return state, codes
-
-    async def decode_batch(
-        self, items: list[tuple[Qwen3TTSState, torch.Tensor]]
-    ) -> list[tuple[Any, int]]:
-        wavs, sample_rate = self._tokenizer.decode(
-            [{"audio_codes": codes} for _, codes in items]
-        )
-        if len(wavs) != len(items):
-            raise RuntimeError(
-                f"Qwen3-TTS speech tokenizer returned {len(wavs)} audios for {len(items)} requests"
-            )
-        return [(wav, sample_rate) for wav in wavs]
-
-    def store_result(
-        self,
-        payload: StagePayload,
-        state: Qwen3TTSState,
-        wav: Any,
-        sample_rate: int,
-    ) -> StagePayload:
-        if wav is None:
-            raise RuntimeError("Qwen3-TTS speech tokenizer did not return audio")
-
-        if state.ref_code_len:
-            total_len = len(state.audio_codes)
-            cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
-            wav = wav[cut:]
-        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
-        state.audio_samples = None
-        state.sample_rate = int(sample_rate)
-        state.audio_codes = None
-
-        payload = store_state(payload, state)
-        payload.data.update(audio_payload)
-        payload.data["sample_rate"] = state.sample_rate
-        payload.data["modality"] = "audio"
-        usage = build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        return payload
-
-
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -218,6 +170,16 @@ def create_vocoder_executor(
     attn_implementation: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
+    stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
+    stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    stream_initial_followup_stride: int | None = None,
+    initial_chunk_frames: int = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
+    stream_left_context_frames: int = DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
+    initial_max_batch_size: int = 32,
+    initial_batch_wait_ms: int = 2,
+    followup_max_batch_size: int = 8,
+    followup_batch_wait_ms: int = 1,
+    initial_cuda_graph: bool = True,
 ) -> SimpleScheduler:
     if gpu_id is not None:
         device = f"cuda:{gpu_id}"
@@ -228,7 +190,19 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
-    return _Qwen3TTSVocoder(tokenizer).build_scheduler(
+    return Qwen3TTSStreamingVocoderScheduler(
+        tokenizer,
+        device=device,
+        stream_stride=stream_stride,
+        stream_followup_stride=stream_followup_stride,
+        stream_initial_followup_stride=stream_initial_followup_stride,
+        initial_chunk_frames=initial_chunk_frames,
+        stream_left_context_frames=stream_left_context_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
+        initial_max_batch_size=initial_max_batch_size,
+        initial_batch_wait_ms=initial_batch_wait_ms,
+        followup_max_batch_size=followup_max_batch_size,
+        followup_batch_wait_ms=followup_batch_wait_ms,
+        initial_cuda_graph=initial_cuda_graph,
     )

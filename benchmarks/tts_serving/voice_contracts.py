@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from benchmarks.tts_serving.http_contracts import _mark_protocol_error
+from benchmarks.tts_serving.http_contracts import mark_protocol_error
 from benchmarks.tts_serving.metrics import ScenarioResult
 
 VOICE_CACHE_STATS_KEY = "cache_stats"
@@ -110,7 +110,7 @@ def require_voice_cache_stats(
     operation: str,
 ) -> dict[str, int] | None:
     if not is_valid_voice_list_response(payload):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -121,7 +121,7 @@ def require_voice_cache_stats(
         return None
     cache_stats = payload.get(VOICE_CACHE_STATS_KEY)
     if not isinstance(cache_stats, dict):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=f"{operation} requires voice list response with cache_stats object",
@@ -146,21 +146,21 @@ def require_voice_cache_stats(
             details.append(f"missing={missing}")
         if invalid:
             details.append(f"invalid={invalid}")
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=f"{operation} returned invalid cache_stats: {', '.join(details)}",
         )
         return None
     if parsed["max_bytes"] <= 0:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=f"{operation} cache_stats.max_bytes must be greater than 0",
         )
         return None
     if parsed["memory_bytes"] > parsed["max_bytes"]:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -182,7 +182,7 @@ def validate_cache_pressure_unique_stats(
 ) -> bool:
     miss_delta = after["miss_count"] - before["miss_count"]
     if miss_delta < voice_count:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -193,7 +193,7 @@ def validate_cache_pressure_unique_stats(
         return False
     eviction_delta = after["eviction_count"] - before["eviction_count"]
     if eviction_delta <= 0 and _voice_cache_at_capacity(after):
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -207,7 +207,7 @@ def validate_cache_pressure_unique_stats(
         )
         return False
     if after["memory_bytes"] <= 0 or after["entries"] <= 0:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -229,7 +229,7 @@ def validate_cache_pressure_revisit_stats(
 ) -> bool:
     lookup_delta = _cache_lookup_count(after) - _cache_lookup_count(before)
     if lookup_delta < revisit_count:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -239,7 +239,7 @@ def validate_cache_pressure_revisit_stats(
         )
         return False
     if after["hit_count"] <= before["hit_count"]:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(
@@ -262,7 +262,7 @@ def validate_cache_pressure_cleanup_stats(
         after["delete_invalidation_counter"] - before["delete_invalidation_counter"]
     )
     if invalidation_delta <= 0:
-        _mark_protocol_error(
+        mark_protocol_error(
             result,
             status="invalid_voice_response",
             error=(

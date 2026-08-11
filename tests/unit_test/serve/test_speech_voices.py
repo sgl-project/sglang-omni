@@ -134,6 +134,8 @@ def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) ->
     assert listed.json()["uploaded_voices"][0]["ref_text"] == (
         "The narrator reference transcript."
     )
+    names_only = client.get("/v1/audio/voices", params={"names_only": "true"})
+    assert names_only.json() == {"uploaded_voice_names": ["Narrator_01"]}
 
     speech = client.post(
         "/v1/audio/speech",
@@ -582,6 +584,25 @@ def test_speech_service_rejects_batch_default_uploaded_voice_task_type(
                 "voice": "Anchor",
                 "task_type": "VoiceDesign",
                 "items": [{"input": "hello"}],
+            }
+        )
+
+
+def test_speech_service_validates_batch_default_voice_before_item_references(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    service = SpeechRequestValidator(
+        default_model="public-tts-name",
+        requires_uploaded_voice_for_named_voice=True,
+        voice_store=store,
+    )
+
+    with pytest.raises(SpeechAPIError, match="Unknown voice"):
+        service.parse_batch_request(
+            {
+                "voice": "Missing",
+                "items": [{"input": "hello", "ref_audio": "data:audio/wav"}],
             }
         )
 

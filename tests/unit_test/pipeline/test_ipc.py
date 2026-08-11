@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
-from types import SimpleNamespace
+from types import FrameType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -383,7 +384,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 async def _run_launcher_with_fake_runner(
     *,
     config: PipelineConfig,
-    serve_mock: AsyncMock,
+    serve_mock: AsyncMock | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
@@ -439,7 +440,8 @@ async def _run_launcher_with_fake_runner(
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
     monkeypatch.setattr(launcher, "ProfilerControlClient", FakeProfilerControl)
     monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
-    monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
+    if serve_mock is not None:
+        monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
     await launcher._run_server(config, port=8000)
     assert runner_ref is not None
@@ -555,6 +557,51 @@ async def test_launcher_stops_runner_when_server_raises(
         )
 
     server_serve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    config = _make_config(tmp_path)
+    replayed_signals: list[int] = []
+    server_ref: launcher.uvicorn.Server | None = None
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    def recording_handler(sig: int, frame: FrameType | None) -> None:
+        del frame
+        replayed_signals.append(sig)
+
+    async def serve_until_sigterm(
+        server: launcher.uvicorn.Server,
+        sockets=None,
+    ) -> None:
+        del sockets
+        nonlocal server_ref
+        server_ref = server
+        signal.raise_signal(signal.SIGTERM)
+        assert server.should_exit
+
+    monkeypatch.setattr(launcher.uvicorn.Server, "_serve", serve_until_sigterm)
+    signal.signal(signal.SIGTERM, recording_handler)
+    try:
+        runner, _, _ = await _run_launcher_with_fake_runner(
+            config=config,
+            serve_mock=None,
+            monkeypatch=monkeypatch,
+        )
+        assert signal.getsignal(signal.SIGTERM) is recording_handler
+    finally:
+        signal.signal(signal.SIGTERM, original_handler)
+
+    assert isinstance(server_ref, launcher._PipelineUvicornServer)
+    assert runner.started
+    assert runner.stopped
+    assert replayed_signals == []
+    assert server_ref._captured_signals == []
 
 
 @pytest.mark.asyncio

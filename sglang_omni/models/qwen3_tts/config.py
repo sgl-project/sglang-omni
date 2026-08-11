@@ -32,6 +32,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "tts_engine"}
+
+    @classmethod
     def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
         # Note (Akazaakane): preprocessing -> tts_engine is excluded because
         # preprocessing stores prepared requests in the module-level
@@ -66,6 +70,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_args={"dtype": "bfloat16"},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -74,6 +79,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             factory_args={"dtype": "bfloat16"},
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

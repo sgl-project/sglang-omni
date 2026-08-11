@@ -2,6 +2,7 @@
 
 FROM python:3.11-slim
 
+ENV HF_HOME=/tmp/huggingface
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /workspace
@@ -9,7 +10,10 @@ WORKDIR /workspace
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-RUN python -m pip install --no-cache-dir aiohttp==3.13.5 openai==2.6.1
+RUN python -m pip install --no-cache-dir \
+    aiohttp==3.13.5 \
+    huggingface-hub==0.36.0 \
+    openai==2.6.1
 RUN mkdir -p /workspace/benchmarks/eval /workspace/benchmarks/tts_serving /var/benchmark/out
 
 COPY benchmarks/eval/benchmark_tts_serving.py /workspace/benchmarks/eval/benchmark_tts_serving.py

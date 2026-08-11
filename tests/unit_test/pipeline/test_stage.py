@@ -265,6 +265,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = {"req-active"}
+        scheduler._prefill_end_done = set()
         scheduler._request_build_executor = None
         scheduler._shutdown_lock = threading.Lock()
         scheduler._shutdown_callback = None
@@ -311,6 +312,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = set()
+        scheduler._prefill_end_done = set()
         scheduler._request_build_executor = None
         scheduler._shutdown_lock = threading.Lock()
         scheduler._shutdown_callback = None

@@ -15,7 +15,8 @@ tests/
 │   └── test_asr_ci_seedtts.py
 └── unit_test/
     ├── benchmarks/
-    │   └── test_dataset_regressions.py
+    │   ├── test_dataset_regressions.py
+    │   └── test_runtime_metrics.py
     ├── test_tune_ci_thresholds.py
     ├── quantization/
     │   ├── test_autoround.py
@@ -64,6 +65,7 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
     │   ├── test_talker_feedback_write.py
     │   ├── test_talker_row_ownership.py
@@ -215,12 +217,17 @@ Relevant model CI ownership:
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
+- `test_qwen3_omni_realtime.py` keeps the lower-cost thinker-only VAD/text
+  path covered; `test_qwen3_omni_realtime_audio.py` separately launches the
+  speech topology and verifies VAD-driven raw PCM16 response streaming.
 - `test_asr_ci_multi_speaker.py`: MOSS-Transcribe-Diarize multi-speaker
   ASR/diarization correctness + speed via the managed router at DP=2. It
-  runs movies800times (non-stream + stream), aishell4_long, and googletime,
-  writes `moss_transcribe_diarize_results.json`,
+  runs movies800times (non-stream + stream), aishell4_long, aishell4_long90
+  (a 90 minute concat tier with catastrophic bounds instead of calibrated
+  thresholds), and googletime, writes `moss_transcribe_diarize_results.json`,
   `moss_transcribe_diarize_stream_results.json`,
-  `moss_transcribe_diarize_aishell4_long_results.json`, and
+  `moss_transcribe_diarize_aishell4_long_results.json`,
+  `moss_transcribe_diarize_aishell4_long90_results.json`, and
   `moss_transcribe_diarize_googletime_results.json`, and enforces calibrated
   accuracy/speed thresholds generated from `tune-ci-thresholds`.
 - `test_asr_ci_seedtts.py`: SeedTTS ASR correctness + speed via SGLang Omni
@@ -351,7 +358,8 @@ that happened to contain an older version of the test.
   - these tests prove transport mechanics, not full pipeline throughput,
     NVLink selection, or production backpressure behavior; keep those covered
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
-- `unit_test/benchmarks/`: Benchmark dataset/loading regression tests.
+- `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
+  runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -378,11 +386,20 @@ that happened to contain an older version of the test.
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
-  - pipeline config and stage factory concurrency defaults
+  - pipeline config and stage factory `max_running_requests=64` default,
+    async-decode default,
+    and `--decode-mode async|sync` CLI overrides
+  - RTX 4090 profile config resolution, SM-specific multimodal-attention
+    defaults, and resolved decode CUDA Graph bucket diagnostics
   - single-source audio token length formula used by both processor and
     request builder paths
+  - all 30 language-code/name mappings, Chinese compatibility aliases,
+    automatic language detection, canonical forced-language prompts, and early
+    unsupported-language rejection
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
+  - invalid encoded-audio classification versus operational loader failures,
+    including transcription-route HTTP 400/500 mapping.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
@@ -479,6 +496,8 @@ that happened to contain an older version of the test.
   - pipeline config and registry contracts
   - OmniScheduler-backed AR stage factory wiring
   - request mapping for `ref_audio` / `ref_text` and `references`
+  - incremental codec-to-vocoder ordering, priority batching, fallback parity,
+    CUDA stream handoff, and abort/failure cleanup
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation

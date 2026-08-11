@@ -30,5 +30,6 @@ class Qwen3TTSState(DeclarativeStateBase):
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     seed: int | None = None
     audio_codes: Any | None = wire(None, codec="tensor_list")
+    finish_reason: str | None = None
     ref_code_len: int = wire(0, emit="truthy", codec="int")
     audio_samples: Any | None = wire(None, codec="tensor_list")

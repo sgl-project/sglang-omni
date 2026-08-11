@@ -9,6 +9,8 @@
 #   3. Validate the resulting snapshot; fail setup if weights are incomplete.
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 if [ "$#" -lt 2 ]; then
   echo "usage: $0 <venv-name> <hf-repo-id> [<hf-repo-id> ...]" >&2
   exit 1

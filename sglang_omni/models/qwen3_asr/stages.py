@@ -5,129 +5,68 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang.srt.managers.mm_utils import init_mm_embedding_cache
-from transformers import AutoFeatureExtractor, AutoTokenizer
-
-from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.qwen3_asr.request_builders import (
-    make_qwen3_asr_scheduler_adapters,
-)
-from sglang_omni.scheduling.bootstrap import (
-    create_sglang_infrastructure_defer_cuda_graph,
-)
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-    validate_generation_batch_policy,
-)
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend import (
-    SGLangOutputProcessor,
-    build_sglang_server_args,
-)
-from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
-
 
 def create_sglang_qwen3_asr_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
-    dtype: str = "float16",
-    max_running_requests: int = 32,
+    dtype: str = "auto",
+    max_running_requests: int = 64,
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    torch_compile_max_bs: int = 1,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
-    request_build_max_workers: int = 2,
-    request_build_max_pending: int | None = 16,
+    request_build_max_workers: int = 8,
+    request_build_max_pending: int | None = 32,
+    prefill_coalesce_requests: int = 16,
+    prefill_coalesce_wait_ms: float = 40.0,
+    prefill_coalesce_when_idle: bool = True,
+    prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
+    enable_pre_lm_encoder: bool = True,
+    pre_lm_cache_max_entries: int = 4096,
+    pre_lm_cache_size_bytes: int = 2 * 1024**3,
+    pre_lm_max_batch_size: int = 8,
+    pre_lm_max_batch_wait_ms: int = 0,
     server_args_overrides: dict[str, Any] | None = None,
 ):
+    from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 
-    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    feature_extractor = AutoFeatureExtractor.from_pretrained(
-        model_path, trust_remote_code=True
-    )
-
-    encoder_token_count = int(feature_extractor.nb_max_frames // 2)
-
-    defaults: dict[str, Any] = {
-        "disable_cuda_graph": False,
-        "disable_overlap_schedule": True,
-        "enable_torch_compile": enable_torch_compile,
-        "mem_fraction_static": mem_fraction_static,
-        "max_prefill_tokens": 4096,
-        "chunked_prefill_size": 4096,
-        "sampling_backend": "pytorch",
-        "dtype": dtype,
-    }
-    if mm_attention_backend is not None:
-        defaults["mm_attention_backend"] = mm_attention_backend
-    else:
-        sm_version = get_visible_gpu_sm_version(gpu_id)
-        if sm_version is not None and sm_version >= 100:
-            defaults["mm_attention_backend"] = "triton_attn"
-    overrides = build_generation_batch_overrides(
+    return Qwen3ASREngineBuilder(
         max_running_requests=max_running_requests,
-        server_args_overrides=server_args_overrides,
-        **defaults,
-    )
-
-    server_args = build_sglang_server_args(
-        model_path,
-        context_length=encoder_token_count + int(max_new_tokens) + 8,
-        **overrides,
-    )
-    validate_generation_batch_policy(
-        model_name="Qwen3-ASR",
-        server_args=server_args,
-    )
-
-    want_cuda_graph, (
-        model_worker,
-        tree_cache,
-        req_to_token_pool,
-        token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
-        model_config,
-    ) = create_sglang_infrastructure_defer_cuda_graph(
-        server_args,
-        gpu_id,
-        model_arch_override="Qwen3ASRForConditionalGeneration",
-    )
-
-    if want_cuda_graph:
-        model_worker.model_runner.init_cuda_graphs()
-
-    init_mm_embedding_cache(mm_embedding_cache_size_bytes)
-
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
-    )
-    request_builder, result_adapter = make_qwen3_asr_scheduler_adapters(
-        tokenizer=tokenizer,
-        feature_extractor=feature_extractor,
         max_new_tokens=max_new_tokens,
-    )
-
-    return OmniScheduler(
-        tp_worker=model_worker,
-        tree_cache=tree_cache,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        server_args=server_args,
-        model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
-        model_runner=ModelRunner(model_worker, output_proc),
-        request_builder=request_builder,
-        result_adapter=result_adapter,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+        mem_fraction_static=mem_fraction_static,
+        mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
+        enable_torch_compile=enable_torch_compile,
+        torch_compile_max_bs=torch_compile_max_bs,
+        mm_attention_backend=mm_attention_backend,
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        prefill_coalesce_requires_pending_builds=(
+            prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
+        ),
+        enable_pre_lm_encoder=enable_pre_lm_encoder,
+        pre_lm_cache_max_entries=pre_lm_cache_max_entries,
+        pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,
+        pre_lm_max_batch_size=pre_lm_max_batch_size,
+        pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
+    ).build(
+        model_path,
+        device=device,
+        dtype=dtype,
+        server_args_overrides=server_args_overrides,
     )
 
 

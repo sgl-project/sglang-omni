@@ -39,6 +39,7 @@ class SessionConfig(EventBase):
     modalities: list[str] | None = None
     instructions: str | None = None
     input_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] | None = None
+    output_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] | None = None
     turn_detection: TurnDetection | None = None
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
@@ -51,6 +52,7 @@ class SessionObject(EventBase):
     modalities: list[str] = Field(default_factory=lambda: ["text"])
     instructions: str = ""
     input_audio_format: str = "pcm16"
+    output_audio_format: str = "pcm16"
     turn_detection: TurnDetection | None = None
     temperature: float = 0.8
     max_response_output_tokens: int | str = "inf"

@@ -1,0 +1,23 @@
+config_cls: DotsTTSPipelineConfig
+model_path: dots-studio/dots.tts-mf
+runtime_overrides:
+  reference_encode:
+    max_concurrency: 8
+    max_batch_size: 1
+    max_batch_wait_ms: 4
+  latent_engine:
+    optimize: true
+    num_steps: 4
+    max_generate_length: 500
+    server_args_overrides:
+      mem_fraction_static: 0.20
+      max_running_requests: 16
+      # note (luojiaxuan): backbone decode runs through the SGLang CUDA graph
+      # with the model-owned feedback buffer; delete these two lines (or set
+      # disable_cuda_graph: true) to fall back to eager backbone decode.
+      disable_cuda_graph: false
+      cuda_graph_max_bs: 16
+  vocoder:
+    optimize: true
+    max_batch_size: 4
+    max_batch_wait_ms: 2

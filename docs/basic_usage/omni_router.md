@@ -195,8 +195,12 @@ The table below lists the router command-line arguments.
 | `--health-check-timeout-secs` | `5` | Timeout for one worker health-check request. |
 | `--health-check-interval-secs` | `10` | Interval between background worker health checks. |
 | `--health-check-endpoint` | `/health` | Worker endpoint used by background health checks. |
+| `--voice-owner-worker-url` | first worker with `speech` and `audio_input` | Single-process mode only. Worker that owns uploaded TTS voices. Voice management and synthesis requests that use uploaded voices stay on this worker. Without such an owner, built-in voices can still route to eligible speech workers, but voice management is unavailable. |
+| `--router-state-dir` | `$SGLANG_OMNI_ROUTER_STATE_DIR`, else `$XDG_STATE_HOME/sglang-omni-router`, else `~/.local/state/sglang-omni-router` | Directory for [durable router state](#durable-router-state) (the weight-update journal), which must survive a host reboot. Mount it on a persistent volume in a container. |
 | `--log-level` | `info` | Router and Uvicorn log level. |
 | `--strict-limits` | off | Fail startup instead of warning when the `nofile` soft limit is too low for the resolved upstream pool size (`max(--max-connections, --max-inflight)`). |
+| `--router-processes` | `1` | Number of data-plane relay processes. `1` keeps the single-process router below; `N >= 2` enables the [multi-process router](#multi-process-router-controldata-plane-split) (x86-64 Linux only, and rejected at startup together with an explicit `--policy least_request`). |
+| `--shutdown-drain-secs` | `--request-timeout-secs` | Multi-process only: how long a stopping data-plane process waits for in-flight requests before cancelling them. The default matches the request timeout, so a routine shutdown never truncates a request its own timeout would have allowed. |
 
 Routing policies:
 
@@ -258,7 +262,8 @@ The endpoints have different meanings:
   `max_inflight`, `peak_inflight`, `rejected_total`). This returns `503` when no
   worker is routable.
 - `GET /workers`: detailed worker state, including `health_state`, `disabled`,
-  `routable`, `active_requests`, failure counters, and last error.
+  `routable`, `active_requests`, aggregate and per-service-class request
+  counters, and last error.
 - `GET /v1/models`: merged model list from routable workers.
 
 ## Send Requests Through the Router
@@ -367,10 +372,53 @@ The router infers required capabilities from each request:
 - `audios`, `audio_inputs`, or audio message parts require `audio_input`
 - `videos`, `video`, or video message parts require `video_input`
 - `modalities: ["audio"]` or `audio` output fields require `audio_output`
-- `/v1/audio/speech` requires `speech`, plus `streaming` for streamed speech
+- `/v1/audio/speech` and `/v1/audio/speech/batch` require `speech`;
+  `/v1/audio/speech` also requires `streaming` when `stream: true` (batch speech
+  does not support streaming)
+- speech requests using `ref_audio` or audio-bearing `references` also require
+  `audio_input`
+- `/v1/audio/speech/stream` WebSocket sessions require `speech` and `streaming`,
+  plus `audio_input` when configured with reference audio
+- `/v1/audio/voices` management and synthesis using an uploaded voice require
+  the owner worker, which has both `speech` and `audio_input`
 
 Register narrower worker capabilities only when a worker cannot serve one of
 those request classes.
+
+The complete TTS route set described below is currently supported by the
+single-process router (`--router-processes 1`). Multi-process router data
+planes retain the route surface documented in
+[Multi-Process Router](#multi-process-router-controldata-plane-split).
+
+Uploaded TTS voices are mutable worker-local state. The Router sends voice
+list, upload, and delete operations to `--voice-owner-worker-url`, and pins
+speech, batch, and WebSocket requests that name an uploaded voice to the same
+worker. It returns `503` if that owner is unavailable instead of silently
+routing the request to a worker without the voice. Once the uploaded-voice
+registry is available, built-in voices remain balanced by the configured
+routing policy. By default, the first routable worker with both `speech` and
+`audio_input` capabilities becomes the owner and remains the owner for that
+router process. Configure
+`--voice-owner-worker-url` when the owner must remain stable across router
+restarts. Pools without such an owner can still route built-in TTS to eligible
+speech workers, but voice management returns `503`.
+The owner cannot be removed or have either required capability removed through
+the router's worker API while the router is running.
+
+Voice ownership assumes one router is the writer for the pool, clients perform
+voice mutations through that router, and the owner keeps its speaker directory
+across restarts. Multiple independent routers or direct mutations against a
+worker are not coordinated and are unsupported for uploaded voices.
+The router loads its uploaded-voice registry in the background after voice
+traffic begins and reconciles it after voice mutations. Until the initial load
+succeeds, or while a mutation outcome is unresolved, every non-default voice
+name is pinned to the owner because the router cannot safely distinguish a
+built-in name from an uploaded name. `GET /health` reports the selected owner,
+owner routability, registry state, and uploaded-voice count under
+`voice_routing`.
+The router hydrates this registry through the compact
+`GET /v1/audio/voices?names_only=true` response rather than transferring stored
+reference metadata.
 
 Large JSON requests are not fully parsed by the router. With a homogeneous pool
 of complete Omni V1 replicas, no extra headers are needed. With mixed models,
@@ -382,20 +430,32 @@ when the router cannot infer a single safe worker set:
   `image_input`, `audio_input`, `video_input`, `audio_output`, or `streaming`
 - `X-SGLang-Omni-Route-Stream`: `true` or `false` for large streaming requests
 
+Speech and speech-batch JSON bodies larger than 1 MiB are conservatively pinned
+to the voice owner because the router cannot fully inspect them to rule out an
+uploaded voice reference. Without an eligible owner, the router conservatively
+requires `audio_input`; it never weakens capability selection at the size
+boundary. Route-hint headers do not override voice ownership.
+
 These headers are router-only hints and are not forwarded to workers.
 
 ## Request Diagnostics
 
-Routed responses include:
+Routed HTTP responses include:
 
 - `X-SGLang-Omni-Worker`: selected worker ID
 - `X-SGLang-Omni-Request-ID`: request ID from the request headers or body, or a
   router-generated ID
 - `X-SGLang-Omni-Route-Attempt`: currently `1`
 
-Router logs include a route-completion record for buffered and streaming
-requests. Each record contains the request ID, selected worker, path, stream
-flag, inferred capabilities, status code, duration, and terminal outcome.
+HTTP routes emit `route_completed` after worker selection and `route_rejected`
+before selection. Completion records contain the request ID, selected worker,
+path, stream flag, inferred capabilities, status code, duration, and terminal
+outcome.
+
+WebSocket sessions cannot add HTTP response headers after the upgrade. Router
+rejections are sent as a TTS `error` event followed by a protocol-appropriate
+close code. Every accepted WebSocket emits one `tts_websocket_completed` record,
+including rejections before worker selection; those records use `worker=-`.
 
 ## Overload Behavior
 
@@ -403,9 +463,12 @@ The router bounds its concurrent work. Once `--max-connections` in-flight model
 requests are being relayed, additional model requests are rejected immediately,
 before the request body is read:
 
-- status `503` with an OpenAI-style error envelope (`"type": "overloaded_error"`)
-- a `Retry-After: 1` header
-- a `route_rejected` log record with `reason=router_overloaded`
+- HTTP requests receive status `503`, an OpenAI-style error envelope
+  (`"type": "overloaded_error"`), a `Retry-After: 1` header, and a
+  `route_rejected` log with `reason=router_overloaded`
+- WebSocket requests receive a TTS `error` event with
+  `error_type=overloaded_error`, close code `1013`, and a terminal log with
+  `outcome=router_overloaded`
 
 Health and management endpoints (`/live`, `/ready`, `/health`, `/workers`, admin
 routes) are never gated. `GET /health` reports the current in-flight level, the
@@ -456,6 +519,128 @@ point with:
 ```bash
 python -m sglang_omni_router.serve --help
 ```
+
+## Durable Router State
+
+`--router-state-dir` holds the control-plane state that must outlive both a
+router restart and a reboot of the router host. Today that is the weight-update
+journal: when an update is interrupted after some workers were already updated,
+the journal keeps the affected workers disabled until an operator verifies
+their weight versions and re-enables them
+(`PUT /workers/{worker_id} {"disabled": false}`). Workers run on their own
+hosts and outlive the router, so losing the journal would let a fresh router
+re-enable a pool whose weights no longer match.
+
+Resolution order:
+
+1. `--router-state-dir`
+2. `SGLANG_OMNI_ROUTER_STATE_DIR`
+3. `$XDG_STATE_HOME/sglang-omni-router`
+4. `~/.local/state/sglang-omni-router`
+
+The directory is created owner-only (`0700`, journal file `0600`) and is keyed
+by the router's `host:port`, so several routers on one machine keep separate
+journals. If the directory cannot be created or written, the failure mode
+depends on the mode: with `--router-processes >= 2` startup fails; the
+single-process default still starts, logs a warning, and refuses weight
+updates (`503`) until `--router-state-dir` points at a writable persistent
+path. In neither mode is there a temp-directory fallback, which would look
+durable while a reboot silently dropped the record.
+
+If the journal itself becomes unreadable, re-enabling cannot resolve it and
+every weight update stays blocked with `409`. Verify the pool's weight
+versions, then drop the record explicitly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/weight_update_journal/resolve \
+  -H "Authorization: Bearer $SGLANG_OMNI_ADMIN_KEY" \
+  -d '{"acknowledge": true}'
+```
+
+The call is admin-authenticated, requires `acknowledge` so the record cannot be
+dropped by accident, reports the worker ids it dropped, and fails with `503` if
+the file could not be removed. The affected workers stay disabled until they
+are re-enabled one by one.
+
+In a container, mount it on a persistent volume:
+
+```bash
+docker run -v /srv/sglang-omni-router:/var/lib/sglang-omni-router ... \
+  python -m sglang_omni_router.serve \
+    --router-state-dir /var/lib/sglang-omni-router \
+    --worker-urls http://127.0.0.1:8011
+```
+
+What this directory does **not** manage:
+
+- Per-run runtime files (serialized config, internal socket, worker snapshot,
+  admission shared memory) stay in a temporary per-run workdir. They are
+  rebuilt at startup and are meant to disappear with the process tree.
+- Logs. The router writes to stdout/stderr; persist them with your container
+  runtime, systemd, or log collector.
+
+## Multi-Process Router (Control/Data-Plane Split)
+
+> x86-64 Linux only: the shared admission seqlock relies on x86-64 store
+> ordering, and any other machine is refused at startup. Enabled with
+> `--router-processes N`; the default `1` keeps the
+> single-process router described above. The one behavioral addition at
+> `N = 1` is the weight-update journal: recovery at startup can keep workers
+> from an earlier interrupted update disabled until an operator re-enables
+> them.
+
+At `N >= 2` the router runs as a small process tree:
+
+- A **supervisor** binds the public port once and passes the listening socket
+  to `N` **data-plane (DP)** processes, which accept from the shared queue and
+  relay the model routes (`/generate`, `/v1/chat/completions`,
+  `/v1/audio/speech`, `/v1/audio/transcriptions`).
+- One **control plane (CP)** owns the worker registry, health checks, and the
+  admin surface. DPs learn the routable-worker set from a snapshot file the CP
+  republishes on every state change and on a fixed keepalive cadence. Admin
+  requests sent to the public port are forwarded to the CP, which enforces the
+  admin key; `/v1/models`, `/live`, and `/ready` are answered by the DP
+  itself, `/health` is the CP's aggregate view.
+- The supervisor restarts crashed children (with a fail-closed budget for
+  rapid crash loops), fences replaced processes by generation, and tears the
+  tree down in order on SIGTERM. A stopping DP drains in-flight requests for
+  up to `--shutdown-drain-secs` (default: `--request-timeout-secs`) before
+  remaining tasks are cancelled, and the supervisor waits out that drain
+  before escalating to SIGKILL.
+
+Behavior differences to know about:
+
+- **The admission bound is shared and soft.** The in-flight bound spans all
+  DPs through a shared-memory counter array. Concurrent admission checks can
+  overshoot the bound by at most `N - 1` requests. In `/health`, `inflight` is
+  an instantaneous sum (not a linearizable value) and `peak_inflight` is
+  best-effort. `rejected_total` is exact while every live slot stays readable;
+  a DP killed mid-write loses the counters it had not yet published, so the
+  total is best-effort across a crash and reclaim window.
+- **`least_request` requires a single process.** It reads per-process
+  counters, so `--router-processes >= 2` combined with an explicit
+  `--policy least_request` fails at startup; use `round_robin` (DPs stagger
+  their starting offsets to avoid herding) or `random`.
+- **CP unavailability degrades before it fails.** DPs keep serving from their
+  last snapshot for the stale timeout, then shed new requests with fast `503`s
+  and flip `/ready`; one republish restores service. `/health` reports
+  `degraded` while some DPs are missing and `503` only when nothing can serve.
+- **Worker weight updates wait for the data planes.** Before broadcasting, the
+  CP publishes the disabled-worker snapshot and waits until every live DP has
+  acknowledged it; on timeout the update fails closed and nothing is sent.
+- **Counters are aggregated.** `/workers` aggregate totals and
+  `*_requests_by_class` maps are summed across DPs and stay monotonic across DP
+  restarts; `active_requests` is a best-effort gauge over live DPs. Counters
+  reset with the CP, matching single-process restarts.
+- **File descriptors scale with `N`.** Each DP holds a full-size upstream pool
+  (a skewed keep-alive client mix can pin the whole bound onto one DP, which
+  must still carry it) with keep-alives split `pool / N`; the startup log
+  prints the per-process and cluster fd budget for the nofile check.
+
+CPU affinity guidance for dense deployments: pin the `N` DP processes to `N`
+dedicated cores on one NUMA node; the CP and supervisor are near-idle and can
+share one core; keep model workers and benchmark clients on other cores (or
+the other NUMA node) so relay throughput is not contended.
 
 ## Troubleshooting
 

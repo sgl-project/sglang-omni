@@ -63,6 +63,46 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
+def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_builds = {}
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
+
+    scheduler._sleep_during_idle()
+    scheduler._pending_request_builds["req"] = object()
+    scheduler._sleep_during_idle()
+
+    assert sleep_calls == [0.001, 0.0001]
+
+
+def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._running = True
+    scheduler._engine_paused = False
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_builds = {"req": object()}
+    scheduler._process_admin_requests = lambda: None
+    scheduler.recv_requests = lambda: []
+    scheduler._take_deferred_request_payloads = lambda: []
+    scheduler.process_input_requests = lambda _requests: None
+    scheduler.self_check_during_idle = lambda: None
+    scheduler.self_check_during_busy = lambda: None
+
+    def get_next_batch_to_run():
+        scheduler._running = False
+        return None
+
+    scheduler.get_next_batch_to_run = get_next_batch_to_run
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
+
+    scheduler._event_loop_normal()
+
+    assert sleep_calls == [0.0001]
+
+
 def test_simple_scheduler_batch_and_error_contracts() -> None:
     """Preserves batched success output and per-request batch failure emission."""
     good = SimpleScheduler(
@@ -259,6 +299,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.forward_ct = 0
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
 
     batch = SimpleNamespace(
         reqs=[
@@ -458,6 +499,7 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     scheduler._model_runner = FakeModelRunner()
     scheduler._stream_output_builder = None
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.forward_ct = 0
 
     def _batch():
@@ -580,6 +622,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.waiting_queue = []
     scheduler.tree_cache = object()
@@ -628,6 +671,7 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
     scheduler._dirty_deferred_request_ids = {"req-run"}
     scheduler._first_emit_done = {"req-run"}
     scheduler._prefill_start_done = {"req-run"}
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.waiting_queue = []
 
@@ -686,6 +730,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
 
     req = SimpleNamespace(rid="req-wait")
@@ -716,6 +761,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
 
@@ -780,6 +826,7 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-finished"}
     scheduler._prefill_start_done = {"req-finished"}
+    scheduler._prefill_end_done = set()
     calls: list[str] = []
     model_path_ends: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -861,6 +908,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._stream_output_builder = stream_output_builder
 
     def tracking_result_adapter(data):
@@ -931,6 +979,7 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda data: {"ok": True}
     scheduler.server_args = SimpleNamespace(weight_version=None)
 
@@ -967,6 +1016,7 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
@@ -1003,6 +1053,7 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
@@ -1108,6 +1159,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     abort_cleanup: list[str] = []
     finished_cleanup: list[str] = []
     scheduler._abort_callback = abort_cleanup.append
@@ -1162,6 +1214,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.waiting_queue = []
     scheduler.tree_cache = None
     cleaned: list[str] = []
@@ -1224,6 +1277,7 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     cleaned: list[str] = []
     scheduler._abort_callback = cleaned.append
     scheduler._request_finished_callback = None
@@ -1307,6 +1361,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: None
     scheduler.server_args = SimpleNamespace(weight_version=None)
 
@@ -1347,6 +1402,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
     scheduler._abort_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._model_runner = SimpleNamespace(
         on_request_finished=lambda rid, _data: calls.append(rid)
     )
@@ -1375,6 +1431,7 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: {"ok": True}
     scheduler.server_args = SimpleNamespace(weight_version=None)
 
@@ -1464,6 +1521,7 @@ def test_stream_output_drops_stale_terminal_alias_without_raising() -> None:
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
 
     req = SimpleNamespace(
         rid="req-stale-terminal",
@@ -1493,6 +1551,7 @@ def test_omni_scheduler_abort_caps_aborted_id_set() -> None:
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.waiting_queue = []
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
@@ -1535,6 +1594,7 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     scheduler._aborted_request_ids = set()
     scheduler._aborted_request_id_order = deque()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.max_req_len = 16
     scheduler.max_req_input_len = 16
     _init_sync_request_build_state(scheduler)
@@ -1586,8 +1646,10 @@ def test_omni_scheduler_normalizes_req_token_arrays() -> None:
     assert req.origin_input_ids.tolist() == origin
 
 
-def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
-    """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
+def _construct_omni_scheduler(
+    monkeypatch, *, return_global_server_args: bool = False, **kwargs
+) -> OmniScheduler | tuple[OmniScheduler, object]:
+    """Build an OmniScheduler over the minimum stub surface __init__ touches."""
     monkeypatch.setattr(
         OmniScheduler,
         "_init_parallel_state",
@@ -1676,6 +1738,18 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         token_to_kv_pool_allocator=None,
         server_args=server_args,
         model_config=SimpleNamespace(),
+        **kwargs,
+    )
+
+    if return_global_server_args:
+        return scheduler, global_server_args
+    return scheduler
+
+
+def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
+    """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
+    scheduler, global_server_args = _construct_omni_scheduler(
+        monkeypatch, return_global_server_args=True
     )
 
     assert scheduler._pending_chunked_abort_req is None
@@ -1870,6 +1944,50 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         )
 
 
+def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
+    """Defaults keep the gate off; the wait is stored in seconds."""
+    scheduler = _construct_omni_scheduler(monkeypatch)
+    assert scheduler.prefill_coalesce_requests == 0
+    assert scheduler.prefill_coalesce_wait_s == pytest.approx(0.06)
+
+    enabled = _construct_omni_scheduler(
+        monkeypatch, prefill_coalesce_requests=32.0, prefill_coalesce_wait_ms=300
+    )
+    assert enabled.prefill_coalesce_requests == 32
+    assert enabled.prefill_coalesce_wait_s == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize(
+    "coalesce_kwargs",
+    [
+        {"prefill_coalesce_requests": None},
+        {"prefill_coalesce_wait_ms": None},
+        {"prefill_coalesce_requests": -1},
+        {"prefill_coalesce_requests": True},
+        {"prefill_coalesce_requests": -0.5},
+        {"prefill_coalesce_requests": 2.9},
+        {"prefill_coalesce_requests": float("inf")},
+        {"prefill_coalesce_wait_ms": 0.0},
+        {"prefill_coalesce_wait_ms": float("nan")},
+        {"prefill_coalesce_wait_ms": float("inf")},
+    ],
+)
+def test_omni_scheduler_rejects_invalid_prefill_coalesce_args(
+    monkeypatch, coalesce_kwargs
+) -> None:
+    """Config-file values never pass through the CLI, so __init__ is the shared
+    choke point where both entrypoints have to fail fast."""
+    with pytest.raises(ValueError):
+        _construct_omni_scheduler(monkeypatch, **coalesce_kwargs)
+
+
+def test_omni_scheduler_null_coalesce_error_points_at_zero(monkeypatch) -> None:
+    """An explicit YAML null is ambiguous, so it must name the documented off
+    switch rather than trip an assert that -O would strip."""
+    with pytest.raises(ValueError, match="use 0 to disable"):
+        _construct_omni_scheduler(monkeypatch, prefill_coalesce_requests=None)
+
+
 def test_stage_output_cache_eviction_uses_lru_order() -> None:
     cache = StageOutputCache(max_size=2)
 
@@ -1936,6 +2054,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler.enable_async_decode = False
     scheduler.enable_overlap = False
     scheduler._prefill_start_done = {"req-1", "req-2"}
+    scheduler._prefill_end_done = set()
     scheduler._request_build_executor = None
     scheduler._shutdown_lock = threading.Lock()
     scheduler._shutdown_callback = None
@@ -1976,6 +2095,7 @@ def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     scheduler._abort_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
     _init_sync_request_build_state(scheduler)
@@ -2012,6 +2132,7 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
     scheduler._abort_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
     _init_sync_request_build_state(scheduler)
@@ -2087,6 +2208,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler._abort_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
     _init_sync_request_build_state(scheduler)
@@ -2135,6 +2257,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
     scheduler._abort_callback = None
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
     scheduler.max_req_len = 6
@@ -2234,6 +2357,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-adapter"}
     scheduler._prefill_start_done = {"req-adapter"}
+    scheduler._prefill_end_done = set()
     model_path_ends: list[tuple[str, str]] = []
     monkeypatch.setattr(
         omni_scheduler_module,
@@ -2305,6 +2429,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     scheduler._dirty_deferred_request_ids = set()
     scheduler._first_emit_done = {"req-1"}
     scheduler._prefill_start_done = {"req-1"}
+    scheduler._prefill_end_done = set()
     scheduler._drain_inbox_for_request = lambda _rid: None
 
     scheduler.abort("req-1")

@@ -2,6 +2,8 @@
 
 set -uo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 max_attempts="${OMNI_CI_MAX_ATTEMPTS:-3}"
 retry_delay_seconds="${OMNI_CI_RETRY_DELAY_SECONDS:-10}"
 stage_label="${OMNI_CI_STAGE_LABEL:-${GITHUB_JOB:-pytest stage}}"
@@ -23,6 +25,11 @@ fi
 if [ "$#" -eq 0 ]; then
   echo "::error::run_flaky_pytest.sh requires a pytest command"
   exit 2
+fi
+
+if [ "$1" = "pytest" ]; then
+  shift
+  set -- "${OMNI_CI_PYTHON:?OMNI_CI_PYTHON is not set}" -m pytest "$@"
 fi
 
 slug="$(printf '%s' "${stage_label}" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//;s/-$//')"
@@ -58,7 +65,7 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
   log_file="${log_root}/${slug}-attempt-${attempt}.log"
 
   echo "::group::${stage_label} attempt ${attempt}/${max_attempts}"
-  "$@" 2>&1 | tee "${log_file}"
+  OMNI_CI_ATTEMPT="${attempt}" "$@" 2>&1 | tee "${log_file}"
   last_status="${PIPESTATUS[0]}"
   echo "::endgroup::"
 

@@ -759,3 +759,21 @@ def test_eos_chunk_is_skipped_and_never_decoded() -> None:
     audio = np.frombuffer(message.data.data["audio_waveform"], dtype=np.float32)
     assert model.calls == [(1, 2, 2)]
     assert audio.shape == (4,)
+
+
+def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
+    model = FakeCode2WavModel(total_upsample=2, output_deficit=1)
+    scheduler = _make_scheduler(model)
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    _feed(scheduler, "req-1", (1, 2, 3, 4), stream=True)
+    scheduler._on_done("req-1")
+
+    first = scheduler.outbox.get_nowait()
+    first_audio = np.frombuffer(first.data["audio_waveform"], dtype=np.float32)
+    assert first_audio.shape == (3,)
+
+    second = scheduler.outbox.get_nowait()
+    second_audio = np.frombuffer(second.data["audio_waveform"], dtype=np.float32)
+    assert second_audio.shape == (4,)
+
+    assert first_audio.shape[0] + second_audio.shape[0] == 4 * 2 - 1

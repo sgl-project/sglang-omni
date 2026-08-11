@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -14,15 +14,92 @@ import numpy as np
 import pybase64
 import torch
 import torchaudio
+import xxhash
 
 _DEFAULT_REQUEST_TIMEOUT = 5
+
+
+class AudioDecodeError(ValueError):
+    """Raised when supplied encoded audio cannot be decoded."""
+
+
+def _ensure_torchaudio_decoder_ready() -> None:
+    from torchcodec.decoders import AudioDecoder
+
+    del AudioDecoder
+
+
+def _has_operational_decoder_cause(exc: BaseException) -> bool:
+    current = exc.__cause__ or exc.__context__
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, torch.OutOfMemoryError):
+            return True
+        if not isinstance(current, (RuntimeError, ValueError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_invalid_audio_source(source: bytes | str) -> bool:
+    try:
+        import av
+    except (ImportError, RuntimeError):
+        return False
+
+    candidate = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        container = av.open(candidate)
+    except (av.error.InvalidDataError, av.error.EOFError, ValueError):
+        return True
+    except Exception:
+        return False
+
+    try:
+        audio_stream = next(
+            (stream for stream in container.streams if stream.type == "audio"),
+            None,
+        )
+        if audio_stream is None:
+            return True
+        try:
+            decoded_frame = False
+            for _frame in container.decode(audio_stream):
+                decoded_frame = True
+            return not decoded_frame
+        except (av.error.InvalidDataError, av.error.EOFError, ValueError):
+            return True
+        except Exception:
+            return False
+    finally:
+        container.close()
+
+
+def _load_with_torchaudio(
+    source: bytes | str, *, source_name: str
+) -> tuple[torch.Tensor, int]:
+    _ensure_torchaudio_decoder_ready()
+    decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        return torchaudio.load(decoder_source)
+    except (ImportError, MemoryError, torch.OutOfMemoryError):
+        raise
+    except RuntimeError as exc:
+        if _has_operational_decoder_cause(exc) or not _is_invalid_audio_source(source):
+            raise
+        raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
 
 
 def _is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
-def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | None:
+def _try_fast_wav_decode(
+    data: bytes,
+    target_sample_rate: int,
+    resample_kwargs: Mapping[str, Any] | None = None,
+) -> np.ndarray | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
     from sglang_omni.preprocessing.audio import _parse_wav_bytes
@@ -38,7 +115,10 @@ def _try_fast_wav_decode(data: bytes, target_sample_rate: int) -> np.ndarray | N
         return audio
 
     resampled = torchaudio.functional.resample(
-        torch.from_numpy(audio), sample_rate, target_sample_rate
+        torch.from_numpy(audio),
+        sample_rate,
+        target_sample_rate,
+        **dict(resample_kwargs or {}),
     )
     return resampled.numpy()
 
@@ -48,11 +128,11 @@ def decode_audio_data_uri(value: str) -> bytes | None:
         return None
     header, separator, payload = value.partition(",")
     if not separator or ";base64" not in header.lower() or not payload:
-        raise ValueError("Invalid base64 audio data URI")
+        raise AudioDecodeError("Invalid base64 audio data URI")
     try:
         return pybase64.b64decode(payload, validate=True)
     except Exception as exc:
-        raise ValueError("Invalid base64 audio data URI") from exc
+        raise AudioDecodeError("Invalid base64 audio data URI") from exc
 
 
 def load_audio(
@@ -60,6 +140,8 @@ def load_audio(
     source_name: str = "audio",
     target_sample_rate: int = 16000,
     mono: bool = True,
+    trim_top_db: float | None = None,
+    resample_kwargs: Mapping[str, Any] | None = None,
 ) -> np.ndarray:
     if isinstance(source, memoryview):
         source = source.tobytes()
@@ -87,13 +169,15 @@ def load_audio(
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
         # startup when mono=True without changing channel-preserving loads.
-        if mono and _is_riff_wav(source):
-            fast = _try_fast_wav_decode(source, target_sample_rate)
+        if mono and trim_top_db is None and _is_riff_wav(source):
+            fast = _try_fast_wav_decode(
+                source, target_sample_rate, resample_kwargs=resample_kwargs
+            )
             if fast is not None:
                 return fast
-        audio, sample_rate = torchaudio.load(io.BytesIO(source))
+        audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     elif isinstance(source, str):
-        audio, sample_rate = torchaudio.load(source)
+        audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     else:
         raise ValueError(
             f"Unsupported {source_name} audio input: {type(source).__name__}"
@@ -104,9 +188,17 @@ def load_audio(
     if mono and audio.ndim == 2 and audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)
     audio = audio.to(torch.float32)
+    if trim_top_db is not None:
+        import librosa
+
+        trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
+        audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
         audio = torchaudio.functional.resample(
-            audio, int(sample_rate), target_sample_rate
+            audio,
+            int(sample_rate),
+            target_sample_rate,
+            **dict(resample_kwargs or {}),
         )
     if mono:
         audio = audio.squeeze(0)
@@ -115,7 +207,7 @@ def load_audio(
 
 def audio_fingerprint(audio: np.ndarray) -> str:
     contiguous = np.ascontiguousarray(audio, dtype=np.float32)
-    return hashlib.blake2b(contiguous.tobytes(), digest_size=16).hexdigest()
+    return xxhash.xxh3_128_hexdigest(contiguous)
 
 
 def audio_fingerprint_int(fingerprint: str) -> int:

@@ -34,10 +34,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -75,10 +76,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -133,10 +135,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -178,10 +181,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -223,10 +227,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -269,10 +274,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -314,10 +320,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -359,10 +366,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -404,10 +412,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
@@ -449,12 +458,13 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         --cap-add=SYS_PTRACE
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci

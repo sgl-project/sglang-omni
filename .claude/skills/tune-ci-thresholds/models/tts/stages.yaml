@@ -13,7 +13,7 @@ tts_higgs_nonstream_wer:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -49,7 +49,7 @@ tts_higgs_nonstream_similarity:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -85,7 +85,7 @@ tts_higgs_nonstream_utmos:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -121,7 +121,7 @@ tts_higgs_nonstream_speed:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -187,7 +187,7 @@ tts_moss_nonstream_wer:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -223,7 +223,7 @@ tts_moss_nonstream_similarity:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 50
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -259,7 +259,7 @@ tts_moss_nonstream_utmos:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -295,7 +295,7 @@ tts_moss_nonstream_speed:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -361,7 +361,7 @@ tts_higgs_stream_wer:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -397,7 +397,7 @@ tts_higgs_stream_speed:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -453,7 +453,7 @@ tts_moss_stream_wer:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -489,7 +489,7 @@ tts_moss_stream_speed:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: d92c8193135ad478aa6a75f560e2befaecce2e3819dcffecbf02d3e8ee60e0c8
-  last_discovered_at: 2026-08-03T02:04:22Z
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_model/tts_ci_config.py"
   threshold_file_sha256: 09f9d85b7353d0984f4258d7a1e52216a61e2e2663c974269a02138d8d71edc7
@@ -531,15 +531,15 @@ tts_moss_stream_speed:
         scale: 1
         digits: 4
       status: OK
-tts_serving_closed16_speed:
+tts_serving_mixed_speech_normal_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING CLOSED16 Speed"
+  title: "TTS SERVING MIXED_SPEECH_NORMAL Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "closed16"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_speech_normal"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -549,134 +549,15 @@ tts_serving_closed16_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.closed-16.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.speech_normal.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.closed-16.metric_sample_counts.latency_s"
-  metrics:
-    throughput_qps:
-      source: "SERVING_CLOSED16_THROUGHPUT_QPS_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.closed-16.achieved_rps"
-      worst: min
-      display:
-        label: "Throughput (req/s)"
-        scale: 1
-        digits: 3
-      status: OK
-    latency_p95_s:
-      source: "SERVING_CLOSED16_LATENCY_P95_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.closed-16.latency_s.p95"
-      worst: max
-      display:
-        label: "Latency p95 (s)"
-        scale: 1
-        digits: 3
-      status: OK
-tts_serving_ramp_speed:
-  test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING RAMP Speed"
-  group: speed
-  extra_env: {}
-  context_vars: []
-  variant: "ramp"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
-  observation_validity:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "valid"
-  allowed_pytest_failure:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "threshold_assertion_failed"
-  sample_counts:
-    total:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.ramp-128.successful_request_count"
-    ok:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.ramp-128.metric_sample_counts.latency_s"
-  metrics:
-    throughput_qps:
-      source: "SERVING_RAMP_THROUGHPUT_QPS_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.ramp-128.achieved_rps"
-      worst: min
-      display:
-        label: "Throughput (req/s)"
-        scale: 1
-        digits: 3
-      status: OK
-    latency_p95_s:
-      source: "SERVING_RAMP_LATENCY_P95_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.ramp-128.latency_s.p95"
-      worst: max
-      display:
-        label: "Latency p95 (s)"
-        scale: 1
-        digits: 3
-      status: OK
-tts_serving_soak_speed:
-  test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING SOAK Speed"
-  group: speed
-  extra_env: {}
-  context_vars: []
-  variant: "soak"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
-  observation_validity:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "valid"
-  allowed_pytest_failure:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "threshold_assertion_failed"
-  sample_counts:
-    total:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.soak-300s.successful_request_count"
-    ok:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.soak-300s.metric_sample_counts.latency_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.speech_normal.metric_sample_counts.rtf"
   metrics:
     latency_p95_s:
-      source: "SERVING_SOAK_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.soak-300s.latency_s.p95"
-      worst: max
-      display:
-        label: "Latency p95 (s)"
-        scale: 1
-        digits: 3
-      status: OK
-tts_serving_speech_normal_speed:
-  test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING SPEECH_NORMAL Speed"
-  group: speed
-  extra_env: {}
-  context_vars: []
-  variant: "speech_normal"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
-  observation_validity:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "valid"
-  allowed_pytest_failure:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "threshold_assertion_failed"
-  sample_counts:
-    total:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.speech_normal.successful_request_count"
-    ok:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.speech_normal.metric_sample_counts.rtf"
-  metrics:
-    latency_p95_s:
-      source: "SERVING_SPEECH_NORMAL_LATENCY_P95_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.speech_normal.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.speech_normal.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
@@ -684,24 +565,24 @@ tts_serving_speech_normal_speed:
         digits: 3
       status: OK
     rtf_p95:
-      source: "SERVING_SPEECH_NORMAL_RTF_P95_REF"
+      source: "SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.speech_normal.rtf.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.speech_normal.rtf.p95"
       worst: max
       display:
         label: "RTF p95"
         scale: 1
         digits: 4
       status: OK
-tts_serving_rest_stream_speed:
+tts_serving_mixed_rest_stream_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING REST_STREAM Speed"
+  title: "TTS SERVING MIXED_REST_STREAM Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "rest_stream"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_rest_stream"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -711,15 +592,15 @@ tts_serving_rest_stream_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.metric_sample_counts.inter_chunk_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.metric_sample_counts.inter_chunk_s"
   metrics:
     ttfa_p95_s:
-      source: "SERVING_REST_STREAM_TTFA_P95_S_REF"
+      source: "SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.ttfa_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.ttfa_s.p95"
       worst: max
       display:
         label: "TTFA p95 (s)"
@@ -727,9 +608,9 @@ tts_serving_rest_stream_speed:
         digits: 4
       status: OK
     inter_chunk_p95_s:
-      source: "SERVING_REST_STREAM_INTER_CHUNK_P95_S_REF"
+      source: "SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.inter_chunk_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.inter_chunk_s.p95"
       worst: max
       display:
         label: "Inter-chunk p95 (s)"
@@ -737,9 +618,9 @@ tts_serving_rest_stream_speed:
         digits: 4
       status: OK
     latency_p95_s:
-      source: "SERVING_REST_STREAM_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
@@ -747,24 +628,24 @@ tts_serving_rest_stream_speed:
         digits: 3
       status: OK
     rtf_p95:
-      source: "SERVING_REST_STREAM_RTF_P95_REF"
+      source: "SERVING_MIXED_REST_STREAM_RTF_P95_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.rest_stream.rtf.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.rest_stream.rtf.p95"
       worst: max
       display:
         label: "RTF p95"
         scale: 1
         digits: 4
       status: OK
-tts_serving_batch32_speed:
+tts_serving_mixed_batch32_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING BATCH32 Speed"
+  title: "TTS SERVING MIXED_BATCH32 Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "batch32"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_batch32"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -774,30 +655,30 @@ tts_serving_batch32_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.metric_sample_counts.latency_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.metric_sample_counts.latency_s"
   metrics:
     latency_p95_s:
-      source: "SERVING_BATCH32_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_BATCH32_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
         scale: 1
         digits: 3
       status: OK
-tts_serving_ws_normal_speed:
+tts_serving_mixed_ws_normal_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING WS_NORMAL Speed"
+  title: "TTS SERVING MIXED_WS_NORMAL Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "ws_normal"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_ws_normal"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -807,15 +688,15 @@ tts_serving_ws_normal_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_normal.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.metric_sample_counts.ttfa_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_normal.metric_sample_counts.ttfa_s"
   metrics:
     ttfa_p95_s:
-      source: "SERVING_WS_NORMAL_TTFA_P95_S_REF"
+      source: "SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.ttfa_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_normal.ttfa_s.p95"
       worst: max
       display:
         label: "TTFA p95 (s)"
@@ -823,24 +704,24 @@ tts_serving_ws_normal_speed:
         digits: 4
       status: OK
     latency_p95_s:
-      source: "SERVING_WS_NORMAL_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_normal.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
         scale: 1
         digits: 3
       status: OK
-tts_serving_ws_stream_speed:
+tts_serving_mixed_ws_stream_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING WS_STREAM Speed"
+  title: "TTS SERVING MIXED_WS_STREAM Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "ws_stream"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_ws_stream"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -850,15 +731,15 @@ tts_serving_ws_stream_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.metric_sample_counts.inter_chunk_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.metric_sample_counts.inter_chunk_s"
   metrics:
     ttfa_p95_s:
-      source: "SERVING_WS_STREAM_TTFA_P95_S_REF"
+      source: "SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.ttfa_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.ttfa_s.p95"
       worst: max
       display:
         label: "TTFA p95 (s)"
@@ -866,9 +747,9 @@ tts_serving_ws_stream_speed:
         digits: 4
       status: OK
     inter_chunk_p95_s:
-      source: "SERVING_WS_STREAM_INTER_CHUNK_P95_S_REF"
+      source: "SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.inter_chunk_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.inter_chunk_s.p95"
       worst: max
       display:
         label: "Inter-chunk p95 (s)"
@@ -876,9 +757,9 @@ tts_serving_ws_stream_speed:
         digits: 4
       status: OK
     latency_p95_s:
-      source: "SERVING_WS_STREAM_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
@@ -886,24 +767,24 @@ tts_serving_ws_stream_speed:
         digits: 3
       status: OK
     rtf_p95:
-      source: "SERVING_WS_STREAM_RTF_P95_REF"
+      source: "SERVING_MIXED_WS_STREAM_RTF_P95_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.rtf.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.rtf.p95"
       worst: max
       display:
         label: "RTF p95"
         scale: 1
         digits: 4
       status: OK
-tts_serving_mixed_burst_speed:
+tts_serving_mixed_long_speed:
   test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING MIXED_BURST Speed"
+  title: "TTS SERVING MIXED_LONG Speed"
   group: speed
   extra_env: {}
   context_vars: []
-  variant: "mixed_burst"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
+  variant: "mixed_long"
+  test_file_sha256: 513f654ae8773c4abfe05f444c0b6f13739adbfb11f331a463f0955599021f31
+  last_discovered_at: 2026-08-10T07:42:53Z
   observation_validity:
     json_file: "tts-serving-ci0/benchmark_validation.json"
     json_path: "valid"
@@ -913,58 +794,15 @@ tts_serving_mixed_burst_speed:
   sample_counts:
     total:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.mixed-burst-512.successful_request_count"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.successful_request_count"
     ok:
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.mixed-burst-512.metric_sample_counts.latency_s"
-  metrics:
-    throughput_qps:
-      source: "SERVING_MIXED_BURST_THROUGHPUT_QPS_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.mixed-burst-512.achieved_rps"
-      worst: min
-      display:
-        label: "Throughput (req/s)"
-        scale: 1
-        digits: 3
-      status: OK
-    latency_p95_s:
-      source: "SERVING_MIXED_BURST_LATENCY_P95_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage.mixed-burst-512.latency_s.p95"
-      worst: max
-      display:
-        label: "Latency p95 (s)"
-        scale: 1
-        digits: 3
-      status: OK
-tts_serving_long_speed:
-  test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING LONG Speed"
-  group: speed
-  extra_env: {}
-  context_vars: []
-  variant: "long"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
-  observation_validity:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "valid"
-  allowed_pytest_failure:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "threshold_assertion_failed"
-  sample_counts:
-    total:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.successful_request_count"
-    ok:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
   metrics:
     prompt_tokens_min:
-      source: "SERVING_LONG_PROMPT_TOKENS_MIN_REF"
+      source: "SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.prompt_tokens.min"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.prompt_tokens.min"
       worst: min
       display:
         label: "Prompt tokens min"
@@ -972,9 +810,9 @@ tts_serving_long_speed:
         digits: 0
       status: OK
     completion_tokens_min:
-      source: "SERVING_LONG_COMPLETION_TOKENS_MIN_REF"
+      source: "SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.completion_tokens.min"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.completion_tokens.min"
       worst: min
       display:
         label: "Completion tokens min"
@@ -982,9 +820,9 @@ tts_serving_long_speed:
         digits: 0
       status: OK
     latency_p95_s:
-      source: "SERVING_LONG_LATENCY_P95_S_REF"
+      source: "SERVING_MIXED_LONG_LATENCY_P95_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.latency_s.p95"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.latency_s.p95"
       worst: max
       display:
         label: "Latency p95 (s)"
@@ -992,9 +830,9 @@ tts_serving_long_speed:
         digits: 3
       status: OK
     audio_duration_min_s:
-      source: "SERVING_LONG_AUDIO_DURATION_MIN_S_REF"
+      source: "SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.audio_duration_s.min"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.audio_duration_s.min"
       worst: min
       display:
         label: "Audio duration min (s)"
@@ -1002,52 +840,9 @@ tts_serving_long_speed:
         digits: 3
       status: OK
     output_tok_per_req_s:
-      source: "SERVING_LONG_OUTPUT_TOK_PER_REQ_S_REF"
+      source: "SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF"
       json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_workload.long_prefill_decode.output_tok_per_req_s"
-      worst: min
-      display:
-        label: "Output tok/req-s"
-        scale: 1
-        digits: 1
-      status: OK
-tts_serving_long_baseline_speed:
-  test: tests/test_model/test_tts_serving_ci.py
-  title: "TTS SERVING LONG_BASELINE Speed"
-  group: speed
-  extra_env: {}
-  context_vars: []
-  variant: "long_baseline"
-  test_file_sha256: 7518e47e7eba7a2ac6287677ea2e388a4c6c7f6ae103565e6df07c5a2853f585
-  last_discovered_at: 2026-08-03T02:04:22Z
-  observation_validity:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "valid"
-  allowed_pytest_failure:
-    json_file: "tts-serving-ci0/benchmark_validation.json"
-    json_path: "threshold_assertion_failed"
-  sample_counts:
-    total:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.successful_request_count"
-    ok:
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
-  metrics:
-    latency_max_s:
-      source: "SERVING_LONG_BASELINE_LATENCY_MAX_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.latency_s.max"
-      worst: max
-      display:
-        label: "Latency max (s)"
-        scale: 1
-        digits: 3
-      status: OK
-    output_tok_per_req_s:
-      source: "SERVING_LONG_BASELINE_OUTPUT_TOK_PER_REQ_S_REF"
-      json_file: "tts-serving-ci0/benchmark/results.json"
-      json_path: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.output_tok_per_req_s"
+      json_path: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.output_tok_per_req_s"
       worst: min
       display:
         label: "Output tok/req-s"
@@ -1067,8 +862,8 @@ tts_mps_dp2_higgs_speed:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
-  last_discovered_at: 2026-08-03T02:04:22Z
+  test_file_sha256: 6d5a45b023ded77318085347a82d81752211379f132bd675487610ed1d5e4bd7
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_ci/tts_mps_ci_config.py"
   threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
@@ -1139,8 +934,8 @@ tts_mps_dp2_higgs_similarity:
   hf_model_ids:
     - "bosonai/higgs-tts-3-4b"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
-  last_discovered_at: 2026-08-03T02:04:22Z
+  test_file_sha256: 6d5a45b023ded77318085347a82d81752211379f132bd675487610ed1d5e4bd7
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 50
   threshold_file: "tests/test_ci/tts_mps_ci_config.py"
   threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
@@ -1181,8 +976,8 @@ tts_mps_dp2_moss_speed:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
-  last_discovered_at: 2026-08-03T02:04:22Z
+  test_file_sha256: 6d5a45b023ded77318085347a82d81752211379f132bd675487610ed1d5e4bd7
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 1088
   threshold_file: "tests/test_ci/tts_mps_ci_config.py"
   threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab
@@ -1253,8 +1048,8 @@ tts_mps_dp2_moss_similarity:
   hf_model_ids:
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
     - "Qwen/Qwen3-ASR-1.7B"
-  test_file_sha256: 553c792b01ed59d3c02ef5c5196f75dc388954c063b2a3bdadbe874925da0a45
-  last_discovered_at: 2026-08-03T02:04:22Z
+  test_file_sha256: 6d5a45b023ded77318085347a82d81752211379f132bd675487610ed1d5e4bd7
+  last_discovered_at: 2026-08-10T07:42:53Z
   expected_samples: 50
   threshold_file: "tests/test_ci/tts_mps_ci_config.py"
   threshold_file_sha256: 13b6deecde2c217c0f1869077f8d4301e77378e98c80b5cc9ddb44732e3d23ab

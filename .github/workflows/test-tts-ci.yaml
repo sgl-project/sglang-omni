@@ -38,10 +38,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -105,10 +106,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -161,10 +163,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -215,10 +218,11 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
-      image: hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
         -v /data/omni-ci:/data/omni-ci
         -v /data/cache/huggingface:/github/home/.cache/huggingface
@@ -231,7 +235,7 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run TTS serving stress stage
+      - name: Run TTS serving stress stage through router DP2
         shell: bash
         run: |
           source omni/bin/activate
@@ -241,7 +245,8 @@ jobs:
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          TTS_SERVING_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          TTS_SERVING_STAGE_OUTPUT_ROOT: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
@@ -249,13 +254,18 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 4 (serving stress)
-          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-search-root: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */benchmark/results.json
             */benchmark/manifest.json
             */benchmark.wall_time.json
+            */benchmark_validation.json
+            */router_validation.json
+            */cleanup_validation.json
           artifact-upload-name: tts-stage-serving-results
-          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving
+          artifact-upload-path: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-if-no-files-found: error
           summary-only: "true"
 
@@ -266,7 +276,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: crpi-n6adu6llixz83q37.cn-hangzhou.personal.cr.aliyuncs.com/hongccc/sglang-omni:dev
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
       options: >-
         --rm
         --cap-add SYS_NICE
@@ -321,7 +331,7 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_ci/test_tts_mps_dp2.py -v -s -x
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_ci/test_tts_mps_dp2.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

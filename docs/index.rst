@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: Supports a growing set of TTS, ASR, and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, MOSS-TTS, Ming-Omni-TTS, Qwen3-ASR, Whisper ASR, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -39,16 +39,34 @@ Supported Models
      - Voice cloning, streaming, 10 languages, 0.6B / 1.7B
    * - `OpenMOSS-Team/MOSS-TTS-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5>`_
      - TTS
-     - Voice cloning, streaming, 31 languages
+     - Delay-pattern MOSS-TTS; voice cloning, streaming, 31 languages
+   * - `OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5>`_
+     - TTS
+     - Local-transformer MOSS-TTS; 48 kHz stereo, streaming
    * - `inclusionAI/Ming-omni-tts-16.8B-A3B <https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B>`_
      - TTS
      - Text-to-speech and zero-shot voice cloning
+   * - `dots-studio/dots.tts-mf <https://huggingface.co/dots-studio/dots.tts-mf>`_
+     - TTS
+     - 48 kHz continuous-latent TTS; also ``dots.tts-soar`` / ``dots.tts-base``
+   * - `Zyphra/zonos2 <https://huggingface.co/Zyphra/zonos2>`_
+     - TTS
+     - MoE TTS, 9 DAC codebooks, voice cloning
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
-     - Audio transcription through ``/v1/audio/transcriptions``
+     - Multilingual transcription with 30 language hints
+   * - `FunAudioLLM/Fun-ASR-Nano-2512-hf <https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512-hf>`_
+     - ASR
+     - Multilingual Fun-ASR-Nano
+   * - `AutoArk-AI/ARK-ASR-3B <https://huggingface.co/AutoArk-AI/ARK-ASR-3B>`_
+     - ASR
+     - Multilingual ARK-ASR
+   * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
+     - ASR
+     - Multi-speaker transcription + diarization + timestamps
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
-     - Experimental Whisper transcription route; response schema is served, correctness is not yet validated
+     - Experimental Whisper route; schema served, correctness not yet validated
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
      - Omni
      - Text, image, audio, video → text + audio
@@ -65,6 +83,7 @@ Supported Models
    :caption: Get Started
 
    get_started/installation.md
+   get_started/release_notes.md
 
 
 .. toctree::
@@ -78,6 +97,7 @@ Supported Models
    cookbook/ming_tts.md
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
+   cookbook/dots_tts.md
    cookbook/zonos2.md
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
@@ -117,4 +137,5 @@ Supported Models
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
+   developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md

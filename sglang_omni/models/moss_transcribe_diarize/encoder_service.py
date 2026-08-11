@@ -7,16 +7,16 @@ compute-bound encoder overlap the memory-bound decode on the same GPU.
 
 from __future__ import annotations
 
-import concurrent.futures
+import contextlib
 import logging
 import queue
-import threading
 import traceback
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 
+from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class _DetachedFailure:
     formatted_traceback: str
 
 
-class BatchedAudioEncoderService:
+class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
     ENCODE_TIMEOUT_S = 300.0
 
     def __init__(self, model: Any, *, max_batch_size: int = 2) -> None:
@@ -46,13 +46,9 @@ class BatchedAudioEncoderService:
             max_bytes=_CACHE_MAX_BYTES,
             cache_device="cpu",
         )
-        self._queue: queue.Queue[tuple[Any, concurrent.futures.Future]] = queue.Queue()
         self._batch_count = 0
         self._item_count = 0
-        self._thread = threading.Thread(
-            target=self._worker, name="moss-td-audio-encode", daemon=True
-        )
-        self._thread.start()
+        super().__init__(worker_name="moss-td-audio-encode")
 
     def encode_item(self, item: Any) -> None:
         """Blocks until item.precomputed_embeddings is attached."""
@@ -61,14 +57,12 @@ class BatchedAudioEncoderService:
         else:
             cached = None
         if cached is not None:
-            item.precomputed_embeddings = cached.to(self._device, non_blocking=True)
-            item.feature = None
+            self.attach_embedding(item, cached.to(self._device, non_blocking=True))
             return
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        self._queue.put((item, future))
+        future = self._submit(item)
         future.result(timeout=self.ENCODE_TIMEOUT_S)
 
-    def _drain_batch(self) -> list[tuple[Any, concurrent.futures.Future]]:
+    def _drain_batch(self) -> list[QueueEntry[Any]]:
         # note (yichi): never wait — a window costs 8~16ms at low concurrency, buys <=5ms at high.
         batch = [self._queue.get()]
         for _ in range(self._max_batch_size - 1):
@@ -78,54 +72,98 @@ class BatchedAudioEncoderService:
                 break
         return batch
 
-    def _worker(self) -> None:
-        while True:
-            self._process_batch(self._drain_batch())
+    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+        return self._drain_batch(), False
 
-    def _process_batch(
-        self, batch: list[tuple[Any, concurrent.futures.Future]]
-    ) -> None:
-        items = [item for item, _ in batch]
-        try:
-            self._encode_batch(items)
-        except Exception as batch_exc:
-            if len(batch) == 1:
-                failure = self._detach_failure(batch_exc)
-                logger.error(
-                    "MOSS-TD audio encode failed:\n%s",
-                    failure.formatted_traceback,
-                )
-                self._recover_after_failure(failure.exception)
-                batch[0][1].set_exception(failure.exception)
-                return
+    def _batch_context(self) -> contextlib.AbstractContextManager[Any]:
+        return torch.cuda.stream(self._stream)
 
-            failure = self._detach_failure(batch_exc)
+    def encode_batch(self, items: list[Any]) -> torch.Tensor:
+        return self._model._get_audio_feature_uncached(items, None)
+
+    def split_embeddings(
+        self,
+        items: list[Any],
+        embedding: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        token_counts = [
+            int(getattr(item, "audio_feature_lengths").sum()) for item in items
+        ]
+        if embedding.shape[0] != sum(token_counts):
+            raise RuntimeError(
+                f"encoder output rows {embedding.shape[0]} != expected "
+                f"{sum(token_counts)}"
+            )
+        return [
+            part.contiguous() for part in torch.split(embedding, token_counts, dim=0)
+        ]
+
+    def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+        item.precomputed_embeddings = embedding
+        item.feature = None
+
+    def attach_before_synchronize(self) -> bool:
+        return False
+
+    def synchronize_batch(self) -> None:
+        self._stream.synchronize()
+
+    def cache_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+        if item.hash is not None:
+            self._cache.put(str(item.hash), embedding)
+
+    def _handle_batch_failure(
+        self,
+        batch: list[QueueEntry[Any]],
+        exc: Exception,
+    ) -> Exception:
+        failure = self._detach_failure(exc)
+        if len(batch) == 1:
+            logger.error(
+                "MOSS-TD audio encode failed:\n%s",
+                failure.formatted_traceback,
+            )
+        else:
             logger.error(
                 "MOSS-TD batched audio encode failed for %d items; "
                 "retrying per item:\n%s",
-                len(items),
+                len(batch),
                 failure.formatted_traceback,
             )
-            self._recover_after_failure(failure.exception)
-            for item, future in batch:
-                try:
-                    self._encode_batch([item])
-                except Exception as item_exc:
-                    failure = self._detach_failure(item_exc)
-                    logger.error(
-                        "MOSS-TD per-item audio encode retry failed:\n%s",
-                        failure.formatted_traceback,
-                    )
-                    self._recover_after_failure(failure.exception)
-                    future.set_exception(failure.exception)
-                else:
-                    self._record_success(1)
-                    future.set_result(None)
-            return
+        self._recover_after_failure(failure.exception)
+        return failure.exception
 
-        self._record_success(len(items))
-        for _, future in batch:
-            future.set_result(None)
+    def _handle_item_failure(
+        self,
+        _entry: QueueEntry[Any],
+        exc: Exception,
+    ) -> Exception:
+        failure = self._detach_failure(exc)
+        logger.error(
+            "MOSS-TD per-item audio encode retry failed:\n%s",
+            failure.formatted_traceback,
+        )
+        self._recover_after_failure(failure.exception)
+        return failure.exception
+
+    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+        return len(batch) > 1
+
+    def _future_result(self, _embedding: torch.Tensor) -> None:
+        return None
+
+    def _on_batch_finished(
+        self,
+        batch: list[QueueEntry[Any]],
+        batch_exc: Exception | None,
+        retry_recovered: int | None,
+        _elapsed_s: float,
+    ) -> None:
+        if batch_exc is None:
+            self._record_success(len(batch))
+            return
+        for _ in range(retry_recovered or 0):
+            self._record_success(1)
 
     @staticmethod
     def _detach_failure(exc: Exception) -> _DetachedFailure:
@@ -171,26 +209,3 @@ class BatchedAudioEncoderService:
                 f"{self._item_count / self._batch_count:.2f} items/batch, "
                 f"last batch: {item_count})"
             )
-
-    def _encode_batch(self, items: list[Any]) -> None:
-        with torch.cuda.stream(self._stream):
-            embedding = self._model._get_audio_feature_uncached(items, None)
-            token_counts = [
-                int(getattr(item, "audio_feature_lengths").sum()) for item in items
-            ]
-            if embedding.shape[0] != sum(token_counts):
-                raise RuntimeError(
-                    f"encoder output rows {embedding.shape[0]} != expected "
-                    f"{sum(token_counts)}"
-                )
-            parts = tuple(
-                part.contiguous()
-                for part in torch.split(embedding, token_counts, dim=0)
-            )
-        self._stream.synchronize()
-        for item, part in zip(items, parts):
-            item.precomputed_embeddings = part
-            item.feature = None
-        for item in items:
-            if item.hash is not None:
-                self._cache.put(str(item.hash), item.precomputed_embeddings)

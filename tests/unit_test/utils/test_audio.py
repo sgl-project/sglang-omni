@@ -11,7 +11,7 @@ import pybase64
 import pytest
 
 from sglang_omni.utils import audio
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import AudioDecodeError, load_audio
 
 
 def _wav_bytes(
@@ -37,6 +37,104 @@ def test_load_audio_accepts_base64_data_uri() -> None:
 def test_load_audio_rejects_non_base64_data_uri() -> None:
     with pytest.raises(ValueError, match="Invalid base64 audio data URI"):
         load_audio("data:audio/wav,not-base64")
+
+
+def test_load_audio_raises_typed_error_for_undecodable_bytes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        audio,
+        "_ensure_torchaudio_decoder_ready",
+        lambda: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audio,
+        "_is_invalid_audio_source",
+        lambda source: True,
+        raising=False,
+    )
+
+    def raise_invalid_audio(source):
+        del source
+        raise RuntimeError("invalid audio data")
+
+    monkeypatch.setattr(
+        audio.torchaudio,
+        "load",
+        raise_invalid_audio,
+    )
+
+    with pytest.raises(AudioDecodeError, match="Could not decode Qwen3-ASR"):
+        load_audio(b"not-audio", source_name="Qwen3-ASR")
+
+
+def test_load_audio_preserves_decoder_backend_failure(monkeypatch) -> None:
+    backend_error = RuntimeError("TorchCodec backend is unavailable")
+
+    def raise_backend_error():
+        raise backend_error
+
+    def unexpected_decoder(source):
+        del source
+        pytest.fail("decoder should not run without its backend")
+
+    monkeypatch.setattr(
+        audio,
+        "_ensure_torchaudio_decoder_ready",
+        raise_backend_error,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audio.torchaudio,
+        "load",
+        unexpected_decoder,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load_audio(b"encoded-audio")
+
+    assert exc_info.value is backend_error
+
+
+def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
+    decoder_oom = audio.torch.OutOfMemoryError("decoder out of memory")
+
+    def raise_wrapped_oom(source):
+        del source
+        try:
+            raise decoder_oom
+        except audio.torch.OutOfMemoryError as exc:
+            raise RuntimeError("decoder failed") from exc
+
+    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(
+        audio,
+        "_is_invalid_audio_source",
+        lambda source: pytest.fail("OOM must not be classified as invalid media"),
+        raising=False,
+    )
+    monkeypatch.setattr(audio.torchaudio, "load", raise_wrapped_oom)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load_audio(b"encoded-audio")
+
+    assert exc_info.value.__cause__ is decoder_oom
+
+
+def test_load_audio_classifies_corrupt_local_path(monkeypatch, tmp_path) -> None:
+    corrupt_path = tmp_path / "corrupt.wav"
+    corrupt_path.write_bytes(b"not-audio")
+
+    def raise_decode_error(source):
+        assert source == str(corrupt_path)
+        raise RuntimeError("invalid audio data")
+
+    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio.torchaudio, "load", raise_decode_error)
+
+    with pytest.raises(AudioDecodeError, match="Could not decode Test"):
+        load_audio(str(corrupt_path), source_name="Test")
 
 
 def test_load_audio_can_preserve_channels() -> None:
@@ -210,6 +308,43 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     samples = load_audio(_sine_wav_bytes(sample_rate=48000))
 
     assert samples.shape == (1600,)
+
+
+def test_load_audio_trims_before_resampling() -> None:
+    import librosa
+    import torch
+    import torchaudio
+
+    sample_rate = 16000
+    tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate // 2) / sample_rate)
+    values = np.pad(tone, (sample_rate, sample_rate))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes((values * 32767).astype("<i2").tobytes())
+    wav = buffer.getvalue()
+    raw, sample_rate = torchaudio.load(io.BytesIO(wav))
+    expected, _ = librosa.effects.trim(raw.numpy(), top_db=30)
+    resample_kwargs = {
+        "lowpass_filter_width": 64,
+        "rolloff": 0.95,
+        "resampling_method": "sinc_interp_kaiser",
+    }
+    expected = torchaudio.functional.resample(
+        torch.from_numpy(expected), sample_rate, 48000, **resample_kwargs
+    )
+
+    samples = load_audio(
+        wav,
+        target_sample_rate=48000,
+        trim_top_db=30,
+        resample_kwargs=resample_kwargs,
+    )
+
+    assert samples.shape == expected.squeeze(0).shape
+    np.testing.assert_allclose(samples, expected.squeeze(0).numpy())
 
 
 def test_load_audio_falls_back_when_not_mono() -> None:
