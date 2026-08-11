@@ -127,6 +127,24 @@ def make_arkasr_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
 
+    prompt_template = (
+        f"{_USER}"
+        f"{_BOA}{_AUDIO_TOKEN}{_EOA}"
+        f"{_DEFAULT_INSTRUCTION}"
+        f"{_ASSISTANT}"
+    )
+    template_ids = list(tokenizer(prompt_template, add_special_tokens=False).input_ids)
+    audio_positions = [
+        index
+        for index, token_id in enumerate(template_ids)
+        if token_id == audio_token_id
+    ]
+    if len(audio_positions) != 1:
+        raise ValueError("ARK-ASR prompt template must contain exactly one audio token")
+    audio_position = audio_positions[0]
+    prompt_prefix_ids = tuple(template_ids[:audio_position])
+    prompt_suffix_ids = tuple(template_ids[audio_position + 1 :])
+
     # Defensively suppress every reserved marker (special / ``<...>`` added
     # token) except EOS. The checkpoint ships no bad_words_ids, so without this,
     # adversarial / OOD audio can leak markers like ``<tool_call>`` or
@@ -136,13 +154,11 @@ def make_arkasr_scheduler_adapters(
     _suppressed_ids = _build_suppressed_token_ids(tokenizer)
 
     def _build_prompt_ids(num_audio_tokens: int) -> list[int]:
-        prompt = (
-            f"{_USER}"
-            f"{_BOA}{_AUDIO_TOKEN * num_audio_tokens}{_EOA}"
-            f"{_DEFAULT_INSTRUCTION}"
-            f"{_ASSISTANT}"
-        )
-        return list(tokenizer(prompt, add_special_tokens=False).input_ids)
+        return [
+            *prompt_prefix_ids,
+            *([audio_token_id] * num_audio_tokens),
+            *prompt_suffix_ids,
+        ]
 
     def request_builder(
         payload: StagePayload,
