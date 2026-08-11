@@ -122,25 +122,17 @@ def test_validate_generation_batch_policy_rejects_mismatched_cuda_graph_max() ->
         )
 
 
-def test_validate_generation_batch_policy_requires_enabled_compile_coverage() -> None:
+def test_validate_generation_batch_policy_accepts_partial_compile_coverage() -> None:
     undercovered_compile = _server_args(
         max_running_requests=64,
         cuda_graph_max_bs=64,
         cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64],
         torch_compile_max_bs=32,
     )
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"torch_compile_max_bs must cover.*"
-            r"increase torch_compile_max_bs to at least max_running_requests.*"
-            r"--talker-torch-compile-max-bs"
-        ),
-    ):
-        validate_generation_batch_policy(
-            model_name="Qwen3-TTS",
-            server_args=undercovered_compile,
-        )
+    validate_generation_batch_policy(
+        model_name="Qwen3-TTS",
+        server_args=undercovered_compile,
+    )
 
 
 def test_validate_generation_batch_policy_accepts_full_64_request_coverage() -> None:

@@ -91,6 +91,30 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
     assert state.decoded_patches == 2
 
 
+def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
+    flow = _flow_head(tmp_path)
+    state, _ = flow.new_request(
+        max_audio_patch_count=2,
+        prompt_latents=None,
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=None,
+    )
+    projection_calls = []
+    hook = flow.hidden_proj.register_forward_hook(
+        lambda _module, inputs, _output: projection_calls.append(inputs[0])
+    )
+    try:
+        flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
+    finally:
+        hook.remove()
+
+    assert len(projection_calls) == 1
+    torch.testing.assert_close(
+        state.fm_cfg_sequence[0, 0], flow.hidden_proj.bias, rtol=0, atol=0
+    )
+
+
 def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
     torch.manual_seed(1618)
     flow = _flow_head(tmp_path)

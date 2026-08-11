@@ -2,6 +2,8 @@
 
 set -uo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 max_attempts="${OMNI_CI_MAX_ATTEMPTS:-3}"
 retry_delay_seconds="${OMNI_CI_RETRY_DELAY_SECONDS:-10}"
 stage_label="${OMNI_CI_STAGE_LABEL:-${GITHUB_JOB:-pytest stage}}"

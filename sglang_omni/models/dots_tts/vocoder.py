@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -137,7 +138,18 @@ class _DotsStreamState:
     received_patches: int = 0
 
 
-class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
+@dataclass(frozen=True)
+class _DotsStreamStepPlan:
+    take: int
+    latents: torch.Tensor
+
+
+class DotsTTSStreamingVocoder(
+    StreamingVocoderBase[_DotsStreamState, _DotsStreamStepPlan]
+):
+    _can_batch_stream_chunks = True
+    _stream_chunk_batch_distinct_requests = True
+
     def __init__(
         self,
         codec: DotsAudioCodec,
@@ -156,6 +168,8 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
         self.codec = codec
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
+        self._stream_chunk_batch_max = int(max_batch_size)
+        self._logged_stream_batch = False
         self._batch_vocoder = DotsTTSBatchVocoder(codec)
         super().__init__(
             self._batch_vocoder.decode_payload,
@@ -211,6 +225,90 @@ class DotsTTSStreamingVocoder(StreamingVocoderBase[_DotsStreamState, None]):
         if state.received_patches <= 2:
             return bool(state.pending)
         return len(state.pending) >= self.merge_steps
+
+    def select_step_participants(self) -> list[tuple[str, _DotsStreamState]]:
+        groups: dict[tuple[Any, ...], list[tuple[str, _DotsStreamState]]] = {}
+        for request_id, state in self._stream_state_items():
+            if not self.should_decode(state, is_final=False):
+                continue
+            take = 1 if state.received_patches <= 2 else self.merge_steps
+            decoder = state.codec_state.decoder
+            frames = sum(int(patch.shape[1]) for patch in state.pending[:take])
+            key = (
+                take,
+                frames,
+                decoder.chunk_size,
+                decoder.total_frames,
+                decoder.emitted_frames,
+                tuple(decoder.window.shape[1:]),
+            )
+            groups.setdefault(key, []).append((request_id, state))
+        if not groups:
+            return []
+        return max(groups.values(), key=len)[: self._stream_chunk_batch_max]
+
+    def build_step_plan(
+        self, participants: list[tuple[str, _DotsStreamState]]
+    ) -> _DotsStreamStepPlan:
+        take = 1 if participants[0][1].received_patches <= 2 else self.merge_steps
+        return _DotsStreamStepPlan(
+            take=take,
+            latents=torch.cat(
+                [torch.cat(state.pending[:take], dim=1) for _, state in participants],
+                dim=0,
+            ),
+        )
+
+    def run_step(
+        self,
+        participants: list[tuple[str, _DotsStreamState]],
+        plan: _DotsStreamStepPlan,
+    ) -> dict[str, torch.Tensor]:
+        first = participants[0][1].codec_state
+        combined = copy.copy(first)
+        combined.decoder = copy.copy(first.decoder)
+        combined.lstm_hidden = tuple(
+            torch.cat(
+                [state.codec_state.lstm_hidden[index] for _, state in participants],
+                dim=1,
+            )
+            for index in range(2)
+        )
+        combined.decoder.window = torch.cat(
+            [state.codec_state.decoder.window for _, state in participants], dim=0
+        )
+        with self.codec.lock:
+            waveform = self.codec.inference.stream_step(
+                plan.latents,
+                stream_state=combined,
+                optimize=self.optimize,
+                use_compiled=False,
+            )
+        if waveform.shape[0] != len(participants):
+            raise RuntimeError(
+                "dots.tts streaming AudioVAE returned an unexpected batch size: "
+                f"expected {len(participants)}, got {waveform.shape[0]}"
+            )
+        if not self._logged_stream_batch and len(participants) > 1:
+            logger.info(
+                "dots.tts streaming AudioVAE batched decode is active: requests=%d",
+                len(participants),
+            )
+            self._logged_stream_batch = True
+
+        outputs = {}
+        for row, (request_id, state) in enumerate(participants):
+            state.codec_state.lstm_hidden = tuple(
+                hidden[:, row : row + 1].clone() for hidden in combined.lstm_hidden
+            )
+            state.codec_state.decoder.window = combined.decoder.window[
+                row : row + 1
+            ].clone()
+            state.codec_state.decoder.total_frames = combined.decoder.total_frames
+            state.codec_state.decoder.emitted_frames = combined.decoder.emitted_frames
+            del state.pending[: plan.take]
+            outputs[request_id] = waveform[row : row + 1]
+        return outputs
 
     def decode_delta(
         self, request_id: str, state: _DotsStreamState, *, is_final: bool

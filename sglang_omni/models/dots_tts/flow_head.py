@@ -498,7 +498,7 @@ class DotsTTSFlowHead(nn.Module):
     def append_hidden(self, state: DotsFlowState, hidden_states: torch.Tensor) -> None:
         hidden = hidden_states[:, -self.hidden_patch_size :]
         projected = self.hidden_proj(hidden)
-        null_projected = self.hidden_proj(torch.zeros_like(hidden))
+        null_projected = self.hidden_proj.bias.view(1, 1, -1).expand_as(projected)
         start, end = self._reserve(state, projected.shape[1])
         state.fm_sequence[:, start:end].copy_(projected)
         state.fm_cfg_sequence[:, start:end].copy_(null_projected)
