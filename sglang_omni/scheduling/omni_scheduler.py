@@ -484,6 +484,10 @@ class OmniScheduler:
         self.ipc_channels = _OmniIpcChannels(self)
         self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
         self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        self.total_prefill_uncached_tokens = 0
+        self.total_prefill_busy_us = 0
+        self.decode_moment_totals: list[float] = [0.0] * 6
+        self._prev_decode_launch_ts: float | None = None
         self._init_upstream_scheduler_components()
 
         self._running = False
@@ -652,9 +656,9 @@ class OmniScheduler:
             get_spec_total_num_forward_ct=lambda: (
                 self.metrics_reporter.spec_total_num_forward_ct
             ),
-            get_total_prefill_uncached_tokens=lambda: 0,
-            get_total_prefill_busy_us=lambda: 0,
-            get_decode_moment_totals=lambda: [0.0] * 6,
+            get_total_prefill_uncached_tokens=lambda: self.total_prefill_uncached_tokens,
+            get_total_prefill_busy_us=lambda: self.total_prefill_busy_us,
+            get_decode_moment_totals=lambda: self.decode_moment_totals,
         )
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
@@ -1221,6 +1225,7 @@ class OmniScheduler:
         # SGLANG_TEST_RETRACT fires every step.
         self.forward_ct += 1
         batch.forward_iter = self.forward_ct
+        batch.launch_ts = time.monotonic()
         sched_output = self._build_sched_output(batch)
         mr_output = self._model_runner.execute(sched_output)
         self._emit_prefill_end_for_batch(batch)
@@ -1308,6 +1313,7 @@ class OmniScheduler:
         # counter (the matching resolve does no forward, so it must not count).
         self.forward_ct += 1
         batch.forward_iter = self.forward_ct
+        batch.launch_ts = time.monotonic()
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
