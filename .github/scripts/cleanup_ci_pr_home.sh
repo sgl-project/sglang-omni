@@ -6,6 +6,8 @@
 # and for ephemeral workflow_dispatch run-* homes—not after every PR CI run.
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <ci-home>" >&2
   exit 1

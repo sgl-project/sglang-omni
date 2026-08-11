@@ -642,6 +642,7 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
     assert result.data["text"] == " leading\u00a0middle  "
     assert result.data["language"] == "English"
     assert tokenizer.encode_calls == ["<asr_text>"]
+    assert len(tokenizer.decode_calls) == 2
     assert tokenizer.decode_calls[-1] == {
         "token_ids": [20, 21, 22, 99],
         "skip_special_tokens": True,

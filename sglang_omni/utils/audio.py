@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import os
 from collections.abc import Mapping
@@ -15,6 +14,7 @@ import numpy as np
 import pybase64
 import torch
 import torchaudio
+import xxhash
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 
@@ -207,7 +207,7 @@ def load_audio(
 
 def audio_fingerprint(audio: np.ndarray) -> str:
     contiguous = np.ascontiguousarray(audio, dtype=np.float32)
-    return hashlib.blake2b(contiguous.tobytes(), digest_size=16).hexdigest()
+    return xxhash.xxh3_128_hexdigest(contiguous)
 
 
 def audio_fingerprint_int(fingerprint: str) -> int:

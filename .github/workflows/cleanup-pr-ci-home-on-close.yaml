@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     container:
       image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
-      options: --rm -e NVIDIA_VISIBLE_DEVICES -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
+      options: --rm -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -28,11 +28,17 @@ writing reports.
 
 - Export `TUNE_HOST`, `TUNE_REPO_ROOT`, `TUNE_VENV_PYTHON`, `TUNE_GPU_INCLUDE`,
   and `TUNE_GPU_EXCLUDE` explicitly.
-- Every two-GPU calibration group must be pinned to exactly 32 logical cores
-  (16 physical plus their HT siblings), matching the runner-side bundle for
-  that lane (`0,1` → `0-15,64-79`, `2,3` → `16-31,80-95`, `4,5` →
-  `48-63,112-127`, `6,7` → `32-47,96-111`). `tune.py` resolves this from
-  `hosts/*/gpu_group_cpusets` when `TUNE_GPU_INCLUDE` is set.
+- Every two-GPU calibration group must be pinned to its NUMA-local lane
+  bundle, matching the runner-side .env for that lane (`0,1` → `2-15,66-79`,
+  `2,3` → `16-31,80-95`, `4,5` → `48-63,112-127`, `6,7` → `32-47,96-111`).
+  `tune.py` resolves this from `hosts/*/gpu_group_cpusets` when
+  `TUNE_GPU_INCLUDE` is set. Lane `0,1` deliberately excludes cores
+  `0,1,64,65`: those are the system cores where host daemons (categraf,
+  dockerd) are confined; including them measures daemon noise, not the model.
+- Calibrations that write thresholds must anchor on the `0,1` lane: its
+  28-core bundle is the conservative baseline for every lane. A threshold
+  calibrated on a 32-core lane can be too aggressive when a CI job lands on
+  `0,1`; use the 32-core lanes for measurement-only runs.
 - Inside a two-GPU container the picked ids are always `0,1`, so the host
   table cannot resolve the physical lane; export `OMNI_CI_CPUSET` with the
   borrowed lane's cores explicitly.

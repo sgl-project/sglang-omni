@@ -200,6 +200,7 @@ def make_qwen3_asr_scheduler_adapters(
                 fingerprint, estimated_audio_tokens
             )
 
+        estimated_input_ids = None
         if context_length is not None:
             assert estimated_audio_tokens is not None
             # WhisperFeatureExtractor emits floor(samples / hop_length) frames.
@@ -251,7 +252,12 @@ def make_qwen3_asr_scheduler_adapters(
             assert estimated_audio_tokens is not None
             num_audio_tokens = estimated_audio_tokens
 
-        input_ids = _build_prompt_ids(num_audio_tokens, forced_language)
+        input_ids = (
+            estimated_input_ids
+            if estimated_input_ids is not None
+            and num_audio_tokens == estimated_audio_tokens
+            else _build_prompt_ids(num_audio_tokens, forced_language)
+        )
         _validate_context_budget(input_ids, request_max_new_tokens)
 
         audio_item = MultimodalDataItem(
@@ -343,10 +349,12 @@ def make_qwen3_asr_scheduler_adapters(
         output_ids = list(data.output_ids or [])
         # Keep the marker handling at token level. Byte-level BPE decode->encode
         # is not an identity transform for all whitespace/Unicode transcripts.
-        raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
-        logger.debug(
-            f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} raw={raw!r}"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
+            logger.debug(
+                f"[qwen3-asr] n_out={len(output_ids)} "
+                f"ids={output_ids[:40]} raw={raw!r}"
+            )
         asr_text_idx = _find_subsequence(output_ids, asr_text_token_ids)
         detected_language = None
         if data.language is None and asr_text_idx is not None:
