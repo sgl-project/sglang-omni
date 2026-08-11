@@ -120,6 +120,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.gpu_placement == {"asr": 0}
     assert config.stages[0].factory.endswith("create_sglang_whisper_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
+    assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("WhisperForConditionalGeneration")
         is WhisperASRPipelineConfig
