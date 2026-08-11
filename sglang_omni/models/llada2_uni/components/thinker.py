@@ -438,6 +438,7 @@ class LLaDA2MoeTextModel(nn.Module):
             lambda idx, prefix="": LLaDA2MoeBlock(
                 config, idx, quant_config, prefix=prefix
             ),
+            prefix="layers",
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
