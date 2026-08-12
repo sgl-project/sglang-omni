@@ -1754,6 +1754,28 @@ def test_upload_over_the_total_duration_limit_is_rejected() -> None:
     assert transcription_client.requests == []
 
 
+def test_total_duration_limit_is_re_enforced_on_the_decoded_audio(monkeypatch) -> None:
+    # A metadata probe can under-measure estimated containers; once the
+    # decode reveals the true duration the cap must still hold.
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(
+        transcriptions, "_probe_audio_duration", lambda audio_bytes: 1.5
+    )
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client, max_total_audio_s=2.0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "accepts audio up to" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
 def test_long_audio_without_chunking_policy_stays_one_request() -> None:
     # No audio_chunking passed to create_app: models that have not declared a
     # policy keep today's single-request behaviour, byte for byte.
