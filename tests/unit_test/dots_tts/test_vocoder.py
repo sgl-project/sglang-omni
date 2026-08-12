@@ -41,7 +41,7 @@ def _codec(*, latent_dim: int = 3, hop_size: int = 2) -> SimpleNamespace:
         hop_size=hop_size,
         sample_rate=48000,
         patch_size=4,
-        lock=threading.RLock(),
+        vocoder_lock=threading.RLock(),
         inference=_FakeInference(hop_size),
     )
 

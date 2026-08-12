@@ -50,7 +50,7 @@ class _RecordingInference:
 class _FakeCodec:
     def __init__(self) -> None:
         self.inference = _RecordingInference()
-        self.lock = threading.Lock()
+        self.vocoder_lock = threading.Lock()
         self.sample_rate = 48000
         self.patch_size = 3
         self.latent_dim = 5

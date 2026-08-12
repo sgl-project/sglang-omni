@@ -69,7 +69,10 @@ class DotsAudioCodec:
         self.sample_rate = int(vocoder.sample_rate)
         self.hop_size = int(vocoder.hop_size)
         self.device = torch.device(device)
-        self.lock = threading.RLock()
+        # Encoder and decoder modules are disjoint; vocoder calls still share one
+        # lock because VocoderInference owns mutable streaming state caches.
+        self.reference_lock = threading.RLock()
+        self.vocoder_lock = threading.RLock()
 
     @staticmethod
     def _reference_load_workers(count: int) -> int:
@@ -113,7 +116,7 @@ class DotsAudioCodec:
         )
         speaker_batch, speaker_lengths = self._speaker_input(batch, audio_lengths)
 
-        with self.lock:
+        with self.reference_lock:
             speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
             latent_distribution = self.inference.extract_latents(batch)
 

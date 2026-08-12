@@ -78,7 +78,8 @@ def _make_codec() -> DotsAudioCodec:
     codec.sample_rate = 48000
     codec.hop_size = HOP_SIZE
     codec.device = torch.device("cpu")
-    codec.lock = threading.RLock()
+    codec.reference_lock = threading.RLock()
+    codec.vocoder_lock = threading.RLock()
     return codec
 
 
@@ -115,6 +116,14 @@ def test_batch_of_one_is_identical_to_the_unbatched_path(
 
     assert torch.equal(single["speaker_embedding"], batched["speaker_embedding"])
     assert torch.equal(single["latent_distribution"], batched["latent_distribution"])
+
+
+def test_reference_encode_does_not_acquire_the_vocoder_lock() -> None:
+    codec = _make_codec()
+    codec.vocoder_lock = None
+    [result] = codec._encode_waveforms([_waveform(2, seed=9)])
+
+    assert result["speaker_embedding"].shape == (1, LATENT_DIM)
 
 
 def test_equal_length_batch_is_bit_identical_to_encoding_each_alone(
