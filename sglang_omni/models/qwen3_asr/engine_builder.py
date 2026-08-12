@@ -36,6 +36,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
+        torch_compile_max_bs: int,
         mm_attention_backend: str | None,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
@@ -65,6 +66,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
+        self.torch_compile_max_bs = torch_compile_max_bs
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
@@ -105,6 +107,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": self.enable_torch_compile,
+            "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,

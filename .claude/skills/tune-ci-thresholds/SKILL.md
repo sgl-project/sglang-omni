@@ -23,7 +23,7 @@ Read these files before running a calibration:
 | Model | Scope |
 |---|---|
 | `asr` | MOSS-Transcribe-Diarize and Qwen3-ASR CI |
-| `tts` | Every configured Higgs and MOSS preset; CI may select one preset, calibration observes both. Includes the Stage 5 MPS placement stages (`tts_mps_dp2_*`), whose references live in `tests/test_ci/tts_mps_ci_config.py` rather than the test file itself |
+| `tts` | Every configured Higgs and MOSS preset; CI may select one preset, calibration observes both. Also includes the Higgs mixed-arrival DP2 serving stages (`tts_serving_mixed_*`) and the Stage 5 MPS placement stages (`tts_mps_dp2_*`). The MPS references live in `tests/test_ci/tts_mps_ci_config.py` rather than the test file itself |
 | `omni` | Numeric threshold stages in Qwen3-Omni CI |
 
 `stages.yaml` is generated from the current test files and `config.yaml`. It is
@@ -135,10 +135,9 @@ host-wide cleanup are forbidden.
 ## Scoping a run to fewer GPUs
 
 `precheck` sizes its GPU requirement from the largest `gpus_per_test` in the
-model, so a standalone `precheck` for `tts` asks for two GPUs even when the
-stages you want need one. `run --stages <subset>` computes the requirement from
-the selected stages and runs its own precheck, so use it to calibrate the
-one-GPU stages (`tts_mps_dp2_*`, `tts_serving_*`) on a single card.
+model. `run --stages <subset>` computes the requirement from the selected
+stages and runs its own precheck, so use it when a subset needs fewer GPUs than
+the full model suite.
 
 Presets own disjoint constant namespaces through
 `calibration_presets[*].constant_filter`. Until this was fixed, the filter was
@@ -249,13 +248,42 @@ Infrastructure failures are not silently treated as metric observations.
 
 CI pins every perf-gate pytest session to a NUMA-local cpuset: the runner lane
 exports `OMNI_CI_CPUSET` and `tests/test_model/conftest.py` applies it
-(sched_setaffinity, inherited by spawned servers). Calibration reproduces the
-same condition through the same code path: `tune.py` looks up the picked GPU
-group in the host profile's `gpu_group_cpusets` table and exports
-`OMNI_CI_CPUSET` for the pytest invocation. Keep that table in sync with the
-production runner `.env` partition; numbers measured without the pin do not
-describe the environment CI gates run in. An explicit `OMNI_CI_CPUSET` in the
-operator's environment overrides the table.
+(sched_setaffinity, inherited by spawned servers). A PR job does not need to
+know which lane it drew — the runner injects the env. Calibration **does**,
+because it chooses the GPUs: `tune.py` looks up `TUNE_GPU_INCLUDE` in the host
+profile's `gpu_group_cpusets` table and exports the matching `OMNI_CI_CPUSET`.
+
+| GPU pair | CPU cores (32 logical) |
+|---|---|
+| `0,1` | `0-15,64-79` |
+| `2,3` | `16-31,80-95` |
+| `4,5` | `48-63,112-127` |
+| `6,7` | `32-47,96-111` |
+
+Keep that table in sync with the production runner `.env` partition. Numbers
+measured without the pin do not describe the environment CI gates run in. An
+explicit `OMNI_CI_CPUSET` in the operator's environment overrides the table.
+Missing both the table entry and the env var is a hard error — calibration
+never runs unpinned.
+
+### CPU occupation policy
+
+- **Precheck (may stop):** if the lane cpuset is already busy with foreign
+  load (`>` 20%), refuse the session and write the busy fraction into
+  `precheck.json` / the fingerprint. Fix the host (stop CI / other jobs) and
+  re-run precheck.
+- **During `run` (must not stop the calibration):** a live foreign-load
+  monitor watches the reserved cores. If intrusion exceeds two foreign cores,
+  `tune.py` aborts **only that stage attempt**, reports the peak, wipes its
+  basetemp artifacts so contaminated metrics never enter `run{k}.json` or the
+  report, waits until the cpuset is idle **and** the owned GPUs are free, then
+  retries the same stage. Contention retries are unbounded; only ordinary
+  infra failures (OOM/crash/…) consume `_MAX_RUN_ATTEMPTS`.
+- **Tab C** (`watch_calibration_cpuset.sh <gpu-group>`) is the
+  operator-visible supervisor for **that process's** lane — start one Tab C
+  per concurrent `TUNE_GPU_INCLUDE` (e.g. `2,3` watches `16-31,80-95`).
+  Enforcement lives in `tune.py` from the picked GPUs, not from a hardcoded
+  `0,1` cpuset.
 
 `precheck` writes `environment-fingerprint.json` containing:
 
@@ -263,6 +291,7 @@ operator's environment overrides the table.
 - host/platform, Python executable, driver, GPU UUID/SKU/memory and topology;
 - torch/sglang versions and a full dependency-freeze hash;
 - relevant environment variables and selected GPU group;
+- resolved lane `cpuset` and its precheck busy fraction;
 - required model and dataset IDs and cache state.
 
 Set `OMNI_CI_IMAGE_DIGEST` or `CONTAINER_IMAGE_DIGEST` when the runtime exposes
@@ -333,9 +362,12 @@ tune-ci-thresholds/
   OPERATIONS.md
   AGENT-PRECHECK.md
   tune.py
+  test_cpuset_gates.py
+  test_destructive_rejection.py
   tail_calibration_pytest.sh
   watch_calibration_group.sh
   watch_calibration_servers.sh
+  watch_calibration_cpuset.sh
   hosts/*.yaml
   models/{asr,tts,omni}/{config.yaml,stages.yaml}
 ```

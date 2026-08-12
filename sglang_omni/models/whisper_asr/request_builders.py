@@ -22,6 +22,10 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _WHISPER_SAMPLE_RATE = 16000
+# note (jiannan-17): Previous context = 1 start-of-prev token + up to 223 prompt tokens.
+MAX_PREV_CONTEXT_TOKENS = 224
+# note (jiannan-17): Standard Whisper decoder context is 448 positions.
+_DEFAULT_DECODER_CONTEXT_LEN = 448
 _LANGUAGE_ALIASES = {
     "en": "english",
     "eng": "english",
@@ -63,6 +67,41 @@ def _build_prefix_tokens(tokenizer: Any, *, language: str, task: str) -> list[in
     return list(tokenizer.prefix_tokens)
 
 
+def _decoder_token_budgets(
+    *,
+    decoder_context_len: int,
+    prefix_len: int,
+    requested_max_new_tokens: int,
+) -> tuple[int, int]:
+    """Split the decoder position budget between generation and prev context.
+
+    Allocation order: the mandatory task prefix first, then generation
+    (clamped so it can never overflow the learned position table), and only
+    the remaining positions go to previous-text context.
+    """
+    max_new_tokens = min(requested_max_new_tokens, decoder_context_len - prefix_len)
+    max_prev_tokens = min(
+        MAX_PREV_CONTEXT_TOKENS,
+        decoder_context_len - prefix_len - max_new_tokens,
+    )
+    return max_new_tokens, max_prev_tokens
+
+
+def _build_prev_context_tokens(
+    tokenizer: Any, prompt: Any, *, max_prev_tokens: int
+) -> list[int]:
+    """Map the OpenAI ``prompt`` field to Whisper prev-context tokens."""
+    if max_prev_tokens < 2 or prompt is None:
+        return []
+    text = str(prompt).strip()
+    if not text:
+        return []
+    sot_prev_id, *text_ids = tokenizer.get_prompt_ids(text, return_tensors=None)
+    # note (jiannan-17): Recent text is the most useful continuation context, so
+    # truncate from the front while preserving the required <|startofprev|> marker.
+    return [sot_prev_id] + text_ids[-(max_prev_tokens - 1) :]
+
+
 def make_whisper_scheduler_adapters(
     *,
     processor: Any,
@@ -70,6 +109,7 @@ def make_whisper_scheduler_adapters(
     generation_config: GenerationConfig,
     encoder_token_count: int,
     max_new_tokens: int,
+    decoder_context_len: int | None = None,
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
@@ -77,6 +117,13 @@ def make_whisper_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     pad_token_id = int(tokenizer.pad_token_id or eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
+    # note (jiannan-17): Prefer the decoder limit passed by the caller. Fall back
+    # to generation_config.max_length, then to Whisper's default 448 positions.
+    decoder_context_len = int(
+        decoder_context_len
+        or getattr(generation_config, "max_length", None)
+        or _DEFAULT_DECODER_CONTEXT_LEN
+    )
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
@@ -89,11 +136,30 @@ def make_whisper_scheduler_adapters(
 
         language = _resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
-        prompt_token_ids = _build_prefix_tokens(
+        prefix_token_ids = _build_prefix_tokens(
             tokenizer,
             language=language,
             task=task,
         )
+        request_max_new_tokens, max_prev_tokens = _decoder_token_budgets(
+            decoder_context_len=decoder_context_len,
+            prefix_len=len(prefix_token_ids),
+            requested_max_new_tokens=int(
+                params.get("max_new_tokens") or max_new_tokens
+            ),
+        )
+        prev_context_ids = _build_prev_context_tokens(
+            tokenizer, params.get("prompt"), max_prev_tokens=max_prev_tokens
+        )
+        prompt_token_ids = prev_context_ids + prefix_token_ids
+        # note (jiannan-17): Keep the invariant at the assembly boundary so future
+        # changes fail before an out-of-range decoder position reaches the GPU.
+        if len(prompt_token_ids) + request_max_new_tokens > decoder_context_len:
+            raise ValueError(
+                "Whisper decoder budget exceeded: "
+                f"{len(prompt_token_ids)} input tokens + "
+                f"{request_max_new_tokens} max_new_tokens > {decoder_context_len}"
+            )
         input_ids = [pad_token_id] * encoder_token_count + prompt_token_ids
 
         features = processor.feature_extractor(
@@ -113,7 +179,6 @@ def make_whisper_scheduler_adapters(
         )
 
         temperature = float(params.get("temperature") or 0.0)
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -170,6 +235,7 @@ def make_whisper_scheduler_adapters(
 
 
 __all__ = [
+    "MAX_PREV_CONTEXT_TOKENS",
     "WhisperASRRequestData",
     "make_whisper_scheduler_adapters",
 ]

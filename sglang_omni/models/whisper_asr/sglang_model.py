@@ -22,6 +22,10 @@ from torch import nn
 from transformers import WhisperConfig
 from transformers.activations import ACT2FN
 
+from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
+    WhisperEncoderCudaGraphRunner,
+)
+
 
 class WhisperEncoderAttention(nn.Module):
     def __init__(self, config: WhisperConfig) -> None:
@@ -330,6 +334,22 @@ class WhisperForConditionalGeneration(nn.Module):
         self.logits_processor = LogitsProcessor(config)
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
+        self._encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+
+    def init_encoder_graphs(
+        self,
+        batch_buckets: list[int] | tuple[int, ...],
+        input_feature_len: int,
+    ) -> None:
+        """Capture fixed-shape Whisper encoder batches after model setup."""
+        if not batch_buckets:
+            return
+        self._encoder_graph_runner = WhisperEncoderCudaGraphRunner(
+            self.model.encoder,
+            num_mel_bins=int(self.config.num_mel_bins),
+            input_feature_len=int(input_feature_len),
+        )
+        self._encoder_graph_runner.capture(batch_buckets)
 
     def _batch_audio_inputs(
         self,
@@ -396,7 +416,10 @@ class WhisperForConditionalGeneration(nn.Module):
             skip_cross_attention = forward_batch.encoder_lens.max() == 0
 
         if audio_features is not None and encoder_lens is not None:
-            encoder_states = self.model.encoder(audio_features)
+            if self._encoder_graph_runner is not None:
+                encoder_states = self._encoder_graph_runner.run(audio_features)
+            else:
+                encoder_states = self.model.encoder(audio_features)
             cross_attention_states = self._flat_encoder_result(
                 encoder_states,
                 encoder_lens,

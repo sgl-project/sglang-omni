@@ -34,6 +34,7 @@ def _make_engine_builder(
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
         enable_torch_compile=False,
+        torch_compile_max_bs=1,
         mm_attention_backend=mm_attention_backend,
         request_build_max_workers=8,
         request_build_max_pending=32,
@@ -100,10 +101,12 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert config.stages[0].factory.endswith("create_sglang_qwen3_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 64
+    assert config.stages[0].factory_args["enable_torch_compile"] is True
+    assert config.stages[0].factory_args["torch_compile_max_bs"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 32
     assert config.stages[0].factory_args["prefill_coalesce_requests"] == 16
-    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 24
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 40
     assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
     assert (
         config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
@@ -136,7 +139,7 @@ def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 32
     assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 40.0
     assert signature.parameters["prefill_coalesce_when_idle"].default is True
     assert (
         signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
@@ -200,6 +203,7 @@ def test_qwen3_asr_stage_default_disables_torch_compile() -> None:
     signature = inspect.signature(create_sglang_qwen3_asr_executor)
 
     assert signature.parameters["enable_torch_compile"].default is False
+    assert signature.parameters["torch_compile_max_bs"].default == 1
 
 
 def test_qwen3_asr_stage_default_enables_async_decode() -> None:
@@ -356,7 +360,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
     assert scheduler.prefill_coalesce_requests == 16
-    assert scheduler.prefill_coalesce_wait_ms == 24.0
+    assert scheduler.prefill_coalesce_wait_ms == 40.0
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True

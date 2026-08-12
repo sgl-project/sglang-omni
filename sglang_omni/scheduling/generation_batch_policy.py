@@ -187,19 +187,6 @@ def validate_generation_batch_policy(
         errors,
         required=torch_compile_enabled,
     )
-    if (
-        torch_compile_enabled
-        and max_running_requests is not None
-        and torch_compile_max_bs is not None
-        and torch_compile_max_bs < max_running_requests
-    ):
-        errors.append(
-            "torch_compile_max_bs must cover max_running_requests "
-            f"({torch_compile_max_bs} < {max_running_requests}); "
-            "increase torch_compile_max_bs to at least max_running_requests "
-            "(for talker-backed pipelines, use --talker-torch-compile-max-bs)"
-        )
-
     normalized_model_buffer_bs: int | None = None
     if model_buffer_bs is not None:
         normalized_model_buffer_bs = int(model_buffer_bs)

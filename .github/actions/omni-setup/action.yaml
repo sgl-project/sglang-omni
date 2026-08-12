@@ -40,6 +40,7 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
+        source .github/scripts/pin_to_ci_cpuset.sh
         HOST="${OMNI_CI_HOME}/${VENV_NAME}"
         if [ -d "${HOST}" ] && [ -n "$(ls -A "${HOST}/")" ]; then
           rm -rf "./${VENV_NAME}"

@@ -1429,6 +1429,31 @@ def test_transcription_endpoint_returns_text_json() -> None:
     assert request.extra_params["language"] == "en"
 
 
+def test_transcription_endpoint_maps_disallowed_special_token_to_400() -> None:
+    transcription_client = FailingTranscriptionClient(
+        "Encountered text in the prompt corresponding to disallowed "
+        "special token: <|startoftranscript|>."
+    )
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="openai/whisper-large-v3",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "openai/whisper-large-v3",
+            "prompt": "<|startoftranscript|> sneaky",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "disallowed special token" in response.json()["detail"]
+
+
 def test_transcription_endpoint_maps_bad_request_error_to_400() -> None:
 
     bad_request_error = (

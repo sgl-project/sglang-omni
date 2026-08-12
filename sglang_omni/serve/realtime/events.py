@@ -31,6 +31,7 @@ class TurnDetection(EventBase):
     threshold: float | None = None
     prefix_padding_ms: int | None = None
     silence_duration_ms: int | None = None
+    interrupt_response: bool | None = None
 
 
 class SessionConfig(EventBase):
@@ -81,6 +82,13 @@ class ResponseCancel(ClientEvent):
     type: Literal["response.cancel"]
 
 
+class ConversationItemTruncate(ClientEvent):
+    type: Literal["conversation.item.truncate"]
+    item_id: str
+    content_index: int
+    audio_end_ms: int = Field(ge=0)
+
+
 def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
     """Construct a server event dict. ``event_id`` is filled in by the
     session loop so handlers don't have to."""
@@ -97,6 +105,7 @@ CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
     "input_audio_buffer.append": InputAudioBufferAppend,
     "input_audio_buffer.clear": InputAudioBufferClear,
     "response.cancel": ResponseCancel,
+    "conversation.item.truncate": ConversationItemTruncate,
 }
 
 
