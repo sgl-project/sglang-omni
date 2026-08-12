@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -33,3 +34,24 @@ def load_llada2_tokenizer(model_path: str):
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     return get_tokenizer(model_path, trust_remote_code=True)
+
+
+def load_llada2_image_token_offset(model_path: str) -> int:
+    """Load the image-codebook offset from the checkpoint configuration."""
+    model_dir = Path(resolve_local_model_dir(model_path))
+    config_path = model_dir / "config.json"
+    if config_path.is_file():
+        with config_path.open(encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        value = config.get("image_token_offset")
+    else:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        value = getattr(config, "image_token_offset", None)
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            "LLaDA2-Uni checkpoint config must define a positive image_token_offset"
+        )
+    return value
