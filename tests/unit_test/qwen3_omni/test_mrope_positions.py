@@ -283,11 +283,21 @@ def test_audio_in_video_eos_uses_last_emitted_column() -> None:
     _assert_bit_identical(oracle, fast)
 
 
-def test_compute_mrope_positions_wires_vectorized_path() -> None:
-    """_compute_mrope_positions returns the vectorized [3, seq] layout."""
+def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
+    """_compute_mrope_positions calls the vectorized path, [3, seq] layout."""
     from types import SimpleNamespace
 
+    from sglang_omni.models.qwen3_omni import mrope_positions as mp
     from sglang_omni.models.qwen3_omni.request_builders import _compute_mrope_positions
+
+    real_vectorized = mp.get_rope_index_qwen3_omni_vectorized
+    calls: list[int] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return real_vectorized(*args, **kwargs)
+
+    monkeypatch.setattr(mp, "get_rope_index_qwen3_omni_vectorized", _spy)
 
     grid = [1, 4, 4]
     tokens = [10] + _image_span(grid) + [11]
@@ -303,6 +313,7 @@ def test_compute_mrope_positions_wires_vectorized_path() -> None:
         position_id_per_seconds=POSITION_ID_PER_SECONDS,
     )
     result = _compute_mrope_positions(input_ids, model_inputs, thinker_config)
+    assert calls, "hot path must call get_rope_index_qwen3_omni_vectorized"
     assert result is not None
     positions, delta = result
     assert positions.shape == (3, len(tokens))
@@ -533,3 +544,55 @@ def test_build_talker_request_keeps_mm_mrope_for_image_prompt(monkeypatch) -> No
         mm.mrope_positions[0].float(),
         torch.arange(len(tokens), dtype=torch.float),
     )
+
+
+def test_build_talker_request_uses_linear_mrope_without_mm_markers(
+    monkeypatch,
+) -> None:
+    """Grids but no mm markers → builder installs linear positions directly."""
+    from unittest.mock import MagicMock
+
+    from sglang_omni.models.qwen3_omni import request_builders as rb
+
+    tokens = [1, 2, 3, 4, 5] + [151675] * 4
+    input_ids = torch.tensor(tokens, dtype=torch.long)
+    embeds = torch.zeros(len(tokens), 8)
+    model_inputs = {"image_grid_thw": torch.tensor([[1, 4, 4]], dtype=torch.long)}
+    cfg = _thinker_config_ns()
+
+    fake_req = MagicMock()
+    fake_req.output_ids = []
+    fake_sampling = MagicMock()
+    monkeypatch.setattr(
+        "sglang.srt.managers.schedule_batch.Req",
+        lambda **kwargs: fake_req,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.sampling.sampling_params.SamplingParams",
+        lambda **kwargs: fake_sampling,
+    )
+    fake_sampling.normalize = MagicMock()
+    fake_sampling.verify = MagicMock()
+
+    def _fail_compute(*args, **kwargs):
+        raise AssertionError("linear gate must skip _compute_mrope_positions")
+
+    monkeypatch.setattr(rb, "_compute_mrope_positions", _fail_compute)
+
+    data = rb.build_sglang_talker_request(
+        thinker_hidden_states=torch.empty(0),
+        tokenizer=MagicMock(),
+        codec_vocab_size=3072,
+        talker_input_embeds=embeds,
+        talker_input_ids=input_ids,
+        input_embeds_are_projected=True,
+        thinker_config=cfg,
+        talker_model_inputs=model_inputs,
+    )
+    mm = data.req.multimodal_inputs
+    assert mm is not None
+    assert torch.equal(
+        mm.mrope_positions,
+        torch.arange(len(tokens), dtype=torch.long).unsqueeze(0).expand(3, -1),
+    )
+    assert torch.equal(mm.mrope_position_delta, torch.zeros((1, 1), dtype=torch.long))

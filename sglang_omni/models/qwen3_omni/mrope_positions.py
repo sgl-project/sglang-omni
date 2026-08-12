@@ -310,10 +310,12 @@ def get_rope_index_qwen3_omni_vectorized(
                 remain_videos -= 1
                 remain_audios -= 1
 
-            # Note (guozhihao): AIV uses last-column max; oracle appends per column.
-            next_st = float(blocks[-1].max() + 1) if blocks else 0.0
             if min_ed == ed_vision_start and ed_vision_start + 1 == ed_audio_start:
+                # Note (guozhihao): AIV uses last-column max; oracle appends
+                # per column.
                 next_st = float(blocks[-1][:, -1].max() + 1)
+            else:
+                next_st = float(blocks[-1].max() + 1) if blocks else 0.0
             blocks.append(_linear_pos_ids(eos_len, next_st))
         if st < n_tokens:
             st_idx = float(blocks[-1].max() + 1) if blocks else 0.0
