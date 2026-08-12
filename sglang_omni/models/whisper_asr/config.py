@@ -30,7 +30,10 @@ class WhisperASRPipelineConfig(PipelineConfig):
             name="asr",
             process="asr",
             factory=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
-            factory_args={"device": "cuda:0"},
+            factory_args={
+                "device": "cuda:0",
+                "enable_encoder_cuda_graph": True,
+            },
             gpu=0,
             terminal=True,
         )

@@ -7,11 +7,13 @@ import logging
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from typing import Any, Callable, NamedTuple
 
 import torch
 from torch.multiprocessing.reductions import rebuild_cuda_tensor
 
+from sglang_omni.comm.kv_transfer import KVPool
 from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
@@ -52,6 +54,38 @@ def _synchronize_cuda_event(
         worker_start_ns=worker_start_ns,
         worker_done_ns=_comm_now_ns(),
     )
+
+
+async def _wait_for_cuda_event(
+    event: torch.cuda.Event,
+    *,
+    device_index: int,
+    wait_executor: ThreadPoolExecutor,
+    timeout: float,
+    finish_on_interrupt: bool = False,
+) -> tuple[int | None, _CudaEventWaitResult | None]:
+    """Wait for a CUDA event without blocking the asyncio event loop."""
+
+    if event.query():
+        return None, None
+    loop = asyncio.get_running_loop()
+    submit_ns = _comm_now_ns()
+    wait_future = loop.run_in_executor(
+        wait_executor,
+        _synchronize_cuda_event,
+        event,
+        device_index,
+    )
+    if not finish_on_interrupt:
+        return submit_ns, await asyncio.wait_for(wait_future, timeout=timeout)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(wait_future), timeout=timeout)
+    except (asyncio.CancelledError, TimeoutError):
+        # A launched GPU copy cannot be cancelled. Keep its resources alive
+        # until the kernel stops touching them, then propagate the interruption.
+        await asyncio.shield(wait_future)
+        raise
+    return submit_ns, result
 
 
 def _cuda_event_elapsed_ms(
@@ -110,6 +144,7 @@ def _dump_cuda_storage_handle(tensor: torch.Tensor) -> dict[str, Any]:
         "event_handle": event_handle,
         "event_sync_required": bool(event_sync_required),
         "numel": int(tensor.numel()),
+        "tensor_offset": int(tensor.storage_offset()),
     }
 
 
@@ -123,7 +158,7 @@ def _load_cuda_storage_handle(
         torch.Tensor,
         (int(storage_meta["numel"]),),
         (1,),
-        0,
+        int(storage_meta.get("tensor_offset", 0)),
         torch.UntypedStorage,
         torch.uint8,
         device_index,
@@ -162,7 +197,48 @@ class _SlotAllocation(NamedTuple):
     last_failed_free_runs: int
 
 
-class CudaIpcPutOperation(RelayOperation):
+class _ReceiverAckOperation(RelayOperation):
+    """Common operation state for sender resources held until receiver ACK."""
+
+    def __init__(
+        self,
+        metadata: dict[str, Any],
+        *,
+        held_references: tuple[Any, ...] = (),
+    ) -> None:
+        self._metadata = metadata
+        self._receiver_done = asyncio.get_running_loop().create_future()
+        self._receiver_done_mark_ns: int | None = None
+        self._held_references = held_references
+        self._completed = False
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self._metadata
+
+    async def _wait_for_receiver(self, timeout: float) -> None:
+        await asyncio.wait_for(self._receiver_done, timeout=timeout)
+
+    async def wait_for_completion(self, timeout: float = 30.0) -> None:
+        if self._completed:
+            return
+        try:
+            await self._wait_for_receiver(timeout)
+        finally:
+            self._completed = True
+            self._held_references = ()
+
+    def mark_receiver_done(self) -> None:
+        if not self._receiver_done.done():
+            self._receiver_done_mark_ns = _comm_now_ns()
+            self._receiver_done.set_result(None)
+
+    def mark_receiver_failed(self, exc: BaseException) -> None:
+        if not self._receiver_done.done():
+            self._receiver_done.set_exception(exc)
+
+
+class CudaIpcPutOperation(_ReceiverAckOperation):
     """Sender-side handle; completion means the slot can be reused."""
 
     def __init__(
@@ -180,7 +256,7 @@ class CudaIpcPutOperation(RelayOperation):
         copy_start_event: torch.cuda.Event | None = None,
         copy_done_event: torch.cuda.Event | None = None,
     ) -> None:
-        self._metadata = metadata
+        super().__init__(metadata)
         self._ready_event: torch.cuda.Event | None = ready_event
         self._copy_start_event = copy_start_event
         self._copy_done_event = copy_done_event
@@ -192,19 +268,13 @@ class CudaIpcPutOperation(RelayOperation):
         self._release_cb = release_cb
         self._fail_cb = fail_cb
         self._completed = False
-        self._receiver_done = asyncio.get_running_loop().create_future()
-        self._receiver_done_mark_ns: int | None = None
-
-    @property
-    def metadata(self) -> dict[str, Any]:
-        return self._metadata
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self._completed:
             return
         wait_start = _comm_now_ns()
         try:
-            await asyncio.wait_for(self._receiver_done, timeout=timeout)
+            await self._wait_for_receiver(timeout)
         except TimeoutError as exc:
             self._completed = True
             self._fail_cb(exc)
@@ -245,15 +315,6 @@ class CudaIpcPutOperation(RelayOperation):
             trace_fields["sender_copy_gpu_ms"] = round(sender_copy_gpu_ms, 6)
         _comm_trace("cuda_ipc_put_wait_ack", **trace_fields)
 
-    def mark_receiver_done(self) -> None:
-        if not self._receiver_done.done():
-            self._receiver_done_mark_ns = _comm_now_ns()
-            self._receiver_done.set_result(None)
-
-    def mark_receiver_failed(self, exc: BaseException) -> None:
-        if not self._receiver_done.done():
-            self._receiver_done.set_exception(exc)
-
 
 class CudaIpcGetOperation(RelayOperation):
     """Receiver-side handle. Completion means the peer copy finished."""
@@ -261,7 +322,7 @@ class CudaIpcGetOperation(RelayOperation):
     def __init__(
         self,
         event: torch.cuda.Event,
-        pool_tensor: torch.Tensor,
+        pool_tensor: torch.Tensor | None,
         slot_index: int,
         num_slots: int,
         request_id: str | None,
@@ -270,6 +331,9 @@ class CudaIpcGetOperation(RelayOperation):
         wait_executor: ThreadPoolExecutor,
         start_event: torch.cuda.Event | None = None,
         done_event: torch.cuda.Event | None = None,
+        held_references: tuple[Any, ...] = (),
+        finish_on_interrupt: bool = False,
+        emit_trace: bool = True,
     ) -> None:
         self._event = event
         self._start_event = start_event
@@ -281,6 +345,9 @@ class CudaIpcGetOperation(RelayOperation):
         self._size = size
         self._device_index = device_index
         self._wait_executor = wait_executor
+        self._held_references = held_references
+        self._finish_on_interrupt = finish_on_interrupt
+        self._emit_trace = emit_trace
         self._completed = False
 
     @property
@@ -291,82 +358,59 @@ class CudaIpcGetOperation(RelayOperation):
         if self._completed:
             return
         wait_start = _comm_now_ns()
-        if self._event.query():
-            host_wait_ms = _comm_elapsed_ms(wait_start)
-            receiver_gpu_ms = _cuda_event_elapsed_ms(
-                self._start_event, self._done_event
-            )
-            self._completed = True
-            self._pool_tensor = None
-            self._start_event = None
-            self._done_event = None
-            trace_fields: dict[str, Any] = {
-                "request_id": self._request_id,
-                "slot_index": self._slot_index,
-                "num_slots": self._num_slots,
-                "bytes": self._size,
-                "completion_mode": "query_ready",
-                "elapsed_ms": round(host_wait_ms, 6),
-            }
-            if receiver_gpu_ms is not None:
-                trace_fields["receiver_gpu_wait_copy_ms"] = round(receiver_gpu_ms, 6)
-                trace_fields["host_minus_receiver_gpu_ms"] = round(
-                    host_wait_ms - receiver_gpu_ms, 6
-                )
-            _comm_trace("cuda_ipc_get_wait_copy", **trace_fields)
-            return
-
-        loop = asyncio.get_event_loop()
-        submit_ns = _comm_now_ns()
-        wait_future = loop.run_in_executor(
-            self._wait_executor,
-            _synchronize_cuda_event,
-            self._event,
-            self._device_index,
-        )
         try:
-            wait_result = await asyncio.wait_for(wait_future, timeout=timeout)
-        except TimeoutError:
-            self._completed = True
-            self._pool_tensor = None
-            self._start_event = None
-            self._done_event = None
-            raise
-        except Exception:
-            self._completed = True
-            self._pool_tensor = None
-            self._start_event = None
-            self._done_event = None
+            submit_ns, wait_result = await _wait_for_cuda_event(
+                self._event,
+                device_index=self._device_index,
+                wait_executor=self._wait_executor,
+                timeout=timeout,
+                finish_on_interrupt=self._finish_on_interrupt,
+            )
+        except BaseException:
+            self._release_references()
             raise
 
         host_wait_ms = _comm_elapsed_ms(wait_start)
         receiver_gpu_ms = _cuda_event_elapsed_ms(self._start_event, self._done_event)
-        self._completed = True
-        self._pool_tensor = None
-        self._start_event = None
-        self._done_event = None
-        worker_queue_ms = (wait_result.worker_start_ns - submit_ns) / 1_000_000.0
-        worker_block_ms = (
-            wait_result.worker_done_ns - wait_result.worker_start_ns
-        ) / 1_000_000.0
-        worker_done_to_resume_ms = _comm_elapsed_ms(wait_result.worker_done_ns)
+        self._release_references()
         trace_fields: dict[str, Any] = {
             "request_id": self._request_id,
             "slot_index": self._slot_index,
             "num_slots": self._num_slots,
             "bytes": self._size,
-            "completion_mode": "thread_synchronize",
-            "worker_queue_ms": round(worker_queue_ms, 6),
-            "worker_block_ms": round(worker_block_ms, 6),
-            "worker_done_to_resume_ms": round(worker_done_to_resume_ms, 6),
+            "completion_mode": (
+                "query_ready" if wait_result is None else "thread_synchronize"
+            ),
             "elapsed_ms": round(host_wait_ms, 6),
         }
+        if submit_ns is not None and wait_result is not None:
+            trace_fields.update(
+                worker_queue_ms=round(
+                    (wait_result.worker_start_ns - submit_ns) / 1_000_000.0, 6
+                ),
+                worker_block_ms=round(
+                    (wait_result.worker_done_ns - wait_result.worker_start_ns)
+                    / 1_000_000.0,
+                    6,
+                ),
+                worker_done_to_resume_ms=round(
+                    _comm_elapsed_ms(wait_result.worker_done_ns), 6
+                ),
+            )
         if receiver_gpu_ms is not None:
             trace_fields["receiver_gpu_wait_copy_ms"] = round(receiver_gpu_ms, 6)
             trace_fields["host_minus_receiver_gpu_ms"] = round(
                 host_wait_ms - receiver_gpu_ms, 6
             )
-        _comm_trace("cuda_ipc_get_wait_copy", **trace_fields)
+        if self._emit_trace:
+            _comm_trace("cuda_ipc_get_wait_copy", **trace_fields)
+
+    def _release_references(self) -> None:
+        self._completed = True
+        self._pool_tensor = None
+        self._held_references = ()
+        self._start_event = None
+        self._done_event = None
 
 
 class _ContiguousSlotAllocator:
@@ -534,6 +578,12 @@ class CudaIpcRelay(Relay):
         self._allocator: _ContiguousSlotAllocator | None = None
 
         self._remote_pools: dict[str, torch.Tensor] = {}
+        self._kv_pools: dict[str, KVPool] = {}
+        self._kv_pool_registration_ids: dict[str, str] = {}
+        self._kv_pool_storage_handles: dict[
+            tuple[str, str], tuple[dict[str, Any], ...]
+        ] = {}
+        self._remote_kv_pools: dict[tuple[str, str], tuple[torch.Tensor, ...]] = {}
         self._failed_error: BaseException | None = None
         self._failed_event = asyncio.Event()
         self._wait_executor = ThreadPoolExecutor(
@@ -902,11 +952,216 @@ class CudaIpcRelay(Relay):
             done_event=done_event,
         )
 
+    def register_kv_pool(self, pool: KVPool) -> None:
+        expected_device = torch.device(self.device)
+        if pool.device != expected_device:
+            raise ValueError(
+                f"KV pool {pool.pool_id!r} is on {pool.device}, but relay uses "
+                f"{expected_device}"
+            )
+        for buffer in pool.buffers:
+            if buffer.bytes_per_page % 8 != 0:
+                raise ValueError(
+                    f"CUDA IPC KV buffer {buffer.name!r} bytes_per_page must be "
+                    f"a multiple of 8, got {buffer.bytes_per_page}"
+                )
+        self._kv_pools[pool.pool_id] = pool
+        self._kv_pool_registration_ids.setdefault(
+            pool.pool_id,
+            f"{self.engine_id}:{os.getpid()}:{uuid.uuid4().hex}",
+        )
+
+    def _export_kv_source_pool(
+        self,
+        pool_id: str,
+        *,
+        destination_registration_id: str,
+    ) -> dict[str, Any]:
+        pool = self._kv_pools.get(pool_id)
+        if pool is None:
+            raise KeyError(f"unknown cuda_ipc KV pool {pool_id!r}")
+        cache_key = (pool_id, destination_registration_id)
+        storage_handles = self._kv_pool_storage_handles.get(cache_key)
+        if storage_handles is None:
+            storage_handles = tuple(
+                _dump_cuda_storage_handle(buffer.byte_view()) for buffer in pool.buffers
+            )
+            self._kv_pool_storage_handles[cache_key] = storage_handles
+        return {
+            "engine_id": self.engine_id,
+            "cuda_ipc_kv": {
+                "registration_id": self._kv_pool_registration_ids[pool_id],
+                "device_id": self.device_id,
+                "storages": list(storage_handles),
+            },
+        }
+
+    def prepare_kv_destination(self, pool_id: str) -> dict[str, Any]:
+        pool = self._kv_pools.get(pool_id)
+        if pool is None:
+            raise KeyError(f"unknown cuda_ipc KV pool {pool_id!r}")
+        return {
+            "cuda_ipc_kv_destination": {
+                "registration_id": self._kv_pool_registration_ids[pool_id],
+            },
+        }
+
+    async def put_kv_pages(
+        self,
+        *,
+        source_pool_id: str,
+        source_page_indices: tuple[int, ...],
+        destination_ref: dict[str, Any],
+    ) -> _ReceiverAckOperation:
+        pool = self._kv_pools.get(source_pool_id)
+        if pool is None:
+            raise KeyError(f"unknown cuda_ipc KV pool {source_pool_id!r}")
+        destination_registration_id = destination_ref["cuda_ipc_kv_destination"][
+            "registration_id"
+        ]
+
+        device = pool.device
+        stream = torch.cuda.current_stream(device)
+        ready_event = torch.cuda.Event(interprocess=True)
+        with torch.cuda.device(device), torch.cuda.stream(stream):
+            ready_event.record(stream)
+        relay_info = self._export_kv_source_pool(
+            source_pool_id,
+            destination_registration_id=destination_registration_id,
+        )
+        relay_info["transfer_info"] = {
+            "size": sum(
+                buffer.bytes_per_page * len(source_page_indices)
+                for buffer in pool.buffers
+            )
+        }
+        relay_info["cuda_ipc_kv"] = dict(relay_info["cuda_ipc_kv"])
+        relay_info["cuda_ipc_kv"]["ready_event"] = ready_event.ipc_handle()
+        return _ReceiverAckOperation(
+            relay_info,
+            held_references=(
+                ready_event,
+                tuple(buffer.byte_view() for buffer in pool.buffers),
+            ),
+        )
+
+    async def get_kv_pages(
+        self,
+        metadata: dict[str, Any],
+        *,
+        destination_pool_id: str,
+        source_page_indices: tuple[int, ...],
+        destination_page_indices: tuple[int, ...],
+        request_id: str,
+    ) -> CudaIpcGetOperation:
+        destination = self._kv_pools.get(destination_pool_id)
+        if destination is None:
+            raise KeyError(f"unknown cuda_ipc KV pool {destination_pool_id!r}")
+        source_meta = metadata["cuda_ipc_kv"]
+
+        destination_device = destination.device
+        source_device_id = int(source_meta["device_id"])
+        destination_device_id = int(destination_device.index or 0)
+        if 0 <= source_device_id < torch.cuda.device_count():
+            if (
+                source_device_id != destination_device_id
+                and not torch.cuda.can_device_access_peer(
+                    destination_device_id,
+                    source_device_id,
+                )
+            ):
+                raise RuntimeError(
+                    "direct CUDA-IPC KV transfer requires GPU peer access; "
+                    f"cuda:{destination_device_id} cannot access "
+                    f"cuda:{source_device_id}"
+                )
+            _ensure_peer_access(source_device_id, destination_device_id)
+        source_engine_id = metadata["engine_id"]
+        source_registration_id = source_meta["registration_id"]
+        remote_pool_key = (source_engine_id, source_registration_id)
+        source_buffers = self._remote_kv_pools.get(remote_pool_key)
+        if source_buffers is None:
+            source_buffers = tuple(
+                _load_cuda_storage_handle(storage, device=destination_device)
+                for storage in source_meta["storages"]
+            )
+            self._remote_kv_pools[remote_pool_key] = source_buffers
+
+        copy_args = tuple(
+            (source, target.byte_view(), target.bytes_per_page)
+            for source, target in zip(
+                source_buffers,
+                destination.buffers,
+                strict=True,
+            )
+        )
+
+        ready_event = torch.cuda.Event.from_ipc_handle(
+            destination_device,
+            source_meta["ready_event"],
+        )
+        source_indices = torch.tensor(
+            source_page_indices,
+            dtype=torch.int64,
+            device=destination_device,
+        )
+        destination_indices = torch.tensor(
+            destination_page_indices,
+            dtype=torch.int64,
+            device=destination_device,
+        )
+        stream = torch.cuda.current_stream(destination_device)
+        done_event = torch.cuda.Event()
+        from sgl_kernel import transfer_kv_per_layer_mla
+
+        with torch.cuda.device(destination_device), torch.cuda.stream(stream):
+            stream.wait_event(ready_event)
+            try:
+                for source, target, item_size in copy_args:
+                    transfer_kv_per_layer_mla(
+                        src=source,
+                        dst=target,
+                        src_indices=source_indices,
+                        dst_indices=destination_indices,
+                        item_size=item_size,
+                    )
+                done_event.record(stream)
+            except Exception:
+                with suppress(Exception):
+                    stream.synchronize()
+                raise
+        transfer_size = sum(
+            buffer.bytes_per_page * len(source_page_indices)
+            for buffer in destination.buffers
+        )
+        return CudaIpcGetOperation(
+            done_event,
+            None,
+            -1,
+            0,
+            request_id,
+            transfer_size,
+            destination_device_id,
+            self._wait_executor,
+            held_references=(
+                ready_event,
+                source_buffers,
+                source_indices,
+                destination_indices,
+            ),
+            finish_on_interrupt=True,
+            emit_trace=False,
+        )
+
     def cleanup(self, request_id: str) -> None:
         pass
 
     def close(self) -> None:
         self._remote_pools.clear()
+        self._remote_kv_pools.clear()
+        self._kv_pool_storage_handles.clear()
+        self._kv_pool_registration_ids.clear()
+        self._kv_pools.clear()
         self._pool_storage_handles.clear()
         self._pool_tensor = None
         self._allocator = None

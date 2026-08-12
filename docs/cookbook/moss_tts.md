@@ -38,6 +38,44 @@ sgl-omni serve \
   --port 8000
 ```
 
+The default model-specific layout keeps the FP32 reference encoder on CPU and
+loads the GPU vocoder in BF16. This removes one codec copy from GPU and halves
+the parameter memory of the remaining codec.
+
+For the bounded 32 GB qualification layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_32gb.yaml \
+  --port 8000
+```
+
+This configuration limits request concurrency and CUDA Graph capture to batch
+size 1. It completed startup and reference-less non-streaming synthesis on one
+RTX 5090 with 32,607 MiB, peaking at 26,939 MiB. Treat this as a measured
+qualification point rather than a general claim for every 32 GB card.
+
+For the directly measured 24 GB layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_24gb.yaml \
+  --port 8000
+```
+
+This profile completed startup, CUDA Graph capture, reference and
+reference-less synthesis, streaming, cancellation, and recovery on one RTX
+4090 with 24,564 MiB. Peak sampled VRAM was 23,251 MiB, leaving a minimum of
+960 MiB free. SGLang profiled an effective 6,708-token KV capacity below the
+requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
+CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
+
+Both policies can be changed explicitly through the preprocessing/vocoder
+`runtime_overrides` entries when profiling another layout. Explicit `device`
+values take precedence over the GPU selected by stage placement.
+
 ## Synthesizing Speech
 
 ### Basic Speech
