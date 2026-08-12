@@ -158,6 +158,36 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
+def test_lookup_cached_embedding_returns_valid_completed_entry() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    service.encode_item(item)
+
+    cached = service.lookup_cached_embedding(item.audio_fingerprint, 3)
+
+    assert cached is not None
+    assert torch.equal(cached, item.precomputed_embeddings.cpu())
+    assert service.stats()["hits"] == 1
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        torch.zeros((4, _HIDDEN_SIZE), dtype=torch.float32),
+        torch.zeros((3, _HIDDEN_SIZE), dtype=torch.float64),
+    ],
+)
+def test_lookup_cached_embedding_evicts_invalid_entry(invalid: torch.Tensor) -> None:
+    service = _make_service(_StubModel(dtype=torch.float32))
+    key = f"{_NAMESPACE}:invalid"
+    service._cache.put(key, invalid)
+
+    assert service.lookup_cached_embedding("invalid", 3) is None
+    assert service._cache.get(key) is None
+    assert service.stats()["hits"] == 0
+
+
 def test_extended_audio_never_reuses_prefix_embedding() -> None:
     model = _StubModel()
     service = _make_service(model)

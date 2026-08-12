@@ -21,6 +21,11 @@ _AUDIO_PAD_ID = 42  # arbitrary sentinel distinct from vocabulary ids below
 
 
 class _UnexpectedEncoderService:
+    def lookup_cached_embedding(
+        self, _audio_fingerprint: str, _expected_tokens: int
+    ) -> None:
+        return None
+
     def encode_item(self, _item: object) -> None:
         pytest.fail("invalid requests must not be encoded")
 
@@ -84,6 +89,9 @@ def _feature_extractor(num_lfr_frames: int):
             "attention_mask": torch.ones((1, num_lfr_frames), dtype=torch.long),
         }
 
+    _call.n_fft = 400
+    _call.hop_length = 160
+    _call.lfr_n = 6
     return _call
 
 
@@ -144,6 +152,11 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
     observed: dict[str, object] = {}
 
     class _EncoderService:
+        def lookup_cached_embedding(
+            self, _audio_fingerprint: str, _expected_tokens: int
+        ) -> None:
+            return None
+
         def encode_item(self, item) -> None:
             observed["offsets"] = item.offsets
             observed["num_audio_tokens"] = item.num_audio_tokens
@@ -171,6 +184,117 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
     assert observed["audio_fingerprint"] == audio_fingerprint(audio)
     assert item.feature is None
     assert item.precomputed_embeddings.shape[0] == 3
+
+
+def test_fun_asr_embedding_cache_hit_skips_feature_extraction(monkeypatch) -> None:
+    audio = np.zeros(16000, dtype=np.float32)
+    monkeypatch.setattr(transcription, "load_audio", lambda source, **kwargs: audio)
+    embedding = torch.zeros((3, 4), dtype=torch.float32)
+
+    class _UnexpectedFeatureExtractor:
+        n_fft = 400
+        hop_length = 160
+        lfr_n = 6
+
+        def __call__(self, *args, **kwargs):
+            raise AssertionError("feature extractor should not be called")
+
+    class _EncoderService:
+        def lookup_cached_embedding(
+            self, fingerprint: str, expected_tokens: int
+        ) -> torch.Tensor | None:
+            assert fingerprint == audio_fingerprint(audio)
+            assert expected_tokens == 3
+            return embedding
+
+        def attach_embedding(self, item, cached: torch.Tensor) -> None:
+            item.precomputed_embeddings = cached
+            item.feature = None
+
+        def encode_item(self, item) -> None:
+            raise AssertionError("encoder should not run on a cache hit")
+
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_UnexpectedFeatureExtractor(),
+        audio_encoder_service=_EncoderService(),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-cache-hit",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert data.num_audio_tokens == 3
+    assert item.feature is None
+    assert item.precomputed_embeddings is embedding
+    assert item.offsets[0][1] - item.offsets[0][0] + 1 == 3
+
+
+def test_fun_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> None:
+    audio = np.zeros(16000, dtype=np.float32)
+    monkeypatch.setattr(transcription, "load_audio", lambda source, **kwargs: audio)
+    extractor = _feature_extractor(17)
+
+    class _EncoderService:
+        def lookup_cached_embedding(
+            self, fingerprint: str, expected_tokens: int
+        ) -> None:
+            assert fingerprint == audio_fingerprint(audio)
+            assert expected_tokens == 3
+            return None
+
+        def encode_item(self, item) -> None:
+            assert item.feature is not None
+            item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
+            item.feature = None
+
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=extractor,
+        audio_encoder_service=_EncoderService(),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-cache-miss",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert data.num_audio_tokens == 3
+    assert item.feature is None
+    assert item.precomputed_embeddings.shape == (3, 4)
+
+
+def test_fun_asr_without_encoder_service_keeps_extracted_feature(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-no-cache",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert item.feature.shape == (1, 560, 17)
+    assert item.precomputed_embeddings is None
 
 
 def test_fun_asr_request_builder_language_prompt(monkeypatch) -> None:

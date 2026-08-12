@@ -26,7 +26,10 @@ from sglang_omni.scheduling.token_text_streaming import (
 )
 
 from .configuration_fun_asr import AUDIO_PLACEHOLDER_TOKEN as _AUDIO_PAD
-from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
+from .tool_funcs.audio_lengths import (
+    fun_asr_low_frame_rate_length,
+    fun_asr_num_audio_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,25 +197,50 @@ def make_fun_asr_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        extracted = feature_extractor(
-            audio,
-            sampling_rate=_SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-            padding="longest",
-        )
-        features = extracted["input_features"]  # [1, 560, T_lfr]
-        feature_attention_mask = extracted.get("attention_mask")
-        if feature_attention_mask is None:
-            feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+        estimated_audio_tokens = None
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            try:
+                estimated_audio_tokens = fun_asr_num_audio_tokens(
+                    len(audio),
+                    frame_length_samples=int(feature_extractor.n_fft),
+                    frame_shift_samples=int(feature_extractor.hop_length),
+                    lfr_n=int(feature_extractor.lfr_n),
+                )
+            except AttributeError as exc:
+                raise ValueError(
+                    "Fun-ASR feature extractor is missing n_fft, hop_length, or lfr_n"
+                ) from exc
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint, estimated_audio_tokens
             )
-        num_lfr_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = int(fun_asr_low_frame_rate_length(num_lfr_frames))
-        logger.debug(
-            f"[fun-asr] lfr_frames={num_lfr_frames} "
-            f"num_audio_tokens={num_audio_tokens} feat_shape={tuple(features.shape)}"
-        )
+
+        if cached_embedding is None:
+            extracted = feature_extractor(
+                audio,
+                sampling_rate=_SAMPLE_RATE,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding="longest",
+            )
+            features = extracted["input_features"]  # [1, 560, T_lfr]
+            feature_attention_mask = extracted.get("attention_mask")
+            if feature_attention_mask is None:
+                feature_attention_mask = torch.ones(
+                    (features.shape[0], features.shape[-1]), dtype=torch.long
+                )
+            num_lfr_frames = int(feature_attention_mask.sum().item())
+            num_audio_tokens = int(fun_asr_low_frame_rate_length(num_lfr_frames))
+            logger.debug(
+                f"[fun-asr] lfr_frames={num_lfr_frames} "
+                f"num_audio_tokens={num_audio_tokens} "
+                f"feat_shape={tuple(features.shape)}"
+            )
+        else:
+            features = None
+            feature_attention_mask = None
+            assert estimated_audio_tokens is not None
+            num_audio_tokens = estimated_audio_tokens
 
         lang_raw = params.get("language")
         language = _resolve_language(lang_raw)
@@ -288,7 +316,9 @@ def make_fun_asr_scheduler_adapters(
         )
         sampling_params.normalize(tokenizer=None)
 
-        if audio_encoder_service is not None:
+        if cached_embedding is not None:
+            audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        elif audio_encoder_service is not None:
             audio_encoder_service.encode_item(audio_item)
 
         req = Req(

@@ -164,20 +164,12 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
 
-        cached = self._cache.get(key)
+        cached = self.lookup_cached_embedding(
+            getattr(item, "audio_fingerprint", None), expected_tokens
+        )
         if cached is not None:
-            if self._is_valid(cached, expected_tokens):
-                with self._lock:
-                    self._hits += 1
-                self.attach_embedding(item, cached)
-                return
-            logger.warning(
-                f"Fun-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self._cache.remove_if_same(key, cached)
-            cached = None
+            self.attach_embedding(item, cached)
+            return
 
         leader = False
         with self._lock:
@@ -252,11 +244,40 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 "cache_evictions": self._cache.eviction_count,
             }
 
-    def _cache_key(self, item: Any) -> str | None:
-        item_hash = getattr(item, "audio_fingerprint", None)
-        if item_hash is None:
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated completed embedding without starting an encode."""
+        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        if key is None:
             return None
-        return f"{self._namespace}:{item_hash}"
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        if self._is_valid(cached, expected_tokens):
+            with self._lock:
+                self._hits += 1
+            return cached
+        logger.warning(
+            f"Fun-ASR pre-LM cache entry {key} failed validation "
+            f"(shape={getattr(cached, 'shape', None)}, "
+            f"dtype={getattr(cached, 'dtype', None)}); "
+            f"discarding it if unchanged before re-encoding"
+        )
+        self._cache.remove_if_same(key, cached)
+        return None
+
+    def _cache_key_from_fingerprint(self, fingerprint: str | None) -> str | None:
+        if fingerprint is None:
+            return None
+        return f"{self._namespace}:{fingerprint}"
+
+    def _cache_key(self, item: Any) -> str | None:
+        return self._cache_key_from_fingerprint(
+            getattr(item, "audio_fingerprint", None)
+        )
 
     def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
