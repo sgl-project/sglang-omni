@@ -11,6 +11,24 @@ from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 logger = logging.getLogger(__name__)
 
 
+def attach_thinking_trace(result: dict[str, Any], state: Any) -> None:
+    """Expose Phase 1 reasoning only for combined text-and-image requests."""
+    modalities = state.request_metadata.get("output_modalities")
+    if isinstance(modalities, str):
+        modalities = (modalities,)
+    if not isinstance(modalities, (list, tuple, set)):
+        return
+    normalized_modalities = {str(modality).lower() for modality in modalities}
+    if not {"text", "image"}.issubset(normalized_modalities):
+        return
+    thinking = state.generation_state.get("thinking")
+    if not isinstance(thinking, dict):
+        return
+    trace = thinking.get("trace")
+    if isinstance(trace, str):
+        result["text"] = trace
+
+
 def _event_to_dict(event) -> dict[str, Any]:
     return {
         "type": event.type,
@@ -184,7 +202,7 @@ def create_image_decode_executor(
         image_bytes, image_width, image_height = decoder.decode_to_bytes(
             token_ids, height, width, **call_kwargs
         )
-        payload.data = {
+        result = {
             "modality": "image",
             "images": [
                 {
@@ -197,6 +215,8 @@ def create_image_decode_executor(
             ],
             "finish_reason": "stop",
         }
+        attach_thinking_trace(result, state)
+        payload.data = result
         return payload
 
     return SimpleScheduler(_decode_image)

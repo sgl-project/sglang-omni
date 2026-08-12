@@ -127,7 +127,7 @@ class LLaDA2UniOmniPipelineConfig(PipelineConfig):
                     ]
                 )
             ),
-            next=[DECODE_STAGE, IMAGE_DECODE_STAGE],
+            next=[THINKER_STAGE, DECODE_STAGE, IMAGE_DECODE_STAGE],
             route_fn=f"{_PKG}.routing.thinker_next",
         ),
         StageConfig(

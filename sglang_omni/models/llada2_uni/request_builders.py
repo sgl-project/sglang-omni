@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from sglang_omni.models.llada2_uni.components.preprocessor import (
+    BOI_TOKEN,
     DUMMY_IMAGE_TOKEN_ID,
+    ROLE_ASSISTANT,
+    ROLE_HUMAN,
+    ROLE_SYSTEM,
+    SOI_TOKEN,
+    SYSTEM_PROMPT_T2I_THINKING,
+    UNCOND_TEXT,
 )
 from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
@@ -28,6 +35,27 @@ from sglang_omni.scheduling.dllm_group import (
 
 if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
+
+
+def _is_thinking_phase(state: LLaDA2UniPipelineState, phase: int) -> bool:
+    thinking = state.generation_state.get("thinking")
+    return isinstance(thinking, dict) and thinking.get("phase") == phase
+
+
+def _token_id(tokenizer: Any, token: str) -> int:
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    if not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0:
+        raise ValueError(f"tokenizer does not define {token}")
+    return token_id
+
+
+def _boi_token_id(tokenizer: Any) -> int:
+    token_id = getattr(tokenizer, "boi_token_id", None)
+    if token_id is None:
+        return _token_id(tokenizer, BOI_TOKEN)
+    if not isinstance(token_id, int) or isinstance(token_id, bool) or token_id < 0:
+        raise ValueError(f"tokenizer does not define {BOI_TOKEN}")
+    return token_id
 
 
 def prepare_dllm_input_group(
@@ -90,6 +118,8 @@ def resolve_native_image_token_offset(
     """Return the checkpoint image-vocabulary boundary for native image tasks."""
     if state.task_kind not in {"t2i", "edit"}:
         return None
+    if _is_thinking_phase(state, 1):
+        return None
     image_token_offset = state.image_token_offset
     if (
         not isinstance(image_token_offset, int)
@@ -107,7 +137,9 @@ def resolve_thinker_max_new_tokens(
     state: LLaDA2UniPipelineState,
     params: dict[str, Any],
 ) -> int:
-    """Use exactly one token per native image grid cell."""
+    """Use a fixed thinking budget or one token per native image grid cell."""
+    if _is_thinking_phase(state, 1):
+        return DEFAULT_THINKER_MAX_NEW_TOKENS
     if state.task_kind not in {"t2i", "edit"}:
         return int(params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS))
     grid = state.generation_state.get("image_grid")
@@ -266,7 +298,9 @@ def build_dllm_thinker_request(
     sampling_params.verify(vocab_size)
 
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    eos_token_ids = {eos_token_id} if eos_token_id is not None else None
+    eos_token_ids = {eos_token_id} if eos_token_id is not None else set()
+    if _is_thinking_phase(state, 1):
+        eos_token_ids.add(_boi_token_id(tokenizer))
 
     rid = request_id or "req-0"
     req = Req(
@@ -275,7 +309,7 @@ def build_dllm_thinker_request(
         origin_input_ids=input_ids_array,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
-        eos_token_ids=eos_token_ids,
+        eos_token_ids=eos_token_ids or None,
         dllm_config=dllm_config,
     )
     req.tokenizer = tokenizer
@@ -318,6 +352,120 @@ def apply_dllm_thinker_result(
     return thinker_out
 
 
+def transition_thinking_phase1_to_phase2(
+    state: LLaDA2UniPipelineState,
+    *,
+    tokenizer: Any,
+    output_ids: list[int],
+) -> None:
+    """Atomically prepare a completed thinking request for image generation."""
+    if not _is_thinking_phase(state, 1):
+        raise ValueError("thinking transition requires a Phase 1 request")
+
+    prompt = state.prompt
+    if not isinstance(prompt, dict):
+        raise TypeError("prompt missing for thinking transition")
+    input_ids = prompt.get("input_ids")
+    if isinstance(input_ids, torch.Tensor):
+        original_ids = [
+            int(token_id)
+            for token_id in input_ids.to(dtype=torch.long).flatten().tolist()
+        ]
+    elif isinstance(input_ids, (list, tuple)):
+        original_ids = [int(token_id) for token_id in input_ids]
+    else:
+        raise TypeError("prompt.input_ids must be a tensor or token sequence")
+
+    boi_token_id = _boi_token_id(tokenizer)
+    boi_position = next(
+        (
+            index
+            for index, token_id in enumerate(output_ids)
+            if int(token_id) == boi_token_id
+        ),
+        None,
+    )
+    if boi_position is None:
+        raise RuntimeError(
+            "Thinking Phase 1 did not produce <boi> after generating "
+            f"{len(output_ids)} token(s)"
+        )
+
+    image_grid = state.generation_state.get("image_grid")
+    if not isinstance(image_grid, dict):
+        raise ValueError("thinking image request is missing image_grid")
+    grid_height = image_grid.get("height")
+    grid_width = image_grid.get("width")
+    if (
+        not isinstance(grid_height, int)
+        or isinstance(grid_height, bool)
+        or not isinstance(grid_width, int)
+        or isinstance(grid_width, bool)
+        or grid_height < 1
+        or grid_width < 1
+    ):
+        raise ValueError("thinking image grid dimensions must be positive integers")
+
+    phase2_prompt_ids = original_ids + [
+        int(token_id) for token_id in output_ids[: boi_position + 1]
+    ]
+    trace = tokenizer.decode(
+        output_ids[:boi_position],
+        skip_special_tokens=True,
+    )
+
+    image_generation = state.request_metadata.get("image_generation")
+    image_generation = image_generation if isinstance(image_generation, dict) else {}
+    cfg_scale = float(image_generation.get("cfg_scale", 4.0))
+    if cfg_scale <= 0.0:
+        raise ValueError("image_generation.cfg_scale must be positive")
+
+    next_generation_state = dict(state.generation_state)
+    next_generation_state["thinking"] = {
+        "phase": 2,
+        "needs_reentry": True,
+        "trace": trace,
+    }
+    if cfg_scale > 1.0:
+        unconditional_prompt = (
+            f"{ROLE_SYSTEM} {SYSTEM_PROMPT_T2I_THINKING} "
+            f"{ROLE_HUMAN}{UNCOND_TEXT}{ROLE_ASSISTANT}"
+        )
+        unconditional_ids = tokenizer.encode(
+            unconditional_prompt,
+            add_special_tokens=False,
+        )
+        unconditional_ids.extend(
+            [
+                _token_id(tokenizer, SOI_TOKEN),
+                *tokenizer.encode(
+                    f"<|reserved_token_{grid_height}|>",
+                    add_special_tokens=False,
+                ),
+                *tokenizer.encode(
+                    f"<|reserved_token_{grid_width}|>",
+                    add_special_tokens=False,
+                ),
+                boi_token_id,
+            ]
+        )
+        next_generation_state["cfg"] = {
+            "unconditional_input_ids": unconditional_ids,
+            "scale": cfg_scale,
+            "rescale": float(image_generation.get("cfg_rescale", 0.7)),
+        }
+    else:
+        next_generation_state.pop("cfg", None)
+
+    next_engine_outputs = dict(state.engine_outputs)
+    next_engine_outputs.pop(THINKER_STAGE, None)
+
+    state.prompt = {"input_ids": torch.tensor([phase2_prompt_ids], dtype=torch.long)}
+    state.generation_state = next_generation_state
+    state.thinker_out = None
+    state.engine_outputs = next_engine_outputs
+
+
 def make_dllm_thinker_scheduler_adapters(
     *,
     tokenizer: Any,
@@ -329,6 +477,22 @@ def make_dllm_thinker_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> SGLangDLLMRequestData:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        thinking = state.generation_state.get("thinking")
+        if (
+            isinstance(thinking, dict)
+            and thinking.get("phase") == 2
+            and thinking.get("needs_reentry")
+        ):
+            next_generation_state = dict(state.generation_state)
+            next_thinking = dict(thinking)
+            next_thinking.pop("needs_reentry", None)
+            next_generation_state["thinking"] = next_thinking
+            state.generation_state = next_generation_state
+            payload = StagePayload(
+                request_id=payload.request_id,
+                request=payload.request,
+                data=state.to_dict(),
+            )
         data = build_dllm_thinker_request(
             state,
             params=payload.request.params,
@@ -343,12 +507,20 @@ def make_dllm_thinker_scheduler_adapters(
     def result_adapter(data: SGLangDLLMRequestData) -> StagePayload:
         payload = data.stage_payload
         state = LLaDA2UniPipelineState.from_dict(payload.data)
-        apply_dllm_thinker_result(
-            state,
-            stage_name=stage_name,
-            output_ids=data.output_ids,
-            finish_reason=data.finish_reason,
-        )
+        is_thinking_phase1 = _is_thinking_phase(state, 1)
+        if is_thinking_phase1:
+            transition_thinking_phase1_to_phase2(
+                state,
+                tokenizer=tokenizer,
+                output_ids=data.output_ids,
+            )
+        else:
+            apply_dllm_thinker_result(
+                state,
+                stage_name=stage_name,
+                output_ids=data.output_ids,
+                finish_reason=data.finish_reason,
+            )
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

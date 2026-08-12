@@ -408,20 +408,20 @@ def test_t2i_cfg_scale_one_stays_single_row() -> None:
     assert group is None
 
 
-def test_native_image_preprocessing_rejects_non_normal_mode() -> None:
+def test_unknown_image_generation_mode_is_rejected() -> None:
     payload = StagePayload(
         request_id="request-0",
         request=OmniRequest(
             inputs=[{"role": "user", "content": "paint a red fox"}],
             metadata={
                 "output_modalities": ["image"],
-                "image_generation": {"mode": "thinking"},
+                "image_generation": {"mode": "turbo"},
             },
         ),
         data=None,
     )
 
-    with pytest.raises(ValueError, match="mode must be 'normal'"):
+    with pytest.raises(ValueError, match="mode must be"):
         asyncio.run(_preprocessor()(payload))
 
 

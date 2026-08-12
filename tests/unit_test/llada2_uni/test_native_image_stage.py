@@ -117,6 +117,7 @@ def test_native_variant_has_dedicated_image_decoder_terminal() -> None:
     assert config.IMAGE_DECODE_STAGE in stage_by_name
     assert stage_by_name[config.IMAGE_DECODE_STAGE].terminal is True
     assert set(stage_by_name[config.THINKER_STAGE].next) == {
+        config.THINKER_STAGE,
         config.DECODE_STAGE,
         config.IMAGE_DECODE_STAGE,
     }

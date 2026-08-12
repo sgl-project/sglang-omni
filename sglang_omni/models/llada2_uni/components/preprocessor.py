@@ -38,6 +38,9 @@ ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
 DEFAULT_SYSTEM_PROMPT = "detailed thinking off"
 SYSTEM_PROMPT_T2I = "You are a text-to-image generation assistant."
+SYSTEM_PROMPT_T2I_THINKING = (
+    "You are a text-to-image generation assistant with a thinking process."
+)
 EDIT_SYSTEM_PROMPT = "You are an image editing assistant."
 UNCOND_TEXT = "<uncondition>"
 
@@ -100,8 +103,8 @@ def resolve_native_image_grid(
 ) -> tuple[int, int, int, int, int]:
     """Resolve requested output pixels to the decoder's semantic token grid."""
     mode = image_generation.get("mode", "normal")
-    if mode != "normal":
-        raise ValueError("image_generation.mode must be 'normal'")
+    if mode not in ("normal", "thinking"):
+        raise ValueError("image_generation.mode must be 'normal' or 'thinking'")
 
     output_format = image_generation.get("format", "png")
     if not isinstance(output_format, str) or output_format.strip().lower() != "png":
@@ -144,8 +147,11 @@ def _resolve_edit_cfg_scales(
 
 
 def _validate_native_edit_params(image_generation: dict[str, Any]) -> int:
-    if image_generation.get("mode", "normal") != "normal":
-        raise ValueError("image_generation.mode must be 'normal'")
+    mode = image_generation.get("mode", "normal")
+    if mode == "thinking":
+        raise ValueError("image_generation.mode='thinking' only supports text-to-image")
+    if mode != "normal":
+        raise ValueError("image_generation.mode must be 'normal' or 'thinking'")
     output_format = image_generation.get("format", "png")
     if not isinstance(output_format, str) or output_format.strip().lower() != "png":
         raise ValueError("image_generation.format must be 'png'")
@@ -532,10 +538,16 @@ class LLaDA2Preprocessor:
         else:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
+        thinking_mode = (
+            task_kind == "t2i"
+            and isinstance(image_generation, dict)
+            and image_generation.get("mode", "normal") == "thinking"
+        )
+        prompt_task_kind = "t2i_thinking" if thinking_mode else task_kind
         text_prompt = self._build_prompt(
             messages,
             image_parts_by_msg=image_parts_by_msg,
-            task_kind=task_kind,
+            task_kind=prompt_task_kind,
         )
         input_ids = self._tokenizer.encode(text_prompt, add_special_tokens=False)
 
@@ -548,7 +560,6 @@ class LLaDA2Preprocessor:
             grid_h, grid_w, height, width, resolution_multiplier = (
                 resolve_native_image_grid(image_generation)
             )
-            input_ids.extend(self._build_image_header_ids(grid_h, grid_w))
             cfg_scale = float(image_generation.get("cfg_scale", 4.0))
             if cfg_scale <= 0.0:
                 raise ValueError("image_generation.cfg_scale must be positive")
@@ -557,7 +568,11 @@ class LLaDA2Preprocessor:
                 "output_size": {"height": height, "width": width},
                 "resolution_multiplier": resolution_multiplier,
             }
-            if cfg_scale > 1.0:
+            if thinking_mode:
+                generation_state["thinking"] = {"phase": 1}
+            else:
+                input_ids.extend(self._build_image_header_ids(grid_h, grid_w))
+            if cfg_scale > 1.0 and not thinking_mode:
                 generation_state["cfg"] = {
                     "unconditional_input_ids": self._build_t2i_unconditional_ids(
                         grid_h, grid_w
@@ -572,7 +587,11 @@ class LLaDA2Preprocessor:
             "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
         )
         if task_kind == "t2i":
-            max_new_tokens = grid_h * grid_w
+            max_new_tokens = (
+                DEFAULT_THINKER_MAX_NEW_TOKENS + grid_h * grid_w
+                if thinking_mode
+                else grid_h * grid_w
+            )
 
         validate_prompt_seq_len(
             input_ids_tensor,
@@ -645,11 +664,15 @@ class LLaDA2Preprocessor:
 
         Image blocks are inserted at the start of their originating message's
         content via *image_parts_by_msg* (message index -> header/footer tokens).
+        ``t2i_thinking`` selects the two-phase image-generation system prompt.
         """
         parts: list[str] = []
-        system_prompt = (
-            SYSTEM_PROMPT_T2I if task_kind == "t2i" else DEFAULT_SYSTEM_PROMPT
-        )
+        if task_kind == "t2i":
+            system_prompt = SYSTEM_PROMPT_T2I
+        elif task_kind == "t2i_thinking":
+            system_prompt = SYSTEM_PROMPT_T2I_THINKING
+        else:
+            system_prompt = DEFAULT_SYSTEM_PROMPT
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 
         for msg_idx, msg in enumerate(messages):
