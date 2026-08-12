@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.gpu_timing import CudaSpanTimer, span
+from sglang_omni.utils.lock_profile import ProfiledRLock, labeled
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,9 @@ def _load_module(module: torch.nn.Module, path: Path) -> None:
 
 class DotsAudioCodec:
     """Model-only AudioVAE/speaker bundle shared by reference and vocoder stages."""
+
+    # Default for tests/embedders that skip __init__; span() treats None as a no-op.
+    spans: CudaSpanTimer | None = None
 
     def __init__(self, checkpoint: str, *, device: str) -> None:
         from dots_tts.models.dots_tts.config import ModelConfig
@@ -69,7 +75,43 @@ class DotsAudioCodec:
         self.sample_rate = int(vocoder.sample_rate)
         self.hop_size = int(vocoder.hop_size)
         self.device = torch.device(device)
-        self.lock = threading.RLock()
+        # Shared across reference/vocoder stage threads.
+        self.lock = ProfiledRLock()
+        # Separate guard so lock profiling does not measure its own reporter.
+        self.spans = CudaSpanTimer()
+        self._lock_log_guard = threading.Lock()
+        self._last_lock_log_time = 0.0
+
+    _LOCK_LOG_INTERVAL_S = 30.0
+
+    def lock_stats(self) -> dict[str, dict[str, float | int]]:
+        stats = getattr(self.lock, "stats", None)
+        return stats() if callable(stats) else {}
+
+    def gpu_span_stats(self) -> dict[str, dict[str, float | int]]:
+        if self.spans is None:
+            return {}
+        return self.spans.stats(block=True)
+
+    def maybe_log_contention(self) -> None:
+        """Rate-limited contention logging; no-op when both profilers are off."""
+        lock_on = bool(getattr(self.lock, "enabled", False))
+        spans_on = self.spans is not None and self.spans.enabled
+        if not (lock_on or spans_on):
+            return
+        now = time.monotonic()
+        if now - self._last_lock_log_time < self._LOCK_LOG_INTERVAL_S:
+            return
+        with self._lock_log_guard:
+            if now - self._last_lock_log_time < self._LOCK_LOG_INTERVAL_S:
+                return
+            self._last_lock_log_time = now
+            lock_summary = self.lock.summary() if lock_on else None
+            span_summary = self.spans.summary() if spans_on else None
+        if lock_summary is not None:
+            logger.info("dots.tts codec lock contention:\n%s", lock_summary)
+        if span_summary is not None:
+            logger.info("dots.tts codec GPU spans:\n%s", span_summary)
 
     @staticmethod
     def _reference_load_workers(count: int) -> int:
@@ -113,7 +155,10 @@ class DotsAudioCodec:
         )
         speaker_batch, speaker_lengths = self._speaker_input(batch, audio_lengths)
 
-        with self.lock:
+        with (
+            labeled(self.lock, "reference_encode"),
+            span(self.spans, "reference_encode"),
+        ):
             speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
             latent_distribution = self.inference.extract_latents(batch)
 

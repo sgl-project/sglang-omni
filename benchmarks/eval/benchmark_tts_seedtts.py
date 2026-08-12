@@ -175,12 +175,12 @@ import argparse
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import managed_omni_server
-from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
@@ -210,6 +210,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
+REFERENCE_MODES = ("per-sample", "shared")
+
+
+def _apply_reference_mode(samples: list[SampleInput], mode: str) -> list[SampleInput]:
+    """Select whether the reference-encode cache stays cold or warm.
+
+    Cache keys use file content, so "per-sample" forces encodes and "shared"
+    warms after the first request. Returns new objects because sample loading is memoized.
+    """
+    if mode not in REFERENCE_MODES:
+        raise ValueError(
+            f"reference_mode must be one of {REFERENCE_MODES}, got {mode!r}"
+        )
+    if mode == "per-sample" or not samples:
+        return samples
+    anchor = samples[0]
+    return [
+        replace(sample, ref_audio=anchor.ref_audio, ref_text=anchor.ref_text)
+        for sample in samples
+    ]
+
+
 @dataclass
 class TtsSeedttsBenchmarkConfig:
     model: str
@@ -231,6 +253,9 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    # "per-sample" forces reference encodes; "shared" warms cache after one
+    # request. Comparing both isolates reference-encode cost during streaming.
+    reference_mode: str = "per-sample"
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
@@ -296,6 +321,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "reference_mode": config.reference_mode,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -341,6 +367,7 @@ async def run_tts_seedtts_benchmark(
         samples = load_seedtts_samples(
             config.meta, config.max_samples, split=config.lang
         )
+    samples = _apply_reference_mode(samples, config.reference_mode)
     logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
@@ -399,6 +426,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "reference_mode": config.reference_mode,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -436,6 +464,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        reference_mode=args.reference_mode,
         response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
@@ -549,6 +578,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Reference payload shape for voice cloning. The default 'flat' sends "
             "ref_audio/ref_text, preserving the original behavior for S2-Pro "
             "and similar models. Use 'references' for Higgs TTS."
+        ),
+    )
+    parser.add_argument(
+        "--reference-mode",
+        choices=list(REFERENCE_MODES),
+        default="per-sample",
+        help=(
+            "Reference-encode cache pressure. 'per-sample' (default) keeps each "
+            "SeedTTS prompt, so most requests miss the cache and the reference "
+            "encoder runs. 'shared' pins one prompt for the whole run, so the "
+            "encoder is idle after the first request. Running both isolates what "
+            "reference encoding costs concurrent streaming decode."
         ),
     )
     parser.add_argument(

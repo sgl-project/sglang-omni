@@ -51,10 +51,14 @@ class _FakeCodec:
     def __init__(self) -> None:
         self.inference = _RecordingInference()
         self.lock = threading.Lock()
+        self.spans = None
         self.sample_rate = 48000
         self.patch_size = 3
         self.latent_dim = 5
         self.device = "cpu"
+
+    def maybe_log_contention(self) -> None:
+        pass
 
 
 def test_streaming_never_uses_the_compiled_stream_step() -> None:
