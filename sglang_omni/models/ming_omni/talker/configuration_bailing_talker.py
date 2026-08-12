@@ -40,7 +40,7 @@ class MingOmniTalkerConfig:
         self.history_patch_size = history_patch_size
         self.latent_dim = latent_dim
         self.spk_dim = spk_dim
-        self.max_conc = max_conc
+        self.max_conc = normalize_max_conc(max_conc)
 
     @classmethod
     def from_pretrained_dir(cls, model_dir: str) -> MingOmniTalkerConfig:
@@ -74,4 +74,32 @@ class MingOmniTalkerConfig:
             history_patch_size=raw.get("history_patch_size", 32),
             latent_dim=raw.get("latent_dim", 64),
             spk_dim=raw.get("spk_dim", 192),
+            max_conc=raw.get("max_conc", 1),
         )
+
+
+def normalize_max_conc(value: int | None, *, default: int = 1) -> int:
+    """Normalize talker concurrency to an int >= 1."""
+    if value is None:
+        return default
+    conc = int(value)
+    if conc < 1:
+        raise ValueError(f"max_conc must be >= 1, got {conc}")
+    return conc
+
+
+def resolve_talker_max_conc(
+    talker_model_path: str,
+    max_conc: int | None = None,
+) -> int:
+    """Resolve effective talker max_conc.
+
+    Explicit overrides win. Otherwise read from the talker checkpoint config,
+    falling back to 1 when the config file is missing.
+    """
+    if max_conc is not None:
+        return normalize_max_conc(max_conc)
+    try:
+        return MingOmniTalkerConfig.from_pretrained_dir(talker_model_path).max_conc
+    except FileNotFoundError:
+        return 1

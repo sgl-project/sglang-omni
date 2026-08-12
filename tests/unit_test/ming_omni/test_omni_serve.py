@@ -13,6 +13,7 @@ from sglang_omni.cli.serve import (
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
     apply_partial_start_cli_overrides,
+    apply_talker_max_conc_cli_override,
     apply_thinker_server_args_cli_overrides,
     apply_torch_compile_cli_overrides,
 )
@@ -21,6 +22,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
     MingOmniSpeechPipelineConfig,
+    MingOmniStreamingSpeechPipelineConfig,
 )
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.registry import (
@@ -469,6 +471,50 @@ def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
 
     assert _stage(config, "thinker").gpu == [0, 1]
     assert _stage(config, "talker").gpu == 3
+
+
+def test_ming_cli_talker_max_conc_targets_talker_factory_args() -> None:
+    config = MingOmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_talker_max_conc_cli_override(config, talker_max_conc=3)
+
+    assert _stage(config, "talker").factory_args["max_conc"] == 3
+
+
+def test_ming_cli_talker_max_conc_none_is_noop() -> None:
+    config = MingOmniSpeechPipelineConfig(model_path="dummy")
+    before = dict(_stage(config, "talker").factory_args)
+
+    apply_talker_max_conc_cli_override(config, talker_max_conc=None)
+
+    assert _stage(config, "talker").factory_args == before
+
+
+def test_ming_cli_rejects_talker_max_conc_below_one() -> None:
+    config = MingOmniSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="--talker-max-conc must be >= 1"):
+        apply_talker_max_conc_cli_override(config, talker_max_conc=0)
+
+
+def test_ming_cli_rejects_talker_max_conc_on_streaming_talker() -> None:
+    config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-max-conc currently supports only the Ming-Omni",
+    ):
+        apply_talker_max_conc_cli_override(config, talker_max_conc=3)
+
+
+def test_ming_text_cli_rejects_talker_max_conc_with_stable_message() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-max-conc is not supported by MingOmniPipelineConfig",
+    ):
+        apply_talker_max_conc_cli_override(config, talker_max_conc=3)
 
 
 @pytest.mark.parametrize("mode", ["on", "off"])

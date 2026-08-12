@@ -45,11 +45,13 @@ class MingTalkerExecutor:
         talker_model_path: str | None = None,
         device: str = "cuda",
         voice: str = DEFAULT_VOICE,
+        max_conc: int | None = None,
     ):
         self._model_path = model_path
         self._talker_model_path = talker_model_path or str(Path(model_path) / "talker")
         self._device = device
         self._voice = voice
+        self._max_conc_override = max_conc
         self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
         self._aborted: set[str] = set()
 
@@ -71,6 +73,7 @@ class MingTalkerExecutor:
             MingOmniTalker,
             MingOmniTalkerConfig,
             SpkembExtractor,
+            normalize_max_conc,
         )
         from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
             AudioVAE,
@@ -86,6 +89,8 @@ class MingTalkerExecutor:
         # 1. Load config from checkpoint
         t0 = time.time()
         config = MingOmniTalkerConfig.from_pretrained_dir(self._talker_model_path)
+        if self._max_conc_override is not None:
+            config.max_conc = normalize_max_conc(self._max_conc_override)
 
         # 2. Create model (no weights yet)
         self._talker = MingOmniTalker(config)

@@ -63,6 +63,7 @@ _PREFILL_COALESCE_SUPPORTED_MODELS = (
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
 )
+_MING_TALKER_FACTORY = "sglang_omni.models.ming_omni.stages.create_talker_executor"
 
 
 def launch_server(*args: object, **kwargs: object) -> object:
@@ -826,6 +827,40 @@ def apply_partial_start_cli_overrides(
     return pipeline_config
 
 
+def apply_talker_max_conc_cli_override(
+    pipeline_config: PipelineConfig,
+    *,
+    talker_max_conc: int | None,
+) -> PipelineConfig:
+    if talker_max_conc is None:
+        return pipeline_config
+    if talker_max_conc < 1:
+        raise typer.BadParameter("--talker-max-conc must be >= 1")
+
+    stage_name = _resolve_talker_stage(
+        pipeline_config,
+        flag_name="--talker-max-conc",
+    )
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="talker max_conc override",
+    )
+    for stage in matching_stages:
+        if stage.factory != _MING_TALKER_FACTORY:
+            raise typer.BadParameter(
+                "--talker-max-conc currently supports only the Ming-Omni "
+                f"non-streaming talker; stage {stage.name!r} uses factory "
+                f"{stage.factory!r}"
+            )
+    _apply_factory_args_updates(
+        pipeline_config,
+        matching_stages,
+        {"max_conc": int(talker_max_conc)},
+    )
+    return pipeline_config
+
+
 def _apply_factory_args_updates(
     pipeline_config: PipelineConfig,
     stages: list[StageConfig],
@@ -1172,6 +1207,18 @@ def serve(
             help="Override GPU id for supported talker stage.",
         ),
     ] = None,
+    talker_max_conc: Annotated[
+        int | None,
+        typer.Option(
+            "--talker-max-conc",
+            "--talker_max_conc",
+            help=(
+                "Override Ming-Omni talker concurrency (CFM CUDA-graph pool and "
+                "stage scheduler). Default comes from talker/config.json "
+                "(usually 1)."
+            ),
+        ),
+    ] = None,
     code2wav_gpu: Annotated[
         int | None,
         typer.Option(
@@ -1467,6 +1514,10 @@ def serve(
     merged_config = apply_partial_start_cli_overrides(
         merged_config,
         talker_partial_start=talker_partial_start,
+    )
+    merged_config = apply_talker_max_conc_cli_override(
+        merged_config,
+        talker_max_conc=talker_max_conc,
     )
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):

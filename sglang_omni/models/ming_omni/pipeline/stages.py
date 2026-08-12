@@ -342,6 +342,7 @@ def create_talker_executor(
     talker_model_path: str | None = None,
     device: str = "cuda",
     voice: str = "DB30",
+    max_conc: int | None = None,
 ) -> MingTalkerExecutor:
     """Create the Ming TTS talker executor.
 
@@ -356,6 +357,7 @@ def create_talker_executor(
         talker_model_path=talker_model_path,
         device=device,
         voice=voice,
+        max_conc=max_conc,
     )
 
 

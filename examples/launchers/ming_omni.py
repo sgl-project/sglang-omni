@@ -275,6 +275,16 @@ def _build_ming_speech_server_parser() -> argparse.ArgumentParser:
             "non-streaming 7-stage speech path."
         ),
     )
+    target.add_argument(
+        "--talker-max-conc",
+        type=int,
+        default=None,
+        help=(
+            "Override Ming talker concurrency for the non-streaming speech path "
+            "(CFM CUDA-graph pool + stage scheduler). Default comes from "
+            "talker/config.json (usually 1)."
+        ),
+    )
     add_server_args(target, model_name="ming-omni")
     return target
 
@@ -309,6 +319,22 @@ def launch_ming_speech_server(args: argparse.Namespace) -> None:
     set_stage_gpu(config, "thinker", thinker_gpus)
     set_stage_gpu(config, talker_stage, int(args.gpu_talker))
     validate_gpus()
+
+    if args.talker_max_conc is not None:
+        if args.enable_streaming_tts:
+            raise ValueError(
+                "--talker-max-conc currently supports only the non-streaming "
+                "Ming talker path"
+            )
+        if args.talker_max_conc < 1:
+            raise ValueError(
+                f"--talker-max-conc must be >= 1, got {args.talker_max_conc}"
+            )
+        apply_stage_factory_updates(
+            config,
+            stage_name="talker",
+            updates={"max_conc": int(args.talker_max_conc)},
+        )
 
     server_updates: dict[str, object] = {}
     if tp_size > 1:

@@ -234,6 +234,7 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
         mem_fraction_static=0.8,
         cpu_offload_gb=None,
         enable_streaming_tts=False,
+        talker_max_conc=None,
         host="127.0.0.1",
         port=8000,
         model_name="ming-omni",

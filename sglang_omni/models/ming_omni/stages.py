@@ -326,19 +326,31 @@ def create_talker_executor(
     talker_model_path: str | None = None,
     device: str = "cuda",
     voice: str = "DB30",
+    max_conc: int | None = None,
 ):
+    from pathlib import Path
+
     from sglang_omni.models.ming_omni.components.talker_executor import (
         MingTalkerExecutor,
+    )
+    from sglang_omni.models.ming_omni.talker.configuration_bailing_talker import (
+        resolve_talker_max_conc,
     )
     from sglang_omni.models.weight_loader import resolve_model_path
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     local_path = resolve_model_path(model_path)
+    resolved_talker_path = talker_model_path or str(Path(local_path) / "talker")
+    effective_max_conc = resolve_talker_max_conc(
+        resolved_talker_path,
+        max_conc=max_conc,
+    )
     executor = MingTalkerExecutor(
         model_path=local_path,
-        talker_model_path=talker_model_path,
+        talker_model_path=resolved_talker_path,
         device=device,
         voice=voice,
+        max_conc=effective_max_conc,
     )
     started = False
 
@@ -352,7 +364,7 @@ def create_talker_executor(
         await executor.add_request(payload)
         return await executor.get_result()
 
-    return SimpleScheduler(_talk)
+    return SimpleScheduler(_talk, max_concurrency=effective_max_conc)
 
 
 def create_streaming_talker_executor(
