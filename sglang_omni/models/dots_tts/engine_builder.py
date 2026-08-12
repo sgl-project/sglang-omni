@@ -41,8 +41,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         register_dots_tts_hf_config()
 
     def customize_server_args(self, server_args: Any) -> None:
-        # The compiled DiT path only serves max_running_requests=1; the batched
-        # tail is eager, so skip the process-global compile policy otherwise.
+        # The single-request DiT has its own compile path; batched checkpoints
+        # use the pooled acoustic tail instead.
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
         if self.optimize and int(server_args.max_running_requests) == 1:
@@ -163,6 +163,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             model.flow.validate_request(
                 num_steps=data.state.num_steps,
                 ode_method=data.state.ode_method,
+                guidance_scale=data.state.guidance_scale,
                 prompt_patch_count=int(data.prompt_span_positions.numel()),
                 total_span_count=int(data.span_positions.numel()),
             )

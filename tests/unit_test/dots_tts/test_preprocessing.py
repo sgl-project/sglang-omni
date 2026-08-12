@@ -76,6 +76,7 @@ def _preprocess(payload: StagePayload, tokenizer: _RecordingTokenizer) -> DotsTT
         model_config=SimpleNamespace(
             patch_size=4,
             vocoder=SimpleNamespace(sample_rate=48000),
+            sampling=None,
         ),
         max_generate_length=20,
         max_sequence_length=128,
@@ -111,3 +112,27 @@ def test_preprocessing_rejects_unconsumed_extra_references() -> None:
 
     with pytest.raises(ValueError, match="at most one reference"):
         _preprocess(payload, _RecordingTokenizer())
+
+
+def test_preprocessing_uses_artifact_sampling_contract() -> None:
+    from dots_tts.models.dots_tts.config import SamplingConfig
+
+    tokenizer = _RecordingTokenizer()
+    result = preprocess_dots_tts_payload(
+        _payload(),
+        tokenizer=tokenizer,
+        model_config=SimpleNamespace(
+            patch_size=4,
+            vocoder=SimpleNamespace(sample_rate=48000),
+            sampling=SamplingConfig(solver="scm"),
+        ),
+        max_generate_length=20,
+        max_sequence_length=128,
+    )
+    state = DotsTTSState.from_dict(result.data)
+
+    assert (state.ode_method, state.num_steps, state.guidance_scale) == (
+        "euler",
+        2,
+        0.0,
+    )
