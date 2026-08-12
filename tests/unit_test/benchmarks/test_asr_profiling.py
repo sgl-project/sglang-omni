@@ -3,17 +3,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.eval import asr_profiling
+from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     build_stage_breakdown,
     collect_environment_fingerprint,
     collect_server_identity,
+    run_profiled_pass,
     start_request_profile,
     stop_request_profile,
 )
@@ -51,6 +56,158 @@ def test_profile_control_posts_run_id_and_event_dir(
     assert calls[0][0] == "http://127.0.0.1:8000/start_request_profile"
     assert calls[0][1] == {"run_id": "run-1", "event_dir": "/tmp/e"}
     assert calls[1][0] == "http://127.0.0.1:8000/stop_request_profile"
+
+
+def test_profiled_pass_runs_shared_lifecycle_and_builds_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[str, str, str]] = []
+    stopped: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        asr_profiling,
+        "start_request_profile",
+        lambda url, run_id, event_dir: started.append((url, run_id, event_dir)),
+    )
+    monkeypatch.setattr(
+        asr_profiling,
+        "stop_request_profile",
+        lambda url, run_id: stopped.append((url, run_id)),
+    )
+    monkeypatch.setattr(
+        asr_profiling,
+        "build_stage_breakdown",
+        lambda event_dir: {
+            "request_count": 1,
+            "stage_breakdown": {"asr": {"count": 1}},
+            "hop_breakdown": {},
+        },
+    )
+
+    async def run_pass() -> dict:
+        return {"wall_clock_s": 2.0}
+
+    profile = asyncio.run(
+        run_profiled_pass(
+            run_id="run-1",
+            event_dir="/tmp/profile/run-1",
+            profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+            run_pass=run_pass,
+            log_prefix="[conc=4]",
+        )
+    )
+
+    assert started == [
+        ("http://worker-0:8000", "run-1", "/tmp/profile/run-1"),
+        ("http://worker-1:8000", "run-1", "/tmp/profile/run-1"),
+    ]
+    assert stopped == [
+        ("http://worker-0:8000", "run-1"),
+        ("http://worker-1:8000", "run-1"),
+    ]
+    assert profile == {
+        "run_id": "run-1",
+        "event_dir": "/tmp/profile/run-1",
+        "pass_metrics": {"wall_clock_s": 2.0},
+        "request_count": 1,
+        "stage_breakdown": {"asr": {"count": 1}},
+        "hop_breakdown": {},
+    }
+
+
+def test_profiled_pass_cleans_up_after_partial_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped: list[tuple[str, str]] = []
+    pass_started = False
+    error_stream = io.StringIO()
+
+    def fake_start(url: str, run_id: str, event_dir: str) -> None:
+        if url.endswith("worker-1:8000"):
+            raise asr_profiling.requests.RequestException("unavailable")
+
+    async def run_pass() -> dict:
+        nonlocal pass_started
+        pass_started = True
+        return {}
+
+    monkeypatch.setattr(asr_profiling, "start_request_profile", fake_start)
+    monkeypatch.setattr(
+        asr_profiling,
+        "stop_request_profile",
+        lambda url, run_id: stopped.append((url, run_id)),
+    )
+
+    profile = asyncio.run(
+        run_profiled_pass(
+            run_id="run-1",
+            event_dir="/tmp/profile/run-1",
+            profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+            run_pass=run_pass,
+            log_prefix="[conc=4]",
+            error_stream=error_stream,
+        )
+    )
+
+    assert profile is None
+    assert pass_started is False
+    assert stopped == [("http://worker-0:8000", "run-1")]
+    assert "[conc=4] profiling unavailable, skipping: unavailable" in (
+        error_stream.getvalue()
+    )
+
+
+def test_seedtts_profiled_pass_delegates_shared_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle: dict[str, object] = {}
+    repeat_call: dict[str, object] = {}
+    args = SimpleNamespace(
+        profile_event_dir="/tmp/asr-profile",
+        profile_urls="http://worker-0:8000,http://worker-1:8000",
+    )
+
+    monkeypatch.setattr(seedtts_benchmark.time, "time", lambda: 123)
+
+    async def fake_run_repeat(args, samples, concurrency, repeat):
+        repeat_call.update(
+            args=args,
+            samples=samples,
+            concurrency=concurrency,
+            repeat=repeat,
+        )
+        return {"wall_clock_s": 2.0}
+
+    async def fake_run_profiled_pass(**kwargs):
+        lifecycle.update(kwargs)
+        return {"pass_metrics": await kwargs["run_pass"]()}
+
+    monkeypatch.setattr(seedtts_benchmark, "_run_repeat", fake_run_repeat)
+    monkeypatch.setattr(
+        seedtts_benchmark,
+        "run_profiled_pass",
+        fake_run_profiled_pass,
+    )
+
+    samples = [object()]
+    profile = asyncio.run(
+        seedtts_benchmark._run_profiled_pass(args, samples, concurrency=4)
+    )
+
+    assert lifecycle["run_id"] == "asrbench-c4-123"
+    assert lifecycle["event_dir"] == "/tmp/asr-profile/asrbench-c4-123"
+    assert lifecycle["profile_urls"] == [
+        "http://worker-0:8000",
+        "http://worker-1:8000",
+    ]
+    assert lifecycle["log_prefix"] == "[conc=4]"
+    assert repeat_call == {
+        "args": args,
+        "samples": samples,
+        "concurrency": 4,
+        "repeat": 0,
+    }
+    assert profile == {"pass_metrics": {"wall_clock_s": 2.0}}
 
 
 def test_build_stage_breakdown_pairs_queue_and_decode_intervals(tmp_path) -> None:

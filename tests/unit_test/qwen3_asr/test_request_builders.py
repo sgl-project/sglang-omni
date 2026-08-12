@@ -96,6 +96,85 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
     assert qwen3_asr_num_audio_tokens(3000) == 390
 
 
+def test_qwen3_asr_max_audio_tokens_covers_the_native_limit() -> None:
+    from sglang_omni.models.qwen3_asr.audio_lengths import (
+        QWEN3_ASR_MAX_INPUT_SECONDS,
+        qwen3_asr_max_audio_tokens,
+        qwen3_asr_max_output_tokens,
+    )
+
+    # The official wrapper accepts up to 1,200s natively; the engine context
+    # is sized from this figure (13 audio tokens per second) plus the
+    # duration-scaled output budget that clip would get.
+    assert QWEN3_ASR_MAX_INPUT_SECONDS == 1200
+    assert qwen3_asr_max_audio_tokens() == 15_600
+    assert qwen3_asr_max_output_tokens() == 12_000
+
+
+def _budget_test_builder(monkeypatch, num_samples: int):
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 100)),
+        attention_mask=torch.ones((1, 100), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(num_samples, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=128,
+        feature_extractor=feature_extractor,
+    )
+    return request_builder
+
+
+def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
+    # 0.1s of audio scales to ~1 token; the stage default is the floor, so a
+    # short clip reserves no more scheduler budget than before.
+    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-floor",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.max_new_tokens == 128
+
+
+def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
+    # 60s of audio needs ~300 output tokens; the scaled default (10/s with
+    # margin) covers it without a large flat default.
+    request_builder = _budget_test_builder(monkeypatch, num_samples=60 * 16000)
+    payload = StagePayload(
+        request_id="req-scaled",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.max_new_tokens == 600
+
+
+def test_qwen3_asr_explicit_budget_overrides_scaling(monkeypatch) -> None:
+    request_builder = _budget_test_builder(monkeypatch, num_samples=60 * 16000)
+    payload = StagePayload(
+        request_id="req-explicit",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"},
+            params={"max_new_tokens": 32},
+        ),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.max_new_tokens == 32
+
+
 @pytest.mark.parametrize("num_mel_frames", range(0, 401))
 def test_qwen3_asr_scalar_audio_token_length_matches_tensor_formula(
     num_mel_frames: int,

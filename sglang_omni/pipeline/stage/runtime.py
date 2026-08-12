@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Literal
 import torch
 
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import DataRef
+from sglang_omni.comm.data_ref import DataKind, DataRef
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
@@ -37,6 +37,8 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -324,6 +326,10 @@ class Stage:
             await self._on_submit(msg)
         elif isinstance(msg, DataAckMessage):
             self._comm.ack_transfer(msg)
+        elif isinstance(msg, KVTransferReadyMessage):
+            self._comm.kv_transfer_ready(msg)
+        elif isinstance(msg, KVTransferPrepareMessage):
+            await self._on_kv_transfer_prepare(msg)
         elif isinstance(msg, DataReadyMessage):
             self._schedule_receive_task(msg)
         elif isinstance(msg, ProfilerStartMessage):
@@ -345,7 +351,7 @@ class Stage:
             label = f"stream chunk {msg.request_id}:{msg.from_stage}:{msg.chunk_id}"
         else:
             handler = self._on_data_ready
-            label = f"payload {msg.request_id}:{msg.from_stage}"
+            label = f"data {msg.request_id}:{msg.from_stage}"
 
         lane = (msg.request_id, msg.from_stage)
         predecessor = self._receive_lane_tails.get(lane)
@@ -411,11 +417,8 @@ class Stage:
     ) -> None:
         request_id = msg.request_id
         if request_id in self._aborted:
-            await self._discard_payload_data(msg)
+            await self._discard_data(msg)
             return
-        self._active_requests.add(request_id)
-        if self._stream_queue is not None and not self._stream_queue.has(request_id):
-            self._stream_queue.open(request_id)
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
@@ -438,7 +441,7 @@ class Stage:
         data_ref = self._data_ref_from_message(msg)
         relay = self._comm.relay(data_ref.transport)
         try:
-            payload = await self._comm.read_payload(
+            payload = await self._comm.read_data(
                 relay=relay,
                 request_id=request_id,
                 data_ref=data_ref,
@@ -450,14 +453,38 @@ class Stage:
             await self._send_data_ack(
                 msg, data_ref, success=False, error=_error_text(exc)
             )
-            relay.cleanup(request_id)
+            self._comm.cleanup(request_id)
             await self._wait_for_receive_predecessor(predecessor)
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
         await self._send_data_ack(msg, data_ref, success=True)
 
         await self._wait_for_receive_predecessor(predecessor)
-        await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+        if payload is not None:
+            await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+
+    async def _on_kv_transfer_prepare(
+        self,
+        msg: KVTransferPrepareMessage,
+    ) -> None:
+        endpoint = self.endpoints.get(msg.from_stage)
+        if endpoint is None:
+            raise RuntimeError(
+                f"Stage {self.name}: no endpoint configured for KV ready target "
+                f"{msg.from_stage!r}"
+            )
+        if msg.request_id in self._aborted:
+            ready = KVTransferReadyMessage(
+                request_id=msg.request_id,
+                transfer_id=msg.transfer_id,
+                from_stage=self.name,
+                to_stage=msg.from_stage,
+                success=False,
+                error=f"request {msg.request_id!r} was aborted",
+            )
+        else:
+            ready = self._comm.prepare_kv_receive(msg)
+        await self.control_plane.send_to_stage(msg.from_stage, endpoint, ready)
 
     async def receive_local_payload(
         self,
@@ -698,16 +725,26 @@ class Stage:
             ),
         )
 
-    async def _discard_payload_data(self, msg: DataReadyMessage) -> None:
+    async def _discard_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             imported = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
             del imported
             return
         request_id = msg.request_id
         data_ref = self._data_ref_from_message(msg)
+        if data_ref.kind is DataKind.KV_PAGES:
+            error = RuntimeError(f"request {request_id!r} was aborted")
+            self._comm.cleanup(request_id)
+            await self._send_data_ack(
+                msg,
+                data_ref,
+                success=False,
+                error=_error_text(error),
+            )
+            return
         relay = self._comm.relay(data_ref.transport)
         try:
-            await self._comm.read_payload(
+            await self._comm.read_data(
                 relay=relay,
                 request_id=request_id,
                 data_ref=data_ref,

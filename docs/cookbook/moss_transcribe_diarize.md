@@ -185,6 +185,15 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --mem-fraction-static 0.80 \
   --output-dir results/moss_transcribe_diarize_movies800times
 
+# note (Xinyu): Add one dedicated request-event profiling pass after the measured
+# evaluation. This pass is excluded from reported accuracy and speed metrics.
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
+  --dataset movies800times \
+  --concurrency 16 \
+  --profile-events \
+  --profile-event-dir /tmp/moss_td_bench_profile \
+  --output-dir results/moss_transcribe_diarize_movies800times_profile
+
 # Long-sequence ASR / diarization
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --dataset aishell4_long \
@@ -207,6 +216,14 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --request-timeout-s 1800 \
   --output-dir results/moss_transcribe_diarize_googletime
 ```
+
+`--profile-events` starts request-level event recording through the serve
+profiler endpoints, runs one extra pass, and adds its `stage_breakdown`,
+`hop_breakdown`, and speed metrics under `profile` in both
+`transcribe_diarize_results.json` and `transcribe_diarize_speed_results.json`.
+The event directory is a server-side path, so report generation requires the
+benchmark process to see the same filesystem. For router or DP deployments,
+pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 
