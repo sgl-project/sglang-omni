@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import AudioChunkingConfig, PipelineConfig, StageConfig
+from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -14,6 +15,11 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Qwen3-ASR checkpoints."""
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
+    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
+        allow_audio_chunking=True,
+        max_audio_clip_s=60.0,
+        max_native_clip_s=float(QWEN3_ASR_MAX_INPUT_SECONDS),
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -33,6 +39,8 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 64,
+                # Note (Jeffro): This is the floor for the per-request output budget.
+                # The request builder will scale the actual budget with audio duration.
                 "max_new_tokens": 128,
                 "enable_torch_compile": True,
                 "torch_compile_max_bs": 2,

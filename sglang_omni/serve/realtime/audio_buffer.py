@@ -46,6 +46,14 @@ class RealtimeAudioBuffer:
     def clear(self) -> None:
         self.buf.clear()
 
+    def drop_prefix(self, num_bytes: int) -> None:
+        if num_bytes <= 0:
+            return
+        if num_bytes >= len(self.buf):
+            self.buf.clear()
+            return
+        del self.buf[:num_bytes]
+
     @property
     def num_bytes(self) -> int:
         return len(self.buf)
@@ -72,5 +80,7 @@ class RealtimeAudioBuffer:
         return f"data:audio/wav;base64,{b64}"
 
     def tail(self, num_bytes: int) -> bytes:
-        assert len(self.buf) >= num_bytes, "Not enough bytes in buffer"
+        assert 0 <= num_bytes <= len(self.buf), "Invalid tail length"
+        if num_bytes == 0:
+            return b""
         return bytes(self.buf[-num_bytes:])

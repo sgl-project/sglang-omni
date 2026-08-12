@@ -198,14 +198,25 @@ def resolve_speech_to_text_adapter(
 
 
 def probe_audio_duration(audio_bytes: bytes) -> float:
-    """Avoid a full decode; unknown duration is valid for response formatting."""
-    try:
-        import soundfile as sf
+    """Best-effort audio duration (seconds) from raw upload bytes.
 
-        info = sf.info(io.BytesIO(audio_bytes))
-        if info.samplerate:
-            return max(info.frames / float(info.samplerate), 0.0)
-    except (RuntimeError, ValueError):
+    Metadata-only: reads container headers, never decodes. PyAV wraps the
+    same FFmpeg demuxers load_audio decodes with, so any upload the engine
+    can read, this probe can measure (soundfile could not inspect M4A/WebM).
+    0.0 means unknown; callers treat that as "duration not available".
+    """
+    try:
+        import av
+
+        with av.open(io.BytesIO(audio_bytes), metadata_errors="ignore") as container:
+            if container.duration:  # in av.time_base units (microseconds)
+                return max(container.duration / 1_000_000, 0.0)
+            for audio_stream in container.streams.audio:
+                if audio_stream.duration and audio_stream.time_base:
+                    return max(
+                        float(audio_stream.duration * audio_stream.time_base), 0.0
+                    )
+    except Exception:
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
 
@@ -219,6 +230,7 @@ def assemble_speech_to_text_response(
     language: str | None,
     audio_bytes: bytes,
     architectures: list[str] | None,
+    duration_s: float | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -231,7 +243,8 @@ def assemble_speech_to_text_response(
 
     adapter = resolve_speech_to_text_adapter(architectures)
     text = adapter.postprocess_text(text)
-    duration_s = probe_audio_duration(audio_bytes)
+    if duration_s is None:
+        duration_s = probe_audio_duration(audio_bytes)
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
@@ -374,10 +387,12 @@ async def create_speech_to_text_streaming_response(
     audio_bytes: bytes,
     architectures: list[str] | None,
     operation_name: str = "transcription",
+    duration_s: float | None = None,
 ) -> Response:
     """Delay headers until backend admission can still return an HTTP error."""
     adapter = resolve_speech_to_text_adapter(architectures)
-    duration_s = probe_audio_duration(audio_bytes)
+    if duration_s is None:
+        duration_s = await asyncio.to_thread(probe_audio_duration, audio_bytes)
     chunk_stream = client.generate(gen_req, request_id=request_id)
     try:
         first_chunk = await _first_speech_to_text_chunk(
