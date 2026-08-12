@@ -115,7 +115,8 @@ def make_whisper_scheduler_adapters(
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
     logit_bias = _build_logit_bias(generation_config)
-    # set_prefix_tokens mutates shared tokenizer state across request-build workers.
+    # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
+    # across request-build workers.
     tokenizer_lock = Lock()
     eos_token_id = int(tokenizer.eos_token_id)
     pad_token_id = int(tokenizer.pad_token_id or eos_token_id)
