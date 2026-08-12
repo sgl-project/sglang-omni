@@ -120,6 +120,35 @@ silently falling back to English.
 The model also has ASR coverage for 22 Chinese dialects, but those dialect names
 are not supported as forced `language` hints; use `Chinese`/`zh` for them.
 
+## Long Audio
+
+The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
+request, so we transcribe longer uploads in chunks: we split the audio, run
+each chunk as its own engine request, and join the transcripts back in
+order. The behavior follows these values, which Qwen3-ASR declares in code
+(`Qwen3ASRPipelineConfig.audio_chunking`). They are fixed model defaults in
+this release:
+
+| Name | Value | Meaning |
+|---|---|---|
+| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff. |
+| `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
+| `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
+
+Behavior notes:
+
+- **`verbose_json` returns one segment per chunk** with the chunk's real
+  start/end timestamps -- chunk-level granularity, not word-level (Qwen3-ASR
+  does not emit word timestamps).
+- A few unusual audio formats may not expose a readable duration; we fall
+  back to the non-chunked path for those uploads.
+- Streamed responses (`stream=true`) do not support chunking yet; a stream
+  request runs as one engine request, so it takes audio up to
+  `max_native_clip_s` (1,200s) and gets HTTP 400 above that -- use
+  `stream=false` for longer uploads.
+
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
@@ -212,8 +241,8 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
-- Audio duration is bounded by the configured context and requested
-  `max_new_tokens`, rather than a fixed 30-second window. Split audio or reduce
-  `max_new_tokens` if the request exceeds that token budget.
+- Non-streaming uploads up to `max_total_audio_s` (default one hour) are
+  transcribed in full via chunking; see Long Audio above. Streaming requests
+  are limited to `max_native_clip_s` (1,200s).
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

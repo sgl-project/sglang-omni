@@ -10,6 +10,10 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import request_builders
+from sglang_omni.models.qwen3_asr.audio_lengths import (
+    qwen3_asr_max_audio_tokens,
+    qwen3_asr_max_output_tokens,
+)
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
@@ -98,8 +102,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
-        encoder_token_count = int(self.feature_extractor.nb_max_frames // 2)
-        self.context_length = encoder_token_count + self.max_new_tokens + 8
+        # Note(Jeffro): Size context_length for the model's native max input + output budget.
+        # model natively accepts: 1,200s (MAX_ASR_INPUT_SECONDS, see
+        # https://github.com/QwenLM/Qwen3-ASR/blob/956766769/qwen_asr/inference/utils.py#L34)
+        # = 15,600 audio tokens, plus 64 slack for the ~15-token chat prompt,
+        # +  the max output budget for that input (12,000).
+        max_prompt_tokens = qwen3_asr_max_audio_tokens() + 64
+        max_output_budget = max(self.max_new_tokens, qwen3_asr_max_output_tokens())
+        self.context_length = max_prompt_tokens + max_output_budget + 8
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         defaults: dict[str, Any] = {
