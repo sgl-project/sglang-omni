@@ -1277,7 +1277,8 @@ def serve(
             help=(
                 "Decode batches smaller than this bypass async lookahead and "
                 "run synchronously (fast path). Model default: 1 for "
-                "Qwen3-ASR and 2 for other supported models."
+                "MOSS-Transcribe-Diarize and Qwen3-ASR; 2 for other "
+                "supported models."
             ),
         ),
     ] = None,

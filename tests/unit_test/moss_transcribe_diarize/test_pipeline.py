@@ -121,6 +121,13 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["encoder_torch_compile"].default is False
 
 
+def test_moss_transcribe_diarize_stage_default_enables_async_decode() -> None:
+    signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
+
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
+
+
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
