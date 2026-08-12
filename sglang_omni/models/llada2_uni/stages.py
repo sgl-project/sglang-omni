@@ -162,6 +162,7 @@ def create_image_decode_executor(
     decode_mode: str = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
+    interleaved_nonterminal: bool = False,
 ):
     """Create the native VQ-to-image terminal stage."""
     import base64
@@ -202,11 +203,22 @@ def create_image_decode_executor(
         image_bytes, image_width, image_height = decoder.decode_to_bytes(
             token_ids, height, width, **call_kwargs
         )
+        frame_index = 0
+        if state.task_kind == "interleaved":
+            interleaved = state.generation_state.get("interleaved")
+            if not isinstance(interleaved, dict):
+                raise ValueError(
+                    "interleaved image decoder is missing generation state"
+                )
+            frame_index = int(interleaved.get("frame_index", 0))
+            if frame_index <= 0:
+                raise ValueError("interleaved image decoder is missing a frame index")
+        image_index = frame_index - 1 if frame_index else 0
         result = {
             "modality": "image",
             "images": [
                 {
-                    "id": f"image-{payload.request_id}-0",
+                    "id": f"image-{payload.request_id}-{image_index}",
                     "data": base64.b64encode(image_bytes).decode("ascii"),
                     "format": "png",
                     "width": image_width,
@@ -215,11 +227,23 @@ def create_image_decode_executor(
             ],
             "finish_reason": "stop",
         }
+        if state.task_kind == "interleaved":
+            payload.data = {
+                "kind": "interleaved_frame",
+                "frame": {
+                    "index": frame_index,
+                    "image": result["images"][0],
+                },
+            }
+            return payload
         attach_thinking_trace(result, state)
         payload.data = result
         return payload
 
-    return SimpleScheduler(_decode_image)
+    return SimpleScheduler(
+        _decode_image,
+        allow_multiple_inflight_per_request=interleaved_nonterminal,
+    )
 
 
 def create_decode_executor(model_path: str):

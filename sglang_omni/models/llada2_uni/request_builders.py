@@ -79,6 +79,37 @@ def prepare_dllm_input_group(
         raise TypeError("prompt.input_ids must be a tensor or token sequence")
 
     cfg = state.generation_state.get("cfg")
+    interleaved = state.generation_state.get("interleaved")
+    if (
+        state.task_kind == "interleaved"
+        and isinstance(interleaved, dict)
+        and interleaved.get("phase") == "image"
+    ):
+        plan = interleaved.get("cfg_plan")
+        if not isinstance(plan, dict):
+            raise ValueError("interleaved image phase is missing its CFG plan")
+        branches = plan.get("branches")
+        if not isinstance(branches, dict):
+            raise ValueError("interleaved CFG plan branches must be a mapping")
+        mode = plan.get("mode")
+        if mode == "none":
+            cfg = None
+        elif mode in {"simple", "editing"}:
+            cfg = {
+                "unconditional_input_ids": branches.get("unconditional"),
+                "scale": plan.get("cfg_scale", 1.0),
+                "rescale": plan.get("cfg_rescale", 0.0),
+            }
+            if mode == "editing":
+                cfg.update(
+                    {
+                        "no_image_input_ids": branches.get("no_image"),
+                        "text_scale": plan.get("cfg_text_scale", 1.0),
+                        "image_scale": plan.get("cfg_image_scale", 0.0),
+                    }
+                )
+        else:
+            raise ValueError(f"unsupported interleaved CFG mode {mode!r}")
     if not isinstance(cfg, dict):
         return conditional, None
     unconditional = cfg.get("unconditional_input_ids")
@@ -94,6 +125,10 @@ def prepare_dllm_input_group(
         "force_image_only": True,
         "image_token_offset": state.image_token_offset,
     }
+    if isinstance(interleaved, dict):
+        algorithm_args["allowed_stop_token_ids"] = tuple(
+            int(token_id) for token_id in interleaved.get("allowed_stop_token_ids", ())
+        )
     if no_image is not None:
         algorithm_args["cfg_image_scale"] = float(cfg.get("image_scale", 0.0))
 
@@ -116,7 +151,11 @@ def resolve_native_image_token_offset(
     vocab_size: int,
 ) -> int | None:
     """Return the checkpoint image-vocabulary boundary for native image tasks."""
-    if state.task_kind not in {"t2i", "edit"}:
+    if state.task_kind == "interleaved":
+        interleaved = state.generation_state.get("interleaved")
+        if not isinstance(interleaved, dict) or interleaved.get("phase") != "image":
+            return None
+    elif state.task_kind not in {"t2i", "edit"}:
         return None
     if _is_thinking_phase(state, 1):
         return None
@@ -140,6 +179,35 @@ def resolve_thinker_max_new_tokens(
     """Use a fixed thinking budget or one token per native image grid cell."""
     if _is_thinking_phase(state, 1):
         return DEFAULT_THINKER_MAX_NEW_TOKENS
+    if state.task_kind == "interleaved":
+        interleaved = state.generation_state.get("interleaved")
+        if not isinstance(interleaved, dict):
+            raise ValueError("interleaved request is missing generation state")
+        if interleaved.get("phase") == "text":
+            prompt = state.prompt or {}
+            input_ids = prompt.get("input_ids")
+            if isinstance(input_ids, torch.Tensor):
+                prompt_length = int(input_ids.numel())
+            elif isinstance(input_ids, (list, tuple)):
+                prompt_length = len(input_ids)
+            else:
+                raise TypeError("interleaved prompt input_ids must be token ids")
+            remaining_context = int(interleaved["max_seq_len"]) - prompt_length
+            if remaining_context <= 0:
+                raise ValueError("interleaved text phase has exhausted thinker context")
+            return min(
+                int(interleaved["text_max_new_tokens"]),
+                remaining_context,
+            )
+        if interleaved.get("phase") == "image":
+            current = interleaved.get("current_frame")
+            if not isinstance(current, dict):
+                raise ValueError("interleaved image phase is missing its frame")
+            remaining = int(current.get("remaining_image_tokens", 0))
+            if remaining <= 0:
+                raise ValueError("interleaved image phase has no remaining tokens")
+            return remaining + 1
+        raise ValueError(f"unsupported interleaved phase {interleaved.get('phase')!r}")
     if state.task_kind not in {"t2i", "edit"}:
         return int(params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS))
     grid = state.generation_state.get("image_grid")
@@ -283,6 +351,27 @@ def build_dllm_thinker_request(
     )
     input_ids_array = array("q", conditional_input_ids)
 
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    eos_token_ids = {eos_token_id} if eos_token_id is not None else set()
+    interleaved = state.generation_state.get("interleaved")
+    interleaved_phase = (
+        interleaved.get("phase") if isinstance(interleaved, dict) else None
+    )
+    if state.task_kind == "interleaved" and interleaved_phase == "image":
+        allowed_stop_token_ids = tuple(
+            int(token_id) for token_id in interleaved.get("allowed_stop_token_ids", ())
+        )
+        if len(allowed_stop_token_ids) != 1:
+            raise ValueError(
+                "interleaved image phase requires exactly one EOI stop token"
+            )
+        eos_token_ids = set(allowed_stop_token_ids)
+    elif state.task_kind == "interleaved" and interleaved_phase == "text":
+        eos_token_ids.add(_boi_token_id(tokenizer))
+    elif _is_thinking_phase(state, 1):
+        eos_token_ids.add(_boi_token_id(tokenizer))
+
+    image_phase = state.task_kind == "interleaved" and interleaved_phase == "image"
     sampling_params = SamplingParams(
         max_new_tokens=resolve_thinker_max_new_tokens(state, params),
         temperature=params.get("temperature", 0.0),
@@ -290,17 +379,14 @@ def build_dllm_thinker_request(
         top_k=params.get("top_k", -1),
         min_p=params.get("min_p", 0.0),
         repetition_penalty=params.get("repetition_penalty", 1.0),
-        stop=params.get("stop") or [],
-        stop_token_ids=params.get("stop_token_ids") or [],
+        stop=[] if image_phase else params.get("stop") or [],
+        stop_token_ids=(
+            sorted(eos_token_ids) if image_phase else params.get("stop_token_ids") or []
+        ),
         sampling_seed=params.get("seed"),
     )
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
-
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    eos_token_ids = {eos_token_id} if eos_token_id is not None else set()
-    if _is_thinking_phase(state, 1):
-        eos_token_ids.add(_boi_token_id(tokenizer))
 
     rid = request_id or "req-0"
     req = Req(
@@ -312,7 +398,9 @@ def build_dllm_thinker_request(
         eos_token_ids=eos_token_ids or None,
         dllm_config=dllm_config,
     )
-    req.tokenizer = tokenizer
+    # Req consults tokenizer.eos_token_id and additional_stop_token_ids in
+    # addition to eos_token_ids. Image phases must terminate on EOI only.
+    req.tokenizer = None if image_phase else tokenizer
 
     req.omni_model_inputs = None
     req._omni_consumed = None
@@ -322,6 +410,8 @@ def build_dllm_thinker_request(
     )
     if image_token_offset is not None:
         req.omni_dllm_image_token_offset = image_token_offset
+        if state.task_kind == "interleaved":
+            req.omni_dllm_allowed_stop_token_ids = tuple(eos_token_ids)
     if group_spec is not None:
         req.omni_dllm_group_spec = group_spec
 
@@ -477,6 +567,20 @@ def make_dllm_thinker_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> SGLangDLLMRequestData:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        interleaved = state.generation_state.get("interleaved")
+        if isinstance(interleaved, dict):
+            next_interleaved = dict(interleaved)
+            next_interleaved.pop("needs_reentry", None)
+            next_interleaved.pop("emit_frame", None)
+            if next_interleaved != interleaved:
+                next_generation_state = dict(state.generation_state)
+                next_generation_state["interleaved"] = next_interleaved
+                state.generation_state = next_generation_state
+                payload = StagePayload(
+                    request_id=payload.request_id,
+                    request=payload.request,
+                    data=state.to_dict(),
+                )
         thinking = state.generation_state.get("thinking")
         if (
             isinstance(thinking, dict)
@@ -507,6 +611,12 @@ def make_dllm_thinker_scheduler_adapters(
     def result_adapter(data: SGLangDLLMRequestData) -> StagePayload:
         payload = data.stage_payload
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        interleaved = state.generation_state.get("interleaved")
+        completed_interleaved_phase = (
+            interleaved.get("phase")
+            if state.task_kind == "interleaved" and isinstance(interleaved, dict)
+            else None
+        )
         is_thinking_phase1 = _is_thinking_phase(state, 1)
         if is_thinking_phase1:
             transition_thinking_phase1_to_phase2(
@@ -514,11 +624,28 @@ def make_dllm_thinker_scheduler_adapters(
                 tokenizer=tokenizer,
                 output_ids=data.output_ids,
             )
-        else:
+        elif completed_interleaved_phase is None:
             apply_dllm_thinker_result(
                 state,
                 stage_name=stage_name,
                 output_ids=data.output_ids,
+                finish_reason=data.finish_reason,
+            )
+        else:
+            from sglang_omni.models.llada2_uni.interleaved import (
+                advance_interleaved_state,
+            )
+
+            apply_dllm_thinker_result(
+                state,
+                stage_name=stage_name,
+                output_ids=data.output_ids,
+                finish_reason=data.finish_reason,
+            )
+            advance_interleaved_state(
+                state,
+                tokenizer,
+                completed_phase=str(completed_interleaved_phase),
                 finish_reason=data.finish_reason,
             )
         return StagePayload(

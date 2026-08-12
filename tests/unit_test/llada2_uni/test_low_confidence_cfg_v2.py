@@ -140,6 +140,50 @@ def test_independent_step_applies_batched_native_image_vocab_boundaries() -> Non
     assert forward_batch.input_ids.tolist() == [4, 1]
 
 
+def test_independent_image_step_allows_only_explicit_low_vocab_stop_tokens() -> None:
+    algorithm = _algorithm(block_size=1)
+    forward_batch = SimpleNamespace(
+        batch_size=1,
+        input_ids=torch.tensor([99]),
+        omni_dllm_group=None,
+        omni_dllm_image_token_offsets=torch.tensor([3]),
+        omni_dllm_allowed_stop_token_ids=((1,),),
+    )
+    logits = torch.tensor([[0.0, 10.0, 9.0, 0.0, 8.0]])
+
+    algorithm.step(forward_batch, logits, [None])
+
+    assert forward_batch.input_ids.tolist() == [1]
+
+
+def test_grouped_image_step_allows_only_explicit_low_vocab_stop_tokens() -> None:
+    algorithm = _algorithm(block_size=1)
+    forward_batch = SimpleNamespace(
+        batch_size=2,
+        input_ids=torch.tensor([99, 99]),
+        omni_dllm_group=SimpleNamespace(
+            roles=("conditional", "unconditional"),
+            algorithm_args={
+                "cfg_scale": 1.0,
+                "cfg_rescale": 0.0,
+                "force_image_only": True,
+                "image_token_offset": 3,
+                "allowed_stop_token_ids": (1,),
+            },
+        ),
+    )
+    logits = torch.tensor(
+        [
+            [0.0, 10.0, 9.0, 0.0, 8.0],
+            [0.0, 10.0, 9.0, 0.0, 8.0],
+        ]
+    )
+
+    algorithm.step(forward_batch, logits, [None, None])
+
+    assert forward_batch.input_ids.tolist() == [1, 1]
+
+
 def test_in_query_left_pad_temporarily_disables_public_cuda_graph_runner() -> None:
     algorithm = _algorithm()
     graph_runner = object()

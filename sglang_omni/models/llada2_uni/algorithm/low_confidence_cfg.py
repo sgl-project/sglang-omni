@@ -128,6 +128,23 @@ class LowConfidenceCFG(DllmAlgorithm):
             valid_vocabulary = vocabulary.view(1, 1, -1) >= (
                 image_token_offsets.to(device=logits.device).view(batch_size, 1, 1)
             )
+            allowed_stop_token_ids = getattr(
+                forward_batch, "omni_dllm_allowed_stop_token_ids", None
+            )
+            if allowed_stop_token_ids:
+                if len(allowed_stop_token_ids) != batch_size:
+                    raise RuntimeError(
+                        "native image stop-token metadata must match the dLLM batch"
+                    )
+                allowed = torch.as_tensor(
+                    allowed_stop_token_ids,
+                    dtype=torch.int64,
+                    device=logits.device,
+                )
+                allowed_vocabulary = (
+                    vocabulary.view(1, 1, -1) == allowed.unsqueeze(-1)
+                ).any(dim=1, keepdim=True)
+                valid_vocabulary = valid_vocabulary | allowed_vocabulary
             logits = logits.masked_fill(~valid_vocabulary, -float("inf"))
 
         predictions, confidence = self._predictions_and_confidence(logits)
@@ -177,10 +194,18 @@ class LowConfidenceCFG(DllmAlgorithm):
         guided_logits = self._guided_logits(logits, args)
         if force_image_only:
             vocabulary = torch.arange(vocab_size, device=guided_logits.device)
-            guided_logits = guided_logits.masked_fill(
-                vocabulary.unsqueeze(0) < image_token_offset,
-                -float("inf"),
-            )
+            valid_vocabulary = vocabulary >= image_token_offset
+            allowed_stop_token_ids = tuple(args.get("allowed_stop_token_ids", ()))
+            if allowed_stop_token_ids:
+                allowed = torch.as_tensor(
+                    allowed_stop_token_ids,
+                    dtype=torch.int64,
+                    device=guided_logits.device,
+                )
+                valid_vocabulary = valid_vocabulary | (
+                    vocabulary.unsqueeze(0) == allowed.unsqueeze(1)
+                ).any(dim=0)
+            guided_logits = guided_logits.masked_fill(~valid_vocabulary, -float("inf"))
         predictions, confidence = self._predictions_and_confidence(guided_logits)
 
         confidence = confidence.masked_fill(~block_mask, -float("inf"))

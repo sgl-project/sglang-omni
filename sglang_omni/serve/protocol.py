@@ -48,6 +48,114 @@ class ChatCompletionImage(BaseModel):
     height: int | None = None
 
 
+class ChatCompletionTextSegment(BaseModel):
+    """One ordered text segment in an interleaved response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["text"]
+    text: str
+
+
+class ChatCompletionImageRefSegment(BaseModel):
+    """Reference to one entry in ``message.images``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["image_ref"]
+    image_id: str
+
+
+def _completion_image_dict(image: Any) -> dict[str, Any]:
+    if isinstance(image, dict):
+        raw = image
+    elif hasattr(image, "to_dict"):
+        raw = image.to_dict()
+    else:
+        raise TypeError("completion images must be objects")
+    return ChatCompletionImage(**raw).model_dump()
+
+
+def normalize_interleaved_content(
+    content: Any,
+    images: Any,
+) -> list[dict[str, Any]]:
+    """Validate ordered segments and their one-to-one image references."""
+    if not isinstance(content, list):
+        raise ValueError("interleaved content must be an array")
+    if not isinstance(images, list):
+        raise ValueError("interleaved images must be an array")
+
+    image_ids: list[str] = []
+    for image in images:
+        image_dict = _completion_image_dict(image)
+        image_id = image_dict["id"]
+        if not image_id:
+            raise ValueError("interleaved image ids must be non-empty")
+        if image_id in image_ids:
+            raise ValueError("interleaved images contain a duplicate id")
+        image_ids.append(image_id)
+
+    normalized: list[dict[str, Any]] = []
+    reference_ids: list[str] = []
+    for segment in content:
+        if not isinstance(segment, dict):
+            raise ValueError("interleaved content segments must be objects")
+        segment_type = segment.get("type")
+        if segment_type == "text":
+            if set(segment) != {"type", "text"}:
+                raise ValueError("interleaved text segment has unsupported fields")
+            normalized.append(
+                ChatCompletionTextSegment.model_validate(segment).model_dump()
+            )
+            continue
+        if segment_type == "image_ref":
+            if set(segment) != {"type", "image_id"}:
+                raise ValueError("interleaved image_ref has unsupported fields")
+            normalized_ref = ChatCompletionImageRefSegment.model_validate(
+                segment
+            ).model_dump()
+            image_id = normalized_ref["image_id"]
+            if not image_id:
+                raise ValueError("interleaved image_ref image_id must be non-empty")
+            if image_id in reference_ids:
+                raise ValueError("interleaved content has a duplicate image_ref")
+            reference_ids.append(image_id)
+            normalized.append(normalized_ref)
+            continue
+        raise ValueError(f"unsupported interleaved content type {segment_type!r}")
+
+    if reference_ids != image_ids:
+        raise ValueError(
+            "interleaved image_ref and message.images must have a one-to-one order"
+        )
+    return normalized
+
+
+def build_chat_completion_message(
+    result: Any,
+    requested_modalities: list[str],
+    *,
+    interleaved: bool,
+) -> dict[str, Any]:
+    """Build the text/image portion of one assistant response message."""
+    message: dict[str, Any] = {"role": "assistant"}
+    result_images = list(getattr(result, "images", []) or [])
+    if interleaved:
+        if requested_modalities != ["text", "image"]:
+            raise ValueError("interleaved response requires text and image modalities")
+        message["content"] = normalize_interleaved_content(
+            getattr(result, "content", None),
+            result_images,
+        )
+    elif "text" in requested_modalities and getattr(result, "text", ""):
+        message["content"] = result.text
+
+    if "image" in requested_modalities and result_images:
+        message["images"] = [_completion_image_dict(image) for image in result_images]
+    return message
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 

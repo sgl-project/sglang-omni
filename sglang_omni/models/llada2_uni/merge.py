@@ -19,7 +19,7 @@ def extract_image_vq_tokens(
     The vocabulary offset and grid are checkpoint/request state, not protocol
     constants. An incomplete grid is rejected rather than silently reshaped.
     """
-    if state.task_kind not in {"t2i", "edit"}:
+    if state.task_kind not in {"t2i", "edit", "interleaved"}:
         return None
     if state.image_token_offset is None:
         raise ValueError("native image result is missing image_token_offset")
@@ -40,10 +40,20 @@ def extract_image_vq_tokens(
         and token_id >= offset
     ]
     grid = state.generation_state.get("image_grid")
+    if state.task_kind == "interleaved":
+        interleaved = state.generation_state.get("interleaved")
+        segments = (
+            interleaved.get("segments", []) if isinstance(interleaved, dict) else []
+        )
+        grid = segments[-1] if segments else None
     if not isinstance(grid, dict):
         raise ValueError("native image result is missing image_grid")
-    height = grid.get("height")
-    width = grid.get("width")
+    if state.task_kind == "interleaved":
+        height = grid.get("grid_h")
+        width = grid.get("grid_w")
+    else:
+        height = grid.get("height")
+        width = grid.get("width")
     if (
         not isinstance(height, int)
         or isinstance(height, bool)

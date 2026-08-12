@@ -173,6 +173,7 @@ class GenerateChunk:
     audio_data: Any = None
     sample_rate: int | None = None
     images: list[CompletionImage] = field(default_factory=list)
+    content: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -192,6 +193,7 @@ class GenerateChunk:
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
             "images": [image.to_dict() for image in self.images],
+            "content": [dict(segment) for segment in self.content],
         }
 
 
@@ -238,6 +240,7 @@ class CompletionResult:
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
+    content: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

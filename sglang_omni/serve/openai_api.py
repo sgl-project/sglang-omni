@@ -73,7 +73,6 @@ from sglang_omni.serve.protocol import (
     AdminRequestBase,
     ChatCompletionAudio,
     ChatCompletionChoice,
-    ChatCompletionImage,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionStreamChoice,
@@ -98,6 +97,7 @@ from sglang_omni.serve.protocol import (
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+    build_chat_completion_message,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -698,6 +698,48 @@ def _validate_chat_image_generation_request(req: ChatCompletionRequest) -> None:
                 "image_generation configures image output but does not request it"
             ),
         )
+    config = req.image_generation
+    if not isinstance(config, dict) or config.get("mode") != "interleaved":
+        return
+    if req.modalities != ["text", "image"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "interleaved generation requires modalities to be exactly "
+                '["text", "image"] in that order'
+            ),
+        )
+    if req.stream:
+        raise HTTPException(
+            status_code=400,
+            detail="interleaved generation does not support stream=true",
+        )
+    has_image_input = bool(req.images)
+    for message in req.messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"image", "image_url"}:
+                has_image_input = True
+    if has_image_input:
+        raise HTTPException(
+            status_code=400,
+            detail="interleaved generation does not support image input",
+        )
+    from sglang_omni.models.llada2_uni.interleaved import (
+        InterleavedGenerationConfig,
+    )
+
+    try:
+        InterleavedGenerationConfig.from_image_generation(config)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 
 def _reject_streaming_image_generation(req: ChatCompletionRequest) -> None:
@@ -737,11 +779,15 @@ async def _chat_non_stream(
 
     requested_modalities = _requested_modalities(req)
 
-    # Build message content
-    message: dict[str, Any] = {"role": "assistant"}
-
-    if "text" in requested_modalities and result.text:
-        message["content"] = result.text
+    interleaved = (
+        isinstance(req.image_generation, dict)
+        and req.image_generation.get("mode") == "interleaved"
+    )
+    message = build_chat_completion_message(
+        result,
+        requested_modalities,
+        interleaved=interleaved,
+    )
 
     if "audio" in requested_modalities and result.audio is not None:
         message["audio"] = {
@@ -749,12 +795,6 @@ async def _chat_non_stream(
             "data": result.audio.data,
             "transcript": result.audio.transcript,
         }
-
-    if "image" in requested_modalities and result.images:
-        message["images"] = [
-            ChatCompletionImage(**image.to_dict()).model_dump()
-            for image in result.images
-        ]
 
     if not any(key in message for key in ("content", "audio", "images")):
         message["content"] = result.text

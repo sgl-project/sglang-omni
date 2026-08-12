@@ -357,6 +357,16 @@ class DllmScheduler:
                     dtype=torch.int64,
                     device=forward_batch.input_ids.device,
                 )
+                allowed_stop_token_ids = tuple(
+                    int(token_id)
+                    for token_id in getattr(
+                        batch.reqs[0], "omni_dllm_allowed_stop_token_ids", ()
+                    )
+                )
+                if allowed_stop_token_ids:
+                    forward_batch.omni_dllm_allowed_stop_token_ids = (
+                        allowed_stop_token_ids,
+                    )
             return
 
         members = tuple(

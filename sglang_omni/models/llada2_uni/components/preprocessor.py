@@ -477,10 +477,17 @@ class LLaDA2Preprocessor:
         if wants_image:
             image_generation = image_generation or {}
             request_metadata["image_generation"] = image_generation
-            task_kind = "edit" if raw_images else "t2i"
+            mode = image_generation.get("mode", "normal")
+            task_kind = (
+                "interleaved"
+                if mode == "interleaved"
+                else ("edit" if raw_images else "t2i")
+            )
+            if task_kind == "interleaved" and raw_images:
+                raise ValueError("interleaved generation does not support image input")
             if task_kind == "edit":
                 _validate_native_edit_params(image_generation)
-            else:
+            elif task_kind == "t2i":
                 resolve_native_image_grid(image_generation)
 
         image_cache_key = compute_image_cache_key(raw_images)
@@ -580,6 +587,17 @@ class LLaDA2Preprocessor:
                     "scale": cfg_scale,
                     "rescale": float(image_generation.get("cfg_rescale", 0.7)),
                 }
+        elif task_kind == "interleaved":
+            from sglang_omni.models.llada2_uni.interleaved import (
+                InterleavedGenerationConfig,
+            )
+
+            assert isinstance(image_generation, dict)
+            config = InterleavedGenerationConfig.from_image_generation(image_generation)
+            generation_state["interleaved"] = config.to_generation_state(
+                prompt_length=len(input_ids),
+                max_seq_len=self._max_seq_len or 8192,
+            )
 
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
 
@@ -592,6 +610,8 @@ class LLaDA2Preprocessor:
                 if thinking_mode
                 else grid_h * grid_w
             )
+        elif task_kind == "interleaved":
+            max_new_tokens = 1
 
         validate_prompt_seq_len(
             input_ids_tensor,
@@ -671,6 +691,12 @@ class LLaDA2Preprocessor:
             system_prompt = SYSTEM_PROMPT_T2I
         elif task_kind == "t2i_thinking":
             system_prompt = SYSTEM_PROMPT_T2I_THINKING
+        elif task_kind == "interleaved":
+            from sglang_omni.models.llada2_uni.interleaved import (
+                SYSTEM_PROMPT_INTERLEAVED,
+            )
+
+            system_prompt = SYSTEM_PROMPT_INTERLEAVED
         else:
             system_prompt = DEFAULT_SYSTEM_PROMPT
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
