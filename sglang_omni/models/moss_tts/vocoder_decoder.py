@@ -457,9 +457,10 @@ class MossAudioTokenizerAttention(nn.Module):
     def resolve_attention_implementation(self, x: torch.Tensor) -> str:
         preferred = getattr(self.source, "attention_implementation", None)
         if preferred is None:
-            # The legacy tokenizer has no backend selector, but exposes the same
-            # local-causal operation. Prefer the packed path when its dtype and
-            # device requirements are satisfied.
+            # Note (Zhang Yiyang): The legacy MOSS-Audio-Tokenizer attention has
+            # no backend selector, but implements the same local-causal operation.
+            # Prefer packed FlashAttention when its device and dtype requirements
+            # are satisfied.
             preferred = _FLASH_ATTENTION_BACKEND
         if preferred == _FLASH_ATTENTION_BACKEND and self._can_run_packed_flash(x):
             return _FLASH_ATTENTION_BACKEND

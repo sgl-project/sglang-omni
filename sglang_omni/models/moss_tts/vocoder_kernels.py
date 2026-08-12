@@ -57,9 +57,10 @@ if triton is not None and hasattr(tl, "inline_asm_elementwise"):
         kr = tl.load(k_base, mask=mask).to(tl.float32)
         ki = tl.load(k_base + 1, mask=mask).to(tl.float32)
 
-        # The source implementation materializes each FP32 multiply before the
-        # add/subtract. Explicit rounding prevents contraction into FMAs and
-        # keeps the fused kernel bitwise-equivalent after the low-precision store.
+        # Note (Zhang Yiyang): The source implementation materializes each FP32
+        # multiply before the add/subtract. Explicit rounding prevents contraction
+        # into FMAs and keeps the fused kernel bitwise-equivalent after the
+        # low-precision store.
         qor, qoi, kor, koi = tl.inline_asm_elementwise(
             asm="""
             {
