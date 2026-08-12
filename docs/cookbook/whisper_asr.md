@@ -13,10 +13,23 @@ hf download openai/whisper-large-v3
 ## Server Configuration
 
 Whisper ASR runs a single ASR stage on one GPU.
+Async decode is enabled by default (`async_decode_min_batch_size=1`), allowing the
+shared one-step-lookahead path to overlap host-side result processing with the
+next GPU decode forward. Use `--decode-mode sync` to disable it, or tune the
+crossover with `--async-lookahead-min-batch-size`.
 
 ```bash
 sgl-omni serve \
   --model-path openai/whisper-large-v3 \
+  --port 8000
+```
+
+For example, force synchronous decode when comparing modes:
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --decode-mode sync \
   --port 8000
 ```
 
@@ -114,6 +127,54 @@ End-to-end results used the 20-sample SeedTTS EN subset on a single H200 with `o
 
 All 480 measured requests completed successfully. Corpus WER was unchanged across eager and CUDA Graph modes at every concurrency.
 
+## Async Decode A/B (stacked on pre-LM)
+
+Compare sync and async decode with `--decode-mode` while keeping the model,
+sample subset, concurrency list, and repeat count identical across arms.
+Whisper already forces atomic encoder-prefix admission
+(`chunked_prefill_size=0`) and defaults to the pre-LM encoder path.
+
+```bash
+PORT_SYNC=8101
+PORT_ASYNC=8102
+
+# Arm A: sync decode (baseline; pre-LM still on)
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path openai/whisper-base \
+  --decode-mode sync \
+  --port "${PORT_SYNC}"
+
+# Arm B: async decode with min batch size 1 (default)
+CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
+  --model-path openai/whisper-base \
+  --decode-mode async \
+  --async-lookahead-min-batch-size 1 \
+  --port "${PORT_ASYNC}"
+
+for PORT in "${PORT_SYNC}" "${PORT_ASYNC}"; do
+  python -m benchmarks.eval.benchmark_asr_seedtts \
+    --port "${PORT}" \
+    --model-path openai/whisper-base \
+    --max-samples 20 \
+    --concurrencies 1,2,4,8 \
+    --repeats 3 --warmup \
+    --output "whisper_async_on_prelm_port${PORT}.json"
+done
+```
+
+Standalone async-decode A/B (without pre-LM) previously showed only a small
+c1 gain and regressions at high concurrency. Stacked on pre-LM (same SeedTTS
+EN 20-clip setup, H200, `openai/whisper-base`, FP16), async lookahead
+(`min_batch_size=1`) improved throughput at every measured concurrency with
+unchanged corpus WER `0.0415`:
+
+| Concurrency | Sync+preLM req/s | Async+preLM req/s | Throughput gain | Sync mean latency (s) | Async mean latency (s) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 22.627 | 24.431 | +8.0% | 0.044 | 0.041 |
+| 2 | 40.258 | 43.586 | +8.3% | 0.049 | 0.046 |
+| 4 | 62.413 | 66.391 | +6.4% | 0.063 | 0.060 |
+| 8 | 81.039 | 86.206 | +6.4% | 0.094 | 0.087 |
+
 ## Known Limitations
 
 - This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
@@ -127,6 +188,8 @@ All 480 measured requests completed successfully. Corpus WER was unchanged acros
   admission (`chunked_prefill_size=0`). Raise `max_prefill_tokens` via
   `server_args_overrides` only when you need larger LM-side encoder CUDA Graph
   buckets with the encoder inside prefill.
+- Async decode is enabled by default; use `--decode-mode sync` for A/B
+  comparisons against the shared one-step-lookahead path.
 - Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.

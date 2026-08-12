@@ -55,6 +55,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
+        enable_async_decode: bool = True,
+        async_decode_min_batch_size: int = 1,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -76,6 +78,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.pre_lm_cache_size_bytes = int(pre_lm_cache_size_bytes)
         self.pre_lm_max_batch_size = int(pre_lm_max_batch_size)
         self.pre_lm_max_batch_wait_ms = int(pre_lm_max_batch_wait_ms)
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
         self.processor: Any = None
         self.tokenizer: Any = None
         self.generation_config: Any = None
@@ -192,6 +196,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             decoder_context_len=self.decoder_context_len,
             audio_encoder_service=self.audio_encoder_service,
         )
+
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        return {
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+        }
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.audio_encoder_service is None:

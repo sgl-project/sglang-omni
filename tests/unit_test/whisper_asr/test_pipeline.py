@@ -148,10 +148,19 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
     assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 0
     assert "max_prefill_tokens" not in config.stages[0].factory_args
+    assert "enable_async_decode" not in config.stages[0].factory_args
+    assert "async_decode_min_batch_size" not in config.stages[0].factory_args
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("WhisperForConditionalGeneration")
         is WhisperASRPipelineConfig
     )
+
+
+def test_whisper_asr_stage_default_enables_async_decode() -> None:
+    signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
+
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
 
 
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
@@ -234,8 +243,11 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         _fake_create_infrastructure,
     )
 
-    whisper_asr_stages.create_sglang_whisper_asr_executor(
-        "dummy", enable_pre_lm_encoder=False
+    scheduler = whisper_asr_stages.create_sglang_whisper_asr_executor(
+        "dummy",
+        enable_pre_lm_encoder=False,
+        enable_async_decode=False,
+        async_decode_min_batch_size=4,
     )
 
     assert build_kwargs["cuda_graph_max_bs"] == 16
@@ -244,3 +256,90 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0
     assert build_kwargs["max_prefill_tokens"] == 4096
+    assert scheduler.enable_async_decode is False
+    assert scheduler.async_decode_min_batch_size == 4
+
+
+def test_whisper_asr_threads_default_async_decode(monkeypatch) -> None:
+    fake_processor = SimpleNamespace(
+        tokenizer=object(),
+        feature_extractor=SimpleNamespace(nb_max_frames=3000),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoConfig=SimpleNamespace(
+                from_pretrained=lambda *args, **kwargs: SimpleNamespace(
+                    max_target_positions=448
+                )
+            ),
+            AutoProcessor=SimpleNamespace(
+                from_pretrained=lambda *args, **kwargs: fake_processor
+            ),
+            GenerationConfig=SimpleNamespace(
+                from_pretrained=lambda *args, **kwargs: object()
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        whisper_request_builders,
+        "make_whisper_scheduler_adapters",
+        lambda **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(
+        model_runner_base,
+        "ModelRunner",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        omni_scheduler,
+        "OmniScheduler",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        server_args = FakeServerArgs(**overrides)
+        server_args.cuda_graph_config = SimpleNamespace(
+            decode=SimpleNamespace(
+                max_bs=overrides["cuda_graph_max_bs"],
+                bs=overrides["cuda_graph_bs"],
+            ),
+            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+        )
+        return server_args
+
+    def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
+        model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
+        return False, (
+            model_worker,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+        )
+
+    monkeypatch.setattr(
+        sglang_backend,
+        "build_sglang_server_args",
+        _fake_server_args_builder,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        _fake_create_infrastructure,
+    )
+
+    scheduler = whisper_asr_stages.create_sglang_whisper_asr_executor(
+        "dummy", enable_pre_lm_encoder=False
+    )
+
+    assert scheduler.enable_async_decode is True
+    assert scheduler.async_decode_min_batch_size == 1

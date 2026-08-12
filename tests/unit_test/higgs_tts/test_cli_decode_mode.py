@@ -20,6 +20,7 @@ from sglang_omni.models.moss_transcribe_diarize.config import (
 )
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 
 
 def _tts_engine_args(config: PipelineConfig) -> dict[str, object]:
@@ -94,7 +95,7 @@ def test_decode_mode_cli_rejects_unsupported_config():
         typer.BadParameter,
         match=(
             "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-            "Qwen3-ASR, and the Qwen3-Omni thinker"
+            "Qwen3-ASR, Whisper ASR, and the Qwen3-Omni thinker"
         ),
     ):
         apply_decode_mode_cli_overrides(
@@ -134,6 +135,23 @@ def test_decode_mode_cli_applies_to_fun_asr_stage():
 
 def test_decode_mode_cli_applies_to_qwen3_asr_stage():
     config = Qwen3ASRPipelineConfig(model_path="dummy")
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="async", async_lookahead_min_batch_size=4
+    )
+    stage = next(s for s in config.stages if s.name == "asr")
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is True
+    assert args["async_decode_min_batch_size"] == 4
+
+    apply_decode_mode_cli_overrides(
+        config, decode_mode="sync", async_lookahead_min_batch_size=None
+    )
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is False
+
+
+def test_decode_mode_cli_applies_to_whisper_asr_stage():
+    config = WhisperASRPipelineConfig(model_path="dummy")
     apply_decode_mode_cli_overrides(
         config, decode_mode="async", async_lookahead_min_batch_size=4
     )
