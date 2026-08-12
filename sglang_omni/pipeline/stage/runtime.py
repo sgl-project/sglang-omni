@@ -173,7 +173,7 @@ class Stage:
                     if self.gpu_id is not None:
                         current_platform.set_device(int(self.gpu_id))
                         logger.info(
-                            "Scheduler thread for stage %s set CUDA device to %s",
+                            "Scheduler thread for stage %s set device to %s",
                             self.name,
                             self.gpu_id,
                         )

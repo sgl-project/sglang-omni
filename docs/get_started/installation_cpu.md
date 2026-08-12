@@ -27,7 +27,6 @@ keeps the dependency set scoped to Qwen3-TTS serving.
 ```bash Command
 # Clone the SGLang-omni repository
 git clone https://github.com/sgl-project/sglang-omni.git
-cd docker
 
 # Build the docker image
 docker build -f docker/cpu.Dockerfile -t sglang-omni:cpu .

@@ -36,6 +36,7 @@ done
 PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_CPU="${REPO_ROOT}/pyproject_cpu.toml"
 
+
 SGLANG_VERIFIED_VERSION="v0.5.16"
 
 [[ -f "${PYPROJECT_CPU}" ]] || { echo "ERROR: ${PYPROJECT_CPU} not found" >&2; exit 1; }
@@ -84,12 +85,30 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
     exit 0
 fi
 
-cp "${PYPROJECT_CPU}" "${PYPROJECT}"
+BACKUP="$(mktemp "${REPO_ROOT}/.pyproject.cuda.bak.XXXXXX")"
+
+# Restore the CUDA pyproject.toml no matter how we exit. Use cp (not mv) so a
+# partial/interrupted restore still leaves the backup in place, and also sweep
+# the in-tree build artifacts an editable build may drop.
+restore() {
+  if [[ -f "${BACKUP}" ]]; then
+    cp -f "${BACKUP}" "${PYPROJECT}"
+    rm -f "${BACKUP}"
+    echo "restored original pyproject.toml"
+  fi
+  rm -rf "${REPO_ROOT}/sglang_omni.egg-info" "${REPO_ROOT}/build" 2>/dev/null || true
+}
+trap restore EXIT
+
+cp -f "${PYPROJECT}" "${BACKUP}"
+cp -f "${PYPROJECT_CPU}" "${PYPROJECT}"
+echo "swapped in pyproject_cpu.toml"
 
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
 
-
+restore
+trap - EXIT
 
 echo
 echo "=== verifying install ==="
