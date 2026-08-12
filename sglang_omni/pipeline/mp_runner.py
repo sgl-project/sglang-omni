@@ -2,9 +2,10 @@
 """Multi-process pipeline runner.
 
 The runner owns the single serving path. It can start one OS process containing
-multiple non-TP stages, multiple OS processes on the same GPU, and the existing
-one-process-per-rank TP topology.
+multiple non-parallel stages, multiple OS processes on the same GPU, and a
+one-process-per-rank TP or SP topology.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,7 @@ import multiprocessing
 import socket
 from typing import Any
 
+from sglang_omni.config.parallelism import resolve_stage_parallelism
 from sglang_omni.config.placement import (
     StagePlacementPlan,
     resolve_gpu_stage_names,
@@ -85,11 +87,13 @@ def _build_stage_groups(
             stage_gpu_ids[raw_name] = stage_gpu_ids[canonical_name]
 
     single_stage_specs: dict[str, StageLaunchConfig] = {}
-    tp_groups: list[StageGroup] = []
+    parallel_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
-        tp_size = stage_cfg.tp_size
+        parallelism = resolve_stage_parallelism(stage_cfg)
+        tp_size = parallelism.tp_size
+        sp_size = parallelism.sp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
-        nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
+        nccl_port = nccl_port_counter.allocate() if parallelism.is_parallel else None
 
         same_process_targets = _resolve_same_process_targets(
             stage_cfg,
@@ -130,7 +134,28 @@ def _build_stage_groups(
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             name_map=name_map,
         )
-        if tp_size == 1:
+        if sp_size > 1:
+            specs = _build_sp_stage_specs(
+                ctx=ctx,
+                stage_cfg=stage_cfg,
+                config=config,
+                gpu_ids=gpu_ids,
+                nccl_port=nccl_port,
+                recv_endpoint=stage_endpoints[stage_cfg.name],
+                base_factory_args=base_factory_args,
+                stage_kwargs=stage_kwargs,
+            )
+            process_specs = [
+                StageWorkerProcessSpec(
+                    process_name=process_plan.sp_stage_to_processes[stage_cfg.name][
+                        spec.sp_rank
+                    ],
+                    stage_specs=[spec],
+                )
+                for spec in specs
+            ]
+            parallel_groups.append(StageGroup(stage_cfg.name, process_specs))
+        elif tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
                 stage_cfg=stage_cfg,
                 config=config,
@@ -159,7 +184,7 @@ def _build_stage_groups(
                 )
                 for spec in specs
             ]
-            tp_groups.append(StageGroup(stage_cfg.name, process_specs))
+            parallel_groups.append(StageGroup(stage_cfg.name, process_specs))
 
     groups: list[StageGroup] = []
     for group in process_plan.groups:
@@ -177,7 +202,7 @@ def _build_stage_groups(
                 ],
             )
         )
-    groups.extend(tp_groups)
+    groups.extend(parallel_groups)
     _attach_process_memory_fraction_defaults(groups)
 
     return groups
@@ -220,7 +245,7 @@ def _resolve_same_process_targets(
     name_map: dict[str, str],
     process_plan: ProcessTopologyPlan,
 ) -> set[str]:
-    if stage_cfg.tp_size > 1:
+    if resolve_stage_parallelism(stage_cfg).is_parallel:
         return set()
     source_process = process_plan.stage_to_process.get(stage_cfg.name)
     if source_process is None:
@@ -237,7 +262,7 @@ def _resolve_same_process_targets(
     for raw_target in raw_targets:
         target = name_map.get(raw_target, raw_target)
         target_cfg = stage_cfg_by_name.get(target)
-        if target_cfg is None or target_cfg.tp_size > 1:
+        if target_cfg is None or resolve_stage_parallelism(target_cfg).is_parallel:
             continue
         if process_plan.stage_to_process.get(target) == source_process:
             same_process_targets.add(target)
@@ -347,6 +372,82 @@ def _build_tp_stage_specs(
     return specs
 
 
+def _build_sp_stage_specs(
+    *,
+    ctx: multiprocessing.context.BaseContext,
+    stage_cfg: StageConfig,
+    config: PipelineConfig,
+    gpu_ids: list[int | None],
+    nccl_port: int | None,
+    recv_endpoint: str,
+    base_factory_args: dict[str, Any],
+    stage_kwargs: dict[str, Any],
+) -> list[StageLaunchConfig]:
+    sp_config = stage_cfg.parallelism
+    if sp_config.sp <= 1:
+        raise ValueError(f"SP stage {stage_cfg.name!r} has no SP configuration")
+    sp_size = sp_config.sp
+    follower_work_queues = [ctx.Queue() for _ in range(sp_size - 1)]
+    follower_abort_queues = [ctx.Queue() for _ in range(sp_size - 1)]
+    follower_admin_result_queues = [ctx.Queue() for _ in range(sp_size - 1)]
+    specs: list[StageLaunchConfig] = []
+
+    for sp_rank in range(sp_size):
+        gpu_id = gpu_ids[sp_rank]
+        if gpu_id is None:
+            raise ValueError(f"SP stage {stage_cfg.name!r} requires GPU placement")
+        role = "leader" if sp_rank == 0 else "follower"
+        factory_args = dict(base_factory_args)
+        factory_args.update(
+            {
+                "stage_role": role,
+                "sp_rank": sp_rank,
+                "sp_size": sp_size,
+                "nccl_port": nccl_port,
+                "ulysses_degree": sp_config.resolved_ulysses_degree,
+                "ring_degree": sp_config.ring_degree,
+            }
+        )
+        comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
+        common = dict(
+            role=role,
+            sp_rank=sp_rank,
+            sp_size=sp_size,
+            placement_gpu_id=gpu_id,
+            gpu_id=gpu_id,
+            nccl_port=nccl_port,
+            factory_args=factory_args,
+            factory_arg_defaults=resolve_stage_factory_arg_defaults(
+                stage_cfg, config, gpu_id=gpu_id
+            ),
+            comm_config=comm_config,
+            **stage_kwargs,
+        )
+        if sp_rank == 0:
+            specs.append(
+                StageLaunchConfig(
+                    recv_endpoint=recv_endpoint,
+                    follower_work_queues=follower_work_queues,
+                    follower_abort_queues=follower_abort_queues,
+                    follower_admin_result_queues=follower_admin_result_queues,
+                    **common,
+                )
+            )
+        else:
+            idx = sp_rank - 1
+            specs.append(
+                StageLaunchConfig(
+                    recv_endpoint="",
+                    internal_work_queue=follower_work_queues[idx],
+                    internal_abort_queue=follower_abort_queues[idx],
+                    internal_admin_result_queue=follower_admin_result_queues[idx],
+                    **common,
+                )
+            )
+
+    return specs
+
+
 def _resolve_comm_config(
     stage_cfg: StageConfig,
     *,
@@ -360,7 +461,7 @@ def _resolve_comm_config(
 
 
 class _NcclPortAllocator:
-    """Allocate unique NCCL ports for per-stage TP groups."""
+    """Allocate unique distributed ports for per-stage parallel groups."""
 
     def __init__(self, base_port: int = 29500):
         self._next = base_port

@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
+from sglang_omni.config.parallelism import resolve_stage_parallelism
 from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
@@ -18,6 +19,8 @@ class StagePlacement:
     stage_name: str
     gpu_ids: tuple[int, ...]
     tp_size: int
+    sp_size: int
+    world_size: int
     total_gpu_memory_fraction: float | None
 
 
@@ -67,10 +70,13 @@ class StagePlacementPlanner:
                 continue
 
             fraction = stage.runtime.resources.total_gpu_memory_fraction
+            parallelism = resolve_stage_parallelism(stage)
             placements[stage.name] = StagePlacement(
                 stage_name=stage.name,
                 gpu_ids=gpu_ids,
                 tp_size=stage.tp_size,
+                sp_size=parallelism.sp_size,
+                world_size=parallelism.size,
                 total_gpu_memory_fraction=fraction,
             )
             for gpu_id in gpu_ids:
@@ -118,7 +124,7 @@ def resolve_stage_gpu_ids(
 ) -> list[int | None]:
     placement = plan.stages.get(stage_cfg.name)
     if placement is None:
-        return [None] * stage_cfg.tp_size
+        return [None] * resolve_stage_parallelism(stage_cfg).size
     return list(placement.gpu_ids)
 
 
@@ -136,22 +142,42 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     gpu = stage.gpu
     if gpu is None:
         return ()
-    if isinstance(gpu, int):
-        if stage.tp_size > 1:
+    parallelism = resolve_stage_parallelism(stage)
+    if parallelism.kind != "sp":
+        if isinstance(gpu, int):
+            if stage.tp_size > 1:
+                raise ValueError(
+                    f"Stage {stage.name!r}: TP placement requires a list of "
+                    f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
+                )
+            return tuple(gpu for _ in range(stage.tp_size))
+        if len(gpu) != stage.tp_size:
             raise ValueError(
-                f"Stage {stage.name!r}: TP placement requires a list of "
-                f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
+                f"Stage {stage.name!r}: gpu has {len(gpu)} entries "
+                f"but tp_size={stage.tp_size}"
             )
-        return tuple(gpu for _ in range(stage.tp_size))
-    if len(gpu) != stage.tp_size:
+        gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError(
+                f"Stage {stage.name!r}: TP placement requires unique GPU ids, "
+                f"got {list(gpu_ids)}"
+            )
+        return gpu_ids
+
+    sp_size = parallelism.size
+    if isinstance(gpu, int):
         raise ValueError(
-            f"Stage {stage.name!r}: gpu has {len(gpu)} entries "
-            f"but tp_size={stage.tp_size}"
+            f"Stage {stage.name!r}: SP placement requires a list of "
+            f"{sp_size} unique GPU ids, got scalar gpu={gpu}"
+        )
+    if len(gpu) != sp_size:
+        raise ValueError(
+            f"Stage {stage.name!r}: gpu has {len(gpu)} entries but sp={sp_size}"
         )
     gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
     if len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(
-            f"Stage {stage.name!r}: TP placement requires unique GPU ids, "
+            f"Stage {stage.name!r}: SP placement requires unique GPU ids, "
             f"got {list(gpu_ids)}"
         )
     return gpu_ids

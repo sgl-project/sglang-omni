@@ -30,6 +30,10 @@ from sglang_omni.scheduling.dllm_group import (
     apply_forward_group_padding,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import (
+    AbortDrainTracker,
+    ParallelSchedulerCapabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,7 @@ class DllmScheduler:
         self._running = False
         self._abort_lock = threading.Lock()
         self._aborted_request_ids: set[str] = set()
+        self._abort_drains = AbortDrainTracker()
         self._rid_to_req_data: dict[str, Any] = {}
         self._waiting_queue: list[Req] = []
         self._staging_queue: list[Req] = []
@@ -81,6 +86,16 @@ class DllmScheduler:
         self._dllm_rid_to_group: dict[str, str] = {}
         self._dllm_hidden_rids: set[str] = set()
         self._dllm_orphaned_rids: set[str] = set()
+        self.tp_size = int(server_args.tp_size)
+        self.parallel_capabilities = ParallelSchedulerCapabilities(
+            fanout_work=self.tp_size > 1,
+            drain_aborted_work=self.tp_size > 1,
+        )
+
+    @property
+    def requires_tp_work_fanout(self) -> bool:
+        """Compatibility view of the TP work-fanout requirement."""
+        return self.parallel_capabilities.fanout_work
 
     def start(self) -> None:
         self._running = True
@@ -95,6 +110,14 @@ class DllmScheduler:
     def abort(self, request_id: str) -> None:
         with self._abort_lock:
             self._aborted_request_ids.add(request_id)
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            self._abort_drains.record(request_id, dispatch_id)
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            self._abort_drains.acknowledge(request_id, dispatch_id)
 
     def _event_loop(self) -> None:
         while self._running:

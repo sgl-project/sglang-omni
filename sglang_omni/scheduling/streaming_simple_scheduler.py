@@ -56,6 +56,7 @@ class StreamingSimpleScheduler:
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.supports_parallel_stage = False
         self.requires_tp_work_fanout: bool = True
 
         self._fn = compute_fn
