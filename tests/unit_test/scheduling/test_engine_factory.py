@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
 
+from sglang_omni.scheduling import engine_factory
 from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
@@ -178,6 +180,15 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         fake_create_sglang_infrastructure,
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", fake_output_processor)
+    monkeypatch.setattr(
+        engine_factory,
+        "current_platform",
+        SimpleNamespace(
+            device_type="cuda",
+            is_cpu=lambda: False,
+            get_device=lambda device_id: torch.device(f"cuda:{device_id}"),
+        ),
+    )
 
     class RecordingBuilder(TtsEngineBuilder):
         model_name = "Test TTS"

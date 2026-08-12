@@ -34,6 +34,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.messages import IncomingMessage
@@ -231,7 +232,16 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     ]
     assert config.stages[1].factory.endswith("create_sglang_tts_engine_executor")
     assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    expected_gpu_map = (
+        {}
+        if current_platform.is_cpu()
+        else {
+            "tts_engine": 0,
+            "vocoder": 0,
+        }
+    )
+
+    assert config.gpu_placement == expected_gpu_map
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
     assert {stage.process for stage in config.stages} == {"pipeline"}
@@ -3678,3 +3688,58 @@ def test_qwen3_tts_prefill_publishes_sglang_forward_context() -> None:
 
     assert seen == [attn_backend]
     assert result.logits_output == "logits"
+
+
+def test_vocoder_executor_uses_cpu_platform_device(monkeypatch) -> None:
+    import torch
+
+    from sglang_omni.models.qwen3_tts import stages
+
+    captured = {}
+
+    class FakeCPUPlatform:
+        def get_device(self, device_id: int):
+            captured["device_id"] = device_id
+            return torch.device("cpu")
+
+    monkeypatch.setattr(
+        stages,
+        "current_platform",
+        FakeCPUPlatform(),
+    )
+
+    def fake_load_tokenizer(
+        model_path: str,
+        *,
+        device: str,
+        dtype: str,
+        attn_implementation,
+    ):
+        captured["tokenizer_device"] = device
+        return object()
+
+    monkeypatch.setattr(
+        stages,
+        "_load_qwen3_tts_tokenizer",
+        fake_load_tokenizer,
+    )
+
+    class FakeScheduler:
+        def __init__(self, tokenizer, *, device: str, **kwargs):
+            captured["scheduler_device"] = device
+
+    monkeypatch.setattr(
+        stages,
+        "Qwen3TTSStreamingVocoderScheduler",
+        FakeScheduler,
+    )
+
+    stages.create_vocoder_executor(
+        "dummy-model",
+        gpu_id=None,
+        dtype="bfloat16",
+    )
+
+    assert captured["device_id"] == 0
+    assert captured["tokenizer_device"] == "cpu"
+    assert captured["scheduler_device"] == "cpu"

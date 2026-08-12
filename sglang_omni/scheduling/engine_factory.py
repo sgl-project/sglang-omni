@@ -9,6 +9,7 @@ from typing import Any
 
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
@@ -64,15 +65,21 @@ class SGLangGenerationEngineBuilder(ABC):
         from sglang_omni.scheduling import sglang_backend
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        if gpu_id is not None:
-            device = f"cuda:{gpu_id}"
-        gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+        runner_device_id = 0 if gpu_id is None else int(gpu_id)
+        device = str(current_platform.get_device(runner_device_id))
         self.checkpoint_dir = checkpoint_dir
         self.device = device
-        self.gpu_id = gpu_id
+        self.gpu_id = runner_device_id
         self.dtype = dtype
 
         self.pre_infra_setup(checkpoint_dir)
+        effective_overrides = dict(server_args_overrides or {})
+
+        # SGLang ServerArgs wants the device type, not an indexed device string.
+        effective_overrides["device"] = current_platform.device_type
+
+        if current_platform.is_cpu():
+            effective_overrides["disable_cuda_graph"] = True
 
         operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
             server_args_overrides
@@ -82,7 +89,7 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
-
+        overrides["device"] = current_platform.device_type
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,
             context_length=self.context_length,

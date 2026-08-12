@@ -23,6 +23,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
@@ -181,8 +182,8 @@ def create_vocoder_executor(
     followup_batch_wait_ms: int = 1,
     initial_cuda_graph: bool = True,
 ) -> SimpleScheduler:
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+    runner_device_id = 0 if gpu_id is None else int(gpu_id)
+    device = str(current_platform.get_device(runner_device_id))
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,
