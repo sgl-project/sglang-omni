@@ -132,14 +132,13 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     )
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
     assert preprocessing.factory_args == {
-        "device": "cpu",
         "dtype": "float32",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
         "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
     }
     assert vocoder.factory_args == {
-        "dtype": "bfloat16",
+        "dtype": "float32",
         "compute_dtype": "bfloat16",
     }
 
@@ -155,7 +154,6 @@ def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
 
     assert preprocessing_args == {
-        "device": "cpu",
         "dtype": "float32",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
@@ -164,7 +162,7 @@ def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
         "gpu_id": 0,
     }
     assert vocoder_args == {
-        "dtype": "bfloat16",
+        "dtype": "float32",
         "compute_dtype": "bfloat16",
         "model_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
         "gpu_id": 0,
@@ -333,7 +331,7 @@ def test_moss_tts_preprocessing_factory_receives_placement_gpu_id() -> None:
 
     assert preprocessing.gpu == 2
     assert factory_args["gpu_id"] == 2
-    assert factory_args["device"] == "cpu"
+    assert "device" not in factory_args
 
 
 @pytest.mark.parametrize(
