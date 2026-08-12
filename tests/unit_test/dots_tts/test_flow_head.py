@@ -2,18 +2,98 @@
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
 LLM_HIDDEN = 48
 FM_HIDDEN = 32
 LATENT_DIM = 6
 PATCH_SIZE = 2
 NFE = 2
+
+
+def test_stts_decode_batches_only_audio_phase_rows() -> None:
+    feedback = torch.randn(LLM_HIDDEN)
+    step = SimpleNamespace(
+        feedback_embedding=feedback,
+        latent_patch=torch.randn(1, PATCH_SIZE, LATENT_DIM),
+        emit=True,
+        finished=False,
+    )
+
+    class _Flow:
+        is_batched = True
+
+        def decode_batch(self, states, *, hidden_states, **_kwargs):
+            assert states == ["audio-state"]
+            assert hidden_states.shape == (1, LLM_HIDDEN)
+            return [step]
+
+    def _request(schedule, cursor, flow_state):
+        state = SimpleNamespace(
+            interleaved=True,
+            audio_span_token_ids=[7],
+            num_steps=2,
+            ode_method="euler",
+            guidance_scale=0.0,
+            eos_threshold=0.8,
+        )
+        data = SimpleNamespace(
+            state=state,
+            generation_schedule=torch.tensor([schedule]),
+            interleave_cursor=cursor,
+            text_cond_end_id=9,
+            text_finished=False,
+            control_token_id=7,
+            flow_state=flow_state,
+            pending_feedback_queue=deque(),
+            decoded_latent_patches=[],
+            latent_patches=[],
+            latest_latent_patch=None,
+        )
+        return SimpleNamespace(data=data)
+
+    audio = _request([1, 7], 1, "audio-state")
+    text = _request([1, 9, 7], 1, "text-state")
+    runner = DotsTTSModelRunner.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=_Flow())
+    result = SimpleNamespace(next_token_ids=None)
+
+    launch = runner._advance_interleaved_batch(
+        result, [audio, text], torch.randn(2, LLM_HIDDEN)
+    )
+
+    assert launch.data_rows == [audio.data]
+    assert result.next_token_ids.tolist() == [7, 9]
+    assert torch.equal(audio.data.pending_feedback_queue.popleft(), feedback)
+    assert text.data.pending_feedback_queue.popleft() == 9
+    assert text.data.text_finished
+
+
+def test_stts_replay_finds_audio_conditioning_positions() -> None:
+    positions = DotsTTSFlowHead._generated_audio_positions(
+        torch.tensor([[3, 7, 4, 5, 7, 6]]),
+        prefill_end=1,
+        generated_count=4,
+        audio_span_token_ids={7},
+        expected=2,
+    )
+
+    assert positions.tolist() == [1, 4]
+    with pytest.raises(RuntimeError, match="do not match decoded patches"):
+        DotsTTSFlowHead._generated_audio_positions(
+            torch.tensor([[3, 7, 4]]),
+            prefill_end=1,
+            generated_count=2,
+            audio_span_token_ids={7},
+            expected=2,
+        )
 
 
 def _flow_head(
@@ -451,25 +531,109 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
 def test_scm_checkpoint_uses_artifact_solver_contract(tmp_path) -> None:
     from dots_tts.modules.backbone.scm_inference import SCMDiTSolver
 
-    sampling = {
-        "solver": "scm",
-        "ode_method": "euler",
-        "num_steps": 2,
-        "guidance_scale": 0.0,
-        "tau_mid": 1.3,
-    }
-    flow = _flow_head(tmp_path, meanflow=False, sampling=sampling)
+    flow = _flow_head(
+        tmp_path,
+        meanflow=False,
+        sampling={
+            "solver": "scm",
+            "ode_method": "euler",
+            "num_steps": 2,
+            "guidance_scale": 0.0,
+            "tau_mid": 1.3,
+        },
+    )
 
     assert flow.mode == "scm"
     assert isinstance(flow._solver(), SCMDiTSolver)
     flow.validate_request(num_steps=2, ode_method="euler", guidance_scale=0.0)
     with pytest.raises(ValueError, match="scm artifact requires"):
         flow.validate_request(num_steps=1, ode_method="euler", guidance_scale=0.0)
-
-    batched_flow = _flow_head(tmp_path, meanflow=False, sampling=sampling)
+    state, _ = flow.new_request(
+        max_audio_patch_count=8,
+        prompt_latents=None,
+        speaker_embedding=torch.randn(1, 512),
+        speaker_scale=1.5,
+        rng=42,
+    )
+    flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
+    step = flow.decode_next(
+        state,
+        hidden_states=torch.randn(1, 1, LLM_HIDDEN),
+        num_steps=2,
+        ode_method="euler",
+        guidance_scale=0.0,
+        eos_threshold=0.8,
+    )
+    assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
+    assert torch.isfinite(step.latent_patch).all()
+    batched_flow = _flow_head(
+        tmp_path,
+        meanflow=False,
+        sampling={
+            "solver": "scm",
+            "ode_method": "euler",
+            "num_steps": 2,
+            "guidance_scale": 0.0,
+            "tau_mid": 1.3,
+        },
+    )
     batched_flow.init_batched_tail(num_slots=2, nfe=2, max_audio_patches=8)
     assert batched_flow.is_batched
     assert batched_flow._tail.spec.solver == "scm"
+
+
+@pytest.mark.gpu
+def test_batched_scm_runs_on_cuda(tmp_path) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    flow = _flow_head(
+        tmp_path,
+        meanflow=False,
+        sampling={
+            "solver": "scm",
+            "ode_method": "euler",
+            "num_steps": 2,
+            "guidance_scale": 0.0,
+            "tau_mid": 1.3,
+        },
+    ).to(device="cuda", dtype=torch.bfloat16)
+    flow.init_batched_tail(num_slots=2, nfe=2, max_audio_patches=8, optimize=True)
+    prompt_latents = torch.randn(
+        1, 2 * PATCH_SIZE, LATENT_DIM, device="cuda", dtype=torch.bfloat16
+    )
+    states = []
+    for seed in (11, 12):
+        state, _ = flow.new_request(
+            max_audio_patch_count=8,
+            prompt_latents=prompt_latents,
+            speaker_embedding=None,
+            speaker_scale=1.0,
+            rng=seed,
+        )
+        flow.initialize_history(
+            state,
+            hidden_states=torch.randn(
+                1, 3, LLM_HIDDEN, device="cuda", dtype=torch.bfloat16
+            ),
+            prompt_span_positions=torch.tensor([1, 2], device="cuda"),
+            audio_span_token_ids={1},
+            generation_schedule=torch.tensor([[0, 1, 1, 1]], device="cuda"),
+            prefill_end=3,
+            decoded_latent_patches=[],
+        )
+        states.append(state)
+    steps = flow.decode_batch(
+        states,
+        hidden_states=torch.randn(2, LLM_HIDDEN, device="cuda", dtype=torch.bfloat16),
+        num_steps=[2, 2],
+        ode_methods=["euler", "euler"],
+        guidance_scales=[0.0, 0.0],
+        eos_thresholds=[2.0, 2.0],
+        append_hidden=False,
+    )
+
+    assert flow.resolve_batched_eos() == [False, False]
+    assert all(torch.isfinite(step.latent_patch).all() for step in steps)
 
 
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:

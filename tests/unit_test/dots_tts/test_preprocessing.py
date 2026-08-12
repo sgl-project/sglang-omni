@@ -5,8 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 
-from sglang_omni.models.dots_tts.payload_types import DotsTTSState
+from sglang_omni.models.dots_tts.payload_types import (
+    DotsTTSState,
+    materialize_streaming_schedule,
+)
 from sglang_omni.models.dots_tts.stages import preprocess_dots_tts_payload
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -17,8 +21,10 @@ class _RecordingTokenizer:
     def __init__(self) -> None:
         from dots_tts.utils.tokenizer import (
             AUDIO_COMP_SPAN_TOKEN,
+            AUDIO_GEN_END_TOKEN,
             AUDIO_GEN_SPAN_TOKEN,
             AUDIO_GEN_START_TOKEN,
+            TEXT_COND_END_TOKEN,
         )
 
         self.encoded_text: list[str] = []
@@ -26,6 +32,8 @@ class _RecordingTokenizer:
             AUDIO_GEN_START_TOKEN: 101,
             AUDIO_GEN_SPAN_TOKEN: 102,
             AUDIO_COMP_SPAN_TOKEN: 103,
+            AUDIO_GEN_END_TOKEN: 104,
+            TEXT_COND_END_TOKEN: 105,
         }
 
     def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
@@ -69,14 +77,21 @@ def _payload(
     )
 
 
-def _preprocess(payload: StagePayload, tokenizer: _RecordingTokenizer) -> DotsTTSState:
+def _preprocess(
+    payload: StagePayload,
+    tokenizer: _RecordingTokenizer,
+    *,
+    sampling=None,
+    streaming=None,
+) -> DotsTTSState:
     result = preprocess_dots_tts_payload(
         payload,
         tokenizer=tokenizer,
         model_config=SimpleNamespace(
             patch_size=4,
             vocoder=SimpleNamespace(sample_rate=48000),
-            sampling=None,
+            sampling=sampling,
+            streaming=streaming,
         ),
         max_generate_length=20,
         max_sequence_length=128,
@@ -117,22 +132,45 @@ def test_preprocessing_rejects_unconsumed_extra_references() -> None:
 def test_preprocessing_uses_artifact_sampling_contract() -> None:
     from dots_tts.models.dots_tts.config import SamplingConfig
 
-    tokenizer = _RecordingTokenizer()
-    result = preprocess_dots_tts_payload(
-        _payload(),
-        tokenizer=tokenizer,
-        model_config=SimpleNamespace(
-            patch_size=4,
-            vocoder=SimpleNamespace(sample_rate=48000),
-            sampling=SamplingConfig(solver="scm"),
-        ),
-        max_generate_length=20,
-        max_sequence_length=128,
-    )
-    state = DotsTTSState.from_dict(result.data)
+    sampling = SamplingConfig(solver="scm")
+    state = _preprocess(_payload(), _RecordingTokenizer(), sampling=sampling)
 
     assert (state.ode_method, state.num_steps, state.guidance_scale) == (
         "euler",
         2,
         0.0,
     )
+
+    with pytest.raises(ValueError, match="scm artifact requires"):
+        _preprocess(
+            _payload(params={"stage_params": {"latent_engine": {"num_steps": 1}}}),
+            _RecordingTokenizer(),
+            sampling=sampling,
+        )
+
+
+def test_stts_schedule_uses_artifact_cadence_after_reference_encode() -> None:
+    from dots_tts.models.dots_tts.config import SamplingConfig, StreamingConfig
+
+    tokenizer = _RecordingTokenizer()
+    state = _preprocess(
+        _payload(),
+        tokenizer,
+        sampling=SamplingConfig(solver="scm"),
+        streaming=StreamingConfig(
+            interleave_mode="buffered_ratio",
+            initial_lookahead=3,
+            ta_per_tta=1,
+            warmup_ta=0,
+        ),
+    )
+
+    assert state.interleaved
+    assert state.generation_schedule.numel() == 0
+    state.prompt_latents = torch.zeros(1, 8, 6)
+    materialize_streaming_schedule(state)
+
+    schedule = state.generation_schedule[0].tolist()
+    audio_id = state.streaming_schedule["audio_span_id"]
+    assert schedule.count(audio_id) == 20
+    assert state.streaming_schedule["interleave_mode"] == "buffered_ratio"

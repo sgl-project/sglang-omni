@@ -105,6 +105,7 @@ def preprocess_dots_tts_payload(
         DEFAULT_INSTRUCTION_TTS_TEMPLATE,
         DEFAULT_TEXT_TO_AUDIO_TEMPLATE,
         DEFAULT_TRAIN_TEMPLATE,
+        TTS_INTERLEAVE_PREFIX,
     )
     from dots_tts.utils.text import (
         attach_language_tag,
@@ -114,7 +115,9 @@ def preprocess_dots_tts_payload(
     )
     from dots_tts.utils.tokenizer import (
         AUDIO_COMP_SPAN_TOKEN,
+        AUDIO_GEN_END_TOKEN,
         AUDIO_GEN_SPAN_TOKEN,
+        TEXT_COND_END_TOKEN,
         require_token_id,
     )
 
@@ -134,8 +137,14 @@ def preprocess_dots_tts_payload(
         else {}
     )
 
-    text = str(_first_not_none(inputs.get("input"), inputs.get("text"), default=""))
-    if not text.strip():
+    raw_text = _first_not_none(inputs.get("input"), inputs.get("text"), default="")
+    text_token_ids = _first_not_none(
+        inputs.get("text_token_ids"), inputs.get("input_ids")
+    )
+    if text_token_ids is None and isinstance(raw_text, list):
+        text_token_ids = raw_text
+    text = "" if isinstance(raw_text, list) else str(raw_text)
+    if not text.strip() and not text_token_ids:
         raise ValueError("dots.tts requires non-empty input text")
     prompt_audio = _first_not_none(
         _reference_path(inputs.get("prompt_audio_path")),
@@ -225,17 +234,51 @@ def preprocess_dots_tts_payload(
         raise ValueError(
             f"dots.tts max_generate_length must be in [1, {max_generate_length}]"
         )
-    schedule_spec = build_generation_schedule(
-        text=f"{normalized_prompt_text}{text}",
-        tokenizer=tokenizer,
-        template=templates[template_name],
-        max_audio_tokens=request_limit,
-    )
-    schedule = torch.tensor([schedule_spec["schedule_ids"]], dtype=torch.long)
-    if schedule.numel() > int(max_sequence_length):
-        raise ValueError(
-            f"dots.tts schedule exceeds context length {max_sequence_length}"
+    streaming = getattr(model_config, "streaming", None)
+    streaming_schedule = None
+    if streaming is not None:
+        if not normalized_prompt_text or not prompt_audio:
+            raise ValueError(
+                "dots.tts STTS continuous batching requires reference audio "
+                "with its transcript"
+            )
+        if text_token_ids is None:
+            text_token_ids = tokenizer.encode(text, add_special_tokens=False)
+        if not isinstance(text_token_ids, list) or not all(
+            isinstance(token_id, int) and token_id >= 0 for token_id in text_token_ids
+        ):
+            raise ValueError("dots.tts STTS text_token_ids must be non-negative ints")
+        streaming_schedule = {
+            "prefix_ids": tokenizer.encode(
+                TTS_INTERLEAVE_PREFIX, add_special_tokens=False
+            ),
+            "prompt_text_ids": tokenizer.encode(
+                normalized_prompt_text, add_special_tokens=False
+            ),
+            "text_ids": text_token_ids,
+            "audio_span_id": require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
+            "audio_end_id": require_token_id(tokenizer, AUDIO_GEN_END_TOKEN),
+            "text_cond_end_id": require_token_id(tokenizer, TEXT_COND_END_TOKEN),
+            "max_audio_patches": request_limit,
+            "max_sequence_length": int(max_sequence_length),
+            "interleave_mode": streaming.interleave_mode,
+            "initial_lookahead": streaming.initial_lookahead,
+            "ta_per_tta": streaming.ta_per_tta,
+            "warmup_ta": streaming.warmup_ta,
+        }
+        schedule = torch.empty((1, 0), dtype=torch.long)
+    else:
+        schedule_spec = build_generation_schedule(
+            text=f"{normalized_prompt_text}{text}",
+            tokenizer=tokenizer,
+            template=templates[template_name],
+            max_audio_tokens=request_limit,
         )
+        schedule = torch.tensor([schedule_spec["schedule_ids"]], dtype=torch.long)
+        if schedule.numel() > int(max_sequence_length):
+            raise ValueError(
+                f"dots.tts schedule exceeds context length {max_sequence_length}"
+            )
 
     ode_method = _first_not_none(
         inputs.get("ode_method"),
@@ -312,6 +355,8 @@ def preprocess_dots_tts_payload(
         ),
         stream=bool(params.get("stream", False)),
         generation_schedule=schedule,
+        interleaved=streaming is not None,
+        streaming_schedule=streaming_schedule,
         audio_span_token_ids=[
             require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
             require_token_id(tokenizer, AUDIO_COMP_SPAN_TOKEN),

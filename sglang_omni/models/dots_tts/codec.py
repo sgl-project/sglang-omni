@@ -16,6 +16,7 @@ from safetensors.torch import load_file
 
 from sglang_omni.models.dots_tts.payload_types import (
     load_dots_tts_state,
+    materialize_streaming_schedule,
     store_dots_tts_state,
 )
 from sglang_omni.preprocessing.cache_key import (
@@ -300,6 +301,7 @@ class DotsReferenceEncoder:
                 artifact["latent_distribution"],
                 seed=state.seed,
             )
+        materialize_streaming_schedule(state)
         return store_dots_tts_state(payload, state)
 
 

@@ -109,6 +109,7 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
                 is_retracted=retracted,
             ),
             state=SimpleNamespace(
+                interleaved=False,
                 prompt_latents=torch.zeros(1, 4, 2),
                 speaker_embedding=torch.zeros(1, 8),
                 speaker_scale=speaker_scale,
@@ -132,6 +133,58 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
     assert suspended == [old_flow_state]
     torch.testing.assert_close(restored_rng[0], torch.tensor([7], dtype=torch.uint8))
     assert restored_rng[1] == 42
+
+
+def test_dots_stts_reprefill_replays_text_tokens_and_audio_feedback() -> None:
+    class _Flow:
+        def suspend_request(self, _state):
+            return torch.tensor([7], dtype=torch.uint8)
+
+        def new_request(self, **_kwargs):
+            return object(), torch.zeros(1, 1, 4)
+
+        def replay_feedback(self, _state, _patches):
+            return torch.full((1, 4), 33.0)
+
+    embedding = nn.Embedding.from_pretrained(
+        torch.arange(48, dtype=torch.float32).reshape(12, 4)
+    )
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=_Flow(), get_input_embeddings=lambda: embedding)
+    data = SimpleNamespace(
+        flow_state=object(),
+        generation_schedule=torch.tensor([[1, 2, 3, 4, 9]]),
+        span_positions=torch.tensor([1]),
+        prompt_span_positions=torch.tensor([1]),
+        prefill_end=3,
+        pending_feedback_queue=deque(),
+        decoded_latent_patches=[torch.zeros(1, 2, 2)],
+        req=SimpleNamespace(
+            prefix_indices=[],
+            extend_range=SimpleNamespace(length=5),
+            output_ids=[4, 9],
+            is_retracted=True,
+        ),
+        state=SimpleNamespace(
+            interleaved=True,
+            audio_span_token_ids=[9],
+            prompt_latents=torch.zeros(1, 4, 2),
+            speaker_embedding=None,
+            speaker_scale=1.0,
+            seed=42,
+        ),
+    )
+    request = SimpleNamespace(request_id="stts", data=data)
+    runner._request_data = {"stts": data}
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([1, 2, 3, 4, 9]), input_embeds=None
+    )
+
+    runner.before_prefill(forward_batch, object(), [request])
+
+    assert forward_batch.input_embeds.shape == (5, 4)
+    torch.testing.assert_close(forward_batch.input_embeds[3], embedding.weight[4])
+    torch.testing.assert_close(forward_batch.input_embeds[4], torch.full((4,), 33.0))
 
 
 def test_dots_prefill_failure_releases_materialized_slots() -> None:

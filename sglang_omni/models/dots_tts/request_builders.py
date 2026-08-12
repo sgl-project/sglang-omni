@@ -43,6 +43,9 @@ class DotsTTSSGLangRequestData(SGLangARRequestData):
     chunk_id: int = 0
     control_token_id: int = 0
     engine_start_s: float = 0.0
+    interleave_cursor: int = 0
+    text_cond_end_id: int = -1
+    text_finished: bool = False
 
 
 def build_sglang_dots_tts_request(
@@ -85,8 +88,10 @@ def build_sglang_dots_tts_request(
             "dots.tts prompt prefill requires one regenerated prompt patch "
             "and at least one payload patch"
         )
-    generation_budget = remaining_spans
-    if state.max_new_tokens is not None:
+    generation_budget = (
+        int(schedule.shape[1]) - prefill_end if state.interleaved else remaining_spans
+    )
+    if state.max_new_tokens is not None and not state.interleaved:
         generation_budget = min(
             generation_budget,
             int(state.max_new_tokens) + discarded_patch_count,
@@ -126,6 +131,10 @@ def build_sglang_dots_tts_request(
         input_embeds_are_projected=True,
         control_token_id=control_token_id,
         engine_start_s=time.perf_counter(),
+        interleave_cursor=prefill_end + 1,
+        text_cond_end_id=int(
+            (state.streaming_schedule or {}).get("text_cond_end_id", -1)
+        ),
         stream_metadata={
             "modality": "audio_latents",
             "stream": bool(state.stream),

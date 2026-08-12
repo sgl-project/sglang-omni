@@ -19,6 +19,7 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 |---|---|
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow. Continuous batching, `num_steps=4`. `examples/configs/dots_tts.yaml` |
 | [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | sCM. Artifact-locked Euler, `num_steps=2`, CFG `0`. Continuous batching with `examples/configs/dots_tts_scm.yaml` |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | Streaming TTS with artifact-declared text/audio cadence and batched sCM. `examples/configs/dots_tts_stts.yaml` |
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Flow matching. Single request at a time (`max_running_requests=1`) with CFG, `num_steps=10`. `examples/configs/dots_tts_soar.yaml` |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Flow matching, same as SOAR. Serve it with `examples/configs/dots_tts_soar.yaml` and `--model-path dots-studio/dots.tts-base` |
 
@@ -63,6 +64,15 @@ sgl-omni serve \
 ```
 
 The checkpoint declares Euler, NFE 2, CFG 0, and `tau_mid`. Serving applies those values automatically and rejects incompatible `ode_method`, `num_steps`, or `guidance_scale` overrides.
+
+For STTS, swap to `dots.tts-mf-2steps-stts` and
+`examples/configs/dots_tts_stts.yaml`. Serving constructs the prompt/target
+interleave from the checkpoint's `streaming` config. Backbone rows at text
+positions stay in the continuous batch; only rows at audio positions enter the
+batched sCM acoustic tail, so requests with different text/audio phases do not
+serialize each other. The OpenAI speech API accepts normal `input` text; the
+low-level pipeline also accepts `text_token_ids` (or `input_ids`) for an upstream
+LLM token stream that has already been collected.
 
 `examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 

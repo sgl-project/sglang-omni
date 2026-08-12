@@ -408,11 +408,20 @@ class DotsTTSFlowHead(nn.Module):
         generation_schedule: torch.Tensor,
         prefill_end: int,
         decoded_latent_patches: list[torch.Tensor],
+        interleaved: bool = False,
     ) -> None:
         if hidden_states.ndim == 2:
             hidden_states = hidden_states.unsqueeze(0)
         decoded_count = len(decoded_latent_patches)
-        assert hidden_states.shape[:2] == (1, int(prefill_end) + decoded_count)
+        if (
+            hidden_states.size(0) != 1
+            or hidden_states.size(1) < int(prefill_end)
+            or (
+                not interleaved
+                and hidden_states.size(1) != int(prefill_end) + decoded_count
+            )
+        ):
+            raise RuntimeError("dots.tts re-prefill history does not match the request")
         if state.slot is not None:
             prompt_patches = state.prompt_patches
             if prompt_patches is None or state.all_mods is None:
@@ -437,10 +446,20 @@ class DotsTTSFlowHead(nn.Module):
                 )
                 return
             fm_parts = [prompt_fm_rows]
-            conditioning_hidden = hidden_states[
-                0,
-                prefill_end - 1 : prefill_end - 1 + decoded_count,
-            ]
+            if interleaved:
+                audio_positions = self._generated_audio_positions(
+                    generation_schedule,
+                    prefill_end=prefill_end,
+                    generated_count=hidden_states.size(1) - prefill_end,
+                    audio_span_token_ids=audio_span_token_ids,
+                    expected=decoded_count,
+                )
+                conditioning_hidden = hidden_states[0, audio_positions - 1]
+            else:
+                conditioning_hidden = hidden_states[
+                    0,
+                    prefill_end - 1 : prefill_end - 1 + decoded_count,
+                ]
             normalized = self.io.normalize(
                 torch.cat(
                     [
@@ -493,27 +512,67 @@ class DotsTTSFlowHead(nn.Module):
                     state, hidden_states[:, span_position : span_position + 1]
                 )
             cursor = next_position
-        if prefill_end > cursor:
+        if (not interleaved or not decoded_count) and prefill_end > cursor:
             self.append_hidden(state, hidden_states[:, prefill_end - 1 : prefill_end])
+        audio_positions = (
+            self._generated_audio_positions(
+                generation_schedule,
+                prefill_end=prefill_end,
+                generated_count=hidden_states.size(1) - prefill_end,
+                audio_span_token_ids=audio_span_token_ids,
+                expected=decoded_count,
+            )
+            if interleaved
+            else None
+        )
         for patch_index, patch in enumerate(decoded_latent_patches):
+            if audio_positions is not None:
+                position = int(audio_positions[patch_index])
+                self.append_hidden(state, hidden_states[:, position - 1 : position])
             self._append_history(
                 state,
                 self.io.normalize(patch.to(device=hidden_states.device)).to(
                     dtype=state.fm_sequence.dtype
                 ),
             )
-            next_hidden_position = prefill_end + patch_index
-            self.append_hidden(
-                state,
-                hidden_states[
-                    :,
-                    next_hidden_position : next_hidden_position + 1,
-                ],
-            )
+            if audio_positions is None:
+                next_hidden_position = prefill_end + patch_index
+                self.append_hidden(
+                    state,
+                    hidden_states[
+                        :,
+                        next_hidden_position : next_hidden_position + 1,
+                    ],
+                )
         if decoded_count:
             state.drop_regenerated_prompt_patch = False
             state.suppress_first_eos_check = False
             state.decoded_patches = decoded_count
+
+    @staticmethod
+    def _generated_audio_positions(
+        generation_schedule: torch.Tensor,
+        *,
+        prefill_end: int,
+        generated_count: int,
+        audio_span_token_ids: set[int],
+        expected: int,
+    ) -> torch.Tensor:
+        ids = torch.tensor(
+            sorted(audio_span_token_ids), device=generation_schedule.device
+        )
+        positions = torch.nonzero(
+            torch.isin(
+                generation_schedule[0, prefill_end : prefill_end + generated_count],
+                ids,
+            ),
+            as_tuple=False,
+        ).squeeze(-1) + int(prefill_end)
+        if positions.numel() != expected:
+            raise RuntimeError(
+                "dots.tts STTS replay audio positions do not match decoded patches"
+            )
+        return positions
 
     @torch.inference_mode()
     def append_hidden(self, state: DotsFlowState, hidden_states: torch.Tensor) -> None:
