@@ -21,6 +21,9 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     create_sglang_moss_transcribe_diarize_executor,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
+)
 
 
 def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -82,6 +85,9 @@ def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
     assert type(builder).supports_breakable_prefill_cuda_graph is True
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert defaults["cuda_graph_bs_prefill"] == (
+        build_default_prefill_cuda_graph_bs(4096)
+    )
     assert (
         max(defaults["cuda_graph_bs_prefill"])
         == defaults["max_prefill_tokens"]
