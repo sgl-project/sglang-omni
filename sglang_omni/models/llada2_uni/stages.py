@@ -141,28 +141,65 @@ def create_image_decode_executor(
     *,
     device: str = "cuda",
     dtype: Any = None,
+    backend: str | None = None,
+    attention_backend: str | None = None,
+    stage_role: str = "single",
+    sp_rank: int = 0,
+    sp_size: int = 1,
+    nccl_port: int | None = None,
+    ulysses_degree: int | None = None,
+    ring_degree: int = 1,
+    checkpoint_load_device: str | None = None,
     decode_mode: str = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
 ):
     """Create the native VQ-to-image terminal stage."""
     import base64
+    import io
 
     from sglang_omni.models.llada2_uni.components.image_decoder import (
         LLaDA2ImageDecoder,
+    )
+    from sglang_omni.models.llada2_uni.config import (
+        resolve_image_decoder_runtime_settings,
     )
     from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
     from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
     from sglang_omni.models.weight_loader import resolve_dtype
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
+    resolved_dtype = resolve_dtype(dtype)
+    runtime_settings = resolve_image_decoder_runtime_settings(
+        backend=backend,
+        attention_backend=attention_backend,
+        sp_size=sp_size,
+        ulysses_degree=ulysses_degree,
+        ring_degree=ring_degree,
+    )
     decoder = LLaDA2ImageDecoder(
         model_path=model_path,
         device=device,
-        dtype=resolve_dtype(dtype),
+        dtype=resolved_dtype,
         decode_mode=decode_mode,
         num_steps=num_steps,
         resolution_multiplier=resolution_multiplier,
+        backend=runtime_settings.backend,
+        attention_backend=runtime_settings.attention_backend,
+        stage_role=stage_role,
+        sp_rank=sp_rank,
+        sp_size=sp_size,
+        ulysses_degree=ulysses_degree,
+        ring_degree=ring_degree,
+        checkpoint_load_device=checkpoint_load_device,
+    )
+    logger.info(
+        "Image decoder created: role=%s, sp_rank=%d/%d, port=%s, backend=%s",
+        stage_role,
+        sp_rank,
+        sp_size,
+        nccl_port,
+        runtime_settings.backend,
     )
 
     def _decode_image(payload):
@@ -181,9 +218,14 @@ def create_image_decode_executor(
         if isinstance(params.get("seed"), int):
             call_kwargs["seed"] = params["seed"]
 
-        image_bytes, image_width, image_height = decoder.decode_to_bytes(
-            token_ids, height, width, **call_kwargs
-        )
+        image = decoder.decode(token_ids, height, width, **call_kwargs)
+        if image is None:
+            payload.data = {"modality": "image", "parallel_follower": True}
+            return payload
+
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        image_bytes = output.getvalue()
         payload.data = {
             "modality": "image",
             "images": [
@@ -191,8 +233,8 @@ def create_image_decode_executor(
                     "id": f"image-{payload.request_id}-0",
                     "data": base64.b64encode(image_bytes).decode("ascii"),
                     "format": "png",
-                    "width": image_width,
-                    "height": image_height,
+                    "width": image.width,
+                    "height": image.height,
                 }
             ],
             "finish_reason": "stop",

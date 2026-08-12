@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import ClassVar
 
 from sglang_omni.config import (
     PipelineConfig,
+    SequenceParallelPolicy,
     StageConfig,
     StageResourceConfig,
     StageRuntimeConfig,
@@ -21,6 +23,81 @@ DECODE_STAGE = "decode"
 IMAGE_DECODE_STAGE = "image_decode"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+LLADA2_IMAGE_DECODER_ATTENTION_HEADS = 30
+LLADA2_IMAGE_DECODER_SP_POLICY = SequenceParallelPolicy(
+    attention_heads=LLADA2_IMAGE_DECODER_ATTENTION_HEADS,
+    requires_power_of_two=True,
+)
+
+
+@dataclass(frozen=True)
+class ImageDecoderRuntimeSettings:
+    backend: str
+    attention_backend: str
+
+
+def _normalize_image_decoder_backend(backend: str) -> str:
+    normalized = backend.strip().lower().replace("-", "_")
+    aliases = {
+        "native": "diffusers",
+        "local": "diffusers",
+        "omni": "diffusers",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def resolve_image_decoder_runtime_settings(
+    *,
+    backend: str | None,
+    attention_backend: str | None,
+    sp_size: int,
+    ulysses_degree: int | None,
+    ring_degree: int,
+) -> ImageDecoderRuntimeSettings:
+    """Resolve model-owned Z-Image backend and SP constraints."""
+    if sp_size < 1:
+        raise ValueError("Image decoder SP size must be positive")
+    if sp_size & (sp_size - 1):
+        raise ValueError("Image decoder SP size must be a power of two")
+    if ring_degree < 1:
+        raise ValueError("Image decoder ring degree must be positive")
+    resolved_ulysses_degree = sp_size if ulysses_degree is None else ulysses_degree
+    if resolved_ulysses_degree < 1:
+        raise ValueError("Image decoder Ulysses degree must be positive")
+    if sp_size != resolved_ulysses_degree * ring_degree:
+        raise ValueError(
+            "Image decoder sp_size must equal ulysses_degree * ring_degree: "
+            f"{sp_size} != {resolved_ulysses_degree} * {ring_degree}"
+        )
+    if LLADA2_IMAGE_DECODER_ATTENTION_HEADS % resolved_ulysses_degree:
+        raise ValueError(
+            f"Image decoder Ulysses degree {resolved_ulysses_degree} must divide "
+            f"the model's {LLADA2_IMAGE_DECODER_ATTENTION_HEADS} attention heads"
+        )
+
+    resolved_backend = (
+        ("sglang" if sp_size > 1 else "diffusers")
+        if backend is None
+        else _normalize_image_decoder_backend(backend)
+    )
+    if resolved_backend not in {"diffusers", "sglang"}:
+        raise ValueError(f"Unsupported image decoder backend: {backend!r}")
+    if sp_size > 1 and resolved_backend != "sglang":
+        raise ValueError("Image decoder SP requires backend='sglang'")
+
+    if attention_backend is None:
+        resolved_attention_backend = (
+            "fa" if resolved_backend == "sglang" else "torch_sdpa"
+        )
+    else:
+        resolved_attention_backend = attention_backend.strip().lower()
+        if not resolved_attention_backend:
+            raise ValueError("Image decoder attention backend must not be empty")
+
+    return ImageDecoderRuntimeSettings(
+        backend=resolved_backend,
+        attention_backend=resolved_attention_backend,
+    )
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
@@ -81,6 +158,14 @@ class LLaDA2UniOmniPipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {THINKER_STAGE: THINKER_STAGE}
+
+    @classmethod
+    def sequence_parallel_policy(
+        cls, *, stage_name: str
+    ) -> SequenceParallelPolicy | None:
+        if stage_name == IMAGE_DECODE_STAGE:
+            return LLADA2_IMAGE_DECODER_SP_POLICY
+        return super().sequence_parallel_policy(stage_name=stage_name)
 
     model_path: str
     stages: list[StageConfig] = [
