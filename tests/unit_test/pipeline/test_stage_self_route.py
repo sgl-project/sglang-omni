@@ -72,3 +72,34 @@ def test_stage_abort_during_self_route_suppresses_reentry() -> None:
         assert "req-abort-reentry" not in stage_obj._active_requests
 
     asyncio.run(_run())
+
+
+def test_stage_self_route_preserves_reentry_with_multi_inflight_lifecycle() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        scheduler = FakeScheduler()
+        scheduler.allow_multiple_inflight_per_request = True
+        stage_obj = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "thinker",
+            endpoints={"thinker": "inproc://thinker"},
+            scheduler=scheduler,
+            same_process_targets={"thinker"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register(stage_obj)
+        stage_obj._active_requests.add("req-multi-reentry")
+        stage_obj._inflight_work_pending["req-multi-reentry"] = 2
+
+        await stage_obj._route_result(
+            "req-multi-reentry",
+            make_stage_payload(request_id="req-multi-reentry", data={"phase": 2}),
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.request_id == "req-multi-reentry"
+        assert queued.data.data == {"phase": 2}
+        assert "req-multi-reentry" in stage_obj._active_requests
+        assert stage_obj._inflight_work_pending["req-multi-reentry"] == 2
+
+    asyncio.run(_run())

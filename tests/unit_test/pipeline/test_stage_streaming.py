@@ -14,11 +14,20 @@ from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.pipeline.stage.input import InputHandler
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
+from sglang_omni.pipeline.tp_control import TPWorkMessage
+from sglang_omni.proto import (
+    DataReadyMessage,
+    OmniRequest,
+    ShutdownMessage,
+    StagePayload,
+    SubmitMessage,
+)
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
 class _FakeControlPlane:
@@ -45,6 +54,18 @@ class _FakeControlPlane:
         self.completions.append(msg)
 
 
+class _BlockingCompleteControlPlane(_FakeControlPlane):
+    def __init__(self) -> None:
+        super().__init__()
+        self.complete_started = asyncio.Event()
+        self.release_complete = asyncio.Event()
+
+    async def send_complete(self, msg) -> None:
+        self.completions.append(msg)
+        self.complete_started.set()
+        await self.release_complete.wait()
+
+
 class _FakeRelay:
     def __init__(self) -> None:
         self.device = "cpu"
@@ -66,6 +87,100 @@ class _FakeRelay:
 
     def cleanup(self, request_id: str) -> None:
         pass
+
+
+class _CountingRelay(_FakeRelay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleaned: list[str] = []
+
+    def cleanup(self, request_id: str) -> None:
+        self.cleaned.append(request_id)
+
+
+class _CountingInput(InputHandler):
+    def __init__(self) -> None:
+        self.cancelled: list[str] = []
+
+    def receive(
+        self, request_id: str, from_stage: str, data: StagePayload
+    ) -> StagePayload:
+        del request_id, from_stage
+        return data
+
+    def cancel(self, request_id: str) -> None:
+        self.cancelled.append(request_id)
+
+
+class _FakeLocalDispatcher:
+    def __init__(self) -> None:
+        self.payloads: list[StagePayload] = []
+
+    async def send_payload(
+        self,
+        *,
+        from_stage: str,
+        to_stage: str,
+        request_id: str,
+        payload: StagePayload,
+    ) -> None:
+        del from_stage, to_stage, request_id
+        self.payloads.append(payload)
+
+
+class _BlockingLocalDispatcher(_FakeLocalDispatcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_send_started = asyncio.Event()
+        self.release_first_send = asyncio.Event()
+
+    async def send_payload(
+        self,
+        *,
+        from_stage: str,
+        to_stage: str,
+        request_id: str,
+        payload: StagePayload,
+    ) -> None:
+        await super().send_payload(
+            from_stage=from_stage,
+            to_stage=to_stage,
+            request_id=request_id,
+            payload=payload,
+        )
+        if len(self.payloads) == 1:
+            self.first_send_started.set()
+            await self.release_first_send.wait()
+
+
+class _QueuedFollowerControlPlane(_FakeControlPlane):
+    def __init__(self) -> None:
+        super().__init__()
+        self.work: asyncio.Queue = asyncio.Queue()
+        self.aborts: asyncio.Queue = asyncio.Queue()
+
+    async def recv(self):
+        return await self.work.get()
+
+    async def recv_abort(self):
+        return await self.aborts.get()
+
+
+class _PassiveScheduler:
+    def __init__(self, *, allow_multiple_inflight_per_request: bool) -> None:
+        self.inbox = queue.Queue()
+        self.outbox = queue.Queue()
+        self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
+        self.aborted: list[str] = []
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
 
 
 class _DoneOp:
@@ -812,5 +927,525 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
         await stage._on_data_ready(await _make_relay_payload(relay, payload))
 
         assert scheduler.inbox.empty()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("stream_first", [False, True])
+def test_stage_preserves_payload_and_stream_arrival_order(stream_first: bool) -> None:
+    async def _run() -> None:
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="relay_consumer",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4)
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"kind": "payload"},
+        )
+
+        async def receive_stream() -> None:
+            await stage.receive_local_stream_chunk(
+                "req",
+                "producer",
+                0,
+                torch.tensor([1]),
+                {"kind": "chunk"},
+            )
+
+        async def receive_payload() -> None:
+            await stage.receive_local_payload("req", "producer", payload)
+
+        arrivals = (
+            (receive_stream, receive_payload)
+            if stream_first
+            else (receive_payload, receive_stream)
+        )
+        for receive in arrivals:
+            await receive()
+
+        assert [scheduler.inbox.get_nowait().type for _ in range(2)] == (
+            ["stream_chunk", "new_request"]
+            if stream_first
+            else ["new_request", "stream_chunk"]
+        )
+
+    asyncio.run(_run())
+
+
+def test_stage_keeps_request_active_until_all_payload_work_finishes() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        local_dispatcher = _FakeLocalDispatcher()
+        input_handler = _CountingInput()
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            allow_multiple_inflight_per_request=True,
+        )
+        stage = Stage(
+            name="relay_consumer",
+            role="single",
+            get_next=lambda request_id, output: "collector",
+            gpu_id=None,
+            endpoints={"collector": "inproc://collector"},
+            control_plane=control_plane,
+            input_handler=input_handler,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            same_process_targets={"collector"},
+            local_dispatcher=local_dispatcher,
+        )
+
+        results = []
+        for sequence in (1, 2):
+            payload = StagePayload(
+                request_id="req",
+                request=OmniRequest(inputs="payload"),
+                data={"sequence": sequence},
+            )
+            await stage.receive_local_payload("req", "producer", payload)
+            incoming = scheduler.inbox.get_nowait()
+            results.append(incoming.data)
+
+        assert stage._inflight_work_pending == {"req": 2}
+        await stage._route_result("req", results[0])
+        assert stage._inflight_work_pending == {"req": 1}
+        assert "req" in stage._active_requests
+        assert input_handler.cancelled == []
+
+        await stage._route_result("req", results[1])
+
+        assert [payload.data for payload in local_dispatcher.payloads] == [
+            {"sequence": 1},
+            {"sequence": 2},
+        ]
+        assert control_plane.completions == []
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+
+    asyncio.run(_run())
+
+
+def test_stage_does_not_clear_new_work_received_while_routing_result() -> None:
+    async def _run() -> None:
+        local_dispatcher = _BlockingLocalDispatcher()
+        input_handler = _CountingInput()
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            allow_multiple_inflight_per_request=True,
+        )
+        stage = Stage(
+            name="relay_consumer",
+            role="single",
+            get_next=lambda request_id, output: "collector",
+            gpu_id=None,
+            endpoints={"collector": "inproc://collector"},
+            control_plane=_FakeControlPlane(),
+            input_handler=input_handler,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            same_process_targets={"collector"},
+            local_dispatcher=local_dispatcher,
+        )
+
+        first_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 1},
+        )
+        await stage.receive_local_payload("req", "producer", first_payload)
+        first_result = scheduler.inbox.get_nowait().data
+        first_route = asyncio.create_task(stage._route_result("req", first_result))
+        await asyncio.wait_for(local_dispatcher.first_send_started.wait(), timeout=1.0)
+
+        second_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 2},
+        )
+        await stage.receive_local_payload("req", "producer", second_payload)
+        second_result = scheduler.inbox.get_nowait().data
+        local_dispatcher.release_first_send.set()
+        await asyncio.wait_for(first_route, timeout=1.0)
+
+        assert stage._inflight_work_pending == {"req": 1}
+        assert stage._active_requests == {"req"}
+        assert input_handler.cancelled == []
+
+        await stage._route_result("req", second_result)
+
+        assert [payload.data for payload in local_dispatcher.payloads] == [
+            {"sequence": 1},
+            {"sequence": 2},
+        ]
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+        assert input_handler.cancelled == ["req"]
+
+    asyncio.run(_run())
+
+
+def test_stage_tracks_submit_while_new_payload_arrives_during_result_routing() -> None:
+    async def _run() -> None:
+        local_dispatcher = _BlockingLocalDispatcher()
+        input_handler = _CountingInput()
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            allow_multiple_inflight_per_request=True,
+        )
+        stage = Stage(
+            name="relay_consumer",
+            role="single",
+            get_next=lambda request_id, output: "collector",
+            gpu_id=None,
+            endpoints={"collector": "inproc://collector"},
+            control_plane=_FakeControlPlane(),
+            input_handler=input_handler,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            same_process_targets={"collector"},
+            local_dispatcher=local_dispatcher,
+        )
+
+        first_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 1},
+        )
+        await stage._on_submit(SubmitMessage(request_id="req", data=first_payload))
+        first_result = scheduler.inbox.get_nowait().data
+        first_route = asyncio.create_task(stage._route_result("req", first_result))
+        await asyncio.wait_for(local_dispatcher.first_send_started.wait(), timeout=1.0)
+
+        second_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 2},
+        )
+        await stage.receive_local_payload("req", "producer", second_payload)
+        second_result = scheduler.inbox.get_nowait().data
+        local_dispatcher.release_first_send.set()
+        await asyncio.wait_for(first_route, timeout=1.0)
+
+        assert stage._inflight_work_pending == {"req": 1}
+        assert stage._active_requests == {"req"}
+        assert input_handler.cancelled == []
+
+        await stage._route_result("req", second_result)
+
+        assert [payload.data for payload in local_dispatcher.payloads] == [
+            {"sequence": 1},
+            {"sequence": 2},
+        ]
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+        assert input_handler.cancelled == ["req"]
+
+    asyncio.run(_run())
+
+
+def test_stage_rejects_multiple_inflight_results_at_terminal_stage() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        input_handler = _CountingInput()
+        scheduler_cleanups: list[str] = []
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            abort_callback=scheduler_cleanups.append,
+            allow_multiple_inflight_per_request=True,
+        )
+        stage = Stage(
+            name="terminal_consumer",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            input_handler=input_handler,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+        )
+
+        results = []
+        for sequence in (1, 2):
+            payload = StagePayload(
+                request_id="req",
+                request=OmniRequest(inputs="payload"),
+                data={"sequence": sequence},
+            )
+            await stage.receive_local_payload("req", "producer", payload)
+            results.append(scheduler.inbox.get_nowait().data)
+
+        await stage._route_result("req", results[0])
+
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is False
+        assert "terminal stage" in control_plane.completions[0].error
+        assert scheduler_cleanups == ["req"]
+        assert input_handler.cancelled == ["req"]
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+
+    asyncio.run(_run())
+
+
+def test_terminal_rejection_blocks_new_work_while_failure_is_sent() -> None:
+    async def _run() -> None:
+        control_plane = _BlockingCompleteControlPlane()
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            allow_multiple_inflight_per_request=True,
+        )
+        stage = Stage(
+            name="terminal_consumer",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        first_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 1},
+        )
+        await stage.receive_local_payload("req", "producer", first_payload)
+        first_result = scheduler.inbox.get_nowait().data
+        route_task = asyncio.create_task(stage._route_result("req", first_result))
+        await asyncio.wait_for(control_plane.complete_started.wait(), timeout=1.0)
+
+        second_payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 2},
+        )
+        await stage.receive_local_payload("req", "producer", second_payload)
+
+        assert scheduler.inbox.empty()
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is False
+        control_plane.release_complete.set()
+        await asyncio.wait_for(route_task, timeout=1.0)
+
+        assert "req" in stage._aborted
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+
+    asyncio.run(_run())
+
+
+def test_stage_failure_cleans_multiple_inflight_work_once() -> None:
+    async def _run() -> None:
+        scheduler_cleanups: list[str] = []
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            abort_callback=scheduler_cleanups.append,
+            allow_multiple_inflight_per_request=True,
+        )
+        relay = _CountingRelay()
+        input_handler = _CountingInput()
+        control_plane = _FakeControlPlane()
+        stage = Stage(
+            name="relay_consumer",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            input_handler=input_handler,
+            relay=relay,
+            scheduler=scheduler,
+        )
+
+        for sequence in (1, 2):
+            payload = StagePayload(
+                request_id="req",
+                request=OmniRequest(inputs="payload"),
+                data={"sequence": sequence},
+            )
+            await stage.receive_local_payload("req", "producer", payload)
+            scheduler.inbox.get_nowait()
+
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="error",
+                data=RuntimeError("relay failed"),
+            )
+        )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="result",
+                data=StagePayload(
+                    request_id="req",
+                    request=OmniRequest(inputs="payload"),
+                    data={"sequence": 2},
+                ),
+            )
+        )
+
+        await stage._drain_outbox_external()
+        stage._on_abort("req")
+        await stage._send_failure("req", "duplicate failure")
+
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is False
+        assert control_plane.completions[0].error == "relay failed"
+        assert scheduler_cleanups == ["req"]
+        assert relay.cleaned == ["req"]
+        assert input_handler.cancelled == ["req"]
+        assert "req" not in stage._inflight_work_pending
+
+    asyncio.run(_run())
+
+
+def test_follower_cleans_multiple_inflight_work_after_last_result() -> None:
+    async def _run() -> None:
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            allow_multiple_inflight_per_request=True,
+        )
+        input_handler = _CountingInput()
+        stage = Stage(
+            name="relay_follower",
+            role="follower",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            input_handler=input_handler,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+        )
+
+        for sequence in (1, 2):
+            payload = StagePayload(
+                request_id="req",
+                request=OmniRequest(inputs="payload"),
+                data={"sequence": sequence},
+            )
+            await stage.receive_local_payload("req", "producer", payload)
+            incoming = scheduler.inbox.get_nowait()
+            scheduler.outbox.put(
+                OutgoingMessage(request_id="req", type="result", data=incoming.data)
+            )
+
+        await stage._drain_outbox_follower()
+
+        assert input_handler.cancelled == ["req"]
+        assert "req" not in stage._active_requests
+        assert "req" not in stage._inflight_work_pending
+
+    asyncio.run(_run())
+
+
+def test_tp_follower_tracks_multiple_work_messages_for_same_request() -> None:
+    async def _run() -> None:
+        control_plane = _QueuedFollowerControlPlane()
+        scheduler = _PassiveScheduler(allow_multiple_inflight_per_request=True)
+        stage = Stage(
+            name="relay_follower",
+            role="follower",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+        )
+        run_task = asyncio.create_task(stage.run())
+
+        try:
+            for sequence in (1, 2):
+                payload = StagePayload(
+                    request_id="req",
+                    request=OmniRequest(inputs="payload"),
+                    data={"sequence": sequence},
+                )
+                control_plane.work.put_nowait(
+                    TPWorkMessage(request_id="req", data=payload)
+                )
+
+            received = [
+                await asyncio.wait_for(
+                    asyncio.to_thread(scheduler.inbox.get, True, 1.0),
+                    timeout=2.0,
+                )
+                for _ in range(2)
+            ]
+
+            assert [message.data.data for message in received] == [
+                {"sequence": 1},
+                {"sequence": 2},
+            ]
+            assert stage._inflight_work_pending == {"req": 2}
+            assert stage._active_requests == {"req"}
+        finally:
+            control_plane.work.put_nowait(ShutdownMessage())
+            await asyncio.wait_for(run_task, timeout=2.0)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("message_type", ["result", "error"])
+def test_follower_ignores_stale_output_after_abort(message_type: str) -> None:
+    async def _run() -> None:
+        scheduler_cleanups: list[str] = []
+        scheduler = SimpleScheduler(
+            lambda payload: payload,
+            abort_callback=scheduler_cleanups.append,
+            allow_multiple_inflight_per_request=True,
+        )
+        relay = _CountingRelay()
+        input_handler = _CountingInput()
+        stage = Stage(
+            name="relay_follower",
+            role="follower",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            input_handler=input_handler,
+            relay=relay,
+            scheduler=scheduler,
+        )
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="payload"),
+            data={"sequence": 1},
+        )
+        await stage.receive_local_payload("req", "producer", payload)
+        scheduler.inbox.get_nowait()
+        stage._on_abort("req")
+
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type=message_type,
+                data=payload if message_type == "result" else RuntimeError("stale"),
+            )
+        )
+        await stage._drain_outbox_follower()
+
+        assert scheduler_cleanups == ["req"]
+        assert relay.cleaned == ["req"]
+        assert input_handler.cancelled == ["req"]
 
     asyncio.run(_run())

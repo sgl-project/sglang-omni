@@ -141,6 +141,60 @@ def test_comm_engine_releases_sender_op_after_data_ack() -> None:
     asyncio.run(_run())
 
 
+def test_comm_engine_assigns_unique_ids_to_inflight_payloads() -> None:
+    async def _run() -> None:
+        relay = _AckedRelay()
+        control_plane = RecordingStageControlPlane()
+        engine = CommEngine(
+            CommRouter(
+                stage_name="producer",
+                gpu_id=None,
+                same_process_targets=set(),
+                gpu_stage_names=set(),
+                comm_config={"ack_timeout_s": 1.0},
+                injected_relay=relay,
+            )
+        )
+
+        refs = []
+        for sequence in (1, 2):
+            refs.append(
+                await engine.send_payload(
+                    relay=relay,
+                    control_plane=control_plane,
+                    request_id="req-1",
+                    payload=make_stage_payload(
+                        request_id="req-1",
+                        data={"sequence": sequence, "x": torch.ones(2)},
+                    ),
+                    transport=TransportKind.SHM,
+                    from_stage="producer",
+                    to_stage="consumer",
+                    target_endpoint="inproc://consumer",
+                )
+            )
+
+        assert refs[0].object_id != refs[1].object_id
+        assert {
+            DataRef.from_dict(message.data_ref).object_id
+            for _, _, message in control_plane.sent_to_stage
+        } == {ref.object_id for ref in refs}
+
+        for ref in refs:
+            engine.ack_transfer(
+                DataAckMessage(
+                    request_id="req-1",
+                    from_stage="consumer",
+                    to_stage="producer",
+                    object_id=ref.object_id,
+                )
+            )
+        await _wait_until(lambda: all(op.waited for op in relay.ops))
+        assert all(op.acked for op in relay.ops)
+
+    asyncio.run(_run())
+
+
 def test_comm_engine_ignores_unknown_data_ack() -> None:
     engine = CommEngine(
         CommRouter(
