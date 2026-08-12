@@ -25,6 +25,7 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.preprocessing.transcription import prepare_audio
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -127,32 +128,44 @@ def make_arkasr_scheduler_adapters(
         payload: StagePayload,
     ) -> ArkASRRequestData | DeferredAdmission:
         params = payload.request.params or {}
-        prepared = prepare_audio(
-            payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="preprocess_start",
         )
-        audio = prepared.waveform
-        audio_duration_s = prepared.duration_s
-        fingerprint = prepared.fingerprint
-
-        # mel: pad to the clip's true length (short clips do not pay the full
-        # 30s of FFT). ARK's WhisperEncoder is variable-length; conv2 stride-2
-        # then merge_factor determines the audio-token count.
-        extracted = feature_extractor(
-            audio,
-            sampling_rate=_SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-            padding="longest",
-            truncation=True,
-        )
-        features = extracted.input_features  # [num_mel_bins, T]
-        feature_attention_mask = getattr(extracted, "attention_mask", None)
-        if feature_attention_mask is None:
-            feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+        try:
+            prepared = prepare_audio(
+                payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE
             )
-        num_mel_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+            audio = prepared.waveform
+            audio_duration_s = prepared.duration_s
+            fingerprint = prepared.fingerprint
+
+            # mel: pad to the clip's true length (short clips do not pay the full
+            # 30s of FFT). ARK's WhisperEncoder is variable-length; conv2 stride-2
+            # then merge_factor determines the audio-token count.
+            extracted = feature_extractor(
+                audio,
+                sampling_rate=_SAMPLE_RATE,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding="longest",
+                truncation=True,
+            )
+            features = extracted.input_features  # [num_mel_bins, T]
+            feature_attention_mask = getattr(extracted, "attention_mask", None)
+            if feature_attention_mask is None:
+                feature_attention_mask = torch.ones(
+                    (features.shape[0], features.shape[-1]), dtype=torch.long
+                )
+            num_mel_frames = int(feature_attention_mask.sum().item())
+            num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="preprocess_end",
+            )
 
         input_ids = _build_prompt_ids(num_audio_tokens)
 

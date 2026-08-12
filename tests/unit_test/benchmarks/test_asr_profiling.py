@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import time
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from benchmarks.eval.asr_profiling import (
     stop_request_profile,
 )
 from benchmarks.eval.benchmark_asr_seedtts import _aggregate, _print_table
+from benchmarks.tasks.asr import ARK_ASR_MODEL_PATH
 
 
 class _FakeResponse:
@@ -210,16 +212,94 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
     assert profile == {"pass_metrics": {"wall_clock_s": 2.0}}
 
 
-def test_build_stage_breakdown_pairs_queue_and_decode_intervals(tmp_path) -> None:
+def test_ark_asr_profiled_sweep_runs_after_measured_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+    args = SimpleNamespace(
+        model_path=ARK_ASR_MODEL_PATH,
+        profile_events=True,
+        repeats=2,
+        warmup=False,
+    )
+
+    async def fake_run_repeat(args, samples, concurrency, repeat):
+        del samples
+        calls.append(("measured", args.model_path, repeat))
+        return _repeat(concurrency, repeat, median=0.4)
+
+    async def fake_run_profiled_pass(args, samples, concurrency):
+        del samples
+        calls.append(("profiled", args.model_path, concurrency))
+        return {
+            "request_count": 1,
+            "stage_breakdown": [],
+            "hop_breakdown": [],
+        }
+
+    monkeypatch.setattr(seedtts_benchmark, "_run_repeat", fake_run_repeat)
+    monkeypatch.setattr(
+        seedtts_benchmark,
+        "_run_profiled_pass",
+        fake_run_profiled_pass,
+    )
+
+    aggregates = asyncio.run(seedtts_benchmark._sweep(args, [object()], [4]))
+
+    assert calls == [
+        ("measured", ARK_ASR_MODEL_PATH, 1),
+        ("measured", ARK_ASR_MODEL_PATH, 2),
+        ("profiled", ARK_ASR_MODEL_PATH, 4),
+    ]
+    assert aggregates[0]["profile"] == {
+        "request_count": 1,
+        "stage_breakdown": [],
+        "hop_breakdown": [],
+    }
+
+
+def test_ark_asr_cli_accepts_request_event_profile_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_seedtts",
+            "--port",
+            "8000",
+            "--model-path",
+            ARK_ASR_MODEL_PATH,
+            "--profile-events",
+            "--profile-urls",
+            "http://worker-0:8000,http://worker-1:8000",
+            "--profile-event-dir",
+            "/tmp/ark-asr-profile",
+        ],
+    )
+
+    args = seedtts_benchmark.parse_args()
+
+    assert args.model_path == ARK_ASR_MODEL_PATH
+    assert args.profile_events is True
+    assert args.profile_urls == "http://worker-0:8000,http://worker-1:8000"
+    assert args.profile_event_dir == "/tmp/ark-asr-profile"
+
+
+def test_build_ark_stage_breakdown_pairs_preprocess_queue_and_decode_intervals(
+    tmp_path,
+) -> None:
     base_ns = 1_000_000_000
     events = [
-        ("scheduler_request_build_start", base_ns),
-        ("scheduler_request_build_end", base_ns + 5_000_000),
-        ("scheduler_queue_enter", base_ns + 6_000_000),
-        ("scheduler_prefill_start", base_ns + 30_000_000),
-        ("scheduler_prefill_end", base_ns + 60_000_000),
-        ("scheduler_first_emit", base_ns + 80_000_000),
-        ("stage_complete", base_ns + 200_000_000),
+        ("preprocess_start", base_ns),
+        ("preprocess_end", base_ns + 4_000_000),
+        ("scheduler_request_build_start", base_ns + 5_000_000),
+        ("scheduler_request_build_end", base_ns + 10_000_000),
+        ("scheduler_queue_enter", base_ns + 11_000_000),
+        ("scheduler_prefill_start", base_ns + 35_000_000),
+        ("scheduler_prefill_end", base_ns + 65_000_000),
+        ("scheduler_first_emit", base_ns + 85_000_000),
+        ("stage_complete", base_ns + 205_000_000),
     ]
     event_file = tmp_path / "events_run_1.jsonl"
     with event_file.open("w") as handle:
@@ -243,6 +323,9 @@ def test_build_stage_breakdown_pairs_queue_and_decode_intervals(tmp_path) -> Non
     assert "timelines" not in report
     assert report["request_count"] == 1
     by_interval = {row["interval"]: row for row in report["stage_breakdown"]}
+    preprocess = by_interval["preprocess_start->preprocess_end"]
+    assert preprocess["stage"] == "asr"
+    assert preprocess["avg_ms"] == pytest.approx(4.0)
     build = by_interval["scheduler_request_build_start->scheduler_request_build_end"]
     assert build["avg_ms"] == pytest.approx(5.0)
     queue = by_interval["scheduler_queue_enter->scheduler_prefill_start"]
