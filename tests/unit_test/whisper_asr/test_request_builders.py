@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
@@ -44,7 +47,7 @@ class _FakeTokenizer:
         return [_SOT_PREV] + [1000 + i for i in range(len(text))]
 
 
-def _make_request_builder():
+def _make_request_builder(tokenizer: _FakeTokenizer | None = None):
     fake_processor = SimpleNamespace(
         feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
             SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
@@ -52,7 +55,7 @@ def _make_request_builder():
     )
     request_builder, _ = make_whisper_scheduler_adapters(
         processor=fake_processor,
-        tokenizer=_FakeTokenizer(),
+        tokenizer=tokenizer if tokenizer is not None else _FakeTokenizer(),
         generation_config=SimpleNamespace(suppress_tokens=None),
         encoder_token_count=_ENCODER_TOKEN_COUNT,
         max_new_tokens=32,
@@ -60,9 +63,11 @@ def _make_request_builder():
     return request_builder
 
 
-def _make_payload(params: dict | None = None) -> StagePayload:
+def _make_payload(
+    params: dict | None = None, *, request_id: str = "req-whisper"
+) -> StagePayload:
     return StagePayload(
-        request_id="req-whisper",
+        request_id=request_id,
         request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params or {}),
         data={},
     )
@@ -189,3 +194,61 @@ def test_request_builder_guard_trips_on_over_budget_prev_context(
 
     with pytest.raises(ValueError, match="decoder budget exceeded"):
         _build(monkeypatch, {"prompt": "hello"})
+
+
+def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
+    monkeypatch,
+) -> None:
+    class _ConcurrentTokenizer(_FakeTokenizer):
+        def __init__(self) -> None:
+            self._state_lock = threading.Lock()
+            self.active_calls = 0
+            self.max_active_calls = 0
+            self.prefix_language = ""
+
+        def set_prefix_tokens(
+            self, *, language: str, task: str, predict_timestamps: bool
+        ) -> None:
+            with self._state_lock:
+                self.active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            time.sleep(0.02)
+            super().set_prefix_tokens(
+                language=language,
+                task=task,
+                predict_timestamps=predict_timestamps,
+            )
+            with self._state_lock:
+                self.active_calls -= 1
+
+        @property
+        def prefix_tokens(self) -> list[int]:
+            return [1 if self.prefix_language == "english" else 2]
+
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    tokenizer = _ConcurrentTokenizer()
+    request_builder = _make_request_builder(tokenizer)
+    start = threading.Barrier(2)
+
+    def _build_concurrently(language: str):
+        start.wait()
+        return request_builder(
+            _make_payload({"language": language}, request_id=f"req-{language}")
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_build_concurrently, language) for language in ("en", "fr")
+        ]
+        results = [future.result() for future in futures]
+
+    assert tokenizer.max_active_calls == 1
+    assert {result.language for result in results} == {"english", "fr"}
+    assert {result.language: result.prompt_token_ids for result in results} == {
+        "english": [1],
+        "fr": [2],
+    }

@@ -33,6 +33,13 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "enable_encoder_cuda_graph": True,
+                "request_build_max_workers": 2,
+                "request_build_max_pending": 16,
+                "prefill_coalesce_requests": 2,
+                "prefill_coalesce_wait_ms": 6.0,
+                "prefill_coalesce_when_idle": True,
+                "prefill_coalesce_requires_pending_builds": True,
+                "prefill_coalesce_after_builds_during_decode": False,
             },
             gpu=0,
             terminal=True,
