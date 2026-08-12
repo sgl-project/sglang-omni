@@ -299,7 +299,7 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         qwen3_asr_builder.AutoFeatureExtractor,
         "from_pretrained",
-        lambda *args, **kwargs: SimpleNamespace(nb_max_frames=3000),
+        lambda *args, **kwargs: SimpleNamespace(nb_max_frames=55072),
     )
     monkeypatch.setattr(
         qwen3_asr_builder,
@@ -480,7 +480,7 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     [
         ({"context_length": 1000}, 1000),
         ({"chunked_prefill_size": 512}, 512),
-        ({"chunked_prefill_size": 0}, 1636),
+        ({"chunked_prefill_size": 0}, 4096),
         ({"max_prefill_tokens": 768}, 768),
         ({"cuda_graph_max_bs_prefill": 512}, 512),
         ({"max_total_tokens": 640}, 640),
