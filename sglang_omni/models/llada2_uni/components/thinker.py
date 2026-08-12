@@ -13,7 +13,10 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -166,6 +169,7 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -179,6 +183,7 @@ class LLaDA2MoeMLP(nn.Module):
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            reduce_results=reduce_results,
         )
         self.act_fn = SiluAndMul()
 
@@ -269,7 +274,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config,
+                shared_intermediate,
+                quant_config,
+                reduce_results=False,
             )
         else:
             self.shared_experts = None
@@ -310,13 +318,17 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             topk_ids=topk_ids,
             router_logits=router_logits,
         )
+        # Both expert paths return per-rank partials. Accumulate them in FP32
+        # before the single collective to preserve LLaDA2-Uni TP accuracy.
         y = self.experts(hidden_states, topk_output)
-
-        # Add shared expert output
+        output_dtype = y.dtype
         if self.shared_experts is not None:
-            y = y + self.shared_experts(identity)
+            y = y.float() + self.shared_experts(identity).float()
 
-        return y
+        if get_tensor_model_parallel_world_size() > 1:
+            y = tensor_model_parallel_all_reduce(y)
+
+        return y.to(output_dtype)
 
     def _group_limited_topk(
         self, scores: torch.Tensor

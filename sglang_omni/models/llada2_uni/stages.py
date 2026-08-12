@@ -83,21 +83,27 @@ def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
     gpu_id: int = 0,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
+    if tp_size < 1:
+        raise ValueError(f"tp_size must be >= 1, got {tp_size}")
+
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 
     overrides: dict[str, Any] = {
         "attention_backend": "flashinfer",
-        "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
     overrides.update(server_args_overrides or {})
+    overrides["tp_size"] = tp_size
 
     server_args = build_sglang_server_args(
         model_path,
@@ -112,7 +118,12 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.dllm_algorithm,
         server_args.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args,
+        gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+    )
 
 
 def create_decode_executor(model_path: str):
