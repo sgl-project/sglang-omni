@@ -174,15 +174,15 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             return
         if "cuda_graph_bs_prefill" in overrides:
             return
-        # Derived from the merged caps: a ladder past any of them fails
-        # startup or captures buckets that can never replay.
+        # note(ratish): derived from the merged caps: a ladder past any of
+        # them fails startup or captures buckets that can never replay.
         caps = [
             overrides["max_prefill_tokens"],
             overrides.get("cuda_graph_max_bs_prefill"),
             overrides.get("max_total_tokens"),
             self.context_length,
         ]
-        if overrides["chunked_prefill_size"] != -1:
+        if overrides["chunked_prefill_size"] > 0:
             caps.append(overrides["chunked_prefill_size"])
         ladder = build_default_prefill_cuda_graph_bs(
             min(int(cap) for cap in caps if cap is not None)

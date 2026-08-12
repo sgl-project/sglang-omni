@@ -480,6 +480,7 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     [
         ({"context_length": 1000}, 1000),
         ({"chunked_prefill_size": 512}, 512),
+        ({"chunked_prefill_size": 0}, 1636),
         ({"max_prefill_tokens": 768}, 768),
         ({"cuda_graph_max_bs_prefill": 512}, 512),
         ({"max_total_tokens": 640}, 640),

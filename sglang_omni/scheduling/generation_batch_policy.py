@@ -90,7 +90,8 @@ def build_generation_batch_overrides(
     **stage_defaults: Any,
 ) -> dict[str, Any]:
     incoming = dict(server_args_overrides or {})
-    # The nested form wins in sglang; mirror its prefill fields into the flat keys.
+    # note(ratish): the nested form wins in sglang; mirror its prefill
+    # fields into the flat keys.
     nested_prefill = nested_prefill_overrides(incoming)
     for nested_key, flat_key in (
         ("backend", "cuda_graph_backend_prefill"),
@@ -149,11 +150,23 @@ def build_generation_batch_overrides(
         overrides.pop("cuda_graph_bs_prefill", None)
         overrides.pop("cuda_graph_max_bs_prefill", None)
 
-    # Derive the prefill cap when only the bucket list is given so the
-    # resolved config stays coherent (max(bs) == max_bs).
+    # Reconcile the merged buckets with the cap: derive a missing cap from
+    # the buckets, and trim stage-default buckets to an operator cap. An
+    # operator-stated list is never trimmed; contradictions fail validation.
     prefill_bs = overrides.get("cuda_graph_bs_prefill")
-    if prefill_bs and "cuda_graph_max_bs_prefill" not in overrides:
+    prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
+    if prefill_bs and prefill_max_bs is None:
         overrides["cuda_graph_max_bs_prefill"] = max(int(b) for b in prefill_bs)
+    elif (
+        prefill_bs
+        and "cuda_graph_bs_prefill" not in incoming
+        and int(prefill_max_bs) < max(int(b) for b in prefill_bs)
+    ):
+        cap = int(prefill_max_bs)
+        trimmed = [int(b) for b in prefill_bs if int(b) <= cap]
+        if not trimmed or trimmed[-1] != cap:
+            trimmed.append(cap)
+        overrides["cuda_graph_bs_prefill"] = trimmed
 
     return overrides
 

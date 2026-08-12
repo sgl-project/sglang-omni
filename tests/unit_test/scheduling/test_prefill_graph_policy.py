@@ -220,6 +220,30 @@ def test_nested_prefill_max_bs_composes_as_a_flat_cap() -> None:
     assert "cuda_graph_bs_prefill" not in overrides
 
 
+def test_nested_prefill_max_bs_trims_a_stage_default_ladder() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(512),
+        server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": 128}}},
+    )
+
+    assert overrides["cuda_graph_max_bs_prefill"] == 128
+    assert max(overrides["cuda_graph_bs_prefill"]) == 128
+
+
+def test_operator_prefill_buckets_are_never_trimmed_by_a_nested_cap() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_config": {"prefill": {"max_bs": 128}},
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 128
+
+
 def test_nested_disabled_backend_overrides_a_stage_default() -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
