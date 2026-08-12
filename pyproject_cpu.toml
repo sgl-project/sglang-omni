@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-omni"
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-stage pipeline framework for omni models"
 readme = "README.md"
 license = { text = "Apache-2.0" }

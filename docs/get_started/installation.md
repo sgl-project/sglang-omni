@@ -4,7 +4,7 @@ Current stable release: **v0.1.1** on [PyPI](https://pypi.org/project/sglang-omn
 
 Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA are prebuilt.
 
-**Intel CPU** This page targets **NVIDIA CUDA**. For Intel Arc cpus, see [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index instead of the CUDA-only pins below.
+**Intel CPU** This page targets **NVIDIA CUDA**.  For CPU-only installation, see [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index instead of the CUDA-only pins below.
 
 ## 🐳 Option A: Docker (recommended)
 

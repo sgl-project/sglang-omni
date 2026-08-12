@@ -65,7 +65,13 @@ class SGLangGenerationEngineBuilder(ABC):
         from sglang_omni.scheduling import sglang_backend
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        runner_device_id = 0 if gpu_id is None else int(gpu_id)
+        if current_platform.is_cpu():
+            runner_device_id = 0
+        elif gpu_id is not None:
+            runner_device_id = int(gpu_id)
+        else:
+            runner_device_id = int(device.split(":")[-1]) if ":" in device else 0
+
         device = str(current_platform.get_device(runner_device_id))
         self.checkpoint_dir = checkpoint_dir
         self.device = device
@@ -130,7 +136,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_config,
         ) = scheduling_bootstrap.create_sglang_infrastructure_defer_cuda_graph(
             server_args,
-            gpu_id,
+            runner_device_id,
             **infra_kwargs,
         )
         model = model_worker.model_runner.model
@@ -139,7 +145,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_worker=model_worker,
             checkpoint_dir=checkpoint_dir,
             device=device,
-            gpu_id=gpu_id,
+            gpu_id=runner_device_id,
             server_args=server_args,
         )
 

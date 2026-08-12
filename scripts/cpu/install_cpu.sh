@@ -35,7 +35,6 @@ done
 
 PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_CPU="${REPO_ROOT}/pyproject_cpu.toml"
-BACKUP="${REPO_ROOT}/.pyproject.original.bak"
 
 SGLANG_VERIFIED_VERSION="v0.5.16"
 
@@ -85,8 +84,7 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
     exit 0
 fi
 
-cp -f "${PYPROJECT_CPU}" "${PYPROJECT}"
-echo "swapped in pyproject_cpu.toml"
+cp "${PYPROJECT_CPU}" "${PYPROJECT}"
 
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
