@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 
+from sglang_omni.config.parallelism import resolve_stage_parallelism
 from sglang_omni.config.schema import PipelineConfig, StageConfig, StageResourceConfig
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def apply_stage_process_overrides(
     for assignment in stage_processes or []:
         requested_name, process_name = parse_stage_process_assignment(assignment)
         stage = _resolve_stage(stages, role_map, requested_name)
-        _reject_tp_stage(stage)
+        _reject_parallel_stage(stage)
         if stage.name in requested:
             raise ValueError(
                 f"Stage {stage.name!r} has multiple --stage-process assignments: "
@@ -61,7 +62,7 @@ def apply_stage_process_overrides(
     singleton_stage_names: list[str] = []
     for requested_name in isolate_stages or []:
         stage = _resolve_stage(stages, role_map, requested_name)
-        _reject_tp_stage(stage)
+        _reject_parallel_stage(stage)
         if stage.name in requested:
             raise ValueError(
                 f"Stage {stage.name!r} cannot use both --isolate-stage and "
@@ -125,9 +126,13 @@ def _resolve_stage(
     return stage
 
 
-def _reject_tp_stage(stage: StageConfig) -> None:
-    if stage.tp_size > 1:
-        raise ValueError(f"Stage {stage.name!r} already uses one process per TP rank")
+def _reject_parallel_stage(stage: StageConfig) -> None:
+    parallelism = resolve_stage_parallelism(stage)
+    if parallelism.is_parallel:
+        raise ValueError(
+            f"Stage {stage.name!r} already uses one process per "
+            f"{parallelism.kind.upper()} rank"
+        )
 
 
 def _runs_alone(process_map: dict[str, str], stage_name: str) -> bool:
@@ -225,15 +230,15 @@ def _is_cross_process(
     source: str,
     destination: str,
 ) -> bool:
-    # Note (Akazaakane): a TP stage is absent from this map because it already runs
-    # one process per rank, so any edge touching it is crossed either way.
+    # A parallel stage is absent because it already runs one process per rank,
+    # so any edge touching it is crossed either way.
     if source not in process_map or destination not in process_map:
         return True
     return process_map[source] != process_map[destination]
 
 
 def _declared_process_map(config: PipelineConfig) -> dict[str, str]:
-    """Process name per non-TP stage from declarations alone.
+    """Process name per non-parallel stage from declarations alone.
 
     Deliberately independent of GPU placement so an unsupported split is
     reported before placement accounting rejects a missing memory fraction.
@@ -241,7 +246,7 @@ def _declared_process_map(config: PipelineConfig) -> dict[str, str]:
     process_by_stage = {
         stage.name: stage.process
         for stage in config.stages
-        if stage.tp_size == 1 and stage.process
+        if not resolve_stage_parallelism(stage).is_parallel and stage.process
     }
     for group in config.fused_stages or []:
         members = [name for name in group if name in process_by_stage]
@@ -270,7 +275,7 @@ def _pipeline_edges(config: PipelineConfig) -> set[tuple[str, str]]:
 def _stage_process_groups(
     config: PipelineConfig,
 ) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """Map each non-TP stage to its process name and that process's members."""
+    """Map each non-parallel stage to its process name and process members."""
     from sglang_omni.config.placement import build_stage_placement_plan
     from sglang_omni.config.topology import build_process_topology_plan
 

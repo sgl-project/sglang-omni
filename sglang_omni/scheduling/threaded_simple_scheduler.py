@@ -13,6 +13,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import (
+    AbortDrainTracker,
+    ParallelSchedulerCapabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +32,23 @@ class ThreadedSimpleScheduler:
     def __init__(self, compute_fn: Callable, *, max_concurrency: int = 8):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
-        self.requires_tp_work_fanout: bool = True
+        self.parallel_capabilities = ParallelSchedulerCapabilities(
+            fanout_work=True,
+            drain_aborted_work=True,
+        )
         self._fn = compute_fn
         self._max_concurrency = max(int(max_concurrency), 1)
         self._executor = ThreadPoolExecutor(max_workers=self._max_concurrency)
         self._pending: dict[str, Future] = {}
         self._aborted: set[str] = set()
+        self._abort_drains = AbortDrainTracker()
         self._lock = threading.Lock()
         self._running = False
+
+    @property
+    def requires_tp_work_fanout(self) -> bool:
+        """Compatibility view of the TP work-fanout requirement."""
+        return self.parallel_capabilities.fanout_work
 
     def start(self) -> None:
         self._running = True
@@ -70,6 +83,14 @@ class ThreadedSimpleScheduler:
             future = self._pending.pop(request_id, None)
         if future is not None:
             future.cancel()
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        with self._lock:
+            self._abort_drains.record(request_id, dispatch_id)
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        with self._lock:
+            self._abort_drains.acknowledge(request_id, dispatch_id)
 
     def _wait_for_capacity(self) -> None:
         while self._running:

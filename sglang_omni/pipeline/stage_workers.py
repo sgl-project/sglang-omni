@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,15 +14,19 @@ import time
 from collections.abc import Iterable
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
+from sglang_omni.pipeline.parallel_control import (
+    ParallelFollowerControlPlane,
+    ParallelLeaderFanout,
+    ParallelStageContext,
+)
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform, get_platform_spec
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
@@ -38,8 +43,8 @@ class StageLaunchConfig:
     """Resolved launch metadata for one logical stage instance.
 
     ``StageWorkerProcessSpec`` is the OS-process payload. A worker process may
-    carry multiple launch configs for colocated non-TP stages, while TP ranks
-    each get their own launch config and process.
+    carry multiple launch configs for colocated non-parallel stages, while TP
+    or SP ranks each get their own launch config and process.
 
     All string references (factory, merge_fn) are dotted import
     paths resolved by the child via :func:`import_string`.
@@ -51,6 +56,8 @@ class StageLaunchConfig:
     tp_rank: int = 0
     tp_size: int = 1
     placement_gpu_id: int | None = None
+    sp_rank: int = 0
+    sp_size: int = 1
     gpu_id: int | None = None
     nccl_port: int | None = None
 
@@ -98,7 +105,7 @@ class StageLaunchConfig:
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
 
-    # TP internal control (leader -> followers)
+    # Parallel-stage internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
     follower_abort_queues: list[Any] = field(default_factory=list)
     follower_admin_result_queues: list[Any] = field(default_factory=list)
@@ -118,6 +125,30 @@ class StageLaunchConfig:
     def is_follower(self) -> bool:
         return self.role == "follower"
 
+    @property
+    def parallel_kind(self) -> Literal["tp", "sp"] | None:
+        if self.sp_size > 1:
+            return "sp"
+        if self.tp_size > 1:
+            return "tp"
+        return None
+
+    @property
+    def parallel_rank(self) -> int | None:
+        if self.parallel_kind == "sp":
+            return self.sp_rank
+        if self.parallel_kind == "tp":
+            return self.tp_rank
+        return None
+
+    @property
+    def parallel_size(self) -> int:
+        if self.parallel_kind == "sp":
+            return self.sp_size
+        if self.parallel_kind == "tp":
+            return self.tp_size
+        return 1
+
 
 @dataclass
 class StageWorkerProcessSpec:
@@ -130,11 +161,21 @@ class StageWorkerProcessSpec:
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
-    Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
+    Hard invariant: a parallel stage must own its OS process
     exclusively. Its CUDA env remap and NCCL settings depend on being the sole
-    tenant, so mixing a TP stage with any other stage in the same process group
+    tenant, so mixing it with any other stage in the same process group
     is a placement bug.
     """
+    sp_stages = [s for s in spec.stage_specs if s.sp_size > 1]
+    if sp_stages:
+        if len(sp_stages) > 1 or len(spec.stage_specs) > 1:
+            raise AssertionError(
+                f"Process {spec.process_name!r} mixes an SP stage with other "
+                "stages; SP stages must own their OS process exclusively. "
+                f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
+            )
+        return get_sp_stage_process_env(sp_stages[0])
+
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -371,18 +412,14 @@ def stage_process_main(
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
+    reclaim_reason: str | None = None
     try:
         for stage_spec in spec.stage_specs:
             _prepare_cuda_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
-            log,
-            reason=f"stage process {spec.process_name} terminated during startup",
-        )
+        reclaim_reason = f"stage process {spec.process_name} terminated during startup"
         raise
     except Exception as exc:
         import traceback
@@ -393,15 +430,18 @@ def stage_process_main(
         with suppress(Exception):
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
-            log,
-            reason=f"stage process {spec.process_name} exit after failure",
-        )
+        reclaim_reason = f"stage process {spec.process_name} exit after failure"
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
         sys.exit(1)
+    finally:
+        _destroy_torch_distributed_process_group(log)
+        if reclaim_reason is not None:
+            _reclaim_process_cuda_memory(
+                _stage_gpu_ids(spec.stage_specs),
+                log,
+                reason=reclaim_reason,
+            )
 
 
 def _run_process(
@@ -509,11 +549,11 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         import torch.distributed as dist
 
         if dist.is_available() and dist.is_initialized():
-            log.warning("Destroying torch.distributed process group after failure")
+            log.info("Destroying torch.distributed process group")
             dist.destroy_process_group()
     except Exception as exc:
         log.warning(
-            "torch.distributed cleanup failed after stage process failure: %s",
+            "torch.distributed process group cleanup failed: %s",
             exc,
             exc_info=True,
         )
@@ -581,12 +621,16 @@ def _construct_stage(
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
 
     # --- Build scheduler via factory ---
-    log.info(
-        "Building scheduler for %s (tp_rank=%d/%d) ...",
-        spec.stage_name,
-        spec.tp_rank,
-        spec.tp_size,
-    )
+    if spec.parallel_kind is None:
+        log.info("Building scheduler for %s ...", spec.stage_name)
+    else:
+        log.info(
+            "Building scheduler for %s (%s_rank=%d/%d) ...",
+            spec.stage_name,
+            spec.parallel_kind,
+            spec.parallel_rank,
+            spec.parallel_size,
+        )
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
 
@@ -716,7 +760,7 @@ def _construct_stage(
             abort_endpoint=spec.abort_endpoint,
         )
     else:
-        control_plane = TPFollowerControlPlane(
+        control_plane = ParallelFollowerControlPlane(
             stage_name=spec.stage_name,
             recv_endpoint=spec.recv_endpoint,
             work_queue=spec.internal_work_queue,
@@ -724,14 +768,25 @@ def _construct_stage(
             admin_result_queue=spec.internal_admin_result_queue,
         )
 
-    tp_fanout = None
+    parallel_fanout = None
     if spec.is_leader:
-        tp_fanout = TPLeaderFanout(
+        parallel_fanout = ParallelLeaderFanout(
             stage_name=spec.stage_name,
             follower_work_queues=spec.follower_work_queues,
             follower_abort_queues=spec.follower_abort_queues,
             follower_admin_result_queues=spec.follower_admin_result_queues,
         )
+    parallel_context = (
+        ParallelStageContext(
+            kind=spec.parallel_kind,
+            rank=spec.parallel_rank,
+            size=spec.parallel_size,
+            role=spec.role,
+            fanout=parallel_fanout,
+        )
+        if spec.parallel_kind is not None
+        else None
+    )
 
     # --- Construct Stage ---
     stage = Stage(
@@ -755,7 +810,7 @@ def _construct_stage(
         local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
-        tp_fanout=tp_fanout,
+        parallel_context=parallel_context,
         is_terminal=spec.is_terminal,
     )
 
@@ -786,23 +841,81 @@ def _construct_scheduler(
         return factory(**factory_args)
 
 
+def _get_single_gpu_process_env(
+    spec: StageLaunchConfig,
+    env: Mapping[str, str] | None,
+    *,
+    mode: Literal["SP"],
+) -> dict[str, str]:
+    """Return one-visible-GPU environment settings for an SP rank."""
+    source_env = env if env is not None else os.environ
+    original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
+    if spec.gpu_id is None:
+        raise ValueError(f"{mode} stage {spec.stage_name!r} requires a GPU id")
+    if original_visible:
+        visible_devices = [item.strip() for item in original_visible.split(",")]
+        if spec.gpu_id >= len(visible_devices):
+            raise ValueError(
+                f"{mode} stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
+                f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
+            )
+        mapped_gpu = visible_devices[spec.gpu_id]
+    else:
+        mapped_gpu = str(spec.gpu_id)
+
+    return {
+        "CUDA_VISIBLE_DEVICES": mapped_gpu,
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+    }
+
+
+def get_sp_stage_process_env(
+    spec: StageLaunchConfig,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return GPU placement and torch.distributed env for an SP rank."""
+    if spec.sp_size <= 1:
+        return {}
+    if spec.nccl_port is None:
+        raise ValueError(f"SP stage {spec.stage_name!r} requires a distributed port")
+
+    updates = _get_single_gpu_process_env(spec, env, mode="SP")
+    updates.update(
+        {
+            "MASTER_ADDR": "127.0.0.1",
+            "MASTER_PORT": str(spec.nccl_port),
+            "WORLD_SIZE": str(spec.sp_size),
+            "RANK": str(spec.sp_rank),
+            "LOCAL_RANK": "0",
+        }
+    )
+    return updates
+
+
 def _prepare_cuda_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
 ) -> None:
-    """Map TP rank processes to one visible CUDA device before torch init."""
+    """Map parallel rank processes to one visible CUDA device before torch init."""
     if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
+        rank = spec.sp_rank if spec.sp_size > 1 else spec.tp_rank
+        mode = "SP" if spec.sp_size > 1 else "TP"
         log.info(
-            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            "%s stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            mode,
             spec.stage_name,
-            spec.tp_rank,
+            rank,
             mapped_gpu,
         )
         return
 
-    env_updates = current_platform.get_stage_process_env(spec)
+    env_updates = (
+        get_sp_stage_process_env(spec)
+        if spec.sp_size > 1
+        else current_platform.get_stage_process_env(spec)
+    )
     if not env_updates:
         return
 
@@ -811,10 +924,13 @@ def _prepare_cuda_environment(
         os.environ[key] = value
 
     _normalize_spec_gpu_id_to_local_device(spec)
+    rank = spec.sp_rank if spec.sp_size > 1 else spec.tp_rank
+    mode = "SP" if spec.sp_size > 1 else "TP"
     log.info(
-        "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+        "Mapped %s stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+        mode,
         spec.stage_name,
-        spec.tp_rank,
+        rank,
         mapped_gpu,
     )
 
@@ -837,6 +953,8 @@ def _process_name(spec: StageWorkerProcessSpec) -> str:
         return f"stage-{stage_spec.stage_name}"
     if stage_spec.role == "leader":
         return f"stage-{stage_spec.stage_name}-leader"
+    if stage_spec.sp_size > 1:
+        return f"stage-{stage_spec.stage_name}-sp{stage_spec.sp_rank}-follower"
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
 
 

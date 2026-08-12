@@ -3,21 +3,22 @@
 
 This module does not decide GPU placement. It consumes the existing resolved
 GPU placement from the colocation planner, then answers one question: which
-non-TP stages should run in the same OS process?
+non-parallel stages should run in the same OS process?
 """
 
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from sglang_omni.config.parallelism import resolve_stage_parallelism
 from sglang_omni.config.placement import StagePlacementPlan, resolve_stage_gpu_ids
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 
 
 @dataclass(frozen=True)
 class ProcessGroupPlacement:
-    """Resolved non-TP stage process group."""
+    """Resolved non-parallel stage process group."""
 
     name: str
     stage_names: tuple[str, ...]
@@ -31,6 +32,7 @@ class ProcessTopologyPlan:
     groups: tuple[ProcessGroupPlacement, ...]
     stage_to_process: dict[str, str]
     tp_stage_to_processes: dict[str, tuple[str, ...]]
+    sp_stage_to_processes: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def build_process_topology_plan(
@@ -42,6 +44,7 @@ def build_process_topology_plan(
     stages = stages_cfg if stages_cfg is not None else config.stages
     groups = _build_process_groups(config, stages, gpu_placement)
     tp_stage_to_processes = _build_tp_process_names(stages)
+    sp_stage_to_processes = _build_sp_process_names(stages)
 
     plan = ProcessTopologyPlan(
         groups=tuple(groups),
@@ -51,6 +54,7 @@ def build_process_topology_plan(
             for stage_name in group.stage_names
         },
         tp_stage_to_processes=tp_stage_to_processes,
+        sp_stage_to_processes=sp_stage_to_processes,
     )
     _validate_process_name_uniqueness(plan)
     _validate_gpu_process_colocation(config, gpu_placement, stages, plan)
@@ -62,10 +66,12 @@ def _build_process_groups(
     stages: list[StageConfig],
     gpu_placement: StagePlacementPlan,
 ) -> list[ProcessGroupPlacement]:
-    non_tp_stages = [stage for stage in stages if stage.tp_size == 1]
-    _validate_non_tp_processes(non_tp_stages)
+    non_parallel_stages = [
+        stage for stage in stages if not resolve_stage_parallelism(stage).is_parallel
+    ]
+    _validate_non_parallel_processes(non_parallel_stages)
 
-    components = _resolve_non_tp_process_components(config, non_tp_stages)
+    components = _resolve_non_parallel_process_components(config, non_parallel_stages)
     used_names: set[str] = set()
     groups: list[ProcessGroupPlacement] = []
     for component in components.values():
@@ -80,16 +86,16 @@ def _build_process_groups(
     return groups
 
 
-def _validate_non_tp_processes(stages: list[StageConfig]) -> None:
+def _validate_non_parallel_processes(stages: list[StageConfig]) -> None:
     for stage in stages:
         if stage.process is None:
             raise ValueError(
-                f"Stage {stage.name!r} must declare process; non-TP stage "
+                f"Stage {stage.name!r} must declare process; non-parallel stage "
                 "process groups are explicit"
             )
 
 
-def _resolve_non_tp_process_components(
+def _resolve_non_parallel_process_components(
     config: PipelineConfig,
     stages: list[StageConfig],
 ) -> OrderedDict[str, list[StageConfig]]:
@@ -124,7 +130,8 @@ def _resolve_non_tp_process_components(
         local_stage_names = [
             stage_name
             for stage_name in group
-            if stage_name in stage_by_name and stage_by_name[stage_name].tp_size == 1
+            if stage_name in stage_by_name
+            and not resolve_stage_parallelism(stage_by_name[stage_name]).is_parallel
         ]
         if not local_stage_names:
             continue
@@ -172,8 +179,24 @@ def _tp_process_name(stage: StageConfig, tp_rank: int) -> str:
     return f"{process_base}_tp{tp_rank}"
 
 
+def _build_sp_process_names(stages: list[StageConfig]) -> dict[str, tuple[str, ...]]:
+    return {
+        stage.name: tuple(
+            _sp_process_name(stage, sp_rank)
+            for sp_rank in range(resolve_stage_parallelism(stage).sp_size)
+        )
+        for stage in stages
+        if resolve_stage_parallelism(stage).kind == "sp"
+    }
+
+
+def _sp_process_name(stage: StageConfig, sp_rank: int) -> str:
+    process_base = stage.process or stage.name
+    return f"{process_base}_sp{sp_rank}"
+
+
 def _validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
-    non_tp_processes = set(plan.stage_to_process.values())
+    non_parallel_processes = set(plan.stage_to_process.values())
     tp_processes = [
         process_name
         for process_names in plan.tp_stage_to_processes.values()
@@ -187,10 +210,26 @@ def _validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
     if duplicate_tp_processes:
         raise ValueError(f"Duplicate TP process names: {duplicate_tp_processes}")
 
-    collisions = sorted(non_tp_processes.intersection(tp_processes))
+    sp_processes = [
+        process_name
+        for process_names in plan.sp_stage_to_processes.values()
+        for process_name in process_names
+    ]
+    duplicate_sp_processes = sorted(
+        process_name
+        for process_name, count in Counter(sp_processes).items()
+        if count > 1
+    )
+    if duplicate_sp_processes:
+        raise ValueError(f"Duplicate SP process names: {duplicate_sp_processes}")
+
+    collisions = sorted(
+        non_parallel_processes.intersection(tp_processes + sp_processes)
+        | set(tp_processes).intersection(sp_processes)
+    )
     if collisions:
         raise ValueError(
-            "TP-derived process names collide with non-TP process groups: "
+            "Parallel rank process names collide with other process names: "
             f"{collisions}"
         )
 
@@ -247,14 +286,18 @@ def _validate_gpu_process_colocation(
                     missing_fraction[gpu_id].add(stage.name)
 
     for stage in stages:
-        if stage.tp_size <= 1:
+        parallelism = resolve_stage_parallelism(stage)
+        if not parallelism.is_parallel:
             continue
+        process_names = (
+            topology_plan.sp_stage_to_processes[stage.name]
+            if parallelism.kind == "sp"
+            else topology_plan.tp_stage_to_processes[stage.name]
+        )
         for rank, gpu_id in enumerate(_stage_gpu_ids(gpu_placement, stage)):
             if gpu_id is None:
                 continue
-            gpu_processes[gpu_id].add(
-                topology_plan.tp_stage_to_processes[stage.name][rank]
-            )
+            gpu_processes[gpu_id].add(process_names[rank])
             if stage.runtime.resources.total_gpu_memory_fraction is None:
                 missing_fraction[gpu_id].add(stage.name)
 

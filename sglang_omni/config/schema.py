@@ -3,9 +3,39 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+@dataclass(frozen=True)
+class SequenceParallelPolicy:
+    """Model-owned constraints for a stage using sequence parallelism."""
+
+    attention_heads: int | None = None
+    requires_power_of_two: bool = False
+
+    def validate_config(
+        self,
+        config: ParallelismConfig,
+        *,
+        stage_name: str,
+    ) -> None:
+        context = f"Stage {stage_name!r}"
+        if self.attention_heads is not None and self.attention_heads < 1:
+            raise ValueError(f"{context} attention head count must be >= 1")
+        if self.requires_power_of_two and config.sp & (config.sp - 1):
+            raise ValueError(f"{context} parallelism.sp must be a power of two")
+        if (
+            self.attention_heads is not None
+            and self.attention_heads % config.resolved_ulysses_degree != 0
+        ):
+            raise ValueError(
+                f"{context} parallelism.ulysses_degree="
+                f"{config.resolved_ulysses_degree} must divide the model's "
+                f"{self.attention_heads} attention heads"
+            )
 
 
 class CommConfig(BaseModel):
@@ -36,15 +66,34 @@ class EndpointsConfig(BaseModel):
 
 
 class ParallelismConfig(BaseModel):
-    """Supported parallelism for one logical stage."""
+    """Tensor- and sequence-parallel settings for one logical stage."""
 
     model_config = ConfigDict(extra="forbid")
 
     tp: int = 1
+    sp: int = 1
+    ulysses_degree: int | None = None
+    ring_degree: int = 1
 
     def model_post_init(self, __context: Any = None) -> None:
         if self.tp < 1:
             raise ValueError("parallelism.tp must be >= 1")
+        if self.sp < 1:
+            raise ValueError("parallelism.sp must be >= 1")
+        if self.ring_degree < 1:
+            raise ValueError("parallelism.ring_degree must be >= 1")
+        if self.resolved_ulysses_degree < 1:
+            raise ValueError("parallelism.ulysses_degree must be >= 1")
+        if self.sp != self.resolved_ulysses_degree * self.ring_degree:
+            raise ValueError(
+                "parallelism.sp must equal ulysses_degree * ring_degree: "
+                f"{self.sp} != {self.resolved_ulysses_degree} * "
+                f"{self.ring_degree}"
+            )
+
+    @property
+    def resolved_ulysses_degree(self) -> int:
+        return self.sp if self.ulysses_degree is None else self.ulysses_degree
 
 
 class StageResourceConfig(BaseModel):
@@ -210,6 +259,10 @@ class StageConfig(BaseModel):
             parallelism_set and not tp_size_set and self.tp_size != self.parallelism.tp
         ):
             self.tp_size = self.parallelism.tp
+        if self.tp_size > 1 and self.parallelism.sp > 1:
+            raise ValueError(
+                f"Stage {self.name!r} cannot enable TP and SP at the same time"
+            )
 
 
 class AudioChunkingConfig(BaseModel):
@@ -407,6 +460,13 @@ class PipelineConfig(BaseModel):
         """Stages whose TP custom all-reduce disable is topology-relaxable."""
         return set()
 
+    @classmethod
+    def sequence_parallel_policy(
+        cls, *, stage_name: str
+    ) -> SequenceParallelPolicy | None:
+        """Return model-owned SP constraints for one stage."""
+        return None
+
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         """Return whether non-default TTS voice names must be uploaded voices."""
         return False
@@ -459,11 +519,25 @@ class PipelineConfig(BaseModel):
                     f"Stage {s.name!r}: tp_size={s.tp_size} conflicts with "
                     f"parallelism.tp={s.parallelism.tp}"
                 )
-            if isinstance(s.gpu, list) and len(s.gpu) != s.tp_size:
-                raise ValueError(
-                    f"Stage {s.name!r}: gpu has {len(s.gpu)} entries "
-                    f"but tp_size={s.tp_size}"
-                )
+            if s.parallelism.sp > 1:
+                policy = type(self).sequence_parallel_policy(stage_name=s.name)
+                if policy is None:
+                    raise ValueError(
+                        f"Stage {s.name!r} does not support sequence parallelism"
+                    )
+                policy.validate_config(s.parallelism, stage_name=s.name)
+                if not isinstance(s.gpu, list):
+                    raise ValueError(
+                        f"Stage {s.name!r} must provide one GPU id per SP rank"
+                    )
+            if isinstance(s.gpu, list):
+                expected_size = s.parallelism.sp if s.parallelism.sp > 1 else s.tp_size
+                if len(s.gpu) != expected_size:
+                    size_name = "parallelism.sp" if s.parallelism.sp > 1 else "tp_size"
+                    raise ValueError(
+                        f"Stage {s.name!r}: gpu has {len(s.gpu)} entries "
+                        f"but {size_name}={expected_size}"
+                    )
             if s.wait_for:
                 if not s.merge_fn:
                     raise ValueError(f"Stage {s.name!r} has wait_for but no merge_fn")
@@ -499,11 +573,13 @@ class PipelineConfig(BaseModel):
                 )
 
         missing_process = [
-            s.name for s in self.stages if s.tp_size == 1 and not s.process
+            s.name
+            for s in self.stages
+            if s.tp_size == 1 and s.parallelism.sp == 1 and not s.process
         ]
         if missing_process:
             raise ValueError(
-                "Non-TP stages must declare process; "
+                "Non-parallel stages must declare process; "
                 f"missing process for {missing_process}"
             )
 
@@ -537,9 +613,9 @@ class PipelineConfig(BaseModel):
         stages = [stage_by_name[name] for name in group]
 
         for stage in stages:
-            if stage.tp_size != 1:
+            if stage.tp_size > 1 or stage.parallelism.sp > 1:
                 raise ValueError(
-                    f"fused group {group} cannot include TP stage {stage.name!r}"
+                    f"fused group {group} cannot include parallel stage {stage.name!r}"
                 )
 
         gpu_ids = {

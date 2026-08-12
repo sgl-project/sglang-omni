@@ -6,6 +6,7 @@ No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,10 @@ import time
 from typing import Any, Awaitable, Callable
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import (
+    AbortDrainTracker,
+    ParallelSchedulerCapabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +50,10 @@ class SimpleScheduler:
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
-        self.requires_tp_work_fanout: bool = True
+        self.parallel_capabilities = ParallelSchedulerCapabilities(
+            fanout_work=True,
+            drain_aborted_work=True,
+        )
         self._fn = compute_fn
         self._batch_fn = batch_compute_fn
         self._max_batch_size = max(int(max_batch_size), 1)
@@ -68,9 +76,15 @@ class SimpleScheduler:
         self._shutdown_callback = shutdown_callback
         self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
+        self._abort_drains = AbortDrainTracker()
         self._abort_lock = threading.Lock()
         self._running = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    @property
+    def requires_tp_work_fanout(self) -> bool:
+        """Compatibility view of the TP work-fanout requirement."""
+        return self.parallel_capabilities.fanout_work
 
     def _cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
@@ -315,3 +329,18 @@ class SimpleScheduler:
                 for stale_request_id in list(self._aborted)[:excess]:
                     self._aborted.discard(stale_request_id)
         self._cleanup_aborted_request(request_id)
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        """Keep stage-fanned collective work runnable after an abort."""
+        with self._abort_lock:
+            self._abort_drains.record(request_id, dispatch_id)
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        """Release deferred cleanup once fanned work reaches terminal."""
+        with self._abort_lock:
+            deferred_cleanup = self._abort_drains.acknowledge(
+                request_id,
+                dispatch_id,
+            )
+        if deferred_cleanup:
+            self._cleanup_aborted_request(request_id)
