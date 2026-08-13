@@ -48,6 +48,7 @@ class DllmScheduler:
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.requires_tp_work_fanout: bool = True
 
         self._request_builder = request_builder
         self._result_adapter = result_adapter

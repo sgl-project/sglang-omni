@@ -13,7 +13,10 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -27,6 +30,7 @@ from sglang_omni.vendor.sglang.layers import (
     VocabParallelEmbedding,
     get_moe_impl_class,
     get_rope,
+    should_skip_post_experts_all_reduce,
 )
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
@@ -34,6 +38,32 @@ from sglang_omni.vendor.sglang.models import (
     enable_fused_set_kv_buffer,
 )
 from sglang_omni.vendor.sglang.utils import make_layers
+
+
+def _get_local_attention_head_counts(
+    num_heads: int,
+    num_kv_heads: int,
+    tp_size: int,
+) -> tuple[int, int]:
+    if tp_size < 1:
+        raise ValueError(f"Tensor parallel size must be positive, got {tp_size}")
+    if num_heads % tp_size != 0:
+        raise ValueError(
+            f"Attention heads ({num_heads}) must be divisible by TP size ({tp_size})"
+        )
+    if num_kv_heads >= tp_size:
+        if num_kv_heads % tp_size != 0:
+            raise ValueError(
+                f"KV heads ({num_kv_heads}) must be divisible by TP size ({tp_size})"
+            )
+        local_kv_heads = num_kv_heads // tp_size
+    else:
+        if tp_size % num_kv_heads != 0:
+            raise ValueError(
+                f"TP size ({tp_size}) must be divisible by KV heads ({num_kv_heads})"
+            )
+        local_kv_heads = 1
+    return num_heads // tp_size, local_kv_heads
 
 
 class LLaDA2MoeAttention(nn.Module):
@@ -55,8 +85,13 @@ class LLaDA2MoeAttention(nn.Module):
         self.use_qk_norm = config.use_qk_norm
 
         tp_size = get_tensor_model_parallel_world_size()
-        self.num_heads_per_tp = self.num_heads // tp_size
-        self.num_kv_heads_per_tp = max(1, self.num_kv_heads // tp_size)
+        self.num_heads_per_tp, self.num_kv_heads_per_tp = (
+            _get_local_attention_head_counts(
+                self.num_heads,
+                self.num_kv_heads,
+                tp_size,
+            )
+        )
         self.q_size = self.num_heads_per_tp * self.head_dim
         self.kv_size = self.num_kv_heads_per_tp * self.head_dim
 
@@ -166,6 +201,7 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        reduce_results: bool = True,
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -178,6 +214,7 @@ class LLaDA2MoeMLP(nn.Module):
             intermediate_size,
             config.hidden_size,
             bias=False,
+            reduce_results=reduce_results,
             quant_config=quant_config,
         )
         self.act_fn = SiluAndMul()
@@ -231,6 +268,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         super().__init__()
         self.config = config
         self.layer_id = layer_id
+        self.tp_size = get_tensor_model_parallel_world_size()
         self.num_experts = config.num_experts
         self.num_experts_per_tok = config.num_experts_per_tok
         self.n_group = config.n_group
@@ -269,7 +307,10 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config,
+                shared_intermediate,
+                quant_config,
+                reduce_results=False,
             )
         else:
             self.shared_experts = None
@@ -315,6 +356,11 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         # Add shared expert output
         if self.shared_experts is not None:
             y = y + self.shared_experts(identity)
+
+        if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
+            is_tp_path=True,
+        ):
+            y = tensor_model_parallel_all_reduce(y)
 
         return y
 
