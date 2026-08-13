@@ -12,6 +12,7 @@ _PKG = "sglang_omni.models.fun_asr"
 class FunASRPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "FunAsrNanoForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "FunASRNano",
         "FunASRForConditionalGeneration",

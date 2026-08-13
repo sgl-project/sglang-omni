@@ -14,6 +14,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Whisper checkpoints."""
 
     architecture: ClassVar[str] = "WhisperForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

@@ -15,9 +15,14 @@ from sglang_omni.cli.serve import (
     serve,
 )
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
+from sglang_omni.models.moss_transcribe_diarize.config import (
+    MossTranscribeDiarizePipelineConfig,
+)
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
@@ -25,6 +30,7 @@ from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.models.zonos2.config import Zonos2PipelineConfig
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -316,8 +322,26 @@ def test_generation_server_args_declared_stage_must_exist() -> None:
         _apply_generation_server_args(config)
 
 
-def test_quantization_routes_to_generation_stage_without_thinker() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
+@pytest.mark.parametrize(
+    ("config_cls", "stage_name"),
+    [
+        (DotsTTSPipelineConfig, "latent_engine"),
+        (HiggsTtsPipelineConfig, "tts_engine"),
+        (MingTTSPipelineConfig, "tts_engine"),
+        (MossTTSPipelineConfig, "tts_engine"),
+        (MossTTSLocalPipelineConfig, "tts_engine"),
+        (Zonos2PipelineConfig, "tts_engine"),
+        (FunASRPipelineConfig, "asr"),
+        (MossTranscribeDiarizePipelineConfig, "asr"),
+        (Qwen3ASRPipelineConfig, "asr"),
+        (WhisperASRPipelineConfig, "asr"),
+    ],
+)
+def test_quantization_routes_only_for_declared_generation_stages(
+    config_cls: type[PipelineConfig],
+    stage_name: str,
+) -> None:
+    config = config_cls(model_path="dummy")
 
     apply_backbone_server_args_cli_overrides(
         config,
@@ -325,7 +349,7 @@ def test_quantization_routes_to_generation_stage_without_thinker() -> None:
         quantization="fp8",
     )
 
-    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
+    overrides = _stage_args(config, stage_name)["server_args_overrides"]
     assert overrides == {"quantization": "fp8"}
 
 
@@ -390,3 +414,34 @@ def test_quantization_rejects_pipeline_without_thinker_or_generation() -> None:
             cpu_offload_gb=None,
             quantization="fp8",
         )
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3TTSPipelineConfig, S2ProPipelineConfig, VoxtralTTSPipelineConfig],
+)
+def test_quantization_rejects_generation_stage_without_quantization_support(
+    config_cls: type[PipelineConfig],
+) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="--quantization is not supported"):
+        apply_backbone_server_args_cli_overrides(
+            config,
+            cpu_offload_gb=None,
+            quantization="fp8",
+        )
+
+
+def test_cpu_offload_still_routes_without_quantization_support() -> None:
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+
+    apply_backbone_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=4,
+        quantization=None,
+    )
+
+    assert _stage_args(config, "tts_engine")["server_args_overrides"] == {
+        "cpu_offload_gb": 4
+    }

@@ -100,6 +100,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     """Single-GPU MOSS-TTS Local pipeline."""
 
     architecture: ClassVar[str] = "MossTTSLocalModel"
+    supports_quantization_override: ClassVar[bool] = True
     requires_model_capabilities: ClassVar[bool] = True
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSLocal",

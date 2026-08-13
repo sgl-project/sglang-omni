@@ -90,6 +90,7 @@ class Zonos2PipelineConfig(PipelineConfig):
     """Single-GPU colocated default."""
 
     architecture: ClassVar[str] = "Zonos2ForCausalLM"
+    supports_quantization_override: ClassVar[bool] = True
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "Zonos2",
         "Zonos2Model",

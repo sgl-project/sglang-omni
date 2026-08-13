@@ -227,6 +227,7 @@ def _ming_streaming_speech_stages() -> list[StageConfig]:
 class _MingOmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
     architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+    supports_quantization_override: ClassVar[bool] = True
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
         THINKER_STAGE,
     )

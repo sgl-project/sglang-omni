@@ -14,6 +14,7 @@ class DotsTTSPipelineConfig(PipelineConfig):
     """preprocess -> reference encode -> SGLang latent AR -> AudioVAE."""
 
     architecture: ClassVar[str] = "DotsTTSForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     requires_model_capabilities: ClassVar[bool] = True
     required_speech_reference_count: ClassVar[int | None] = 1
     speech_reference_text_required: ClassVar[bool] = True

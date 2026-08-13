@@ -622,6 +622,8 @@ def apply_backbone_server_args_cli_overrides(
         quantization = quantization.strip()
         if not quantization:
             raise typer.BadParameter("--quantization must not be empty")
+        if not type(pipeline_config).supports_quantization_override:
+            _raise_unsupported_flag(pipeline_config, "--quantization")
         backbone_updates["quantization"] = quantization
     if backbone_updates:
         _apply_stage_server_args_override(

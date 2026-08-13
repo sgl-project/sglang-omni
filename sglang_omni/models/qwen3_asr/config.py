@@ -15,6 +15,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Qwen3-ASR checkpoints."""
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
         allow_audio_chunking=True,
         max_audio_clip_s=60.0,

@@ -24,6 +24,7 @@ class MingTTSPipelineConfig(PipelineConfig):
     """
 
     architecture: ClassVar[str] = "BailingMMNativeForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod

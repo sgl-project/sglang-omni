@@ -284,6 +284,7 @@ _SPEECH_DEFAULT_PROCESSES = {
 
 class _Qwen3OmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
         THINKER_STAGE,
     )

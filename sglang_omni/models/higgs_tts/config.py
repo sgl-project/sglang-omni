@@ -27,6 +27,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
     """
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
+    supports_quantization_override: ClassVar[bool] = True
     requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
