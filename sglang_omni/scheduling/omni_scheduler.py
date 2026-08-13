@@ -232,9 +232,11 @@ class OmniScheduler:
                 else int(request_build_max_pending)
             )
             self.request_build_max_pending = max(1, max_pending)
-            self._request_build_backlog_limit = max(
-                self.request_build_max_pending,
-                int(server_args.max_queued_requests or 0),
+            max_queued_requests = int(server_args.max_queued_requests or 0)
+            self._request_build_backlog_limit = (
+                max(self.request_build_max_pending, max_queued_requests)
+                if max_queued_requests > 0
+                else None
             )
             self._request_build_executor: ThreadPoolExecutor | None = (
                 ThreadPoolExecutor(
@@ -954,7 +956,10 @@ class OmniScheduler:
                     selected_ids.add(req_id)
                     capacity -= 1
                     continue
-                if len(backlog) >= self._request_build_backlog_limit:
+                if (
+                    self._request_build_backlog_limit is not None
+                    and len(backlog) >= self._request_build_backlog_limit
+                ):
                     rejected.append(payload)
                     continue
                 backlog.append(payload)

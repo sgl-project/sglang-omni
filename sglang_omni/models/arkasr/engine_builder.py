@@ -22,6 +22,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         *,
         max_running_requests: int,
         max_new_tokens: int,
+        enable_async_decode: bool,
+        async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
@@ -31,6 +33,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
     ) -> None:
         self.max_running_requests = max_running_requests
         self.max_new_tokens = int(max_new_tokens)
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
@@ -98,6 +102,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

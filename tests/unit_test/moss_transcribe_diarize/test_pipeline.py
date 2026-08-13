@@ -126,6 +126,8 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
     assert signature.parameters["prefill_coalesce_requests"].default == 4
     assert signature.parameters["prefill_coalesce_wait_ms"].default == 12.0
     assert signature.parameters["prefill_coalesce_when_idle"].default is True
@@ -330,6 +332,8 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert len(calls["encoder_services"]) == 1
     assert calls["encoder_services"][0][1] == 2
     scheduler_kwargs = calls["scheduler_kwargs"][0]
+    assert scheduler_kwargs["enable_async_decode"] is True
+    assert scheduler_kwargs["async_decode_min_batch_size"] == 1
     assert scheduler_kwargs["prefill_coalesce_requests"] == 4
     assert scheduler_kwargs["prefill_coalesce_wait_ms"] == 12.0
     assert scheduler_kwargs["prefill_coalesce_when_idle"] is True

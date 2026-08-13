@@ -16,6 +16,8 @@ def create_sglang_arkasr_executor(
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
@@ -26,6 +28,8 @@ def create_sglang_arkasr_executor(
     return ArkasrEngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
         mem_fraction_static=mem_fraction_static,
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
         enable_torch_compile=enable_torch_compile,

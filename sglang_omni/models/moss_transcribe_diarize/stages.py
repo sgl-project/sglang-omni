@@ -80,9 +80,10 @@ def create_sglang_moss_transcribe_diarize_executor(
     mm_embedding_cache_size_bytes: int = 0,
     encoder_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
-    # note (yichi): async on by default for MOSS-TD; --decode-mode sync to opt out.
+    # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
+    # --decode-mode sync remains the operator opt-out.
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 4,
     prefill_coalesce_wait_ms: float = 12.0,
     prefill_coalesce_when_idle: bool = True,

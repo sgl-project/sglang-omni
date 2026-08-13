@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Callable
 
 import torch
@@ -114,6 +115,9 @@ def make_whisper_scheduler_adapters(
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
     logit_bias = _build_logit_bias(generation_config)
+    # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
+    # across request-build workers.
+    tokenizer_lock = Lock()
     eos_token_id = int(tokenizer.eos_token_id)
     pad_token_id = int(tokenizer.pad_token_id or eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
@@ -136,21 +140,22 @@ def make_whisper_scheduler_adapters(
 
         language = _resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
-        prefix_token_ids = _build_prefix_tokens(
-            tokenizer,
-            language=language,
-            task=task,
-        )
-        request_max_new_tokens, max_prev_tokens = _decoder_token_budgets(
-            decoder_context_len=decoder_context_len,
-            prefix_len=len(prefix_token_ids),
-            requested_max_new_tokens=int(
-                params.get("max_new_tokens") or max_new_tokens
-            ),
-        )
-        prev_context_ids = _build_prev_context_tokens(
-            tokenizer, params.get("prompt"), max_prev_tokens=max_prev_tokens
-        )
+        with tokenizer_lock:
+            prefix_token_ids = _build_prefix_tokens(
+                tokenizer,
+                language=language,
+                task=task,
+            )
+            request_max_new_tokens, max_prev_tokens = _decoder_token_budgets(
+                decoder_context_len=decoder_context_len,
+                prefix_len=len(prefix_token_ids),
+                requested_max_new_tokens=int(
+                    params.get("max_new_tokens") or max_new_tokens
+                ),
+            )
+            prev_context_ids = _build_prev_context_tokens(
+                tokenizer, params.get("prompt"), max_prev_tokens=max_prev_tokens
+            )
         prompt_token_ids = prev_context_ids + prefix_token_ids
         # note (jiannan-17): Keep the invariant at the assembly boundary so future
         # changes fail before an out-of-range decoder position reaches the GPU.

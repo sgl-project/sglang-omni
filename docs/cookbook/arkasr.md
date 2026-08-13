@@ -21,10 +21,23 @@ hf download AutoArk-AI/ARK-ASR-3B
 ## Server Configuration
 
 ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
+Async decode is enabled by default for decode batches of at least two requests,
+allowing the shared one-step-lookahead path to overlap host-side result
+processing with the next GPU decode forward. Use `--decode-mode sync` to disable
+it, or tune the crossover with `--async-lookahead-min-batch-size`.
 
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
+  --port 8000
+```
+
+For example, force synchronous decode when comparing modes:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --decode-mode sync \
   --port 8000
 ```
 

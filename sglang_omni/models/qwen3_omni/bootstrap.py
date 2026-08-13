@@ -57,6 +57,8 @@ def create_thinker_scheduler(
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
     if defer_cuda_graph_capture:
+        saved_disable_cuda_graph = server_args.disable_cuda_graph
+        saved_return_hidden_states = server_args.enable_return_hidden_states
         override_server_args(
             server_args,
             "sglang_omni.qwen3_omni.defer_cuda_graph_capture",
@@ -88,7 +90,8 @@ def create_thinker_scheduler(
         override_server_args(
             server_args,
             "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
-            disable_cuda_graph=False,
+            disable_cuda_graph=saved_disable_cuda_graph,
+            enable_return_hidden_states=saved_return_hidden_states,
         )
         model_worker.model_runner.init_cuda_graphs()
 
@@ -108,11 +111,7 @@ def create_thinker_scheduler(
     )
 
     if speech_enabled:
-        model_runner = ThinkerModelRunner(
-            model_worker,
-            output_proc,
-            should_capture_hidden=_should_generate_qwen_audio_output,
-        )
+        model_runner = ThinkerModelRunner(model_worker, output_proc)
     else:
         model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
 
