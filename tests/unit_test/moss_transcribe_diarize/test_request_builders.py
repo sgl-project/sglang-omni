@@ -17,6 +17,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
     DEFAULT_TRANSCRIBE_DIARIZE_PROMPT,
+    _audio_feature_lengths_from_waveform,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, OmniRequest, StagePayload
@@ -190,6 +191,7 @@ def _request_builder(
     processor: FakeProcessor | None = None,
     *,
     context_length: int = TEST_CONTEXT_LENGTH,
+    audio_encoder_service=None,
 ):
     processor = processor or FakeProcessor()
     request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
@@ -197,6 +199,7 @@ def _request_builder(
         tokenizer=processor.tokenizer,
         max_new_tokens=32,
         context_length=context_length,
+        audio_encoder_service=audio_encoder_service,
     )
     return request_builder
 
@@ -296,6 +299,107 @@ def test_streamlined_request_builder_enforces_context_limit() -> None:
         match="Prompt/audio sequence exceeds max_length=5",
     ):
         request_builder(_payload())
+
+
+def test_embedding_cache_hit_skips_feature_extraction_and_encode() -> None:
+    class _EncoderService:
+        def __init__(self) -> None:
+            self.lookup: tuple[str, int] | None = None
+            self.embedding = torch.zeros((2, 4))
+
+        def lookup_cached_embedding(
+            self,
+            audio_fingerprint: str,
+            expected_tokens: int,
+        ) -> torch.Tensor:
+            self.lookup = (audio_fingerprint, expected_tokens)
+            return self.embedding
+
+        def attach_embedding(self, item, embedding: torch.Tensor) -> None:
+            item.precomputed_embeddings = embedding
+            item.feature = None
+
+        def encode_item(self, item) -> None:
+            raise AssertionError("encoder should not run on a cache hit")
+
+    processor = FakeProcessor()
+    encoder_service = _EncoderService()
+    request_builder = _request_builder(
+        processor,
+        audio_encoder_service=encoder_service,
+    )
+
+    data = request_builder(_payload())
+
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert encoder_service.lookup == (data.req.extra_key, 2)
+    assert processor.processor_calls == 0
+    assert processor.feature_extractor.calls == 0
+    assert item.feature is None
+    assert item.precomputed_embeddings is encoder_service.embedding
+    assert item.audio_feature_lengths.tolist() == [2]
+    assert item.audio_chunk_mapping.tolist() == [0]
+
+
+def test_embedding_cache_miss_preserves_processor_and_encoder_path() -> None:
+    class _EncoderService:
+        def __init__(self) -> None:
+            self.lookup: tuple[str, int] | None = None
+            self.encoded_feature: torch.Tensor | None = None
+
+        def lookup_cached_embedding(
+            self,
+            audio_fingerprint: str,
+            expected_tokens: int,
+        ) -> None:
+            self.lookup = (audio_fingerprint, expected_tokens)
+            return None
+
+        def attach_embedding(self, item, embedding: torch.Tensor) -> None:
+            raise AssertionError("no cached embedding should be attached")
+
+        def encode_item(self, item) -> None:
+            self.encoded_feature = item.feature
+            item.precomputed_embeddings = torch.zeros((3, 4))
+            item.feature = None
+
+    processor = FakeProcessor()
+    encoder_service = _EncoderService()
+    request_builder = _request_builder(
+        processor,
+        audio_encoder_service=encoder_service,
+    )
+
+    data = request_builder(_payload())
+
+    assert encoder_service.lookup == (data.req.extra_key, 2)
+    assert processor.processor_calls == 0
+    assert processor.feature_extractor.calls == 1
+    assert encoder_service.encoded_feature is not None
+    assert data.req.multimodal_inputs.mm_items[0].feature is None
+
+
+@pytest.mark.parametrize(
+    ("num_samples", "expected"),
+    [
+        (1, [1]),
+        (1280, [1]),
+        (1281, [2]),
+        (480000, [375]),
+        (480001, [375, 1]),
+        (960123, [375, 375, 1]),
+    ],
+)
+def test_audio_feature_lengths_match_processor_chunk_boundaries(
+    num_samples: int,
+    expected: list[int],
+) -> None:
+    processor = FakeProcessor()
+    processor.feature_extractor.n_samples = 480000
+
+    assert _audio_feature_lengths_from_waveform(processor, num_samples).tolist() == (
+        expected
+    )
 
 
 def test_request_builder_replaces_audio_tokens_with_item_pad_value() -> None:

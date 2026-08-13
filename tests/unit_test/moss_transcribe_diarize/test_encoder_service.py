@@ -265,18 +265,60 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     )
 
 
-def test_cache_hit_attaches_embedding_without_submitting() -> None:
+def test_encode_item_rechecks_cache_after_preprocessing() -> None:
     service = object.__new__(BatchedAudioEncoderService)
     service._device = torch.device("cpu")
+    service._dtype = torch.float32
+    service._hidden_size = 3
     service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     cached = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    service._cache.put("7", cached)
-    item = SimpleNamespace(hash=7, feature=object(), precomputed_embeddings=None)
+    service._cache.put("fingerprint", cached)
+    item = SimpleNamespace(
+        hash=7,
+        audio_fingerprint="fingerprint",
+        audio_feature_lengths=torch.tensor([2]),
+        feature=object(),
+        precomputed_embeddings=None,
+    )
+    service._submit = lambda item: pytest.fail("cached item must not be submitted")
 
     service.encode_item(item)
 
     assert torch.equal(item.precomputed_embeddings, cached)
     assert item.feature is None
+
+
+@pytest.mark.parametrize(
+    "cached",
+    [
+        torch.ones(3, 3),
+        torch.ones(2, 4),
+        torch.ones(2, 3, dtype=torch.float64),
+    ],
+)
+def test_lookup_cached_embedding_evicts_invalid_entries(cached: torch.Tensor) -> None:
+    service = object.__new__(BatchedAudioEncoderService)
+    service._dtype = torch.float32
+    service._hidden_size = 3
+    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    service._cache.put("fingerprint", cached)
+
+    assert service.lookup_cached_embedding("fingerprint", 2) is None
+    assert len(service._cache) == 0
+
+
+def test_lookup_cached_embedding_returns_valid_entry() -> None:
+    service = object.__new__(BatchedAudioEncoderService)
+    service._dtype = torch.float32
+    service._hidden_size = 3
+    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    cached = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    service._cache.put("fingerprint", cached)
+
+    result = service.lookup_cached_embedding("fingerprint", 2)
+
+    assert result is not None
+    assert torch.equal(result, cached)
 
 
 def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
@@ -285,6 +327,7 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     service._item_count = 0
     service._worker_state_lock = threading.Lock()
     service._worker_error = None
+    service._device = torch.device("cpu")
     service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     synchronized: list[None] = []
     service._stream = SimpleNamespace(synchronize=lambda: synchronized.append(None))

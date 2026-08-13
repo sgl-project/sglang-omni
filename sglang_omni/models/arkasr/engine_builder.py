@@ -21,6 +21,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self,
         *,
         max_running_requests: int,
+        encoder_max_batch_size: int,
         max_new_tokens: int,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
@@ -32,6 +33,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         request_build_max_pending: int | None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.encoder_max_batch_size = encoder_max_batch_size
         self.max_new_tokens = int(max_new_tokens)
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
@@ -87,7 +89,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        del model, server_args, generation_cuda_graph_enabled
+        del server_args, generation_cuda_graph_enabled
+        model.set_encoder_max_batch_size(self.encoder_max_batch_size)
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:

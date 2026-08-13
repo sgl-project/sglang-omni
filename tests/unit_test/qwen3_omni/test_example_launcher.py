@@ -359,6 +359,16 @@ def test_tp1_default_config_contract(mock_launch_server):
     assert code2wav.gpu == 0
 
 
+def test_speech_server_code2wav_follows_relocated_thinker(mock_launch_server):
+    args = _make_args(gpu_thinker=2, gpu_talker=3)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    assert _stage(config, "thinker").gpu == 2
+    assert _stage(config, "talker_ar").gpu == 3
+    assert _stage(config, "code2wav").gpu == 2
+
+
 def test_speech_server_forwards_realtime_flag(mock_launch_server):
     args = _make_args(enable_realtime=True)
     _launch_speech_server(args)

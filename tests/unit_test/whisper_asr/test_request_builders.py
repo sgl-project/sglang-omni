@@ -82,6 +82,34 @@ def _build(monkeypatch, params: dict | None = None):
     return _make_request_builder()(_make_payload(params))
 
 
+def test_request_builder_rejects_audio_past_the_mel_window(monkeypatch) -> None:
+    # Anything past the 30s window is rejected. Without the guard the feature
+    # extractor would silently drop everything past 30 seconds instead.
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(int(30.1 * 16000), dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="accepts audio up to"):
+        _make_request_builder()(_make_payload())
+
+
+def test_request_builder_accepts_a_full_window_chunk(monkeypatch) -> None:
+    # Exactly 30.0s must build: the serve-layer chunker cuts spans of up to
+    # exactly max_audio_clip_s samples, so the guard has to be a strict
+    # greater-than or every full-length chunk of a long upload would 400.
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(30 * 16000, dtype=np.float32),
+    )
+
+    data = _make_request_builder()(_make_payload())
+
+    assert data.audio_duration_s == pytest.approx(30.0)
+
+
 def test_request_builder_without_prompt_keeps_prefix_only(monkeypatch) -> None:
     data = _build(monkeypatch)
 

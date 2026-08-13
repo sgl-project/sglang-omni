@@ -23,6 +23,7 @@ from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
@@ -447,7 +448,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
         )
 
         # Decoder layers
-        alt_stream = torch.cuda.Stream()
+        alt_stream = torch.get_device_module().Stream()
         self.layers = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeTalkerDecoderLayer(
@@ -578,7 +579,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         )
 
         # 5 dense decoder layers
-        alt_stream = torch.cuda.Stream()
+        alt_stream = torch.get_device_module().Stream()
         self.model.layers = nn.ModuleList()
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP
@@ -973,7 +974,7 @@ class Qwen3OmniTalker(nn.Module):
             device=device,
         )
         self._sampling_staging_event = (
-            torch.cuda.Event() if device.type == "cuda" else None
+            torch.get_device_module().Event() if device.type != "cpu" else None
         )
         self._decode_prep_rids: list | None = None
         self._decode_prep_out_lens: list[int] = []
@@ -1381,7 +1382,7 @@ class Qwen3OmniTalker(nn.Module):
             custom_params=None,
             custom_logit_processor=None,
             sampling_seed=self._sampling_seeds[:batch_size],
-            device="cuda",
+            device=current_platform.device_type,
             logit_bias=None,
         )
 

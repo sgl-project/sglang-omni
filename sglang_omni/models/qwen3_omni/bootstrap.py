@@ -31,12 +31,29 @@ def create_thinker_scheduler(
         make_thinker_stream_output_builder,
         should_generate_audio_output,
     )
+    from sglang_omni.models.qwen3_omni.thinker_model_runner import (
+        Qwen3OmniThinkerModelRunner,
+    )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils import cuda_graph_batch_validator
 
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+    if speech_enabled and prefill_graph_backend != CudaGraphBackend.DISABLED:
+        raise RuntimeError(
+            "Qwen3-Omni speech output does not support a non-disabled "
+            "prefill CUDA graph backend "
+            f"({prefill_graph_backend!r}); set "
+            "cuda_graph_backend_prefill='disabled'"
+        )
+    enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
     if defer_cuda_graph_capture:
@@ -66,6 +83,7 @@ def create_thinker_scheduler(
         capture_hidden_layers=capture_hidden_layers,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=defer_cuda_graph_capture,
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
     )
 
     if defer_cuda_graph_capture:
@@ -77,6 +95,11 @@ def create_thinker_scheduler(
         )
         model_worker.model_runner.init_cuda_graphs()
 
+    if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+        cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+            model_worker.model_runner, server_args
+        )
+
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
 
@@ -87,7 +110,10 @@ def create_thinker_scheduler(
         should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
-    model_runner = ThinkerModelRunner(model_worker, output_proc)
+    if speech_enabled:
+        model_runner = ThinkerModelRunner(model_worker, output_proc)
+    else:
+        model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
 
     tokenizer = get_tokenizer(
         model_config.model_path,

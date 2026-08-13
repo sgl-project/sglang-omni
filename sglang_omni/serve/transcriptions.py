@@ -290,6 +290,8 @@ async def _transcribe_audio_chunks(
     in_flight: set[str] = set()
 
     async def run_chunk(span: ChunkSpan) -> str:
+        if not span.has_speech:
+            return ""
         async with semaphore:
             # Encode inside the semaphore so at most max_concurrent chunk
             # WAVs exist at a time.

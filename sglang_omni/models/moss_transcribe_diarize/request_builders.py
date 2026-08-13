@@ -255,22 +255,42 @@ def _prompt_token_parts(
     )
 
 
+def _audio_feature_lengths_from_waveform(
+    processor: Any,
+    num_samples: int,
+) -> torch.Tensor:
+    """Derive the processor's per-chunk token lengths without extracting mel."""
+    feature_extractor = processor.feature_extractor
+    chunk_samples = int(feature_extractor.n_samples)
+    stride = (
+        int(feature_extractor.hop_length)
+        * _WHISPER_ENCODER_STRIDE
+        * int(processor.audio_merge_size)
+    )
+    if chunk_samples <= 0 or stride <= 0:
+        raise ValueError("MOSS-Transcribe-Diarize processor has invalid audio strides")
+    return torch.tensor(
+        [
+            (min(chunk_samples, num_samples - start) - 1) // stride + 1
+            for start in range(0, num_samples, chunk_samples)
+        ],
+        dtype=torch.long,
+    )
+
+
 def _extract_audio_features(
     processor: Any,
     audio: np.ndarray,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     feature_extractor = processor.feature_extractor
     n_samples = int(feature_extractor.n_samples)
-    stride = (
-        int(feature_extractor.hop_length)
-        * _WHISPER_ENCODER_STRIDE
-        * int(processor.audio_merge_size)
+    audio_feature_lengths = _audio_feature_lengths_from_waveform(
+        processor,
+        int(audio.shape[0]),
     )
     chunks: list[np.ndarray] = []
-    token_lengths: list[int] = []
     for start in range(0, audio.shape[0], n_samples):
         chunk = audio[start : start + n_samples]
-        token_lengths.append((int(chunk.shape[0]) - 1) // stride + 1)
         if chunk.shape[0] < n_samples:
             chunk = np.pad(chunk, (0, n_samples - chunk.shape[0]))
         chunks.append(chunk)
@@ -281,16 +301,12 @@ def _extract_audio_features(
         padding="max_length",
         return_tensors="pt",
     )["input_features"]
-    audio_feature_lengths = torch.tensor(
-        token_lengths,
-        dtype=torch.long,
-        device=input_features.device,
-    )
+    audio_feature_lengths = audio_feature_lengths.to(input_features.device)
     return (
         input_features,
         audio_feature_lengths,
         torch.zeros_like(audio_feature_lengths),
-        sum(token_lengths),
+        int(audio_feature_lengths.sum().item()),
     )
 
 
@@ -347,12 +363,29 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         max_length = min(
             int(params.get("max_length") or context_length), context_length
         )
-        (
-            features,
-            audio_feature_lengths,
-            audio_chunk_mapping,
-            audio_token_count,
-        ) = _extract_audio_features(processor, audio)
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            audio_feature_lengths = _audio_feature_lengths_from_waveform(
+                processor,
+                len(audio),
+            )
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint,
+                int(audio_feature_lengths.sum().item()),
+            )
+
+        if cached_embedding is None:
+            (
+                features,
+                audio_feature_lengths,
+                audio_chunk_mapping,
+                audio_token_count,
+            ) = _extract_audio_features(processor, audio)
+        else:
+            features = None
+            audio_chunk_mapping = torch.zeros_like(audio_feature_lengths)
+            audio_token_count = int(audio_feature_lengths.sum().item())
+
         if prompt == default_prompt:
             prefix_ids, suffix_ids = default_prompt_parts
         else:
@@ -381,13 +414,17 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             model_specific_data={
                 "audio_feature_lengths": audio_feature_lengths,
                 "audio_chunk_mapping": audio_chunk_mapping,
+                "audio_fingerprint": fingerprint,
             },
         )
         audio_item.set_pad_value()
         audio_item.offsets = offsets
 
         if audio_encoder_service is not None:
-            audio_encoder_service.encode_item(audio_item)
+            if cached_embedding is None:
+                audio_encoder_service.encode_item(audio_item)
+            else:
+                audio_encoder_service.attach_embedding(audio_item, cached_embedding)
 
         padded_audio_span_ids = [
             audio_item.pad_value if token_id == audio_token_id else token_id

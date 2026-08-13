@@ -53,7 +53,7 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert len(config.stages) == 8
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
-    assert code2wav.gpu == 1
+    assert code2wav.gpu == 0
     assert code2wav_args["enable_cuda_graph"] is True
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
     assert "enable_batching" not in code2wav.factory_args
@@ -144,10 +144,10 @@ def test_default_speech_splits_thinker_from_talker_chain() -> None:
 
     plan = build_stage_placement_plan(config)
 
-    # Default: thinker on its own GPU, talker_ar -> code2wav colocated on another.
+    # Default: thinker and code2wav share a GPU, talker_ar runs alone on another.
     assert plan.stages["thinker"].gpu_ids == (0,)
     assert plan.stages["talker_ar"].gpu_ids == (1,)
-    assert plan.stages["code2wav"].gpu_ids == (1,)
+    assert plan.stages["code2wav"].gpu_ids == (0,)
 
 
 def test_colocated_config_rejects_conflicting_ar_mem_fraction() -> None:

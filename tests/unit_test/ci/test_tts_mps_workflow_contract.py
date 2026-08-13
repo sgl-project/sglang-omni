@@ -89,14 +89,15 @@ def test_cpu_selection_is_rerun_stable_and_conflicts_fail_before_h100() -> None:
     assert 'printf "%s" "${GITHUB_RUN_ID}" | sha256sum' in run
     assert "RUN_HIGGS_LABEL" in selection["env"]
     assert "RUN_MOSS_LABEL" in selection["env"]
-    assert "cannot both be set" in run
+    assert "RUN_QWEN3_TTS_LABEL" in selection["env"]
+    assert "mutually exclusive" in run
     assert "GITHUB_RUN_ATTEMPT" not in run.partition("selection_digest=")[0]
     assert "tts_stage1_topology" not in omni["on"]["workflow_dispatch"]["inputs"]
     assert "pick-tts-model" not in omni["jobs"]
     assert "selected_model" in omni["jobs"]["preflight"]["outputs"]
 
 
-def test_mps_config_resolution_covers_both_selected_models() -> None:
+def test_mps_config_resolution_covers_the_colocated_models() -> None:
     omni = _workflow(OMNI_WORKFLOW)
     run = _step(omni["jobs"]["preflight"], "Select TTS model once")["run"]
     assert "examples/mps_dp/configs/higgs_h100_dp3.yaml" in run
@@ -104,3 +105,5 @@ def test_mps_config_resolution_covers_both_selected_models() -> None:
     assert "examples/mps_dp/configs/moss_local_h100_dp2.yaml" in run
     assert "MossTTSLocalPipelineConfig" in run
     assert "resolved config mismatch" in run
+    # Single-instance models resolve no config; stage 5 keys off that.
+    assert 'resolved_config=""' in run

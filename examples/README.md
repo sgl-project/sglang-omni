@@ -44,7 +44,7 @@ python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
-  --gpu-code2wav 1 \
+  --gpu-code2wav 0 \
   --port 8000 \
   --model-name qwen3-omni
 ```

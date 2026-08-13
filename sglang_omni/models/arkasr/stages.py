@@ -12,6 +12,7 @@ def create_sglang_arkasr_executor(
     device: str = "cuda:0",
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
+    encoder_max_batch_size: int = 8,
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
@@ -27,6 +28,7 @@ def create_sglang_arkasr_executor(
 
     return ArkasrEngineBuilder(
         max_running_requests=max_running_requests,
+        encoder_max_batch_size=encoder_max_batch_size,
         max_new_tokens=max_new_tokens,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,

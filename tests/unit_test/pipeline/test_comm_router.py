@@ -121,3 +121,54 @@ def test_comm_router_uses_cuda_ipc_for_cuda_stream_chunks_only() -> None:
         router.outbound_stream("decode", torch.empty(1, device="cuda:0"))
         is TransportKind.CUDA_IPC
     )
+
+
+def _cross_gpu_router() -> CommRouter:
+    return CommRouter(
+        stage_name="minimax_ttm_ar",
+        gpu_id=0,
+        placement_gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"dit_dav"},
+        stage_gpu_ids={"dit_dav": (1,)},
+        comm_config={},
+    )
+
+
+def test_comm_router_caches_cuda_peer_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+
+    def _can_access(target: int, source: int) -> bool:
+        calls.append((target, source))
+        return True
+
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", _can_access)
+    router = _cross_gpu_router()
+
+    assert router.outbound("dit_dav") is TransportKind.CUDA_IPC
+    assert router.outbound("dit_dav") is TransportKind.CUDA_IPC
+    assert calls == [(1, 0)]
+
+
+def test_comm_router_falls_back_to_shm_when_cuda_peer_access_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+
+    def _cannot_access(_target: int, _source: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", _cannot_access)
+    router = _cross_gpu_router()
+
+    assert router.outbound("dit_dav") is TransportKind.SHM
+    assert router.outbound("dit_dav") is TransportKind.SHM
+    assert calls == 1

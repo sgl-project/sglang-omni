@@ -5,15 +5,23 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import AudioChunkingConfig, PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.whisper_asr"
+
+WHISPER_MAX_INPUT_SECONDS = 30
 
 
 class WhisperASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Whisper checkpoints."""
 
     architecture: ClassVar[str] = "WhisperForConditionalGeneration"
+    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
+        allow_audio_chunking=True,
+        max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
+        max_native_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
+        min_tail_s=1.0,
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

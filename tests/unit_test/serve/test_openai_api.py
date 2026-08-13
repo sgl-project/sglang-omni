@@ -1518,6 +1518,36 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
+def test_noise_floor_chunks_are_skipped_not_transcribed() -> None:
+    # A TTS-runaway-shaped upload: loud speech then a ~-70 dBFS noise floor.
+    # Floor-only chunks hallucinate when decoded, so they must never be sent.
+    import numpy as np
+
+    from sglang_omni.serve.transcription_chunking import encode_wav
+
+    rng = np.random.default_rng(0)
+    loud = rng.uniform(-0.5, 0.5, 8000).astype(np.float32)
+    floor = rng.uniform(-3e-4, 3e-4, 32000).astype(np.float32)
+    upload = encode_wav(np.concatenate([loud, floor]), 16000)
+
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("runaway.wav", upload, "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    # Only the chunk holding speech reached the engine; the floor-only
+    # chunks were answered locally with empty text.
+    assert len(transcription_client.requests) == 1
+    assert response.json()["text"] == "part0"
+    # usage still reports the whole upload, skipped chunks included.
+    assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
+
+
 def test_streamed_long_audio_is_rejected_explicitly() -> None:
     # Streaming cannot chunk; without this 400 a too-long upload would run
     # as a single request and truncate (observed live: 243s audio came back

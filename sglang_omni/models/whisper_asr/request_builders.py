@@ -18,11 +18,19 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import GenerationConfig
 
+from sglang_omni.models.whisper_asr.config import WHISPER_MAX_INPUT_SECONDS
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _WHISPER_SAMPLE_RATE = 16000
+
+_MAX_ENGINE_CLIP_S = float(WHISPER_MAX_INPUT_SECONDS)
+_MAX_ENGINE_CLIP_MESSAGE = (
+    f"Whisper ASR accepts audio up to {WHISPER_MAX_INPUT_SECONDS} seconds per "
+    "request (the model's mel window); send longer audio through "
+    "/v1/audio/transcriptions, which splits it into chunks"
+)
 # note (jiannan-17): Previous context = 1 start-of-prev token + up to 223 prompt tokens.
 MAX_PREV_CONTEXT_TOKENS = 224
 # note (jiannan-17): Standard Whisper decoder context is 448 positions.
@@ -132,7 +140,11 @@ def make_whisper_scheduler_adapters(
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
         prepared = prepare_audio(
-            payload, source_name="Whisper ASR", target_sample_rate=_WHISPER_SAMPLE_RATE
+            payload,
+            source_name="Whisper ASR",
+            target_sample_rate=_WHISPER_SAMPLE_RATE,
+            max_duration_s=_MAX_ENGINE_CLIP_S,
+            max_duration_message=_MAX_ENGINE_CLIP_MESSAGE,
         )
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s

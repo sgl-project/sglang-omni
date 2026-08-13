@@ -25,6 +25,7 @@ class ArkasrPipelineConfig(PipelineConfig):
             factory_args={
                 "device": "cuda:0",
                 "max_running_requests": 32,
+                "encoder_max_batch_size": 8,
                 "max_new_tokens": 256,
                 "request_build_max_workers": 2,
                 "request_build_max_pending": 16,

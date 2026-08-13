@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.nn as nn
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from transformers import WhisperConfig
 
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
@@ -21,6 +23,7 @@ from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter, ArkAudioTo
 from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
 from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_ids
+from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from tests.unit_test.fakes import FakeServerArgs
@@ -54,6 +57,7 @@ def test_arkasr_config_registered():
     assert config.entry_stage == "asr"
     assert config.stages[0].name == "asr"
     assert config.stages[0].terminal
+    assert config.stages[0].factory_args["encoder_max_batch_size"] == 8
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("ArkasrForConditionalGeneration")
         is ArkasrPipelineConfig
@@ -63,6 +67,7 @@ def test_arkasr_config_registered():
 def test_arkasr_stage_defaults():
     signature = inspect.signature(create_sglang_arkasr_executor)
     assert signature.parameters["max_running_requests"].default == 32
+    assert signature.parameters["encoder_max_batch_size"].default == 8
     assert signature.parameters["request_build_max_workers"].default == 2
     assert signature.parameters["request_build_max_pending"].default == 16
 
@@ -85,8 +90,12 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
 
+    encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
-        gpu_id=0, model_runner=SimpleNamespace(model=object())
+        gpu_id=0,
+        model_runner=SimpleNamespace(
+            model=SimpleNamespace(set_encoder_max_batch_size=encoder_batch_sizes.append)
+        ),
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
@@ -181,6 +190,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     # here instead of at serve time.
     assert scheduler.server_args.context_length == 2000 // 2 + 256 + 8
     assert infra_kwargs_seen["model_arch_override"] == "ArkasrForConditionalGeneration"
+    assert encoder_batch_sizes == [8]
 
 
 def test_arkasr_audio_token_count():
@@ -218,6 +228,122 @@ def test_ark_audio_tower_forward_shape():
     assert out.size(0) == 1
     assert out.size(-1) == cfg.hidden_size  # projected to LLM hidden
     assert out.size(1) >= 1
+
+
+def _tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
+    """Encoder-only ARK model used to test get_audio_feature without an LLM."""
+    model = ArkasrForConditionalGeneration.__new__(ArkasrForConditionalGeneration)
+    nn.Module.__init__(model)
+    model.audio_encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
+    model.encoder_max_batch_size = model.DEFAULT_ENCODER_MAX_BATCH_SIZE
+    return model
+
+
+def _ark_audio_item(
+    feature: torch.Tensor, valid_frames: int, *, hash_id: int
+) -> MultimodalDataItem:
+    return MultimodalDataItem(
+        modality=Modality.AUDIO,
+        hash=hash_id,
+        feature=feature,
+        model_specific_data={
+            "feature_attention_mask": torch.cat(
+                [
+                    torch.ones((1, valid_frames), dtype=torch.long),
+                    torch.zeros(
+                        (1, feature.shape[-1] - valid_frames), dtype=torch.long
+                    ),
+                ],
+                dim=1,
+            )
+        },
+    )
+
+
+def test_ark_get_audio_feature_batched_matches_serial_and_uses_one_encoder_call():
+    torch.manual_seed(2)
+    model = _tiny_ark_audio_mm_model()
+    lengths = [9, 18, 25]
+    items = [
+        _ark_audio_item(torch.randn(1, 8, length), length, hash_id=index + 1)
+        for index, length in enumerate(lengths)
+    ]
+    calls = []
+
+    def record_call(_module, args, kwargs):
+        calls.append((args[0].shape, kwargs.get("attention_mask")))
+
+    handle = model.audio_encoder.register_forward_pre_hook(
+        record_call, with_kwargs=True
+    )
+    try:
+        with torch.no_grad():
+            batched = model.get_audio_feature(items)
+    finally:
+        handle.remove()
+    with torch.no_grad():
+        serial = torch.cat([model.get_audio_feature([item]) for item in items], dim=0)
+
+    assert len(calls) == 1
+    assert calls[0][0] == (len(items), 8, max(lengths))
+    assert calls[0][1] is not None
+    assert calls[0][1].shape == (len(items), max(lengths))
+    assert batched.shape == (
+        sum(arkasr_num_audio_tokens(length) for length in lengths),
+        48,
+    )
+    assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
+
+
+def test_ark_get_audio_feature_splits_large_batches_in_order():
+    torch.manual_seed(4)
+    model = _tiny_ark_audio_mm_model()
+    model.set_encoder_max_batch_size(2)
+    lengths = [9, 18, 25, 12, 20]
+    items = [
+        _ark_audio_item(torch.randn(1, 8, length), length, hash_id=200 + index)
+        for index, length in enumerate(lengths)
+    ]
+    calls = []
+
+    def record_call(_module, args, kwargs):
+        calls.append((args[0].shape, kwargs.get("attention_mask")))
+
+    handle = model.audio_encoder.register_forward_pre_hook(
+        record_call, with_kwargs=True
+    )
+    try:
+        with torch.no_grad():
+            batched = model.get_audio_feature(items)
+            serial = torch.cat(
+                [model.get_audio_feature([item]) for item in items], dim=0
+            )
+    finally:
+        handle.remove()
+
+    assert [shape[0][0] for shape in calls[:3]] == [2, 2, 1]
+    assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
+
+
+def test_ark_get_audio_feature_masks_pre_padded_garbage():
+    torch.manual_seed(3)
+    model = _tiny_ark_audio_mm_model()
+    lengths = [9, 25]
+    t_max = max(lengths)
+    items = []
+    for index, length in enumerate(lengths):
+        feature = torch.zeros(1, 8, t_max)
+        feature[:, :, :length] = torch.randn(1, 8, length)
+        if length < t_max:
+            feature[:, :, length:] = 50.0
+        items.append(_ark_audio_item(feature, length, hash_id=100 + index))
+
+    with torch.no_grad():
+        batched = model.get_audio_feature(items)
+        serial = torch.cat([model.get_audio_feature([item]) for item in items], dim=0)
+
+    assert batched.shape == serial.shape
+    assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
 
 
 def test_ark_tower_rope_toggle():

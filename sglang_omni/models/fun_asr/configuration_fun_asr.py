@@ -18,6 +18,8 @@ from transformers import (
 )
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 
+from sglang_omni.utils.audio_features import cached_fbank
+
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 AUDIO_PLACEHOLDER_TOKEN = "<|object_ref_start|>"
@@ -90,8 +92,6 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         (hamming window, energy_floor=0, dither=0, snip_edges=True).
         Returns ``(fbank, T_mel)`` where ``fbank`` is ``[T_mel, n_mels]``.
         """
-        import torchaudio.compliance.kaldi as kaldi
-
         wav = np.asarray(waveform, dtype=np.float32)
         if wav.ndim != 1:
             wav = wav.reshape(-1)
@@ -101,16 +101,13 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         wav_t = torch.from_numpy(wav).unsqueeze(0) * (1 << 15)
         # Cap frame_length for very short audio (funasr WavFrontend does this).
         frame_length = min(self.frame_length, wav.shape[0] / self.sampling_rate * 1000)
-        mat = kaldi.fbank(
+        mat = cached_fbank(
             wav_t,
             num_mel_bins=self.n_mels,
             frame_length=frame_length,
             frame_shift=self.frame_shift,
-            dither=0.0,
-            energy_floor=0.0,
             window_type=self.window,
             sample_frequency=self.sampling_rate,
-            snip_edges=True,
         )  # [T_mel, n_mels]
         return mat, mat.shape[0]
 

@@ -18,6 +18,9 @@
 # - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
 #   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
 #   similarity_results.json and utmos_results.json for nonstream).
+# - Qwen3-TTS 1.7B is gated as a single instance, so it appears under
+#   test_tts_ci.py only and has no stage 5 (MPS) preset; its speed tables start
+#   empty with gate_thresholds=False and this calibration fills them.
 # - WER thresholds are corpus-level only; each TTS preset has its own symbol
 #   namespace in tts_ci_config.py (Higgs: HIGGS_VC_* / _HIGGS_VC_*; MOSS:
 #   MOSS_VC_* / _MOSS_VC_*). Per-sample WER caps and generation failure
@@ -33,12 +36,13 @@
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
 #   weights are already present in the configured HF cache.
 name: tts
-description: "TTS CI (Higgs/MOSS SeedTTS EN)"
+description: "TTS CI (Higgs/MOSS/Qwen3-TTS SeedTTS EN)"
 hf_model_id: "bosonai/higgs-tts-3-4b"
 hf_model_ids_by_test:
   test_tts_ci.py:
     - "bosonai/higgs-tts-3-4b"
     - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
+    - "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
     - "Qwen/Qwen3-ASR-1.7B"
   test_tts_serving_ci.py:
     - "bosonai/higgs-tts-3-4b"
@@ -117,6 +121,17 @@ metric_sources:
         hf_model_ids:
           - "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
           - "Qwen/Qwen3-ASR-1.7B"
+      # Gated as a single instance: the tuned single instance beats the
+      # same-card MPS-DP2 pool on this variant, so it has no stage 5 preset.
+      qwen3-tts:
+        extra_env:
+          TTS_CI_MODEL: "qwen3-tts"
+        gpus: 2
+        # discover: only QWEN3_TTS_VC_* constants
+        constant_filter: "^QWEN3_TTS_VC_"
+        hf_model_ids:
+          - "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+          - "Qwen/Qwen3-ASR-1.7B"
     # Per-variant routing: each variant claims constants matching its
     # `constant_filter` regex (matched against the bare constant name with
     # any leading underscore stripped). Stage keys become
@@ -126,7 +141,7 @@ metric_sources:
       nonstream:
         # Higgs HIGGS_VC_* (not HIGGS_VC_STREAM_*); MOSS uses MOSS_VC_*.
         # via calibration_presets.<preset>.constant_filter in discover.
-        constant_filter: "^HIGGS_VC_(?!STREAM_).*|^MOSS_VC_(?!STREAM_).*"
+        constant_filter: "^HIGGS_VC_(?!STREAM_).*|^MOSS_VC_(?!STREAM_).*|^QWEN3_TTS_VC_(?!STREAM_).*"
         json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -150,7 +165,7 @@ metric_sources:
           similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
           utmos_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/utmos_results.json::summary.utmos_mean"
       stream:
-        constant_filter: "^HIGGS_VC_STREAM_.*$|^MOSS_VC_STREAM_.*$"
+        constant_filter: "^HIGGS_VC_STREAM_.*$|^MOSS_VC_STREAM_.*$|^QWEN3_TTS_VC_STREAM_.*$"
         json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
