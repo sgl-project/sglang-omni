@@ -35,6 +35,11 @@ def _server_args(
         chunked_prefill_size=chunked_prefill_size,
         max_prefill_tokens=max_prefill_tokens,
         tp_size=1,
+        attn_cp_size=1,
+        dcp_size=1,
+        lora_paths=None,
+        enable_lora=None,
+        moe_a2a_backend="none",
         cuda_graph_config=SimpleNamespace(
             decode=SimpleNamespace(max_bs=4, bs=(1, 2, 4)),
             prefill=SimpleNamespace(
@@ -164,6 +169,101 @@ def test_breakable_rejects_buckets_above_max_prefill_tokens() -> None:
                 chunked_prefill_size=-1,
                 max_prefill_tokens=16384,
             )
+        )
+
+
+@pytest.mark.parametrize(
+    ("incompatibility", "match"),
+    [
+        ({"attn_cp_size": 2}, "attn_cp_size"),
+        ({"dcp_size": 2}, "dcp_size"),
+        ({"lora_paths": ["adapter"]}, "LoRA"),
+        ({"enable_lora": True}, "LoRA"),
+        ({"moe_a2a_backend": "deepep"}, "MoE A2A"),
+    ],
+)
+def test_breakable_rejects_sglang_incompatible_features(
+    incompatibility: dict[str, Any], match: str
+) -> None:
+    server_args = _server_args(
+        prefill_backend="breakable",
+        prefill_bs=(128, 256, 512),
+        prefill_max_bs=512,
+        locked=_PREFILL_BS_LOCKED,
+    )
+    server_args.override("test", **incompatibility)
+
+    with pytest.raises(ValueError, match=match):
+        _validate(server_args)
+
+
+def test_nested_prefill_bs_composes_as_operator_buckets() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_config": {"prefill": {"backend": "breakable", "bs": [128, 256]}}
+        },
+    )
+
+    assert overrides["cuda_graph_backend_prefill"] == "breakable"
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 256
+
+
+def test_nested_prefill_max_bs_composes_as_a_flat_cap() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": 512}}},
+    )
+
+    assert overrides["cuda_graph_max_bs_prefill"] == 512
+    assert "cuda_graph_bs_prefill" not in overrides
+
+
+def test_nested_prefill_max_bs_trims_a_stage_default_ladder() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(512),
+        server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": 128}}},
+    )
+
+    assert overrides["cuda_graph_max_bs_prefill"] == 128
+    assert max(overrides["cuda_graph_bs_prefill"]) == 128
+
+
+def test_operator_prefill_buckets_are_never_trimmed_by_a_nested_cap() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_config": {"prefill": {"max_bs": 128}},
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 128
+
+
+def test_nested_disabled_backend_overrides_a_stage_default() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_backend_prefill="breakable",
+        server_args_overrides={
+            "cuda_graph_config": {"prefill": {"backend": "disabled"}}
+        },
+    )
+
+    assert overrides["cuda_graph_backend_prefill"] == "disabled"
+
+
+def test_conflicting_flat_and_nested_prefill_overrides_are_rejected() -> None:
+    with pytest.raises(ValueError, match="Conflicting"):
+        build_generation_batch_overrides(
+            max_running_requests=4,
+            server_args_overrides={
+                "cuda_graph_bs_prefill": [128],
+                "cuda_graph_config": {"prefill": {"bs": [128, 256]}},
+            },
         )
 
 

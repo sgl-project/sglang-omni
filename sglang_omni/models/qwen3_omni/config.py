@@ -211,7 +211,7 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
         factory_args={
             "device": current_platform.device_type,
-            "enable_cuda_graph": True,
+            "enable_cuda_graph": current_platform.enable_code2wav_graph(),
         },
         gpu=gpu,
         runtime=StageRuntimeConfig(
@@ -266,7 +266,7 @@ def _speech_stages(
             process=process_by_stage["talker_ar"],
             enable_partial_start=enable_partial_start,
         ),
-        _code2wav_stage(gpu=talker_gpu, process=process_by_stage["code2wav"]),
+        _code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
     ]
 
 

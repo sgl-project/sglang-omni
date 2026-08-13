@@ -4,6 +4,8 @@
 # Always exits 0 only when validate_omni_env_reusable passes.
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <venv-name>" >&2
   exit 1

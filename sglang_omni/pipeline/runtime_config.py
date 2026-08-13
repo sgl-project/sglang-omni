@@ -170,6 +170,9 @@ def allocate_endpoints(
     }
     for stage in stages:
         endpoints[f"stage_{stage.name}"] = f"ipc://{base_dir}/stage_{stage.name}.sock"
+        for tp_rank in range(stage.tp_size):
+            endpoint_name = f"comm_{stage.name}_rank{tp_rank}"
+            endpoints[endpoint_name] = f"ipc://{base_dir}/{endpoint_name}.sock"
     return endpoints
 
 
@@ -223,6 +226,9 @@ def _validate_ipc_endpoint_budget(
 def _longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
     suffixes = [len("/completion.sock"), len("/abort.sock")]
     suffixes.extend(len(f"/stage_{stage.name}.sock") for stage in stages)
+    suffixes.extend(
+        len(f"/comm_{stage.name}_rank{stage.tp_size - 1}.sock") for stage in stages
+    )
     return max(suffixes)
 
 

@@ -78,7 +78,7 @@ auto_env:
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 gpus_per_test:
   test_tts_ci.py: 2
-  test_tts_serving_ci.py: 1
+  test_tts_serving_ci.py: 2
   # The two MPS replicas share one physical H100, but the WER evaluation that
   # follows launches the Qwen3-ASR router at num_workers=2, so the stage needs
   # two cards over its lifetime.
@@ -169,110 +169,66 @@ metric_sources:
     observation_validity: "tts-serving-ci0/benchmark_validation.json::valid"
     allowed_pytest_failure: "tts-serving-ci0/benchmark_validation.json::threshold_assertion_failed"
     variants:
-      closed16:
-        constant_filter: "^SERVING_CLOSED16_"
+      mixed_speech_normal:
+        constant_filter: "^SERVING_MIXED_SPEECH_NORMAL_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage.closed-16.successful_request_count"
-          ok: "metrics.by_stage.closed-16.metric_sample_counts.latency_s"
+          total: "metrics.by_stage_and_workload.mixed-production.speech_normal.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.speech_normal.metric_sample_counts.rtf"
         paths:
-          throughput_qps: "metrics.by_stage.closed-16.achieved_rps"
-          latency_p95_s: "metrics.by_stage.closed-16.latency_s.p95"
-      ramp:
-        constant_filter: "^SERVING_RAMP_"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.speech_normal.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.mixed-production.speech_normal.rtf.p95"
+      mixed_rest_stream:
+        constant_filter: "^SERVING_MIXED_REST_STREAM_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage.ramp-128.successful_request_count"
-          ok: "metrics.by_stage.ramp-128.metric_sample_counts.latency_s"
+          total: "metrics.by_stage_and_workload.mixed-production.rest_stream.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.rest_stream.metric_sample_counts.inter_chunk_s"
         paths:
-          throughput_qps: "metrics.by_stage.ramp-128.achieved_rps"
-          latency_p95_s: "metrics.by_stage.ramp-128.latency_s.p95"
-      soak:
-        constant_filter: "^SERVING_SOAK_"
+          ttfa_p95_s: "metrics.by_stage_and_workload.mixed-production.rest_stream.ttfa_s.p95"
+          inter_chunk_p95_s: "metrics.by_stage_and_workload.mixed-production.rest_stream.inter_chunk_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.rest_stream.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.mixed-production.rest_stream.rtf.p95"
+      mixed_batch32:
+        constant_filter: "^SERVING_MIXED_BATCH32_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage.soak-300s.successful_request_count"
-          ok: "metrics.by_stage.soak-300s.metric_sample_counts.latency_s"
+          total: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.metric_sample_counts.latency_s"
         paths:
-          latency_p95_s: "metrics.by_stage.soak-300s.latency_s.p95"
-      speech_normal:
-        constant_filter: "^SERVING_SPEECH_NORMAL_"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.batch_32_all_valid.latency_s.p95"
+      mixed_ws_normal:
+        constant_filter: "^SERVING_MIXED_WS_NORMAL_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage_and_workload.soak-300s.speech_normal.successful_request_count"
-          ok: "metrics.by_stage_and_workload.soak-300s.speech_normal.metric_sample_counts.rtf"
+          total: "metrics.by_stage_and_workload.mixed-production.ws_normal.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.ws_normal.metric_sample_counts.ttfa_s"
         paths:
-          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.speech_normal.latency_s.p95"
-          rtf_p95: "metrics.by_stage_and_workload.soak-300s.speech_normal.rtf.p95"
-      rest_stream:
-        constant_filter: "^SERVING_REST_STREAM_"
+          ttfa_p95_s: "metrics.by_stage_and_workload.mixed-production.ws_normal.ttfa_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.ws_normal.latency_s.p95"
+      mixed_ws_stream:
+        constant_filter: "^SERVING_MIXED_WS_STREAM_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage_and_workload.soak-300s.rest_stream.successful_request_count"
-          ok: "metrics.by_stage_and_workload.soak-300s.rest_stream.metric_sample_counts.inter_chunk_s"
+          total: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.metric_sample_counts.inter_chunk_s"
         paths:
-          ttfa_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.ttfa_s.p95"
-          inter_chunk_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.inter_chunk_s.p95"
-          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.rest_stream.latency_s.p95"
-          rtf_p95: "metrics.by_stage_and_workload.soak-300s.rest_stream.rtf.p95"
-      batch32:
-        constant_filter: "^SERVING_BATCH32_"
+          ttfa_p95_s: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.ttfa_s.p95"
+          inter_chunk_p95_s: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.inter_chunk_s.p95"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.latency_s.p95"
+          rtf_p95: "metrics.by_stage_and_workload.mixed-production.ws_stream_audio.rtf.p95"
+      mixed_long:
+        constant_filter: "^SERVING_MIXED_LONG_"
         json_file: "tts-serving-ci0/benchmark/results.json"
         sample_counts:
-          total: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.successful_request_count"
-          ok: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.metric_sample_counts.latency_s"
+          total: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.successful_request_count"
+          ok: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
         paths:
-          latency_p95_s: "metrics.by_stage_and_workload.soak-300s.batch_32_all_valid.latency_s.p95"
-      ws_normal:
-        constant_filter: "^SERVING_WS_NORMAL_"
-        json_file: "tts-serving-ci0/benchmark/results.json"
-        sample_counts:
-          total: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.successful_request_count"
-          ok: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.metric_sample_counts.ttfa_s"
-        paths:
-          ttfa_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.ttfa_s.p95"
-          latency_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_normal.latency_s.p95"
-      ws_stream:
-        constant_filter: "^SERVING_WS_STREAM_"
-        json_file: "tts-serving-ci0/benchmark/results.json"
-        sample_counts:
-          total: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.successful_request_count"
-          ok: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.metric_sample_counts.inter_chunk_s"
-        paths:
-          ttfa_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.ttfa_s.p95"
-          inter_chunk_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.inter_chunk_s.p95"
-          latency_p95_s: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.latency_s.p95"
-          rtf_p95: "metrics.by_stage_and_workload.ws-burst-512.ws_stream_audio.rtf.p95"
-      mixed_burst:
-        constant_filter: "^SERVING_MIXED_BURST_"
-        json_file: "tts-serving-ci0/benchmark/results.json"
-        sample_counts:
-          total: "metrics.by_stage.mixed-burst-512.successful_request_count"
-          ok: "metrics.by_stage.mixed-burst-512.metric_sample_counts.latency_s"
-        paths:
-          throughput_qps: "metrics.by_stage.mixed-burst-512.achieved_rps"
-          latency_p95_s: "metrics.by_stage.mixed-burst-512.latency_s.p95"
-      long:
-        constant_filter: "^SERVING_LONG_(?!BASELINE_)"
-        json_file: "tts-serving-ci0/benchmark/results.json"
-        sample_counts:
-          total: "metrics.by_workload.long_prefill_decode.successful_request_count"
-          ok: "metrics.by_workload.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
-        paths:
-          prompt_tokens_min: "metrics.by_workload.long_prefill_decode.prompt_tokens.min"
-          completion_tokens_min: "metrics.by_workload.long_prefill_decode.completion_tokens.min"
-          latency_p95_s: "metrics.by_workload.long_prefill_decode.latency_s.p95"
-          audio_duration_min_s: "metrics.by_workload.long_prefill_decode.audio_duration_s.min"
-          output_tok_per_req_s: "metrics.by_workload.long_prefill_decode.output_tok_per_req_s"
-      long_baseline:
-        constant_filter: "^SERVING_LONG_BASELINE_"
-        json_file: "tts-serving-ci0/benchmark/results.json"
-        sample_counts:
-          total: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.successful_request_count"
-          ok: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.metric_sample_counts.generation_metrics_complete"
-        paths:
-          latency_max_s: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.latency_s.max"
-          output_tok_per_req_s: "metrics.by_stage_and_workload.closed-1.long_prefill_decode.output_tok_per_req_s"
+          prompt_tokens_min: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.prompt_tokens.min"
+          completion_tokens_min: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.completion_tokens.min"
+          latency_p95_s: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.latency_s.p95"
+          audio_duration_min_s: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.audio_duration_s.min"
+          output_tok_per_req_s: "metrics.by_stage_and_workload.mixed-production.long_prefill_decode.output_tok_per_req_s"
   # Stage 5 MPS placement validation. Calibration runs the file once per preset
   # exactly like test_tts_ci.py; CI itself only ever runs the preselected one.
   # References live in tests/test_ci/tts_mps_ci_config.py, not in the test

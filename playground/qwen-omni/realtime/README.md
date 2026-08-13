@@ -58,6 +58,14 @@ build step.
    and start speaking. The output mode is locked for the duration of the
    connection. **Text + audio** requires one of the speech-server configurations.
 
+## Test
+
+Run the browser-side playback state regressions from the repository root:
+
+```bash
+node --test playground/qwen-omni/realtime/playback.test.js
+```
+
 ## What you'll see
 
 | UI panel | Meaning |
@@ -78,6 +86,45 @@ build step.
 - Text-only mode requests only the `text` modality.
 - Text + audio mode requests both modalities. Audio deltas are mono 24 kHz
   PCM16 little-endian and are queued with Web Audio for gapless playback.
+- Server-owned barge-in is the default behavior for text-plus-audio sessions.
+  The server cancels the active response when new speech starts, while the
+  browser stops queued PCM playback. The interrupted user transcription remains
+  in conversation history before the next queued response starts. Cancelled
+  assistant output is not retained.
+- Text-only mode keeps its existing behavior and finishes the active response.
+- Custom realtime applications get the same behavior by requesting
+  `["text", "audio"]`. On `input_audio_buffer.speech_started`, they must stop
+  buffered playback and reject later `response.audio.delta` events for the
+  interrupted response until `response.done`. If speech starts before
+  `response.created`, retain a pending-interruption flag and reject that response
+  once its ID arrives.
+- If playback is interrupted after assistant audio has been scheduled, send
+  `conversation.item.truncate` with the assistant `item_id` from
+  `response.audio.delta`, `content_index: 0`, and the played duration in
+  `audio_end_ms`. The server replies with `conversation.item.truncated` and
+  removes that assistant item from conversation history. It removes the whole
+  assistant transcript because audio and text are not aligned.
+- Automatic interruption ends with `response.done.status="cancelled"` and
+  reason `turn_detected`; explicit `response.cancel` uses `client_cancelled`.
+- To opt out for a specific audio session, set:
+
+  ```json
+  {
+    "type": "session.update",
+    "session": {
+      "modalities": ["text", "audio"],
+      "turn_detection": {
+        "type": "server_vad",
+        "interrupt_response": false
+      }
+    }
+  }
+  ```
+- Only `turn_detection.interrupt_response` is applied dynamically. The endpoint
+  constructs server VAD once with fixed defaults; `threshold`,
+  `prefix_padding_ms`, and `silence_duration_ms` do not reconfigure it.
+- The standalone `/v1/audio/speech` TTS API is unchanged because it does not
+  have a live microphone/VAD session to trigger barge-in.
 - The page does no error handling beyond updating the status line —
   matching the project's house style. If the WS drops mid-session,
   reconnect.

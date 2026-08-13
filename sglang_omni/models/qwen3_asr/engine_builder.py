@@ -9,13 +9,21 @@ from typing import Any
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
-from sglang_omni.models.qwen3_asr import request_builders
+from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
+from sglang_omni.models.qwen3_asr.audio_lengths import (
+    qwen3_asr_max_audio_tokens,
+    qwen3_asr_max_output_tokens,
+)
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+    get_decode_cuda_graph_bs,
+)
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
@@ -25,6 +33,7 @@ logger = logging.getLogger(__name__)
 class Qwen3ASREngineBuilder(AsrEngineBuilder):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -36,6 +45,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
+        torch_compile_max_bs: int,
         mm_attention_backend: str | None,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
@@ -65,6 +75,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
+        self.torch_compile_max_bs = torch_compile_max_bs
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
@@ -96,8 +107,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
-        encoder_token_count = int(self.feature_extractor.nb_max_frames // 2)
-        self.context_length = encoder_token_count + self.max_new_tokens + 8
+        # Note(Jeffro): Size context_length for the model's native max input + output budget.
+        # model natively accepts: 1,200s (MAX_ASR_INPUT_SECONDS, see
+        # https://github.com/QwenLM/Qwen3-ASR/blob/956766769/qwen_asr/inference/utils.py#L34)
+        # = 15,600 audio tokens, plus 64 slack for the ~15-token chat prompt,
+        # +  the max output budget for that input (12,000).
+        max_prompt_tokens = qwen3_asr_max_audio_tokens() + 64
+        max_output_budget = max(self.max_new_tokens, qwen3_asr_max_output_tokens())
+        self.context_length = max_prompt_tokens + max_output_budget + 8
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         defaults: dict[str, Any] = {
@@ -105,11 +122,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": self.enable_torch_compile,
+            "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
@@ -129,6 +148,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
         super().validate_before_infrastructure(server_args)
+        # Replace the per-request decode mrope-position loop with a vectorized
+        # equivalent before any forward runs.
+        mrope_fast_path.apply_asr_mrope_fast_path()
         logger.info(
             "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
             "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
@@ -151,6 +173,25 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
+            return
+        if "cuda_graph_bs_prefill" in overrides:
+            return
+        # note(ratish): derived from the merged caps: a ladder past any of
+        # them fails startup or captures buckets that can never replay.
+        caps = [
+            overrides["max_prefill_tokens"],
+            overrides.get("cuda_graph_max_bs_prefill"),
+            overrides.get("max_total_tokens"),
+            self.context_length,
+        ]
+        if overrides["chunked_prefill_size"] > 0:
+            caps.append(overrides["chunked_prefill_size"])
+        ladder = build_default_prefill_cuda_graph_bs(
+            min(int(cap) for cap in caps if cap is not None)
+        )
+        overrides["cuda_graph_bs_prefill"] = ladder
+        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
 
     def customize_server_args(self, server_args: Any) -> None:
         self.context_length = int(server_args.context_length)

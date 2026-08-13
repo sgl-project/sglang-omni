@@ -13,6 +13,12 @@ from .admin import (
     AdminResult,
     is_update_action,
 )
+from .kv_transfer import (
+    KVBufferSpec,
+    KVPoolLayout,
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
+)
 from .messages import (
     AbortMessage,
     AdminMessage,
@@ -53,6 +59,10 @@ __all__ = [
     "is_update_action",
     "DataAckMessage",
     "DataReadyMessage",
+    "KVBufferSpec",
+    "KVPoolLayout",
+    "KVTransferPrepareMessage",
+    "KVTransferReadyMessage",
     "AbortMessage",
     "CompleteMessage",
     "StreamMessage",

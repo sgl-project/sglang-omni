@@ -97,11 +97,9 @@ from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
-    build_stage_breakdown,
     collect_environment_fingerprint,
     collect_server_identity,
-    start_request_profile,
-    stop_request_profile,
+    run_profiled_pass,
 )
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
@@ -679,44 +677,13 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
     run_id = f"asrbench-c{concurrency}-{int(time.time())}"
     event_dir = os.path.join(args.profile_event_dir, run_id)
     profile_urls = [u.strip() for u in args.profile_urls.split(",") if u.strip()]
-    started: list[str] = []
-    try:
-        for url in profile_urls:
-            start_request_profile(url, run_id, event_dir)
-            started.append(url)
-    except requests.RequestException as exc:
-        for url in started:
-            try:
-                stop_request_profile(url, run_id)
-            except requests.RequestException as stop_exc:
-                print(
-                    f"[conc={concurrency}] failed to stop profiling on "
-                    f"{url}: {stop_exc}"
-                )
-        print(f"[conc={concurrency}] profiling unavailable, skipping: {exc}")
-        return None
-    try:
-        result = await _run_repeat(args, samples, concurrency, repeat=0)
-    finally:
-        for url in started:
-            try:
-                stop_request_profile(url, run_id)
-            except requests.RequestException as stop_exc:
-                # The pass metrics remain valid; profiling just keeps
-                # recording on that worker until the next explicit stop.
-                print(
-                    f"[conc={concurrency}] failed to stop profiling on "
-                    f"{url}: {stop_exc}"
-                )
-    report = build_stage_breakdown(event_dir)
-    return {
-        "run_id": run_id,
-        "event_dir": event_dir,
-        "pass_metrics": result,
-        "request_count": report.get("request_count"),
-        "stage_breakdown": report.get("stage_breakdown"),
-        "hop_breakdown": report.get("hop_breakdown"),
-    }
+    return await run_profiled_pass(
+        run_id=run_id,
+        event_dir=event_dir,
+        profile_urls=profile_urls,
+        run_pass=lambda: _run_repeat(args, samples, concurrency, repeat=0),
+        log_prefix=f"[conc={concurrency}]",
+    )
 
 
 async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:

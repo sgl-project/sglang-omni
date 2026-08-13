@@ -21,6 +21,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
     GraphKey,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -265,8 +266,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         with torch.no_grad():
-            if self._device.type == "cuda":
-                torch.cuda.set_device(self._device)
+            torch.get_device_module(self._device).set_device(self._device)
             if self._cuda_graph_runner is None:
                 result = Code2WavRunResult(
                     output=self._model(codes),
@@ -531,10 +531,13 @@ def create_code2wav_scheduler(
             "runtime.resources.total_gpu_memory_fraction"
         )
     if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
-    concrete_device = torch.device(device)
-    if concrete_device.type == "cuda" and concrete_device.index is None:
-        concrete_device = torch.device("cuda", torch.cuda.current_device())
+        concrete_device = current_platform.get_device(gpu_id)
+    else:
+        concrete_device = torch.device(device)
+    if concrete_device.type != "cpu" and concrete_device.index is None:
+        concrete_device = current_platform.get_device(
+            torch.get_device_module().current_device()
+        )
     device = str(concrete_device)
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)

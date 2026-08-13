@@ -32,6 +32,9 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
+        prefill_coalesce_when_idle: bool,
+        prefill_coalesce_requires_pending_builds: bool,
+        prefill_coalesce_after_builds_during_decode: bool,
         encoder_chunk_buckets: list[int],
         encoder_torch_compile: bool,
         encoder_max_batch_size: int,
@@ -50,6 +53,13 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = (
+            prefill_coalesce_after_builds_during_decode
+        )
         self.encoder_chunk_buckets = encoder_chunk_buckets
         self.encoder_torch_compile = encoder_torch_compile
         self.encoder_max_batch_size = encoder_max_batch_size
@@ -154,6 +164,13 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
+            "prefill_coalesce_after_builds_during_decode": (
+                self.prefill_coalesce_after_builds_during_decode
+            ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

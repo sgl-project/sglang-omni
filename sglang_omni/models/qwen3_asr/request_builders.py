@@ -16,6 +16,7 @@ into those positions. So request_builder must:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -35,7 +36,11 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.utils.audio import AudioDecodeError
 
-from .audio_lengths import qwen3_asr_num_audio_tokens
+from . import mrope_fast_path
+from .audio_lengths import (
+    QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND,
+    qwen3_asr_num_audio_tokens,
+)
 from .languages import resolve_language
 
 logger = logging.getLogger(__name__)
@@ -176,7 +181,15 @@ def make_qwen3_asr_scheduler_adapters(
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
-        request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
+
+        explicit_max_new_tokens = params.get("max_new_tokens")
+        if explicit_max_new_tokens is not None:
+            request_max_new_tokens = int(explicit_max_new_tokens)
+        else:
+            request_max_new_tokens = max(
+                int(max_new_tokens),
+                math.ceil(audio_duration_s * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND),
+            )
 
         estimated_audio_tokens = None
         if context_length is not None or audio_encoder_service is not None:
@@ -200,6 +213,7 @@ def make_qwen3_asr_scheduler_adapters(
                 fingerprint, estimated_audio_tokens
             )
 
+        estimated_input_ids = None
         if context_length is not None:
             assert estimated_audio_tokens is not None
             # WhisperFeatureExtractor emits floor(samples / hop_length) frames.
@@ -209,6 +223,12 @@ def make_qwen3_asr_scheduler_adapters(
             estimated_input_ids = _build_prompt_ids(
                 estimated_audio_tokens, forced_language
             )
+
+            if explicit_max_new_tokens is None:
+                remaining = context_length - 1 - len(estimated_input_ids)
+                if remaining >= int(max_new_tokens):
+                    request_max_new_tokens = min(request_max_new_tokens, remaining)
+
             _validate_context_budget(estimated_input_ids, request_max_new_tokens)
 
         if cached_embedding is None:
@@ -251,7 +271,12 @@ def make_qwen3_asr_scheduler_adapters(
             assert estimated_audio_tokens is not None
             num_audio_tokens = estimated_audio_tokens
 
-        input_ids = _build_prompt_ids(num_audio_tokens, forced_language)
+        input_ids = (
+            estimated_input_ids
+            if estimated_input_ids is not None
+            and num_audio_tokens == estimated_audio_tokens
+            else _build_prompt_ids(num_audio_tokens, forced_language)
+        )
         _validate_context_budget(input_ids, request_max_new_tokens)
 
         audio_item = MultimodalDataItem(
@@ -292,6 +317,9 @@ def make_qwen3_asr_scheduler_adapters(
         positions = torch.arange(seq_len, dtype=torch.long)
         mm_inputs.mrope_positions = positions.unsqueeze(0).expand(3, -1).clone()
         mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
+        # Mark the input as degenerate-mrope so the vectorized decode fast path
+        # (mrope_fast_path.py) can skip the per-request position loop for it.
+        setattr(mm_inputs, mrope_fast_path.DEGENERATE_MROPE_FLAG, True)
 
         temperature = float(params.get("temperature") or 0.0)
         logger.debug(
@@ -343,10 +371,12 @@ def make_qwen3_asr_scheduler_adapters(
         output_ids = list(data.output_ids or [])
         # Keep the marker handling at token level. Byte-level BPE decode->encode
         # is not an identity transform for all whitespace/Unicode transcripts.
-        raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
-        logger.debug(
-            f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} raw={raw!r}"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
+            logger.debug(
+                f"[qwen3-asr] n_out={len(output_ids)} "
+                f"ids={output_ids[:40]} raw={raw!r}"
+            )
         asr_text_idx = _find_subsequence(output_ids, asr_text_token_ids)
         detected_language = None
         if data.language is None and asr_text_idx is not None:

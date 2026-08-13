@@ -47,21 +47,16 @@
   let workletNode = null;
   let analyserNode = null;
   let drawRaf = 0;
-  let playbackCtx = null;
-  let nextPlaybackTime = 0;
   let activeModalities = null;
   let sessionReady = false;
   let turnCounter = 0;
   // Each turn card is keyed by the audio item_id minted at speech_started /
   // committed.
   const turnCards = new Map();           // item_id → DOM node
-  // response.text.delta events have no item_id link to the audio. Server
-  // serializes turns, so we maintain a FIFO of audio item_ids queued for a
-  // response and bind one to each response.created.
-  const pendingAudioForResponse = [];    // queue of item_ids awaiting response
-  let respondingTurnItemId = null;       // item_id of the response currently streaming
   const TARGET_SR = 16000;
   const OUTPUT_SR = 24000;
+  const playback = new RealtimePlaybackController({ sampleRate: OUTPUT_SR });
+  const turns = new RealtimeTurnTracker();
 
   // ─────────────────────  Status helpers  ─────────────────────
 
@@ -129,7 +124,7 @@
     sessionReady = false;
     stopPlayback();
     if (connectionWantsAudio()) {
-      ensurePlaybackContext();
+      playback.ensureContext();
     }
     outputModeEl.disabled = true;
     ws = new WebSocket(url);
@@ -182,10 +177,10 @@
   });
 
   function clearTurns() {
+    playback.flush();
+    turns.clear();
     turnCards.clear();
     turnCounter = 0;
-    pendingAudioForResponse.length = 0;
-    respondingTurnItemId = null;
     transcriptsEl.innerHTML =
       '<p class="empty-state">The wire is quiet. Open it, then speak.</p>';
   }
@@ -301,56 +296,32 @@
     return btoa(binary);
   }
 
-  function base64ToBytes(encoded) {
-    const binary = atob(encoded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+  function responseIdOf(evt) {
+    return (
+      evt.response_id ||
+      (evt.response && evt.response.id) ||
+      null
+    );
   }
 
-  function ensurePlaybackContext() {
-    if (!playbackCtx || playbackCtx.state === "closed") {
-      playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
-      nextPlaybackTime = 0;
-    }
-    if (playbackCtx.state === "suspended") {
-      playbackCtx.resume();
-    }
-    return playbackCtx;
-  }
-
-  function queueAudioDelta(encoded) {
-    const bytes = base64ToBytes(encoded);
-    if (bytes.byteLength % 2 !== 0) {
-      throw new Error("Received an odd-length PCM16 audio delta");
-    }
-
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const samples = new Float32Array(bytes.byteLength / 2);
-    for (let i = 0; i < samples.length; i++) {
-      samples[i] = view.getInt16(i * 2, true) / 0x8000;
-    }
-
-    const ctx = ensurePlaybackContext();
-    const buffer = ctx.createBuffer(1, samples.length, OUTPUT_SR);
-    buffer.copyToChannel(samples, 0);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-
-    const startAt = Math.max(ctx.currentTime + 0.02, nextPlaybackTime);
-    source.start(startAt);
-    nextPlaybackTime = startAt + buffer.duration;
+  function markTurnInterrupted(itemId) {
+    if (!itemId) return;
+    const node = turnCards.get(itemId);
+    const responseStatus = node && node.dataset.state;
+    const terminal = responseStatus && responseStatus !== "in-progress";
+    const terminalLabel =
+      responseStatus === "completed" ? "complete" : responseStatus;
+    setTurnMeta(
+      itemId,
+      terminal
+        ? `${terminalLabel} · interrupted`
+        : "response interrupted",
+    );
   }
 
   function stopPlayback() {
-    if (playbackCtx) {
-      playbackCtx.close();
-      playbackCtx = null;
-    }
-    nextPlaybackTime = 0;
+    playback.close();
+    turns.clear();
   }
 
   // ─────────────────────  Oscilloscope  ─────────────────────
@@ -424,74 +395,129 @@
         return;
 
       case "input_audio_buffer.speech_started":
+        if (connectionWantsAudio()) {
+          const interruptedResponses = playback.interrupt();
+          if (interruptedResponses.length) {
+            for (const record of interruptedResponses) {
+              const turnItemId = turns.interruptResponse(record.responseId);
+              markTurnInterrupted(turnItemId);
+              if (record.itemId) {
+                wsSend({
+                  type: "conversation.item.truncate",
+                  item_id: record.itemId,
+                  content_index: 0,
+                  audio_end_ms: record.audioEndMs,
+                });
+              }
+            }
+          } else if (turns.hasPendingResponse()) {
+            turns.markPendingInterrupted();
+          }
+        }
         ensureTurn(evt.item_id);
         setTurnMeta(evt.item_id, `started ${ms(evt.audio_start_ms)}`);
         return;
 
       case "input_audio_buffer.speech_stopped":
+        turns.clearPendingInterruption();
         setTurnMeta(evt.item_id, `stopped ${ms(evt.audio_end_ms)}`);
         return;
 
       case "input_audio_buffer.committed":
         ensureTurn(evt.item_id);
         setTurnMeta(evt.item_id, "committed · awaiting reply");
-        // Queue this turn for the next response.created — server processes
-        // commits serially so FIFO is correct.
-        pendingAudioForResponse.push(evt.item_id);
+        turns.commit(evt.item_id);
         return;
 
       // ── Pass 1: assistant reply (streams first) ──
-      case "response.created":
-        respondingTurnItemId = pendingAudioForResponse.shift() || null;
-        if (respondingTurnItemId) {
-          setTurnMeta(respondingTurnItemId, "replying");
+      case "response.created": {
+        const responseId = responseIdOf(evt);
+        const binding = turns.beginResponse(responseId);
+        if (!responseId || !binding.itemId) {
+          playback.rejectResponse(responseId);
+        } else if (binding.interrupted) {
+          playback.rejectResponse(responseId);
+          markTurnInterrupted(binding.itemId);
+        } else {
+          playback.beginResponse(responseId);
+          setTurnMeta(binding.itemId, "replying");
         }
         return;
+      }
 
-      case "response.text.delta":
-        if (respondingTurnItemId) {
-          appendToBody(respondingTurnItemId, "assistant-body", evt.delta || "");
+      case "response.text.delta": {
+        const responseId = responseIdOf(evt);
+        if (turns.ownsResponse(responseId)) {
+          appendToBody(turns.respondingItemId, "assistant-body", evt.delta || "");
         }
         return;
+      }
 
-      case "response.text.done":
-        if (respondingTurnItemId) {
+      case "response.text.done": {
+        const responseId = responseIdOf(evt);
+        if (turns.ownsResponse(responseId)) {
           setTurnMeta(
-            respondingTurnItemId,
+            turns.respondingItemId,
             connectionWantsAudio()
               ? "reply streaming"
               : "reply done · transcribing",
           );
         }
         return;
+      }
 
-      case "response.audio.delta":
-        if (connectionWantsAudio() && evt.delta) {
-          queueAudioDelta(evt.delta);
+      case "response.audio.delta": {
+        const responseId = responseIdOf(evt);
+        if (
+          connectionWantsAudio() &&
+          turns.ownsResponse(responseId) &&
+          evt.delta
+        ) {
+          playback.queueAudioDelta(evt.delta, responseId, evt.item_id);
         }
         return;
+      }
 
-      case "response.audio.done":
-        if (respondingTurnItemId) {
-          setTurnMeta(respondingTurnItemId, "reply streaming");
+      case "response.audio.done": {
+        const responseId = responseIdOf(evt);
+        if (turns.ownsResponse(responseId)) {
+          setTurnMeta(turns.respondingItemId, "reply streaming");
         }
         return;
+      }
 
-      case "response.done":
-        if (respondingTurnItemId) {
-          const responseStatus =
-            (evt.response && evt.response.status) || "completed";
-          const node = turnCards.get(respondingTurnItemId);
+      case "response.done": {
+        const responseId = responseIdOf(evt);
+        const responseStatus =
+          (evt.response && evt.response.status) || "completed";
+        const responseReason =
+          evt.response &&
+          evt.response.status_details &&
+          evt.response.status_details.reason;
+        const result = turns.finishResponse(responseId, responseReason);
+        playback.finishResponse(responseId, responseStatus);
+        if (result.itemId) {
+          const node = turnCards.get(result.itemId);
           if (node) node.dataset.state = responseStatus;
-          if (connectionWantsAudio() || responseStatus !== "completed") {
+          if (result.interrupted) {
             setTurnMeta(
-              respondingTurnItemId,
+              result.itemId,
+              responseStatus === "completed"
+                ? "complete · interrupted"
+                : `${responseStatus} · interrupted`,
+            );
+          } else if (
+            connectionWantsAudio() ||
+            responseStatus !== "completed"
+          ) {
+            setTurnMeta(
+              result.itemId,
               responseStatus === "completed" ? "complete" : responseStatus,
             );
           }
         }
-        respondingTurnItemId = null;
         return;
+      }
 
       // In text-only mode, render the incremental user transcript.
       case "conversation.item.input_audio_transcription.delta":
@@ -604,7 +630,8 @@
   // ─────────────────────  Misc UI  ─────────────────────
 
   function updatePresentation() {
-    if (wantsAudioOutput()) {
+    const audioOutput = wantsAudioOutput();
+    if (audioOutput) {
       mastheadModeEl.textContent = "LIVE AUDIO RESPONSES";
       mastheadTaglineEl.textContent =
         "A demonstration of /v1/realtime — voice in, streamed text and voice " +

@@ -498,7 +498,7 @@ class DotsTTSFlowHead(nn.Module):
     def append_hidden(self, state: DotsFlowState, hidden_states: torch.Tensor) -> None:
         hidden = hidden_states[:, -self.hidden_patch_size :]
         projected = self.hidden_proj(hidden)
-        null_projected = self.hidden_proj(torch.zeros_like(hidden))
+        null_projected = self.hidden_proj.bias.view(1, 1, -1).expand_as(projected)
         start, end = self._reserve(state, projected.shape[1])
         state.fm_sequence[:, start:end].copy_(projected)
         state.fm_cfg_sequence[:, start:end].copy_(null_projected)
@@ -645,9 +645,15 @@ class DotsTTSFlowHead(nn.Module):
             slots,
             fm_hidden_rows=self.hidden_proj(hidden),
         )
+        latent_patches = self.io.denormalize(normalized)
+        patch_encoder_input = (
+            normalized
+            if self.patch_encoder.expects_normalized_input
+            else latent_patches
+        ).to(dtype=next(self.patch_encoder.parameters()).dtype)
         feedback = self._tail.encode_feedback(
             slots,
-            self._patch_encoder_input(normalized, already_normalized=True),
+            patch_encoder_input,
         )
         self._stage_batched_eos(eos_hits)
         results = []
@@ -657,7 +663,7 @@ class DotsTTSFlowHead(nn.Module):
             state.decoded_patches += 1
             results.append(
                 DotsFlowStep(
-                    latent_patch=self.io.denormalize(normalized[row : row + 1]),
+                    latent_patch=latent_patches[row : row + 1],
                     feedback_embedding=feedback[row],
                     finished=False,
                     emit=emit,

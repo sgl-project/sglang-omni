@@ -8,12 +8,12 @@ import pytest
 import typer
 
 from sglang_omni.cli.serve import (
+    apply_backbone_server_args_cli_overrides,
     apply_cuda_graph_cli_overrides,
     apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
     apply_partial_start_cli_overrides,
-    apply_thinker_server_args_cli_overrides,
     apply_torch_compile_cli_overrides,
 )
 from sglang_omni.config import PipelineConfig, StageConfig
@@ -369,7 +369,7 @@ def test_ming_cli_applies_thinker_sglang_server_args() -> None:
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
     )
-    apply_thinker_server_args_cli_overrides(
+    apply_backbone_server_args_cli_overrides(
         config,
         cpu_offload_gb=0,
         quantization="fp8",

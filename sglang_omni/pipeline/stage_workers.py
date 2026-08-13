@@ -79,6 +79,7 @@ class StageLaunchConfig:
     coordinator_endpoint: str = ""
     abort_endpoint: str = ""
     stage_endpoints: dict[str, str] = field(default_factory=dict)
+    rank_endpoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
@@ -741,6 +742,9 @@ def _construct_stage(
         gpu_id=spec.gpu_id,
         placement_gpu_id=spec.placement_gpu_id,
         endpoints=spec.stage_endpoints,
+        rank_endpoints=spec.rank_endpoints,
+        tp_rank=spec.tp_rank,
+        tp_size=spec.tp_size,
         control_plane=control_plane,
         input_handler=input_handler,
         comm_config=spec.comm_config,
