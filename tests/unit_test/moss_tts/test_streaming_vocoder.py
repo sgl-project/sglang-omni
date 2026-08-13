@@ -14,8 +14,8 @@ from sglang_omni.models.moss_tts.request_builders import (
     MossTTSSGLangRequestData,
     make_moss_tts_stream_output_builder,
 )
-from sglang_omni.models.moss_tts.stages import _MossTTSVocoder
 from sglang_omni.models.moss_tts.streaming_vocoder import MossStreamingVocoderScheduler
+from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
@@ -50,7 +50,7 @@ def _make_scheduler(
     stream_followup_stride: int = 2,
     stream_overlap_tokens: int = 1,
     stream_holdback_tokens: int = 0,
-) -> tuple[MossStreamingVocoderScheduler, _FakeAudioTokenizer, _MossTTSVocoder]:
+) -> tuple[MossStreamingVocoderScheduler, _FakeAudioTokenizer, MossTTSVocoder]:
     processor = SimpleNamespace(
         model_config=SimpleNamespace(
             n_vq=3,
@@ -59,7 +59,7 @@ def _make_scheduler(
         )
     )
     tokenizer = _FakeAudioTokenizer()
-    vocoder = _MossTTSVocoder(processor, tokenizer, "cpu")
+    vocoder = MossTTSVocoder(processor, tokenizer, "cpu")
     scheduler = MossStreamingVocoderScheduler(
         vocoder,
         stream_stride=stream_stride,
@@ -203,6 +203,29 @@ def test_streaming_matches_full_decode_across_segments() -> None:
     result = next(message for message in messages if message.type == "result")
     assert "delayed_audio_codes" not in result.data.data
     assert result.data.data["usage"]["completion_tokens"] == int(delayed.shape[0])
+
+
+def test_streaming_path_does_not_call_nonstream_batch_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delayed = _apply_delay_pattern(
+        torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=torch.long)
+    )
+    scheduler, tokenizer, vocoder = _make_scheduler()
+
+    async def fail_decode_batch(*_args, **_kwargs):
+        pytest.fail("streaming requests must not use the non-streaming batch decoder")
+
+    monkeypatch.setattr(vocoder, "decode_batch", fail_decode_batch)
+    scheduler._on_streaming_new_request("req", _payload("req", delayed))
+    scheduler._on_chunk("req", _item(delayed))
+    scheduler._on_done("req")
+
+    messages = _drain(scheduler)
+
+    assert tokenizer.decode_inputs
+    assert any(message.type == "stream" for message in messages)
+    assert any(message.type == "result" for message in messages)
 
 
 def test_chunks_and_done_before_payload_preserve_final_tail() -> None:

@@ -203,7 +203,7 @@ python examples/run_omni.py qwen3-speech-server \
   --gpu-thinker 0 \
   --gpu-talker 1 \
   --gpu-code-predictor 1 \
-  --gpu-code2wav 1 \
+  --gpu-code2wav 0 \
   --port 8008
 ```
 
@@ -244,7 +244,7 @@ python examples/run_omni.py qwen3-speech-server \
   --gpu-thinker 0 \
   --gpu-talker 1 \
   --gpu-code-predictor 1 \
-  --gpu-code2wav 1 \
+  --gpu-code2wav 0 \
   --port 8008 \
   --thinker-mem-fraction-static 0.88 \
   --talker-mem-fraction-static 0.88
@@ -274,6 +274,55 @@ runtime_overrides:
     server_args_overrides:
       max_running_requests: 16
 ```
+
+### Speech Stage Placement
+
+At concurrency 8, the talker is the heaviest speech stage: it holds its GPU
+at about 86% median utilization. Give it a GPU of its own. The code2wav
+vocoder is light by comparison (9–13% median utilization) and shares the
+thinker's GPU by default. That default holds only when the thinker stays on
+its own default GPU — a `--thinker-gpus` override moves the thinker alone,
+not code2wav, so pass `--code2wav-gpu` explicitly too if you relocate the
+thinker.
+
+This is the default topology for `sgl-omni serve` without GPU overrides:
+thinker alone, talker alone, code2wav on the thinker's GPU. When code2wav
+shares the thinker's GPU, the thinker's auto-sized KV pool shrinks to make
+room for it — about 4.3 GiB smaller, measured on H200, since the vocoder
+itself needs roughly 1.4–1.6 GiB. That adjustment only happens for the
+auto-sized budget: an explicitly pinned `--thinker-mem-fraction-static`
+gets no automatic carve-out, so a tightly pinned fraction should leave
+headroom for code2wav.
+
+A concurrency-8 experiment held code2wav fixed on the thinker's GPU and
+varied only the talker's placement, from sharing the thinker's GPU to
+having its own. Every concurrent metric improved:
+
+| metric (concurrency 8, two measured pairs) | talker shares the thinker's GPU | talker alone | change |
+|---|---|---|---|
+| wall-clock time | 22.8–24.1 s | 20.2–20.7 s | 9–16% lower |
+| time to first audio (TTFA), p50 | 1.43–1.71 s | 0.99–1.20 s | 16–42% lower |
+| TTFA, p90 | 2.66–2.70 s | 1.42–1.46 s | 46–47% lower |
+| end-to-end latency, p50 | 10.04–10.05 s | 8.94–9.44 s | 6–11% lower |
+
+A follow-up single-variable pair tested moving code2wav to its own GPU
+instead, with the talker already isolated in both arms. Wall-clock time and
+end-to-end latency were flat (−0.7% and −0.9%, well within noise for a
+single interleaved pair) — giving the vocoder a dedicated GPU bought
+nothing, which is why code2wav shares the thinker's GPU instead of getting
+isolated like the talker.
+
+Single-stream traffic (one request at a time) sees a different trade-off.
+In the talker-placement experiment above, isolating the talker — moving it
+off the thinker's GPU — made single-stream end-to-end latency 14–17% worse:
+with one request in flight there is no contention to escape, while that
+experiment's thinker-to-talker handoff started crossing a device boundary.
+Single-stream TTFA still improved by about 30% (0.48–0.49 s to 0.34–0.35 s),
+because the talker no longer waits its turn on a shared GPU. Both the old
+and the new default layout already keep the thinker and talker on separate
+GPUs, so these numbers describe that experiment's topology change, not the
+default code2wav placement. Streaming TTS workloads should prefer this
+layout regardless, since TTFA is the latency users notice first.
 
 ### Realtime Speech with Server VAD
 
@@ -310,6 +359,32 @@ automatically commits each utterance and starts generation. Text arrives in
 Audio output is opt-in: sessions remain text-only unless both modalities are
 requested. A thinker-only server rejects audio negotiation because it has no
 `code2wav` stage.
+
+For text-and-audio sessions, server-owned barge-in is enabled by default. When
+server VAD emits `input_audio_buffer.speech_started`, the active response is
+cancelled with reason `turn_detected`; its user transcription still completes
+and enters conversation history before the next queued turn runs. Cancelled
+assistant output is not added to conversation history.
+
+Clients must stop buffered playback on `speech_started` and reject every later
+`response.audio.delta` for that response until its `response.done`. If speech
+starts before `response.created`, retain a pending-interruption flag and reject
+the response when its ID arrives. Automatic barge-in ends with
+`response.done.status="cancelled"` and reason `turn_detected`; explicit
+`response.cancel` uses reason `client_cancelled`.
+
+If assistant audio has already been scheduled for playback, the client must
+also send `conversation.item.truncate` with the assistant `item_id` from
+`response.audio.delta`, `content_index: 0`, and the played duration in
+`audio_end_ms`. The server replies with `conversation.item.truncated` and
+removes that assistant item from conversation history. The whole assistant
+transcript is removed because the endpoint cannot align text with played audio.
+
+Set `turn_detection.interrupt_response` to `false` in `session.update` to opt
+out. This is the only `turn_detection` field applied dynamically by the current
+endpoint. Server VAD remains fixed at its startup defaults; `threshold`,
+`prefix_padding_ms`, and `silence_duration_ms` do not reconfigure it. Text-only
+responses are not interrupted automatically.
 
 The browser example in `playground/qwen-omni/realtime` captures microphone
 input and lets the user select text-only output or text plus streamed PCM16

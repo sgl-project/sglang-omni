@@ -22,8 +22,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TextIO
 
 import requests
 
@@ -68,6 +69,60 @@ def build_stage_breakdown(event_dir: str, *, include_timelines: bool = False) ->
     if not include_timelines:
         report.pop("timelines", None)
     return report
+
+
+async def run_profiled_pass(
+    *,
+    run_id: str,
+    event_dir: str,
+    profile_urls: Sequence[str],
+    run_pass: Callable[[], Awaitable[dict[str, Any]]],
+    log_prefix: str,
+    error_stream: TextIO | None = None,
+) -> dict[str, Any] | None:
+    """Run one pass inside a scoped request-profiling lifecycle."""
+    started: list[str] = []
+    try:
+        for url in profile_urls:
+            start_request_profile(url, run_id, event_dir)
+            started.append(url)
+    except requests.RequestException as exc:
+        for url in started:
+            try:
+                stop_request_profile(url, run_id)
+            except requests.RequestException as stop_exc:
+                print(
+                    f"{log_prefix} failed to stop profiling on {url}: {stop_exc}",
+                    file=error_stream,
+                )
+        print(
+            f"{log_prefix} profiling unavailable, skipping: {exc}",
+            file=error_stream,
+        )
+        return None
+
+    try:
+        pass_metrics = await run_pass()
+    finally:
+        for url in started:
+            try:
+                stop_request_profile(url, run_id)
+            except requests.RequestException as stop_exc:
+                # note (Xinyu): Preserve pass results when only profiler teardown fails.
+                print(
+                    f"{log_prefix} failed to stop profiling on {url}: {stop_exc}",
+                    file=error_stream,
+                )
+
+    report = build_stage_breakdown(event_dir)
+    return {
+        "run_id": run_id,
+        "event_dir": event_dir,
+        "pass_metrics": pass_metrics,
+        "request_count": report.get("request_count"),
+        "stage_breakdown": report.get("stage_breakdown"),
+        "hop_breakdown": report.get("hop_breakdown"),
+    }
 
 
 @dataclass

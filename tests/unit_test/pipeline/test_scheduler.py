@@ -1647,7 +1647,11 @@ def test_omni_scheduler_normalizes_req_token_arrays() -> None:
 
 
 def _construct_omni_scheduler(
-    monkeypatch, *, return_global_server_args: bool = False, **kwargs
+    monkeypatch,
+    *,
+    return_global_server_args: bool = False,
+    server_max_queued_requests: int | None = 7,
+    **kwargs,
 ) -> OmniScheduler | tuple[OmniScheduler, object]:
     """Build an OmniScheduler over the minimum stub surface __init__ touches."""
     monkeypatch.setattr(
@@ -1714,7 +1718,7 @@ def _construct_omni_scheduler(
         page_size=1,
         max_prefill_tokens=32,
         max_running_requests=2,
-        max_queued_requests=7,
+        max_queued_requests=server_max_queued_requests,
         context_length=128,
         chunked_prefill_size=0,
         enable_mixed_chunk=False,
@@ -1769,6 +1773,48 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         )
     ]
     assert scheduler._abort_on_queued_limit(object()) is False
+
+
+def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(
+    monkeypatch,
+) -> None:
+    scheduler = _construct_omni_scheduler(
+        monkeypatch,
+        server_max_queued_requests=None,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+    )
+    payloads = [_new_stage_payload(f"req-{index}") for index in range(40)]
+
+    try:
+        selected, rejected = scheduler._stage_request_build_payloads(payloads)
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler._request_build_backlog_limit is None
+    assert len(selected) == 16
+    assert len(scheduler._backlogged_request_build_payloads) == 24
+    assert rejected == []
+
+
+def test_request_build_backlog_honors_configured_queue_limit(monkeypatch) -> None:
+    scheduler = _construct_omni_scheduler(
+        monkeypatch,
+        server_max_queued_requests=16,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+    )
+    payloads = [_new_stage_payload(f"req-{index}") for index in range(40)]
+
+    try:
+        selected, rejected = scheduler._stage_request_build_payloads(payloads)
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler._request_build_backlog_limit == 16
+    assert len(selected) == 16
+    assert len(scheduler._backlogged_request_build_payloads) == 16
+    assert len(rejected) == 8
 
 
 @pytest.mark.parametrize(

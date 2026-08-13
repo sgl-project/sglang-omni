@@ -15,6 +15,8 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -30,6 +32,8 @@ ControlMessage = (
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | KVTransferPrepareMessage
+    | KVTransferReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -99,6 +103,19 @@ class PushSocket:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
+
+
+async def send_to_endpoint(
+    sockets: dict[str, PushSocket],
+    endpoint: str,
+    msg: ControlMessage,
+) -> None:
+    socket = sockets.get(endpoint)
+    if socket is None:
+        socket = PushSocket(endpoint)
+        await socket.connect()
+        sockets[endpoint] = socket
+    await socket.send(msg)
 
 
 class PullSocket:
@@ -296,12 +313,7 @@ class StageControlPlane:
         msg: DataReadyMessage | DataAckMessage,
     ) -> None:
         """Send a stage-to-stage control message."""
-        if next_stage not in self._next_stage_sockets:
-            sock = PushSocket(next_stage_endpoint)
-            await sock.connect()
-            self._next_stage_sockets[next_stage] = sock
-
-        await self._next_stage_sockets[next_stage].send(msg)
+        await send_to_endpoint(self._next_stage_sockets, next_stage_endpoint, msg)
 
     async def send_complete(self, msg: CompleteMessage) -> None:
         """Send completion notification to coordinator."""

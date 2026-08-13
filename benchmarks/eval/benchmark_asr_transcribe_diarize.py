@@ -62,6 +62,7 @@ from benchmarks.benchmarker.utils import (
     save_json_results,
     wait_for_service,
 )
+from benchmarks.eval.asr_profiling import run_profiled_pass
 from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.tasks.transcribe_diarize import (
@@ -412,7 +413,10 @@ def parse_args(
     _add_dataset_args(parser, dataset_config)
     _add_request_args(parser)
     _add_server_args(parser)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.reuse_asr_results and args.profile_events:
+        parser.error("--profile-events cannot be used with --reuse-asr-results")
+    return args
 
 
 def main(
@@ -538,6 +542,30 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "post-processing metrics."
         ),
     )
+    parser.add_argument(
+        "--profile-events",
+        action="store_true",
+        help=(
+            "After the measured evaluation, run one extra pass with request-level "
+            "event recording and attach its stage/hop breakdown to the result files."
+        ),
+    )
+    parser.add_argument(
+        "--profile-urls",
+        default="",
+        help=(
+            "Comma-separated serve base URLs exposing /start_request_profile. "
+            "Defaults to the benchmark base URL."
+        ),
+    )
+    parser.add_argument(
+        "--profile-event-dir",
+        default="/tmp/moss_td_bench_profile",
+        help=(
+            "Server-side base directory for request event JSONL. Building the "
+            "breakdown requires the benchmark to share this filesystem."
+        ),
+    )
 
 
 def _add_server_args(parser: argparse.ArgumentParser) -> None:
@@ -638,9 +666,66 @@ def _run_requests_and_save(
     )
     _save_asr_results(args, samples, outputs, wall_clock_s)
     _save_and_print_speed_results(args, outputs, wall_clock_s)
+    profile = None
+    if args.profile_events:
+        print(f"[conc={args.concurrency}] profiled pass ...", flush=True)
+        profile = asyncio.run(_run_profiled_pass(args, samples, base_url))
+        _save_and_print_speed_results(
+            args,
+            outputs,
+            wall_clock_s,
+            profile=profile,
+            include_profile=True,
+            print_results=False,
+        )
     payload = _build_payload(args, samples, outputs, wall_clock_s)
-    output_path = _save_payload(args, payload)
+    output_path = _save_payload(
+        args,
+        payload,
+        profile=profile,
+        include_profile=args.profile_events,
+    )
     return payload, output_path
+
+
+async def _run_profiled_pass(
+    args: argparse.Namespace,
+    samples: list[Movies800Sample],
+    base_url: str,
+) -> dict[str, object] | None:
+    """Run a dedicated profiled evaluation without affecting measured results."""
+    run_id = f"moss-td-{args.dataset}-c{args.concurrency}-{int(time.time())}"
+    event_dir = str(Path(args.profile_event_dir) / run_id)
+    profile_urls = [
+        url.strip() for url in args.profile_urls.split(",") if url.strip()
+    ] or [base_url]
+
+    async def run_pass() -> dict[str, object]:
+        outputs, wall_clock_s = await run_eval(
+            samples,
+            base_url=base_url,
+            model_path=args.model_path,
+            language=args.language,
+            concurrency=args.concurrency,
+            warmup=0,
+            request_rate=args.request_rate,
+            disable_tqdm=args.disable_tqdm,
+            request_timeout_s=args.request_timeout_s,
+            max_new_tokens=args.max_new_tokens,
+            stream=args.stream,
+        )
+        pass_metrics = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
+        pass_metrics["wall_clock_s"] = wall_clock_s
+        return pass_metrics
+
+    return await run_profiled_pass(
+        run_id=run_id,
+        event_dir=event_dir,
+        profile_urls=profile_urls,
+        run_pass=run_pass,
+        log_prefix=f"[conc={args.concurrency}]",
+        error_stream=sys.stderr,
+    )
 
 
 def _run_from_asr_results(args: argparse.Namespace) -> tuple[EvaluationPayload, str]:
@@ -724,9 +809,18 @@ def _build_payload(
     )
 
 
-def _save_payload(args: argparse.Namespace, payload: EvaluationPayload) -> str:
+def _save_payload(
+    args: argparse.Namespace,
+    payload: EvaluationPayload,
+    *,
+    profile: dict[str, object] | None = None,
+    include_profile: bool = False,
+) -> str:
+    serialized_payload: dict[str, object] = json.loads(json.dumps(payload))
+    if include_profile:
+        serialized_payload["profile"] = profile
     return save_json_results(
-        json.loads(json.dumps(payload)),
+        serialized_payload,
         args.output_dir,
         RESULTS_FILE,
     )
@@ -755,6 +849,9 @@ def _save_and_print_speed_results(
     wall_clock_s: float,
     *,
     config_override: Mapping[str, object] | None = None,
+    profile: dict[str, object] | None = None,
+    include_profile: bool = False,
+    print_results: bool = True,
 ) -> str:
     payload = _build_speed_payload(
         args,
@@ -762,8 +859,11 @@ def _save_and_print_speed_results(
         wall_clock_s,
         config_override=config_override,
     )
+    if include_profile:
+        payload["profile"] = profile
     path = save_json_results(payload, args.output_dir, args.speed_results_file)
-    _print_speed_results(args, payload, path)
+    if print_results:
+        _print_speed_results(args, payload, path)
     return path
 
 

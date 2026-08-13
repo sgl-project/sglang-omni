@@ -37,6 +37,17 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     assert config.stages[0].factory_args["encoder_max_batch_size"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
+    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 4
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 12
+    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert (
+        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
+        is True
+    )
+    assert (
+        config.stages[0].factory_args["prefill_coalesce_after_builds_during_decode"]
+        is True
+    )
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config(
             "MossTranscribeDiarizeForConditionalGeneration"
@@ -115,6 +126,18 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
+    assert signature.parameters["prefill_coalesce_requests"].default == 4
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 12.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert (
+        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
+    assert (
+        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
+        is True
+    )
     assert signature.parameters["encoder_max_batch_size"].default == 2
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
     assert signature.parameters["encoder_chunk_buckets"].default is None
@@ -210,6 +233,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "compile_encoder": [],
         "init_encoder_graphs": [],
         "encoder_services": [],
+        "scheduler_kwargs": [],
     }
     model = SimpleNamespace(
         compile_encoder=lambda buckets, feat_len: calls["compile_encoder"].append(
@@ -285,7 +309,11 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         lambda **k: object(),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
-    monkeypatch.setattr(omni_scheduler, "OmniScheduler", lambda **k: SimpleNamespace())
+    monkeypatch.setattr(
+        omni_scheduler,
+        "OmniScheduler",
+        lambda **k: calls["scheduler_kwargs"].append(k) or SimpleNamespace(),
+    )
     return calls
 
 
@@ -303,6 +331,14 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert calls["init_cuda_graphs"] == 1
     assert len(calls["encoder_services"]) == 1
     assert calls["encoder_services"][0][1] == 2
+    scheduler_kwargs = calls["scheduler_kwargs"][0]
+    assert scheduler_kwargs["enable_async_decode"] is True
+    assert scheduler_kwargs["async_decode_min_batch_size"] == 1
+    assert scheduler_kwargs["prefill_coalesce_requests"] == 4
+    assert scheduler_kwargs["prefill_coalesce_wait_ms"] == 12.0
+    assert scheduler_kwargs["prefill_coalesce_when_idle"] is True
+    assert scheduler_kwargs["prefill_coalesce_requires_pending_builds"] is True
+    assert scheduler_kwargs["prefill_coalesce_after_builds_during_decode"] is True
 
 
 def test_factory_context_length_override_uses_final_server_value(

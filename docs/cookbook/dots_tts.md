@@ -208,18 +208,18 @@ A rejected solver value comes back as HTTP 500 with the engine's message, for ex
 
 ### Performance
 
-We report throughput on Seed-TTS EN. Client `--max-concurrency` sweep against a single dots.tts server started from `examples/configs/dots_tts.yaml` (`max_running_requests=16`, bf16, `num_steps=4`, backbone decode CUDA graph and graph-captured acoustic tail on). Each row is the mean of two runs, seed 42. Hardware: **1x H100**.
+Seed-TTS EN benchmark at main commit `2b45073c`, seed 42, with 10 warmup requests. Throughput and latency were measured on **1x H100**. The server used `examples/configs/dots_tts.yaml`, which enables the optimized acoustic tail, vocoder, and backbone CUDA Graph. Every row uses all 1,088 samples.
 
 | Concurrency | Throughput (req/s) | Mean latency | RTF (per-req) | audio_s/s | WER |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 0.90 | 1.11 s | 0.284 | 3.58 | 1.06% |
-| 2 | 1.48 | 1.35 s | 0.329 | 6.16 | 1.25% |
-| 4 | 2.43 | 1.64 s | 0.399 | 10.14 | 1.36% |
-| 8 | 3.99 | 2.00 s | 0.486 | 16.65 | 1.31% |
-| 16 | 4.64 | 3.43 s | 0.830 | 19.36 | 1.31% |
-| 32 | 4.43 | 7.15 s | 1.797 | 18.47 | 1.27% |
+| 1 | 0.935 | 1.070 s | 0.275 | 3.726 | 1.241% |
+| 2 | 1.556 | 1.286 s | 0.314 | 6.493 | 1.256% |
+| 4 | 2.493 | 1.603 s | 0.390 | 10.407 | 1.264% |
+| 8 | 3.875 | 2.062 s | 0.502 | 16.173 | 1.323% |
+| 16 | 4.760 | 3.344 s | 0.812 | 19.859 | 1.348% |
+| 32 | 4.988 | 6.344 s | 1.596 | 20.818 | 1.331% |
 
-Zero failed requests in every run, and no sample above 50% WER. c=1 is a 50-sample latency probe; the other rows use the full 1,088-sample set. WER is measured on the first run of each row.
+All requests completed successfully.
 
 - **Concurrency** — Maximum number of in-flight client requests (`--max-concurrency`).
 - **Throughput (req/s)** — Completed requests divided by total benchmark wall-clock time.
@@ -236,7 +236,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --model dots-studio/dots.tts-mf \
   --ref-format references \
   --base-url http://127.0.0.1:8000 --port 8000 \
-  --lang en --max-concurrency 16 --warmup 8 --seed 42 \
+  --lang en --max-concurrency 16 --max-samples 1088 --warmup 10 --seed 42 \
   --generate-only --use-existing-server \
   --output-dir results/dots-seedtts-en-c16
 

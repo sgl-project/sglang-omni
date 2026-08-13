@@ -56,6 +56,29 @@ def test_response_format_validation_preserves_endpoint_error_contract() -> None:
     )
 
 
+def test_assemble_uses_the_caller_probed_duration(monkeypatch) -> None:
+    # A handler that already probed the upload passes the duration in;
+    # assembling the response must not probe the same bytes again.
+    monkeypatch.setattr(
+        speech_to_text,
+        "probe_audio_duration",
+        lambda audio_bytes: pytest.fail("re-probed the upload"),
+    )
+
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="hello world",
+        response_format="json",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=2.4,
+    )
+
+    assert json.loads(response.body)["usage"] == {"seconds": 3, "type": "duration"}
+
+
 def test_verbose_response_uses_requested_task() -> None:
     response = speech_to_text.assemble_speech_to_text_response(
         text="hello world",

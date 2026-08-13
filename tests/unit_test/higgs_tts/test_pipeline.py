@@ -268,6 +268,11 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
             chunked_prefill_size=overrides.get("chunked_prefill_size"),
             max_prefill_tokens=overrides.get("max_prefill_tokens", 16384),
             tp_size=1,
+            attn_cp_size=1,
+            dcp_size=1,
+            lora_paths=None,
+            enable_lora=None,
+            moe_a2a_backend="none",
             cuda_graph_config=SimpleNamespace(
                 decode=SimpleNamespace(
                     max_bs=overrides["cuda_graph_max_bs"],

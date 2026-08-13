@@ -60,6 +60,10 @@ def _fused_asr_forward_prepare_native(
             positions,
             hidden_states,
         )
+    if positions.dtype != torch.int32:
+        # note(ratish): the prefill CUDA graph bypasses forward()'s int32
+        # cast; the kernel rejects int64 positions.
+        positions = positions.to(torch.int32)
     qkv, _ = attention.qkv_proj(hidden_states)
     fused_qk_norm_rope(
         qkv,

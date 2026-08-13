@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from sglang_omni.comm.data_ref import TransportKind
+from sglang_omni.platforms import current_platform
 from sglang_omni.relay.base import Relay, create_relay
 
 
@@ -61,7 +62,10 @@ class CommRouter:
         return target in self.same_process_targets
 
     def can_use_direct_cuda_ipc(self, target: str) -> bool:
-        return target in self._direct_cuda_ipc_targets
+        return (
+            target in self._direct_cuda_ipc_targets
+            and current_platform.get_intra_node_transport() == TransportKind.CUDA_IPC
+        )
 
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:
@@ -77,7 +81,7 @@ class CommRouter:
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
         if self.self_is_gpu and target in self.gpu_stage_names:
-            return TransportKind.CUDA_IPC
+            return current_platform.get_intra_node_transport()
         return TransportKind.SHM
 
     def outbound_stream(self, target: str, data: torch.Tensor) -> TransportKind:
@@ -91,7 +95,7 @@ class CommRouter:
         if not data.is_cuda:
             return TransportKind.SHM
         if self.self_is_gpu and target in self.gpu_stage_names:
-            return TransportKind.CUDA_IPC
+            return current_platform.get_intra_node_transport()
         raise ValueError(
             f"cuda stream chunk cannot be sent from {self.stage_name!r} to "
             f"non-GPU target {target!r}"
@@ -101,7 +105,7 @@ class CommRouter:
         if from_stage in self.remote_stage_names:
             return TransportKind.MOONCAKE
         if self.self_is_gpu and from_stage in self.gpu_stage_names:
-            return TransportKind.CUDA_IPC
+            return current_platform.get_intra_node_transport()
         return TransportKind.SHM
 
     def relay(self, kind: TransportKind) -> Relay:
@@ -138,9 +142,12 @@ class CommRouter:
         devices = _tensor_devices(getattr(payload, "data", payload))
         if not devices or devices == {"cpu"}:
             return TransportKind.SHM
-        if "cuda" in devices and devices <= {"cpu", "cuda"}:
+        if current_platform.device_type in devices and devices <= {
+            "cpu",
+            current_platform.device_type,
+        }:
             if self.self_is_gpu and target in self.gpu_stage_names:
-                return TransportKind.CUDA_IPC
+                return current_platform.get_intra_node_transport()
             return TransportKind.SHM
         raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")
 

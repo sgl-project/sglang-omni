@@ -43,6 +43,35 @@ class TranscriptionAdapter(ABC):
     ) -> TranscriptionVerboseResponse:
         """Build a verbose_json response with segments / timestamps."""
 
+    def build_verbose_response_from_chunks(
+        self,
+        *,
+        text: str,
+        chunks: list[tuple[float, float, str]],
+        language: str | None,
+        audio_duration_s: float,
+    ) -> TranscriptionVerboseResponse:
+        """verbose_json for chunked long audio: one segment per chunk."""
+        segments: list[TranscriptionSegment] = []
+        for start_s, end_s, chunk_text in chunks:
+            stripped = self.postprocess_text(chunk_text).strip()
+            if not stripped:
+                continue
+            segments.append(
+                TranscriptionSegment(
+                    id=len(segments),
+                    start=round(start_s, 2),
+                    end=round(end_s, 2),
+                    text=stripped,
+                )
+            )
+        return TranscriptionVerboseResponse(
+            language=language,
+            duration=round(max(float(audio_duration_s), 0.0), 2),
+            text=text,
+            segments=segments,
+        )
+
 
 class DefaultTranscriptionAdapter(TranscriptionAdapter):
     """Fallback: emit the whole transcript as a single segment."""
