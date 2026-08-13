@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import time
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from benchmarks.eval.asr_profiling import (
     stop_request_profile,
 )
 from benchmarks.eval.benchmark_asr_seedtts import _aggregate, _print_table
+from benchmarks.tasks.asr import OMNI_WHISPER_MODEL_PATH
 
 
 class _FakeResponse:
@@ -34,6 +36,20 @@ class _FakeResponse:
 
     def json(self) -> dict:
         return self._payload
+
+
+def test_seedtts_help_advertises_whisper_model(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["benchmark_asr_seedtts", "--help"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        seedtts_benchmark.parse_args()
+
+    assert exc_info.value.code == 0
+    help_text = "".join(capsys.readouterr().out.split())
+    assert OMNI_WHISPER_MODEL_PATH in help_text
 
 
 def test_profile_control_posts_run_id_and_event_dir(

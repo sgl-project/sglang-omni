@@ -110,6 +110,79 @@ does not include `language`; the translation target is English in both APIs.
 See the [audio translation support matrix](../basic_usage/audio_translations.md)
 for response formats and other ASR models.
 
+## Request-event profiling
+
+The shared SeedTTS benchmark can run one additional request-event-profiled pass
+after the normal measured repeats at each concurrency. This example uses
+`openai/whisper-base` to keep development profiling inexpensive; it is not a
+production model recommendation. Start the same checkpoint named by the
+benchmark request:
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-base \
+  --model-name openai/whisper-base \
+  --port 8000
+```
+
+In another shell, run:
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 \
+  --model-path openai/whisper-base \
+  --max-samples 20 \
+  --concurrencies 1,2,4,8 \
+  --repeats 3 --warmup \
+  --profile-events \
+  --profile-event-dir /tmp/whisper_asr_profile \
+  --fingerprint \
+  --save-raw-dir /tmp/whisper_asr_raw \
+  --output /tmp/whisper_profile.json
+```
+
+The profiled pass is stored under each result's `profile` field and is not
+included in normal latency, throughput, or WER aggregates. Its JSONL writes
+add overhead, so use normal repeats for performance numbers and the profile
+pass for attribution.
+
+For Whisper, the main intervals are:
+
+| Interval | Meaning |
+|---|---|
+| `scheduler_request_build_start->scheduler_request_build_end` | Server-side request builder: audio decode/resample, feature extraction, and request-object construction |
+| `scheduler_request_build_end->scheduler_queue_enter` | Build-result collection and admission handoff |
+| `scheduler_queue_enter->scheduler_prefill_start` | Queue/admission delay |
+| `scheduler_prefill_start->scheduler_prefill_end` | Whisper encoder plus decoder prefill/first forward |
+| `scheduler_prefill_end->stage_complete` | Autoregressive decode plus result adaptation and stage-completion handling |
+| `stage_input_received->stage_complete` | Server-side ASR stage lifetime; not client HTTP end-to-end latency |
+
+The first-forward interval is not an encoder-only measurement. Whisper runs
+its encoder inside the batched first model forward.
+
+The benchmark process must be able to read the server-side event directory.
+The simplest setup runs the server and benchmark on the same host or container.
+For a router or data-parallel deployment, pass every direct worker profiling
+endpoint with `--profile-urls`; profiling only the router does not reach all
+worker-local recorders. This solves only the control plane. For automatic
+profile attachment, every worker must write to storage visible to the benchmark
+process during the run, preferably the same `event_dir` path on every host.
+Without shared storage, collect all worker JSONL afterward and render an offline
+report. That offline report does not repair the benchmark result JSON already
+written by `run_profiled_pass(...)`; its original `profile` field may be partial.
+
+Render any generated run directory again with:
+
+```bash
+python -m sglang_omni.profiler \
+  /tmp/whisper_asr_profile/<run-id> --format table
+```
+
+> **GPU baseline pending.** Before this PR leaves Draft, run the documented
+> 20-sample c1/c2/c4/c8 profile on one fixed GPU type and record the commit,
+> image digest, model and dataset revisions, WER, normal performance metrics,
+> and key interval counts here.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
