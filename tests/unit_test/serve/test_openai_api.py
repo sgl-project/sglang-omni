@@ -11,7 +11,11 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import (
+    CompletionResult,
+    CompletionStreamChunk,
+    GenerateRequest,
+)
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
     EXPLICIT_GENERATION_PARAMS_KEY,
@@ -299,6 +303,61 @@ class SuccessfulTranscriptionClient:
             text="hello world",
             finish_reason="stop",
         )
+
+
+class SuccessfulImageChatClient:
+    def __init__(self) -> None:
+        self.completion_requests: list[GenerateRequest] = []
+        self.stream_requests: list[GenerateRequest] = []
+        self.omni_rollout = {
+            "images": [
+                {
+                    "type": "image",
+                    "format": "png",
+                    "data": "data:image/png;base64,iVBORw0KGgo=",
+                    "width": 2,
+                    "height": 1,
+                    "index": 0,
+                },
+                {"type": "image", "data": "https://example.invalid/not-inline.png"},
+            ],
+        }
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> CompletionResult:
+        del audio_format
+        self.completion_requests.append(request)
+        return CompletionResult(
+            request_id=request_id,
+            text="caption",
+            omni_rollout=self.omni_rollout,
+            finish_reason="stop",
+        )
+
+    async def completion_stream(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        del audio_format
+        self.stream_requests.append(request)
+        yield CompletionStreamChunk(
+            request_id=request_id,
+            text="caption",
+            modality="text",
+            omni_rollout=self.omni_rollout,
+        )
+        yield CompletionStreamChunk(request_id=request_id, finish_reason="stop")
 
 
 class ChunkRecordingTranscriptionClient:
@@ -1405,6 +1464,92 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.metadata == {"task": "asr"}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
+
+
+def test_chat_request_passes_image_generation_controls() -> None:
+    req = ChatCompletionRequest(
+        model="sensenova-u1",
+        messages=[{"role": "user", "content": "draw a red square"}],
+        modalities=["text", "image"],
+        image_config={"width": 256, "height": 256, "seed": 7},
+        chat_template_kwargs={"enable_thinking": False},
+        n=1,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.output_modalities == ["text", "image"]
+    assert gen_req.extra_params["image_config"] == {
+        "width": 256,
+        "height": 256,
+        "seed": 7,
+    }
+    assert gen_req.extra_params["chat_template_kwargs"] == {"enable_thinking": False}
+    assert gen_req.extra_params["n"] == 1
+
+
+def test_chat_completion_non_stream_returns_inline_images() -> None:
+    image_client = SuccessfulImageChatClient()
+    client = TestClient(create_app(image_client, model_name="sensenova-u1"))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "sensenova-u1",
+            "messages": [{"role": "user", "content": "draw a red square"}],
+            "modalities": ["text", "image"],
+            "image_config": {"width": 256, "height": 256},
+            "chat_template_kwargs": {"enable_thinking": False},
+            "n": 1,
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["choices"][0]["message"]
+    assert message["content"] == "caption"
+    assert message["images"] == [
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+            "width": 2,
+            "height": 1,
+            "index": 0,
+            "format": "png",
+        }
+    ]
+    assert image_client.completion_requests[0].output_modalities == ["text", "image"]
+    assert image_client.completion_requests[0].extra_params["image_config"] == {
+        "width": 256,
+        "height": 256,
+    }
+    assert image_client.completion_requests[0].extra_params["chat_template_kwargs"] == {
+        "enable_thinking": False
+    }
+
+
+def test_chat_completion_stream_returns_inline_image_delta() -> None:
+    image_client = SuccessfulImageChatClient()
+    client = TestClient(create_app(image_client, model_name="sensenova-u1"))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "sensenova-u1",
+            "messages": [{"role": "user", "content": "draw a red square"}],
+            "modalities": ["text", "image"],
+            "stream": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"content": "caption"' in body
+    assert '"images": [{"type": "image_url"' in body
+    assert "data:image/png;base64,iVBORw0KGgo=" in body
+    assert "not-inline.png" not in body
+    assert image_client.stream_requests[0].output_modalities == ["text", "image"]
 
 
 def test_transcription_request_preserves_explicit_empty_language() -> None:

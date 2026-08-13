@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import json
+
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.sensenova_u1.config import (
+    SenseNovaU1FlowPipelineConfig,
+    SenseNovaU1InterleavePipelineConfig,
+    SenseNovaU1PipelineConfig,
+    Variants,
+)
+
+
+def _stage_names(config) -> list[str]:
+    return [stage.name for stage in config.stages]
+
+
+def test_sensenova_u1_pipeline_configs_register_architecture_and_alias() -> None:
+    assert PIPELINE_CONFIG_REGISTRY.get_config("NEOChatModel") is SenseNovaU1PipelineConfig
+    assert PIPELINE_CONFIG_REGISTRY.get_config("SenseNovaU1") is SenseNovaU1PipelineConfig
+
+    default = SenseNovaU1PipelineConfig(model_path="model")
+    flow = SenseNovaU1FlowPipelineConfig(model_path="model")
+    interleave = SenseNovaU1InterleavePipelineConfig(model_path="model")
+
+    assert _stage_names(default) == ["u1_vqa"]
+    assert _stage_names(flow) == ["u1_flow"]
+    assert _stage_names(interleave) == ["u1_interleave"]
+    assert default.mem_fraction_role_to_stage() == {"understanding": "u1_vqa"}
+    assert flow.mem_fraction_role_to_stage() == {"generation": "u1_flow"}
+    assert interleave.mem_fraction_role_to_stage() == {"interleave": "u1_interleave"}
+    assert default.stages[0].terminal is True
+    assert flow.stages[0].terminal is True
+    assert interleave.stages[0].terminal is True
+    assert default.stages[0].runtime.resources.total_gpu_memory_fraction == 0.75
+    assert interleave.stages[0].factory.endswith(
+        ".stages.create_sensenova_u1_interleave_executor"
+    )
+
+
+def test_sensenova_u1_config_manager_resolves_raw_hf_config_and_variant(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["NEOChatModel"], "model_type": "neo_chat"})
+    )
+
+    manager = ConfigManager.from_model_path(str(tmp_path), variant="interleave")
+
+    assert isinstance(manager.config, SenseNovaU1InterleavePipelineConfig)
+    assert manager.config.model_path == str(tmp_path)
+    assert manager.config.entry_stage == "u1_interleave"
+    assert Variants["default"] is SenseNovaU1PipelineConfig
+    assert Variants["flow"] is SenseNovaU1FlowPipelineConfig
+    assert Variants["interleave"] is SenseNovaU1InterleavePipelineConfig
