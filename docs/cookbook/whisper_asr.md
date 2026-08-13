@@ -36,6 +36,21 @@ runtime_overrides:
 
 The graph is captured after SGLang's generation graphs. Raise `max_prefill_tokens` before configuring larger buckets. Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
 
+## Prefill Coalescing
+
+Whisper builds up to two requests concurrently and coalesces prefill at the serving-reachable batch size of two. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately. This allows concurrent traffic to replay the encoder batch-2 graph without adding a fixed wait to the idle c=1 path.
+
+`request_build_max_pending` bounds submitted request-build futures, not the request backlog. When `max_queued_requests` is unset, requests beyond that pending-build limit remain queued for later construction. Setting `max_queued_requests` retains the configured finite-queue rejection behavior.
+
+Use `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` to tune the gate. Set `prefill_coalesce_requests: 0` to disable only coalescing, or also set `request_build_max_workers: 1` to restore the pre-optimization request-build path:
+
+```yaml
+runtime_overrides:
+  asr:
+    request_build_max_workers: 1
+    prefill_coalesce_requests: 0
+```
+
 ## Transcribe Audio
 
 ```bash
@@ -88,12 +103,12 @@ Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and t
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path openai/whisper-base \
   --max-samples 20 --concurrencies 1,2,4,8 \
-  --repeats 3 --warmup --output whisper_concurrency.json
+  --repeats 5 --warmup --output whisper_concurrency.json
 ```
 
 ## Benchmark Results
 
-End-to-end results used the 20-sample SeedTTS EN subset on a single H200 with `openai/whisper-base` in FP16. Each mode ran one discarded warmup and three measured repeats per concurrency.
+The following W-PR1 results used the 20-sample SeedTTS EN subset on a single H200 with `openai/whisper-base` in FP16. Each mode ran one discarded warmup and three measured repeats per concurrency.
 
 | Concurrency | Eager req/s | CUDA Graph req/s | Throughput gain | Eager mean latency (s) | CUDA Graph mean latency (s) | Corpus WER |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -102,14 +117,25 @@ End-to-end results used the 20-sample SeedTTS EN subset on a single H200 with `o
 | 4 | 37.90 | 41.70 | 10.0% | 0.104 | 0.094 | 0.0415 |
 | 8 | 42.10 | 49.00 | 16.4% | 0.185 | 0.158 | 0.0415 |
 
-All 480 measured requests completed successfully. Corpus WER was unchanged across eager and CUDA Graph modes at every concurrency.
+All 480 W-PR1 measured requests completed successfully. Corpus WER was unchanged across eager and CUDA Graph modes at every concurrency.
+
+The following W-PR2 results were measured separately on the same H200 and 20-sample subset with five measured repeats plus one discarded warmup per concurrency. The baseline used one request-build worker with coalescing disabled; the attribution run used two workers with coalescing disabled; the optimized run used two workers, a batch target of two, and a pending-build-aware 6 ms deadline.
+
+| Concurrency | Baseline req/s | Two workers req/s | Coalesced req/s | Total gain | Gate gain | Baseline latency (s) | Coalesced latency (s) | Corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 21.04 | 22.51 | 22.46 | 6.8% | -0.3% | 0.047 | 0.044 | 0.0415 |
+| 2 | 30.45 | 36.68 | 41.96 | 37.8% | 14.4% | 0.066 | 0.047 | 0.0415 |
+| 4 | 40.24 | 55.62 | 62.83 | 56.2% | 13.0% | 0.097 | 0.063 | 0.0415 |
+| 8 | 48.03 | 75.93 | 82.15 | 71.0% | 8.2% | 0.161 | 0.092 | 0.0415 |
+
+All 1,200 measured requests completed successfully. Corpus WER remained 0.0415 in all three modes and at every concurrency. Logs from the optimized run showed `Replaying Whisper encoder CUDA graph batch=2 request_batch=2` and prefill batches with two sequences and 3,008 new tokens.
 
 ## Known Limitations
 
 - This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
   for validated ASR serving.
-- Encoder CUDA Graph is opt-in and requires SGLang generation CUDA Graph to be
-  enabled. Validate the selected buckets before production use.
+- Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
+  Graph to remain enabled. Validate the selected buckets before production use.
 - Chunked prefill is disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.

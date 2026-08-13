@@ -37,8 +37,6 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
-    KVTransferPrepareMessage,
-    KVTransferReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -87,6 +85,9 @@ class Stage:
         gpu_id: int | None,
         endpoints: dict[str, str],
         control_plane: Any,
+        rank_endpoints: dict[str, tuple[str, ...]] | None = None,
+        tp_rank: int = 0,
+        tp_size: int = 1,
         placement_gpu_id: int | None = None,
         input_handler: InputHandler | None = None,
         relay: Relay | None = None,
@@ -136,6 +137,9 @@ class Stage:
                 comm_config=comm_config or {},
                 injected_relay=relay,
             ),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+            rank_endpoints=rank_endpoints,
             task_done_callback=self._on_background_task_done,
         )
 
@@ -158,6 +162,7 @@ class Stage:
         if self._running:
             return
         await self.control_plane.start()
+        await self._comm.start()
         self._loop = asyncio.get_running_loop()
         self._running = True
 
@@ -259,7 +264,7 @@ class Stage:
             except Exception as exc:
                 _record_cleanup_error("TP fanout", exc)
         try:
-            self._comm.close()
+            await self._comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
         logger.info("Stage %s stopped", self.name)
@@ -326,10 +331,6 @@ class Stage:
             await self._on_submit(msg)
         elif isinstance(msg, DataAckMessage):
             self._comm.ack_transfer(msg)
-        elif isinstance(msg, KVTransferReadyMessage):
-            self._comm.kv_transfer_ready(msg)
-        elif isinstance(msg, KVTransferPrepareMessage):
-            await self._on_kv_transfer_prepare(msg)
         elif isinstance(msg, DataReadyMessage):
             self._schedule_receive_task(msg)
         elif isinstance(msg, ProfilerStartMessage):
@@ -462,29 +463,6 @@ class Stage:
         await self._wait_for_receive_predecessor(predecessor)
         if payload is not None:
             await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
-
-    async def _on_kv_transfer_prepare(
-        self,
-        msg: KVTransferPrepareMessage,
-    ) -> None:
-        endpoint = self.endpoints.get(msg.from_stage)
-        if endpoint is None:
-            raise RuntimeError(
-                f"Stage {self.name}: no endpoint configured for KV ready target "
-                f"{msg.from_stage!r}"
-            )
-        if msg.request_id in self._aborted:
-            ready = KVTransferReadyMessage(
-                request_id=msg.request_id,
-                transfer_id=msg.transfer_id,
-                from_stage=self.name,
-                to_stage=msg.from_stage,
-                success=False,
-                error=f"request {msg.request_id!r} was aborted",
-            )
-        else:
-            ready = self._comm.prepare_kv_receive(msg)
-        await self.control_plane.send_to_stage(msg.from_stage, endpoint, ready)
 
     async def receive_local_payload(
         self,

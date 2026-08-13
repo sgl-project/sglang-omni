@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from sglang_omni.models.fun_asr import encoder_service
 from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
     _expected_audio_tokens,
@@ -39,6 +43,7 @@ class _StubModel(torch.nn.Module):
         self.dtype = dtype
         self.encode_calls = 0
         self.fail = False
+        self.fail_oom_once = False
         self.fail_multi_item = False
         self.encode_gate: threading.Event | None = None
         self.row_offset = 0
@@ -56,6 +61,9 @@ class _StubModel(torch.nn.Module):
             time.sleep(self.encode_delay_s)
         if self.fail:
             raise RuntimeError("boom")
+        if self.fail_oom_once:
+            self.fail_oom_once = False
+            raise torch.OutOfMemoryError("test encoder OOM")
         if self.fail_multi_item and len(items) > 1:
             raise RuntimeError("multi-item boom")
         parts = []
@@ -327,6 +335,192 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
     item = _item(55, 3)
     service.encode_item(item)
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+
+
+class _FailingStream:
+    def synchronize(self) -> None:
+        raise torch.OutOfMemoryError("test encoder sync OOM")
+
+
+class _EncoderIntermediate:
+    pass
+
+
+def test_execute_batch_commits_item_state_only_after_stream_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(FunASRPreLMEncoderService)
+    service._model = _StubModel()
+    service._stream = _FailingStream()
+    service._hidden_size = _HIDDEN_SIZE
+    service._dtype = torch.float32
+    service._device = torch.device("cpu")
+    monkeypatch.setattr(
+        encoder_service.torch.cuda,
+        "stream",
+        lambda stream: contextlib.nullcontext(),
+    )
+    items = [_item(701, 2), _item(702, 3)]
+    features = [item.feature for item in items]
+
+    with pytest.raises(torch.OutOfMemoryError, match="test encoder sync OOM"):
+        service._execute_batch(items)
+
+    for item, feature in zip(items, features):
+        assert item.feature is feature
+        assert item.precomputed_embeddings is None
+        assert not hasattr(item, "format")
+
+
+def test_singleton_oom_is_not_retried_and_next_request_succeeds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model = _StubModel()
+    model.fail_oom_once = True
+    service = _make_service(model)
+    failed_item = _item(801, 3)
+    healthy_item = _item(802, 3)
+
+    with pytest.raises(torch.OutOfMemoryError, match="test encoder OOM"):
+        service.encode_item(failed_item)
+    service.encode_item(healthy_item)
+
+    assert model.encode_calls == 2
+    assert failed_item.precomputed_embeddings is None
+    assert failed_item.feature is not None
+    assert healthy_item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+    assert healthy_item.feature is None
+    assert all(record.exc_info is None for record in caplog.records)
+    assert all(
+        not any(isinstance(arg, BaseException) for arg in record.args)
+        for record in caplog.records
+    )
+
+
+def test_oom_recovery_synchronizes_and_clears_selected_encoder_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(FunASRPreLMEncoderService)
+    service._device = torch.device("cuda:7")
+    cleanup_steps: list[str] = []
+    selected_devices: list[torch.device] = []
+    service._stream = SimpleNamespace(
+        synchronize=lambda: cleanup_steps.append("synchronize")
+    )
+
+    def cuda_device(device: torch.device):  # noqa: ANN202
+        selected_devices.append(device)
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(encoder_service.torch.cuda, "device", cuda_device)
+    monkeypatch.setattr(
+        encoder_service.torch.cuda,
+        "empty_cache",
+        lambda: cleanup_steps.append("empty_cache"),
+    )
+
+    service._recover_after_failure(torch.OutOfMemoryError("test encoder OOM"))
+
+    assert cleanup_steps == ["synchronize", "empty_cache"]
+    assert selected_devices == [torch.device("cuda:7")]
+
+
+def test_non_oom_failure_is_detached_before_future_and_logging(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = _make_service()
+    retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
+
+    def raise_non_oom(_items: list[object]) -> torch.Tensor:
+        intermediate = _EncoderIntermediate()
+        retained_intermediates.append(weakref.ref(intermediate))
+        raise ValueError("unexpected encoder shape")
+
+    monkeypatch.setattr(service, "encode_batch", raise_non_oom)
+    future = service._submit(object())
+
+    failure = future.exception(timeout=2)
+    assert isinstance(failure, ValueError)
+    assert failure.__traceback__ is None
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+    gc.collect()
+    assert retained_intermediates[0]() is None
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Traceback (most recent call last):" in message
+    assert "raise_non_oom" in message
+    assert "ValueError: unexpected encoder shape" in message
+    assert all(record.exc_info is None for record in caplog.records)
+    assert all(
+        not any(isinstance(arg, BaseException) for arg in record.args)
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("error_type", [ValueError, torch.OutOfMemoryError])
+def test_failure_arguments_do_not_retain_tensors_in_future(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    service = _make_service()
+    retained_tensors: list[weakref.ReferenceType[torch.Tensor]] = []
+
+    def raise_with_tensor(_items: list[object]) -> torch.Tensor:
+        failed_tensor = torch.ones(1)
+        retained_tensors.append(weakref.ref(failed_tensor))
+        raise error_type("failed tensor", failed_tensor)
+
+    monkeypatch.setattr(service, "encode_batch", raise_with_tensor)
+    future = service._submit(object())
+
+    failure = future.exception(timeout=2)
+    assert isinstance(failure, error_type)
+    assert all(not isinstance(arg, torch.Tensor) for arg in failure.args)
+    gc.collect()
+    assert retained_tensors[0]() is None
+
+
+def test_batched_oom_recovers_before_per_item_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _make_service()
+    service._max_batch_wait_s = 1.0
+    calls: list[list[SimpleNamespace]] = []
+    cleanup_steps: list[str] = []
+    poisoned = False
+    items = [_item(None, 1), _item(None, 1)]
+
+    def encode_batch(batch: list[SimpleNamespace]) -> torch.Tensor:
+        nonlocal poisoned
+        calls.append(list(batch))
+        if len(batch) > 1:
+            poisoned = True
+            raise torch.OutOfMemoryError("aggregate batch is too large")
+        if poisoned:
+            raise RuntimeError("allocator remained poisoned after OOM")
+        return torch.ones(1, _HIDDEN_SIZE)
+
+    def recover(exc: Exception) -> None:
+        nonlocal poisoned
+        assert isinstance(exc, torch.OutOfMemoryError)
+        cleanup_steps.append("recover")
+        poisoned = False
+
+    monkeypatch.setattr(service, "encode_batch", encode_batch)
+    monkeypatch.setattr(service, "_recover_after_failure", recover)
+    futures = [service._submit(item) for item in items]
+    results = [future.result(timeout=5) for future in futures]
+
+    assert all(torch.equal(result, torch.ones(1, _HIDDEN_SIZE)) for result in results)
+    assert [len(batch) for batch in calls] == [2, 1, 1]
+    assert calls[0][0] is items[0]
+    assert calls[0][1] is items[1]
+    assert calls[1][0] is items[0]
+    assert calls[2][0] is items[1]
+    assert cleanup_steps == ["recover"]
+    assert service.stats()["batches"] == 2
+    assert service.stats()["items"] == 2
 
 
 def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
