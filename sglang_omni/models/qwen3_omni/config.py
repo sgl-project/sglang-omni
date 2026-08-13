@@ -266,7 +266,7 @@ def _speech_stages(
             process=process_by_stage["talker_ar"],
             enable_partial_start=enable_partial_start,
         ),
-        _code2wav_stage(gpu=talker_gpu, process=process_by_stage["code2wav"]),
+        _code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
     ]
 
 
