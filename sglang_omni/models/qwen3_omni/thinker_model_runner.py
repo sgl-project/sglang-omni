@@ -190,10 +190,6 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             return False
 
         prefix, length = chunk_span
-        live_audio = positions["audio"][
-            (positions["audio"] >= prefix) & (positions["audio"] < prefix + length)
-        ]
-
         consumed = getattr(req, "_omni_consumed", None)
         if consumed is None:
             cached_audio = positions["audio"][positions["audio"] < prefix]
@@ -203,16 +199,19 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             # Qwen sidecar.
             if cached_audio.numel() and future_audio.numel():
                 return False
-            audio_offset = 0
+            chunk_consumed = {}
         elif isinstance(consumed, dict) and set(consumed) <= {"audio"}:
-            audio_offset = consumed.get("audio", 0)
+            chunk_consumed = consumed
         else:
             return False
+        _, audio_offset, live_audio_count = self._plan_modality_chunk(
+            positions["audio"], chunk_consumed, "audio", prefix, length
+        )
         if (
             not isinstance(audio_offset, Integral)
             or isinstance(audio_offset, bool)
             or audio_offset < 0
-            or audio_offset + live_audio.numel() > audio_embeds.shape[0]
+            or audio_offset + live_audio_count > audio_embeds.shape[0]
         ):
             return False
 

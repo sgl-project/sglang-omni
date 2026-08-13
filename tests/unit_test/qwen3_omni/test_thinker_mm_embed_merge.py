@@ -94,6 +94,25 @@ def _rand(n):
     return torch.randn(n, HIDDEN)
 
 
+def test_plan_modality_chunk_is_pure_and_uses_half_open_bounds():
+    runner = _runner()
+    positions = torch.tensor([0, 2, 4], dtype=torch.long)
+    consumed = {"audio": 1}
+
+    relative_positions, offset, count = runner._plan_modality_chunk(
+        positions,
+        consumed,
+        "audio",
+        prefix=2,
+        length=2,
+    )
+
+    assert relative_positions.tolist() == [0]
+    assert offset == 1
+    assert count == 1
+    assert consumed == {"audio": 1}
+
+
 def test_text_only_batch_returns_none():
     runner = _runner()
     req = _req([TEXT, TEXT, TEXT], None)

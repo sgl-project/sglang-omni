@@ -96,6 +96,26 @@ class ThinkerModelRunner(ModelRunner):
         req._omni_mm_positions = positions
         return positions
 
+    @staticmethod
+    def _plan_modality_chunk(
+        positions: torch.Tensor,
+        consumed: dict[str, Any],
+        modality: str,
+        prefix: int,
+        length: int,
+    ) -> tuple[torch.Tensor, Any, int]:
+        """Plan the embed slice for positions in ``[prefix, prefix + length)``.
+
+        The caller owns cursor advancement; this helper never mutates ``consumed``.
+        """
+        in_chunk = (positions >= prefix) & (positions < prefix + length)
+        relative_positions = positions[in_chunk] - prefix
+        return (
+            relative_positions,
+            consumed.get(modality, 0),
+            relative_positions.numel(),
+        )
+
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
@@ -144,18 +164,13 @@ class ThinkerModelRunner(ModelRunner):
             positions = self._req_mm_token_positions(req, pad_values)
             chunk_positions: dict[str, torch.Tensor] = {}
             for modality in ("image", "video", "audio"):
-                mod_positions = positions[modality]
-                if mod_positions.numel() == 0:
-                    chunk_positions[modality] = mod_positions
-                    continue
-                in_chunk = (mod_positions >= prefix) & (mod_positions < prefix + length)
-                rel = mod_positions[in_chunk] - prefix
+                rel, offset, n_tokens = self._plan_modality_chunk(
+                    positions[modality], consumed, modality, prefix, length
+                )
                 chunk_positions[modality] = rel
-                n_tokens = rel.numel()
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None or n_tokens == 0:
                     continue
-                offset = consumed.get(modality, 0)
                 chunk_offsets[modality] = (offset, n_tokens)
                 scatter_rows.append(rel + start)
                 scatter_srcs.append(embeds[offset : offset + n_tokens])
