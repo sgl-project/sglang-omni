@@ -218,6 +218,7 @@ class CompletionStreamChunk:
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     stage_name: str | None = None
+    omni_rollout: dict[str, Any] | None = None
 
 
 @dataclass

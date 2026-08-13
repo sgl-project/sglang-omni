@@ -198,6 +198,7 @@ class Client:
                     finish_reason=chunk.finish_reason,
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
+                    omni_rollout=chunk.omni_rollout,
                 )
 
     # ------------------------------------------------------------------

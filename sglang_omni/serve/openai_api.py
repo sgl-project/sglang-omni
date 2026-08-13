@@ -680,6 +680,31 @@ def _register_chat_completions(app: FastAPI) -> None:
         )
 
 
+def _images_from_omni_rollout(omni_rollout: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(omni_rollout, dict):
+        return []
+    images = omni_rollout.get("images") or []
+    output: list[dict[str, Any]] = []
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("data") or item.get("url")
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            url = image_url.get("url", url)
+        if not isinstance(url, str) or not url.startswith("data:image/"):
+            continue
+        out_item: dict[str, Any] = {
+            "type": "image_url",
+            "image_url": {"url": url},
+        }
+        for key in ("width", "height", "index", "format"):
+            if item.get(key) is not None:
+                out_item[key] = item[key]
+        output.append(out_item)
+    return output
+
+
 async def _chat_non_stream(
     client: Client,
     gen_req: GenerateRequest,
@@ -721,6 +746,11 @@ async def _chat_non_stream(
             "data": result.audio.data,
             "transcript": result.audio.transcript,
         }
+
+    if "image" in requested_modalities:
+        images = _images_from_omni_rollout(result.omni_rollout)
+        if images:
+            message["images"] = images
 
     if "content" not in message and "audio" not in message:
         message["content"] = result.text
@@ -793,6 +823,9 @@ async def _chat_stream(
                     chunk.modality == "audio"
                     and chunk.audio_b64 is not None
                     and "audio" in requested_modalities
+                ) or (
+                    "image" in requested_modalities
+                    and bool(_images_from_omni_rollout(chunk.omni_rollout))
                 )
                 if not has_payload:
                     continue
@@ -826,6 +859,12 @@ async def _chat_stream(
                     data=chunk.audio_b64,
                 )
                 emit = True
+
+            if "image" in requested_modalities:
+                images = _images_from_omni_rollout(chunk.omni_rollout)
+                if images:
+                    delta.images = images
+                    emit = True
 
             if not emit:
                 continue
@@ -966,6 +1005,9 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         ("talker_top_k", req.talker_top_k),
         ("talker_repetition_penalty", req.talker_repetition_penalty),
         ("talker_max_new_tokens", req.talker_max_new_tokens),
+        ("image_config", req.image_config),
+        ("chat_template_kwargs", req.chat_template_kwargs),
+        ("n", req.n),
     ):
         if value is not None:
             extra_params[field_name] = value

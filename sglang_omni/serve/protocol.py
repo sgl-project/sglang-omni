@@ -62,6 +62,9 @@ class ChatCompletionRequest(BaseModel):
 
     # Multi-modal output control
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
+    image_config: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
+    n: int | None = None
 
     # Audio output configuration
     audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
@@ -128,6 +131,7 @@ class ChatCompletionStreamDelta(BaseModel):
     role: str | None = None
     content: str | None = None
     audio: ChatCompletionAudio | None = None
+    images: list[dict[str, Any]] | None = None
 
 
 class ChatCompletionStreamChoice(BaseModel):
