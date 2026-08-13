@@ -7,9 +7,7 @@ visual embeddings for Qwen3-Omni's thinker stage.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -22,15 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 class ThinkerModelRunner(ModelRunner):
-    def __init__(
-        self,
-        tp_worker: Any,
-        output_processor: Any,
-        *,
-        should_capture_hidden: Callable[[Any], bool] | None = None,
-    ):
+    def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._should_capture_hidden = should_capture_hidden
 
         model = self.model
         self._outer_model = model.thinker
@@ -43,37 +34,6 @@ class ThinkerModelRunner(ModelRunner):
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
-
-    @contextlib.contextmanager
-    def _text_only_capture_guard(self, requests: list[Any]):
-        # note (jiaxin deng): drop hidden-capture for an all-text batch, shared by
-        # sync execute() and async execute_launch so both take the same path.
-        capture_layers = self._text_model.layers_to_capture
-        if not (capture_layers and not self._batch_should_capture_hidden(requests)):
-            yield
-            return
-        saved_capture_layers = list(capture_layers)
-        self._text_model.layers_to_capture = []
-        try:
-            yield
-        finally:
-            self._text_model.layers_to_capture = saved_capture_layers
-
-    def execute(self, scheduler_output: Any):
-        with self._text_only_capture_guard(scheduler_output.requests):
-            return super().execute(scheduler_output)
-
-    def execute_launch(self, scheduler_output: Any):
-        with self._text_only_capture_guard(scheduler_output.requests):
-            return super().execute_launch(scheduler_output)
-
-    def _batch_should_capture_hidden(self, requests: list[Any]) -> bool:
-        if self._should_capture_hidden is None:
-            return True
-        for request in requests:
-            if self._should_capture_hidden(request):
-                return True
-        return False
 
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
         if not schedule_batch.forward_mode.is_extend():

@@ -16,8 +16,8 @@ from typing import Any, Mapping
 
 import torch
 
+from sglang_omni.models.moss_tts.vocoder_decoder import MossAudioTokenizerVocoderDecoder
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
-from sglang_omni.models.moss_tts_local.vocoder_decoder import MossTTSLocalVocoderDecoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
@@ -374,7 +374,7 @@ class MossTTSLocalStreamingVocoderScheduler(
                 f"MOSS-TTS Local streaming vocoder: codec is missing {missing}; "
                 "the installed MOSS-Audio-Tokenizer-v2 version is incompatible"
             )
-        nonstream_decoder = MossTTSLocalVocoderDecoder(codec.decoder)
+        nonstream_decoder = MossAudioTokenizerVocoderDecoder(codec.decoder)
         logger.info(
             f"MOSS-TTS Local non-streaming vocoder uses packed SGLang attention "
             f"stages={len(nonstream_decoder)}"

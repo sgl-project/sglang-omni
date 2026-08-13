@@ -2,10 +2,14 @@ name: Lint
 
 on:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: lint-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -25,3 +29,17 @@ jobs:
 
       - name: Linting
         run: pre-commit run --all-files --show-diff-on-failure
+
+  playback-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test realtime playback state
+        run: node --test playground/qwen-omni/realtime/playback.test.js

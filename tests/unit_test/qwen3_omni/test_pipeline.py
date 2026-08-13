@@ -781,10 +781,11 @@ def test_qwen_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> No
         "expected_infrastructure_graph_disabled",
         "expected_capture_hidden_layers",
         "expected_init_graph_calls",
+        "expected_infrastructure_return_hidden",
     ),
     [
-        (False, False, None, 0),
-        (True, True, [0, 24], 1),
+        (False, False, None, 0, False),
+        (True, True, [0, 24], 1, True),
     ],
 )
 def test_qwen_thinker_cuda_graph_capture_lifecycle(
@@ -793,6 +794,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     expected_infrastructure_graph_disabled: bool,
     expected_capture_hidden_layers: list[int] | None,
     expected_init_graph_calls: int,
+    expected_infrastructure_return_hidden: bool,
 ) -> None:
     from sglang.srt.utils import hf_transformers_utils
 
@@ -805,6 +807,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         disable_cuda_graph=False, enable_return_hidden_states=False
     )
     infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_return_hidden: list[bool] = []
     capture_hidden_layers_seen: list[list[int] | None] = []
     init_graph_calls = 0
 
@@ -815,6 +818,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
             nonlocal init_graph_calls
             init_graph_calls += 1
             assert server_args.disable_cuda_graph is False
+            assert server_args.enable_return_hidden_states is False
 
     model_config = SimpleNamespace(
         model_path="model",
@@ -828,6 +832,9 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
 
     def fake_create_infrastructure(*args, **kwargs):
         infrastructure_saw_graph_disabled.append(bool(args[0].disable_cuda_graph))
+        infrastructure_saw_return_hidden.append(
+            bool(args[0].enable_return_hidden_states)
+        )
         capture_hidden_layers_seen.append(kwargs.get("capture_hidden_layers"))
         return (
             model_worker,
@@ -877,7 +884,8 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert infrastructure_saw_graph_disabled == [expected_infrastructure_graph_disabled]
     assert capture_hidden_layers_seen == [expected_capture_hidden_layers]
     assert init_graph_calls == expected_init_graph_calls
-    assert server_args.enable_return_hidden_states is speech_enabled
+    assert infrastructure_saw_return_hidden == [expected_infrastructure_return_hidden]
+    assert server_args.enable_return_hidden_states is False
     assert server_args.disable_cuda_graph is False
     assert scheduler.server_args is server_args
 

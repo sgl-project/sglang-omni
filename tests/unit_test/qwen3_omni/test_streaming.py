@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.model_runner._hidden_capture import StaticAuxHiddenCapture
 from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
@@ -241,13 +242,16 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     )
 
 
-def test_qwen_aux_hidden_states_clone_only_audio_request_slice():
-    model = SimpleNamespace(
-        _captured_aux_hidden_states=[
-            torch.arange(6, dtype=torch.float32).reshape(3, 2),
-            torch.arange(30, 36, dtype=torch.float32).reshape(3, 2),
-        ]
+def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
+    static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
+    static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
+    capture = StaticAuxHiddenCapture(
+        buffers=[static_embed, static_layer],
+        hook_handles=[],
+        max_tokens=6,
     )
+    capture.rows_written = 3
+    model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
         capture_hidden_layers=[0, 24],
@@ -256,87 +260,114 @@ def test_qwen_aux_hidden_states_clone_only_audio_request_slice():
     )
     scheduler_output = SchedulerOutput(
         requests=[
-            SchedulerRequest(request_id="text-1"),
+            SchedulerRequest(request_id="text"),
             SchedulerRequest(request_id="audio"),
-            SchedulerRequest(request_id="text-2"),
         ],
         batch_data=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_extend=lambda: True),
             reqs=[
                 SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-            ]
+                SimpleNamespace(extend_range=SimpleNamespace(length=2)),
+            ],
         ),
     )
     model_output = SimpleNamespace(
-        next_token_ids=torch.tensor([11, 22, 33]),
+        next_token_ids=torch.tensor([11, 22]),
         logits_output=SimpleNamespace(
-            hidden_states=torch.arange(100, 106, dtype=torch.float32).reshape(3, 2)
+            hidden_states=torch.arange(6, dtype=torch.float32).reshape(3, 2)
         ),
     )
 
     outputs = output_processor.process(model_output, scheduler_output)
 
-    assert outputs["text-1"].extra is None
-    assert outputs["text-2"].extra is None
-    assert model._captured_aux_hidden_states is None
-
     audio_hidden = outputs["audio"].extra["hidden_states"]
-    assert torch.equal(audio_hidden["embed"], torch.tensor([2.0, 3.0]))
-    assert torch.equal(audio_hidden[24], torch.tensor([32.0, 33.0]))
-    assert torch.equal(
-        outputs["audio"].extra["stream_hidden_states"],
-        torch.tensor([102.0, 103.0]),
-    )
-    stream_hidden = outputs["audio"].extra["stream_hidden_states"]
+    assert outputs["text"].extra is None
+    assert audio_hidden["embed"].shape == (2, 2)
+    torch.testing.assert_close(audio_hidden["embed"], static_embed[1:3])
+    torch.testing.assert_close(audio_hidden[24], static_layer[1:3])
     assert (
         audio_hidden["embed"].untyped_storage().nbytes()
         == audio_hidden["embed"].numel() * audio_hidden["embed"].element_size()
     )
-    assert (
-        stream_hidden.untyped_storage().nbytes()
-        == stream_hidden.numel() * stream_hidden.element_size()
-    )
 
 
-def test_qwen_aux_hidden_states_clear_when_no_request_emits_hidden():
-    model = SimpleNamespace(
-        _captured_aux_hidden_states=[
-            torch.arange(6, dtype=torch.float32).reshape(3, 2),
-            torch.arange(30, 36, dtype=torch.float32).reshape(3, 2),
-        ]
+def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
+    static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
+    static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
+    capture = StaticAuxHiddenCapture(
+        buffers=[static_embed, static_layer],
+        hook_handles=[],
+        max_tokens=6,
     )
+    capture.rows_written = 2
+    model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
         capture_hidden_layers=[0, 24],
         model=model,
-        should_emit_hidden=lambda request: False,
+        should_emit_hidden=lambda request: request.request_id == "audio",
+    )
+    scheduler_output = SchedulerOutput(
+        requests=[
+            SchedulerRequest(request_id="text"),
+            SchedulerRequest(request_id="audio"),
+        ],
+        batch_data=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_extend=lambda: False),
+            reqs=[SimpleNamespace(), SimpleNamespace()],
+        ),
+    )
+    model_output = SimpleNamespace(
+        next_token_ids=torch.tensor([11, 22]),
+        logits_output=SimpleNamespace(
+            hidden_states=torch.arange(4, dtype=torch.float32).reshape(2, 2)
+        ),
+    )
+
+    outputs = output_processor.process(model_output, scheduler_output)
+
+    audio_hidden = outputs["audio"].extra["hidden_states"]
+    assert outputs["text"].extra is None
+    torch.testing.assert_close(audio_hidden["embed"], static_embed[1])
+    torch.testing.assert_close(audio_hidden[24], static_layer[1])
+
+
+def test_qwen_static_aux_hidden_skips_capture_for_text_only_decode():
+    class _UnexpectedCaptureRead:
+        def __init__(self) -> None:
+            self.views_calls = 0
+
+        def views(self, _num_rows: int) -> None:
+            self.views_calls += 1
+            raise AssertionError("text-only decode must not read hidden capture")
+
+    capture = _UnexpectedCaptureRead()
+    output_processor = SGLangOutputProcessor(
+        capture_hidden=True,
+        capture_hidden_layers=[0, 24],
+        model=SimpleNamespace(_omni_aux_hidden_capture=capture),
+        should_emit_hidden=lambda _request: False,
     )
     scheduler_output = SchedulerOutput(
         requests=[
             SchedulerRequest(request_id="text-1"),
             SchedulerRequest(request_id="text-2"),
-            SchedulerRequest(request_id="text-3"),
         ],
         batch_data=SimpleNamespace(
-            reqs=[
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-            ]
+            forward_mode=SimpleNamespace(is_extend=lambda: False),
+            reqs=[SimpleNamespace(), SimpleNamespace()],
         ),
     )
     model_output = SimpleNamespace(
-        next_token_ids=torch.tensor([11, 22, 33]),
-        logits_output=SimpleNamespace(
-            hidden_states=torch.arange(100, 106, dtype=torch.float32).reshape(3, 2)
-        ),
+        next_token_ids=torch.tensor([11, 22]),
+        logits_output=None,
     )
 
     outputs = output_processor.process(model_output, scheduler_output)
 
-    assert all(output.extra is None for output in outputs.values())
-    assert model._captured_aux_hidden_states is None
+    assert capture.views_calls == 0
+    assert outputs["text-1"].extra is None
+    assert outputs["text-2"].extra is None
 
 
 def test_utf8_multibyte_hold_then_emit():

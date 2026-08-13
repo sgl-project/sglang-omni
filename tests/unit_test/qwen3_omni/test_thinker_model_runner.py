@@ -7,7 +7,38 @@ from sglang.srt.model_executor.forward_context import (
     has_forward_context,
 )
 
+from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+
+
+def _probe_runner(monkeypatch, method: str):
+    runner = object.__new__(ThinkerModelRunner)
+    runner._text_model = SimpleNamespace(layers_to_capture=[0, 24])
+    seen: list[list[int]] = []
+    monkeypatch.setattr(
+        ModelRunner,
+        method,
+        lambda self, _sched: seen.append(list(self._text_model.layers_to_capture)),
+    )
+    return runner, seen
+
+
+def test_execute_keeps_layers_to_capture_stable(monkeypatch) -> None:
+    runner, seen = _probe_runner(monkeypatch, "execute")
+
+    runner.execute(SimpleNamespace(requests=[object()]))
+
+    assert seen == [[0, 24]]
+    assert runner._text_model.layers_to_capture == [0, 24]
+
+
+def test_execute_launch_keeps_layers_to_capture_stable(monkeypatch) -> None:
+    runner, seen = _probe_runner(monkeypatch, "execute_launch")
+
+    runner.execute_launch(SimpleNamespace(requests=[object()]))
+
+    assert seen == [[0, 24]]
+    assert runner._text_model.layers_to_capture == [0, 24]
 
 
 def test_audio_prefill_publishes_embeds_to_sglang_runner() -> None:

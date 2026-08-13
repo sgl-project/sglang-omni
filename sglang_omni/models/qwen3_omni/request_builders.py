@@ -461,7 +461,9 @@ def _compute_mrope_positions(
     thinker_config: Any,
 ) -> torch.Tensor | None:
     """Compute M-RoPE positions for multimodal inputs."""
-    from sglang.srt.layers.rotary_embedding import MRotaryEmbedding
+    from sglang_omni.models.qwen3_omni.mrope_positions import (
+        get_rope_index_qwen3_omni_vectorized,
+    )
 
     image_grid_thw = model_inputs.get("image_grid_thw")
     video_grid_thw = model_inputs.get("video_grid_thw")
@@ -478,7 +480,7 @@ def _compute_mrope_positions(
 
     ids_2d = input_ids.unsqueeze(0) if input_ids.dim() == 1 else input_ids
 
-    # Move all tensors to CPU — get_rope_index creates CPU tensors internally
+    # Move tensors to CPU — get_rope_index builds CPU tensors internally.
     ids_2d = ids_2d.cpu()
     if isinstance(image_grid_thw, torch.Tensor):
         image_grid_thw = image_grid_thw.cpu()
@@ -498,12 +500,11 @@ def _compute_mrope_positions(
         "audio_seqlens": audio_feature_lengths,
     }
 
-    mrope_positions, mrope_position_delta = MRotaryEmbedding.get_rope_index(
+    mrope_positions, mrope_position_delta = get_rope_index_qwen3_omni_vectorized(
         spatial_merge_size=spatial_merge_size,
         image_token_id=image_token_id,
         video_token_id=video_token_id,
         vision_start_token_id=vision_start_token_id,
-        model_type="qwen3_omni_moe",
         tokens_per_second=tokens_per_second,
         input_ids=ids_2d,
         image_grid_thw=image_grid_thw,
@@ -759,11 +760,21 @@ def build_sglang_talker_request(
         else None
     )
     if thinker_config is not None and talker_model_inputs:
-        mrope_positions, mrope_position_delta = _compute_mrope_positions(
-            input_ids_tensor.to(dtype=torch.long),
-            talker_model_inputs or {},
-            thinker_config,
+        from sglang_omni.models.qwen3_omni.mrope_positions import (
+            linear_mrope_positions,
+            talker_can_use_linear_mrope,
         )
+
+        ids = input_ids_tensor.to(dtype=torch.long)
+        mm_model_inputs = talker_model_inputs or {}
+        if talker_can_use_linear_mrope(ids, mm_model_inputs, thinker_config):
+            mrope_positions, mrope_position_delta = linear_mrope_positions(
+                int(ids.numel())
+            )
+        else:
+            mrope_positions, mrope_position_delta = _compute_mrope_positions(
+                ids, mm_model_inputs, thinker_config
+            )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta

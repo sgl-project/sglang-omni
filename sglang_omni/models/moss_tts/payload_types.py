@@ -6,7 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase
+from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
+from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
+from sglang_omni.scheduling.pipeline_state import wire
 
 
 @dataclass(frozen=True)
@@ -62,3 +66,11 @@ class MossTTSState(DeclarativeStateBase):
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     delayed_audio_codes: Any | None = wire(None, codec="tensor_cpu")
     assistant_start_length: int = wire(0, emit="truthy", codec="int")
+
+
+def load_moss_tts_state(payload: StagePayload) -> MossTTSState:
+    return _load_pipeline_state(payload, MossTTSState)
+
+
+def store_moss_tts_state(payload: StagePayload, state: MossTTSState) -> StagePayload:
+    return _store_pipeline_state(payload, state)

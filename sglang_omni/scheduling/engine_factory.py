@@ -7,12 +7,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
 
-from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
-
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
+    nested_prefill_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -25,14 +24,7 @@ def _operator_selected_prefill_graph_backend(
         return False
     if "cuda_graph_backend_prefill" in server_args_overrides:
         return True
-
-    config = server_args_overrides.get("cuda_graph_config")
-    if isinstance(config, CudaGraphConfig):
-        config = config.to_dict()
-    if not isinstance(config, Mapping):
-        return False
-    prefill_config = config.get("prefill")
-    return isinstance(prefill_config, Mapping) and "backend" in prefill_config
+    return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
 class SGLangGenerationEngineBuilder(ABC):
