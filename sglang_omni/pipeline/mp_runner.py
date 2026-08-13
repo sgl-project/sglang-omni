@@ -60,6 +60,13 @@ def _build_stage_groups(
         ctx = multiprocessing.get_context("spawn")
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
+    rank_endpoints = {
+        stage.name: tuple(
+            endpoints[f"comm_{stage.name}_rank{tp_rank}"]
+            for tp_rank in range(stage.tp_size)
+        )
+        for stage in stages_cfg
+    }
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
         for target in scfg.stream_to:
@@ -120,6 +127,7 @@ def _build_stage_groups(
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
+            rank_endpoints=rank_endpoints,
             stream_targets=list(stage_cfg.stream_to),
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             gpu_stage_names=gpu_stage_names,

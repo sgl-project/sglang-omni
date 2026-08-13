@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSStreamingVocoderScheduler,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -123,13 +124,13 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> ThreadedSimpleScheduler:
     del model_path
     # note (luojiaxuan): preprocessing must admit several requests at once. A
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
-    return SimpleScheduler(
+    return ThreadedSimpleScheduler(
         preprocess_qwen3_tts_payload,
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,

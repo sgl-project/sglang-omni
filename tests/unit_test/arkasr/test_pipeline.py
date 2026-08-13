@@ -67,6 +67,13 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["request_build_max_pending"].default == 16
 
 
+def test_arkasr_stage_default_enables_async_decode():
+    signature = inspect.signature(create_sglang_arkasr_executor)
+
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 2
+
+
 @pytest.mark.parametrize("want_cuda_graph", [True, False])
 def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
@@ -153,7 +160,10 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     )
 
     scheduler = create_sglang_arkasr_executor(
-        "AutoArk-AI/ARK-ASR-3B", mm_attention_backend="triton_attn"
+        "AutoArk-AI/ARK-ASR-3B",
+        mm_attention_backend="triton_attn",
+        enable_async_decode=False,
+        async_decode_min_batch_size=4,
     )
 
     assert graph_init_workers == ([model_worker] if want_cuda_graph else [])
@@ -161,6 +171,8 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     # builder forwards the stage knobs instead of dropping them.
     assert scheduler.request_build_max_workers == 2
     assert scheduler.request_build_max_pending == 16
+    assert scheduler.enable_async_decode is False
+    assert scheduler.async_decode_min_batch_size == 4
     assert adapter_kwargs["merge_factor"] == 7
     assert adapter_kwargs["audio_token_id"] == 4242
     assert adapter_kwargs["max_new_tokens"] == 256

@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 TARGET_SAMPLE_RATE = 16000
 
+# Note (Jiaxin Deng): peak amplitude below -60 dBFS means a chunk holds no
+# speech at all; decoding one anyway free-runs into repeated hallucinated text.
+SILENT_CHUNK_PEAK_THRESHOLD = 1e-3
+
 # Half-open [start, end) sample range of one chunk.
 Span = tuple[int, int]
 
@@ -142,6 +146,7 @@ class ChunkSpan:
     end_sample: int
     start_s: float
     end_s: float
+    has_speech: bool = True
 
     @property
     def duration_s(self) -> float:
@@ -229,6 +234,9 @@ def plan_audio_chunks(
                 end_sample=end,
                 start_s=start / sample_rate,
                 end_s=end / sample_rate,
+                has_speech=bool(
+                    np.max(np.abs(waveform[start:end])) >= SILENT_CHUNK_PEAK_THRESHOLD
+                ),
             )
             for index, (start, end) in enumerate(spans)
         ],

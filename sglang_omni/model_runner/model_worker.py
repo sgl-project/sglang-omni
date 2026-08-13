@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
     normalize_quant_config,
     resolve_quant_config,
 )
+from sglang_omni.utils.misc import model_config_has_moe
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
@@ -150,7 +152,12 @@ class ModelWorker:
         # model_worker backend policy.
         _apply_omni_quantization_adapters(self.model_config)
 
-        effective_quantization = _apply_model_worker_backend_policy(
+        _apply_model_worker_backend_common_policy(
+            self.server_args,
+            self.model_arch_override,
+        )
+
+        effective_quantization = current_platform.apply_model_worker_backend_policy(
             self.server_args,
             self.model_config,
             self.model_arch_override,
@@ -447,19 +454,10 @@ def _resolve_nccl_port() -> int:
     return port
 
 
-def _apply_model_worker_backend_policy(
+def _apply_model_worker_backend_common_policy(
     server_args: ServerArgs,
-    model_config: ModelConfig,
     model_arch_override: str | None,
 ) -> str | None:
-    """Apply Omni backend policy after checkpoint quantization is known."""
-
-    effective_quantization = _normalize_quantization(model_config.quantization)
-    server_quantization = _normalize_quantization(server_args.quantization)
-    if server_quantization is not None:
-        effective_quantization = server_quantization
-
-    moe_runner_backend = server_args.moe_runner_backend
     is_qwen3_omni_arch = model_arch_override in (
         "Qwen3OmniTalker",
         "Qwen3OmniThinkerForCausalLM",
@@ -469,135 +467,6 @@ def _apply_model_worker_backend_policy(
             "Qwen3-Omni ModelWorker does not support expert parallelism; "
             "use ep_size=1."
         )
-    has_moe = _model_config_has_moe(model_config)
-    has_native_fp8_block_quant = _model_config_has_native_fp8_block_quant(model_config)
-
-    if (
-        model_arch_override == "Qwen3OmniTalker"
-        and effective_quantization is None
-        and moe_runner_backend == "auto"
-    ):
-        # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
-        # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
-        override_server_args(
-            server_args,
-            "sglang-omni-qwen3-backend-policy",
-            moe_runner_backend=("triton" if _is_h20_device() else "flashinfer_cutlass"),
-        )
-        moe_runner_backend = server_args.moe_runner_backend
-
-    if (
-        is_qwen3_omni_arch
-        and effective_quantization == "fp8"
-        and has_moe
-        and moe_runner_backend == "auto"
-        and has_native_fp8_block_quant
-        and _is_fp8_cutlass_moe_supported()
-    ):
-        override_server_args(
-            server_args,
-            "sglang-omni-qwen3-backend-policy",
-            moe_runner_backend="cutlass",
-        )
-        moe_runner_backend = server_args.moe_runner_backend
-
-    if (
-        is_qwen3_omni_arch
-        and effective_quantization == "fp8"
-        and has_moe
-        and moe_runner_backend == "cutlass"
-    ):
-        if not has_native_fp8_block_quant:
-            raise ValueError(
-                "Qwen3-Omni FP8 CUTLASS MoE requires a native serialized "
-                "block-FP8 checkpoint with weight_block_size."
-            )
-
-    if (
-        is_qwen3_omni_arch
-        and effective_quantization == "fp8"
-        and moe_runner_backend == "flashinfer_cutlass"
-    ):
-        raise ValueError(
-            "Qwen3-Omni native FP8 checkpoints cannot use "
-            "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "
-            "'auto' so Omni selects a native-FP8-compatible MoE runner."
-        )
-
-    fp8_gemm_backend = _normalize_quantization(server_args.fp8_gemm_runner_backend)
-    if (
-        model_arch_override == "Qwen3OmniTalker"
-        and effective_quantization == "fp8"
-        and has_native_fp8_block_quant
-        and fp8_gemm_backend in (None, "auto")
-    ):
-        # Projected talker prefill has request-dependent FP8 dense GEMM shapes
-        # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
-        override_server_args(
-            server_args,
-            "sglang-omni-qwen3-backend-policy",
-            fp8_gemm_runner_backend="triton",
-        )
-        fp8_gemm_backend = server_args.fp8_gemm_runner_backend
-
-    server_quantization = server_args.quantization
-    logger.info(
-        f"Configured SGLang backend policy: arch={model_arch_override} "
-        f"effective_quantization={effective_quantization} "
-        f"server_quantization={server_quantization} "
-        f"moe_runner_backend={moe_runner_backend} "
-        f"fp8_gemm_backend={fp8_gemm_backend}"
-    )
-    return effective_quantization
-
-
-def _normalize_quantization(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(value).lower()
-
-
-def _model_config_has_moe(model_config: ModelConfig) -> bool:
-    return hasattr(model_config.hf_text_config, "num_experts_per_tok")
-
-
-def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
-    quant_dict = resolve_quant_config(model_config.hf_config)
-    if quant_dict is None:
-        return False
-    return (
-        _normalize_quantization(quant_dict.get("quant_method")) == "fp8"
-        and quant_dict.get("weight_block_size") is not None
-    )
-
-
-def _is_h20_device() -> bool:
-    """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
-    try:
-        import re
-
-        import torch
-
-        if not torch.cuda.is_available():
-            return False
-        return bool(re.search(r"\bH20\b", torch.cuda.get_device_name(0)))
-    except Exception:
-        return False
-
-
-def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror SGLang 0.5.16's CUTLASS FP8 MoE assertions."""
-    from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
-    from sglang.srt.utils import (
-        is_sm90_supported,
-        is_sm100_supported,
-        is_sm120_supported,
-    )
-
-    return bool(
-        cutlass_fp8_supported()
-        and (is_sm90_supported() or is_sm100_supported() or is_sm120_supported())
-    )
 
 
 def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
@@ -623,7 +492,7 @@ def _initialize_model_worker_backend_globals(
 ) -> None:
     """Initialize backend globals needed by direct workers before model loading."""
 
-    if _model_config_has_moe(model_config):
+    if model_config_has_moe(model_config):
         from sglang.srt.layers.moe import initialize_moe_config
 
         initialize_moe_config(server_args)

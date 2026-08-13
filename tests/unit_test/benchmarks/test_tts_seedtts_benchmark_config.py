@@ -44,3 +44,17 @@ def test_seedtts_benchmark_batch_args_are_independent() -> None:
     )
     assert results_config["max_running_requests"] == 32
     assert results_config["cuda_graph_max_bs"] == 128
+
+
+def test_seedtts_benchmark_records_quantization() -> None:
+    config = _config_from_cli("--quantization", "fp8")
+    assert config.quantization == "fp8"
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["quantization"] == "fp8"
+
+
+def test_seedtts_benchmark_quantization_defaults_to_none() -> None:
+    config = _config_from_cli()
+    assert config.quantization is None
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["quantization"] is None

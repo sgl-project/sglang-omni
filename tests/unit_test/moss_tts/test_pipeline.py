@@ -24,7 +24,6 @@ from benchmarks.tasks.tts import (
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
-from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.request_builders import (
     _INF_DELAY,
@@ -133,13 +132,15 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     )
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
     assert preprocessing.factory_args == {
-        "device": "cpu",
         "dtype": "float32",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
         "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
     }
-    assert vocoder.factory_args == {"dtype": "bfloat16"}
+    assert vocoder.factory_args == {
+        "dtype": "float32",
+        "compute_dtype": "bfloat16",
+    }
 
 
 def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
@@ -153,7 +154,6 @@ def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
 
     assert preprocessing_args == {
-        "device": "cpu",
         "dtype": "float32",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
@@ -162,7 +162,8 @@ def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
         "gpu_id": 0,
     }
     assert vocoder_args == {
-        "dtype": "bfloat16",
+        "dtype": "float32",
+        "compute_dtype": "bfloat16",
         "model_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
         "gpu_id": 0,
     }
@@ -189,6 +190,7 @@ def test_moss_tts_32gb_config_bounds_runtime_memory() -> None:
         "cuda_graph_max_bs": 1,
     }
     assert vocoder_args["dtype"] == "bfloat16"
+    assert vocoder_args["compute_dtype"] == "bfloat16"
     assert vocoder_args["max_batch_size"] == 1
     assert vocoder_args["max_batch_wait_ms"] == 2
 
@@ -215,6 +217,7 @@ def test_moss_tts_24gb_config_bounds_runtime_memory() -> None:
         "cuda_graph_max_bs": 1,
     }
     assert vocoder_args["dtype"] == "bfloat16"
+    assert vocoder_args["compute_dtype"] == "bfloat16"
     assert vocoder_args["max_batch_size"] == 1
     assert vocoder_args["max_batch_wait_ms"] == 2
 
@@ -239,6 +242,7 @@ def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
     assert preprocessing_args["gpu_id"] == 2
     assert vocoder_args["device"] == "cpu"
     assert vocoder_args["dtype"] == "float32"
+    assert vocoder_args["compute_dtype"] == "bfloat16"
     assert vocoder_args["gpu_id"] == 2
 
 
@@ -262,6 +266,53 @@ def test_moss_tts_config_merge_updates_reference_cache_factory_args() -> None:
     assert preprocessing.factory_args["ref_audio_cache_max_bytes"] == 4096
 
 
+def test_moss_tts_config_merge_updates_vocoder_factory_args() -> None:
+    from sglang_omni.config.manager import ConfigManager
+
+    config = MossTTSPipelineConfig(model_path="model")
+    merged = ConfigManager(config).merge_config(
+        {
+            "stages.vocoder.factory_args.compute_dtype": "float32",
+        }
+    )
+    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+
+    assert vocoder.factory_args["compute_dtype"] == "float32"
+
+    disabled = ConfigManager(config).merge_config(
+        {"stages.vocoder.factory_args.compute_dtype": None}
+    )
+    vocoder = next(stage for stage in disabled.stages if stage.name == "vocoder")
+
+    assert vocoder.factory_args["compute_dtype"] is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("float32", torch.float32),
+        ("bfloat16", torch.bfloat16),
+        (torch.float32, torch.float32),
+        (torch.bfloat16, torch.bfloat16),
+    ],
+)
+def test_moss_tts_resolves_compute_dtype(value, expected) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    assert stages._resolve_compute_dtype(value) is expected
+
+
+@pytest.mark.parametrize(
+    "value", ["fp16", "float16", "fp32", "bf16", "invalid", torch.float16]
+)
+def test_moss_tts_rejects_invalid_compute_dtype(value) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    with pytest.raises(ValueError, match="compute_dtype"):
+        stages._resolve_compute_dtype(value)
+
+
 def test_moss_tts_preprocessing_factory_receives_placement_gpu_id() -> None:
     from sglang_omni.config.manager import ConfigManager
     from sglang_omni.config.runtime import resolve_stage_factory_args
@@ -280,7 +331,7 @@ def test_moss_tts_preprocessing_factory_receives_placement_gpu_id() -> None:
 
     assert preprocessing.gpu == 2
     assert factory_args["gpu_id"] == 2
-    assert factory_args["device"] == "cpu"
+    assert "device" not in factory_args
 
 
 @pytest.mark.parametrize(
@@ -1850,22 +1901,6 @@ def test_moss_audio_end_in_batch_uses_full_text_path_on_next_step() -> None:
     )
 
     assert seen == {"head": False, "sampler": False}
-
-
-def test_moss_delay_codec_splits_non_pad_segments() -> None:
-    delayed = torch.tensor(
-        [
-            [1, 1024],
-            [2, 3],
-            [1024, 4],
-            [1024, 1024],
-        ],
-        dtype=torch.long,
-    )
-
-    segments = split_moss_audio_segments(delayed, audio_pad_code=1024)
-
-    assert [segment.tolist() for segment in segments] == [[[1, 3], [2, 4]]]
 
 
 def test_moss_sample_tokens_uses_per_row_top_k() -> None:

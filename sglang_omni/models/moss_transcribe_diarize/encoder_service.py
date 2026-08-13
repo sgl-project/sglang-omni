@@ -40,6 +40,9 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self._model = model
         self._max_batch_size = int(max_batch_size)
         self._device = next(model.whisper_encoder.parameters()).device
+        adaptor_reference = next(model.vq_adaptor.parameters())
+        self._dtype = adaptor_reference.dtype
+        self._hidden_size = int(model.config.text_config.hidden_size)
         self._stream = torch.cuda.Stream(device=self._device)
         self._cache = StageOutputCache(
             max_size=_CACHE_MAX_ENTRIES,
@@ -52,15 +55,62 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
 
     def encode_item(self, item: Any) -> None:
         """Blocks until item.precomputed_embeddings is attached."""
-        if item.hash is not None:
-            cached = self._cache.get(str(item.hash))
-        else:
-            cached = None
+        feature_lengths = getattr(item, "audio_feature_lengths", None)
+        if feature_lengths is None:
+            future = self._submit(item)
+            future.result(timeout=self.ENCODE_TIMEOUT_S)
+            return
+        expected_tokens = int(feature_lengths.sum())
+        key = self._cache_key(item)
+        cached = self._lookup_cached_embedding(key, expected_tokens)
         if cached is not None:
-            self.attach_embedding(item, cached.to(self._device, non_blocking=True))
+            self.attach_embedding(item, cached)
             return
         future = self._submit(item)
         future.result(timeout=self.ENCODE_TIMEOUT_S)
+
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated cached embedding without starting an encode."""
+        return self._lookup_cached_embedding(str(audio_fingerprint), expected_tokens)
+
+    def _lookup_cached_embedding(
+        self,
+        key: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        if self._is_valid(cached, expected_tokens):
+            return cached
+        logger.warning(
+            "MOSS-TD pre-LM cache entry %s failed validation "
+            "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
+            key,
+            getattr(cached, "shape", None),
+            getattr(cached, "dtype", None),
+        )
+        self._cache.remove_if_same(key, cached)
+        return None
+
+    def _cache_key(self, item: Any) -> str | None:
+        fingerprint = getattr(item, "audio_fingerprint", None)
+        if fingerprint is None:
+            fingerprint = getattr(item, "hash", None)
+        return None if fingerprint is None else str(fingerprint)
+
+    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+        return (
+            isinstance(embedding, torch.Tensor)
+            and embedding.dim() == 2
+            and embedding.shape[0] == expected_tokens
+            and embedding.shape[1] == self._hidden_size
+            and embedding.dtype == self._dtype
+        )
 
     def _drain_batch(self) -> list[QueueEntry[Any]]:
         # note (yichi): never wait — a window costs 8~16ms at low concurrency, buys <=5ms at high.
@@ -99,7 +149,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         ]
 
     def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
-        item.precomputed_embeddings = embedding
+        item.precomputed_embeddings = embedding.to(self._device, non_blocking=True)
         item.feature = None
 
     def attach_before_synchronize(self) -> bool:
@@ -109,8 +159,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self._stream.synchronize()
 
     def cache_embedding(self, item: Any, embedding: torch.Tensor) -> None:
-        if item.hash is not None:
-            self._cache.put(str(item.hash), embedding)
+        self._cache.put(self._cache_key(item), embedding)
 
     def _handle_batch_failure(
         self,

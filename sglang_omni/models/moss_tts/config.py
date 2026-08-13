@@ -62,11 +62,7 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            # Keep the standalone reference encoder off GPU. MOSS-TTS loads a
-            # second audio-tokenizer instance for vocoding, so colocating both
-            # FP32 codec copies leaves no credible runtime margin on 32 GB.
             factory_args={
-                "device": "cpu",
                 "dtype": "float32",
                 "ref_audio_cache": True,
                 "ref_audio_cache_max_items": _REF_AUDIO_CACHE_MAX_ITEMS,
@@ -88,7 +84,10 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="vocoder",
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"dtype": "bfloat16"},
+            factory_args={
+                "dtype": "float32",
+                "compute_dtype": "bfloat16",
+            },
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
