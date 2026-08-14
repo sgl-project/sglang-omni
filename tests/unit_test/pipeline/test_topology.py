@@ -1070,7 +1070,7 @@ def test_serve_cli_accepts_repeatable_stage_process(monkeypatch) -> None:
 
 
 def test_non_tp_stages_must_declare_process() -> None:
-    with pytest.raises(ValueError, match="Non-TP stages must declare process"):
+    with pytest.raises(ValueError, match="Non-parallel stages must declare process"):
         PipelineConfig(
             model_path="dummy",
             stages=[
@@ -1081,7 +1081,7 @@ def test_non_tp_stages_must_declare_process() -> None:
 
 
 def test_missing_non_tp_process_declaration_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Non-TP stages must declare process"):
+    with pytest.raises(ValueError, match="Non-parallel stages must declare process"):
         PipelineConfig(
             model_path="dummy",
             stages=[_stage("a", next_stage="b"), _stage("b", terminal=True)],

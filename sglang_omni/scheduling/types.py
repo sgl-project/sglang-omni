@@ -5,10 +5,66 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import torch
+
+
+@dataclass(frozen=True)
+class ParallelSchedulerCapabilities:
+    """Scheduler behavior required by TP or SP stage ranks."""
+
+    fanout_work: bool = False
+    drain_aborted_work: bool = False
+    synchronize_abort: bool = False
+
+    def __post_init__(self) -> None:
+        if self.fanout_work and not self.drain_aborted_work:
+            raise ValueError("stage-fanned work must drain after abort")
+        if self.fanout_work and self.synchronize_abort:
+            raise ValueError(
+                "stage work fanout and scheduler-owned abort synchronization "
+                "are mutually exclusive"
+            )
+
+
+class AbortDrainTracker:
+    """Track dispatch-specific aborts until stage-fanned work reaches terminal."""
+
+    def __init__(self) -> None:
+        self._pending: set[tuple[str, int]] = set()
+
+    def record(self, request_id: str, dispatch_id: int) -> None:
+        if dispatch_id < 1:
+            raise ValueError("Abort-drain dispatch ID must be positive")
+        self._pending.add((request_id, dispatch_id))
+
+    def acknowledge(self, request_id: str, dispatch_id: int) -> bool:
+        key = (request_id, dispatch_id)
+        if key not in self._pending:
+            return False
+        self._pending.remove(key)
+        return True
+
+    def is_pending(self, request_id: str, dispatch_id: int) -> bool:
+        return (request_id, dispatch_id) in self._pending
+
+
+@runtime_checkable
+class AbortDrainScheduler(Protocol):
+    def mark_request_aborted_for_drain(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
+
+    def acknowledge_request_terminal(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
+
+
+@runtime_checkable
+class AbortPropagationScheduler(Protocol):
+    def propagate_abort(self, request_id: str) -> None: ...
 
 
 class SchedulerStatus(Enum):
