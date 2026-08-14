@@ -115,8 +115,10 @@ for response formats and other ASR models.
 The shared SeedTTS benchmark can run one additional request-event-profiled pass
 after the normal measured repeats at each concurrency. This example uses
 `openai/whisper-base` to keep development profiling inexpensive; it is not a
-production model recommendation. Start the same checkpoint named by the
-benchmark request:
+production model recommendation. Stop any server already using port 8000, then
+start the same checkpoint named by the benchmark request. To profile the
+canonical checkpoint used earlier on this page, replace every
+`openai/whisper-base` below with `openai/whisper-large-v3` in both shells:
 
 ```bash
 sgl-omni serve \

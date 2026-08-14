@@ -46,6 +46,8 @@ Usage:
         --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
         --concurrencies 32 --repeats 3 --warmup --stream
 
+    # Use whisper-base for a low-cost profiling smoke. Replace both model
+    # values below with openai/whisper-large-v3 for the canonical checkpoint.
     # Start the same Whisper checkpoint named by the benchmark request:
     sgl-omni serve \
         --model-path openai/whisper-base \
