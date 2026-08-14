@@ -450,6 +450,11 @@ that happened to contain an older version of the test.
     ```bash
     pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m gpu -q
     ```
+  - Code2Wav output overlap (depth-2 pipelined D2H): message-for-message byte
+    identity against the synchronous path, first-window sync cadence,
+    stream-done pending flush, lazy batched EOS scanning, pinned-slot pool
+    lifecycle across abort/replay-failure/exhaustion, and profiler event
+    shape; the `gpu`-marked case runs real pinned buffers and CUDA events
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
 - `unit_test/ming_omni/` Ming-Omni unit tests:
