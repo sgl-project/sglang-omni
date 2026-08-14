@@ -42,20 +42,13 @@ Metric semantics:
     Tail percentiles of inter-chunk latency (streaming jitter).
 ``max_playback_underrun_mean_s`` / ``max_playback_underrun_p95_s`` /
 ``max_playback_underrun_p99_s``
-    Client-side max playback underrun for multi-chunk streams. Single-chunk
-    requests are excluded.
+    Maximum client-side playback starvation for streaming audio requests.
 ``c50`` / ``c100`` / ``c200``
-    Percent of multi-chunk successful requests whose max underrun is at most
-    50 / 100 / 200 ms.
+    Percent of multi-chunk streams whose maximum playback underrun is at most
+    50 / 100 / 200 ms. Single-chunk streams are reported as N/A.
 ``playback_continuity_requests`` / ``playback_continuity_na_requests``
-    Scored versus single-chunk requests behind the ``c*`` gates. Utterances that
-    finish inside the first vocoder chunk are single-chunk and land in the N/A
-    bucket. Every playback-continuity field above is summary-level and is emitted
-    only for workloads that stream audio chunks, so ASR/Omni summaries are
-    unaffected. Per-request rows are separate: ``_request_result_to_dict`` is a
-    fixed-schema serializer, so ``chunk_audio_duration_s`` and
-    ``max_playback_underrun_s`` appear there as ``None`` on non-streaming rows,
-    exactly like ``audio_ttfp_s`` / ``inter_chunk_s`` / ``audio_chunk_count``.
+    Scored versus N/A requests behind the ``c*`` gates. All the fields above are
+    emitted only for workloads that stream audio chunks.
 ``audio_chunks_mean``
     Mean number of audio chunks observed per successful streaming request.
     For raw PCM streaming, HTTP chunk boundaries are preserved when available

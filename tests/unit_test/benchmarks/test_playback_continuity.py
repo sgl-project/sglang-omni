@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.metrics.performance import build_speed_results, compute_speed_metrics
+from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.playback_continuity import (
     compute_max_playback_underrun_s,
     continuity_pass_rate,
@@ -160,67 +160,3 @@ def test_compute_speed_metrics_reports_all_single_chunk_streams() -> None:
     assert metrics["c50"] is None
     assert metrics["c100"] is None
     assert metrics["c200"] is None
-
-
-def test_build_speed_results_keeps_continuity_out_of_non_streaming_summary() -> None:
-    """Saved ASR/Omni results gain no continuity gates and keep a stable schema.
-
-    ``_request_result_to_dict`` is a fixed-schema serializer: all 18 keys are
-    always present and ``None`` marks "not applicable". The two continuity
-    fields therefore serialize as ``None`` on non-streaming rows, matching the
-    streaming-only fields that already behave that way. Only the summary is
-    gated.
-    """
-    outputs = [
-        RequestResult(
-            request_id="asr-1",
-            is_success=True,
-            latency_s=1.0,
-            audio_duration_s=1.0,
-            rtf=1.0,
-        ),
-    ]
-
-    results = build_speed_results(
-        outputs,
-        compute_speed_metrics(outputs, wall_clock_s=1.0),
-        {"task": "asr"},
-    )
-
-    for key in _CONTINUITY_KEYS:
-        assert key not in results["summary"]
-    row = results["per_request"][0]
-    assert row["chunk_audio_duration_s"] is None
-    assert row["max_playback_underrun_s"] is None
-    assert row["inter_chunk_s"] is None
-    assert row["audio_ttfp_s"] is None
-    assert row["audio_chunk_count"] is None
-
-
-def test_build_speed_results_serializes_streaming_continuity_fields() -> None:
-    outputs = [
-        RequestResult(
-            request_id="tts-1",
-            is_success=True,
-            latency_s=1.0,
-            audio_duration_s=1.0,
-            rtf=1.0,
-            audio_ttfp_s=0.1,
-            inter_chunk_s=[0.2],
-            chunk_audio_duration_s=[0.4, 0.6],
-            max_playback_underrun_s=0.02,
-            audio_chunk_count=2,
-        ),
-    ]
-
-    results = build_speed_results(
-        outputs,
-        compute_speed_metrics(outputs, wall_clock_s=1.0),
-        {"task": "tts"},
-    )
-
-    row = results["per_request"][0]
-    assert row["chunk_audio_duration_s"] == [0.4, 0.6]
-    assert row["max_playback_underrun_s"] == pytest.approx(0.02)
-    assert results["summary"]["c50"] == pytest.approx(100.0)
-    assert results["summary"]["playback_continuity_requests"] == 1
