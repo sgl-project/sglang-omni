@@ -16,6 +16,7 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.platforms import current_platform
 from tests.unit_test.fakes import FakeServerArgs
 
 
@@ -123,6 +124,21 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
         builder.adjust_overrides({"chunked_prefill_size": 4096})
 
 
+def test_whisper_selects_native_attention_on_rocm(monkeypatch) -> None:
+    from sglang_omni.models.whisper_asr import engine_builder
+
+    builder = engine_builder.WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    monkeypatch.setattr(engine_builder.current_platform, "is_rocm", lambda: True)
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["attention_backend"] == "torch_native"
+
+
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
@@ -152,7 +168,10 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.gpu_placement == {"asr": 0}
     assert config.stages[0].factory.endswith("create_sglang_whisper_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
+    assert (
+        config.stages[0].factory_args["enable_encoder_cuda_graph"]
+        is current_platform.supports_device_graphs()
+    )
     assert config.stages[0].factory_args["request_build_max_workers"] == 2
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert config.stages[0].factory_args["prefill_coalesce_requests"] == 2

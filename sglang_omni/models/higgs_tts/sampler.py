@@ -13,9 +13,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
-from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
 from sglang.srt.layers.sampler import multinomial_with_seed
+
+from sglang_omni.platforms import current_platform
+
+if not current_platform.is_rocm():
+    from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
+    from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
+else:
+    try:
+        from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
+        from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
+    except ImportError:  # ROCm wheels may omit the sampling extension entirely.
+        _fused_top_k_renorm = None
+        _fused_top_p_renorm = None
 
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 
@@ -123,6 +134,36 @@ class HiggsBatchedSamplerState:
 
 
 _GREEDY_TEMP_THRESHOLD = 1e-5
+
+
+def _has_sgl_kernel_op(name: str) -> bool:
+    try:
+        getattr(torch.ops.sgl_kernel, name)
+    except AttributeError:
+        return False
+    return True
+
+
+def _top_k_renorm_torch(probs: torch.Tensor, top_k: torch.Tensor) -> torch.Tensor:
+    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+    ranks = torch.arange(probs.shape[-1], device=probs.device).view(1, -1)
+    keep = ranks < top_k.view(-1, 1)
+    filtered = torch.zeros_like(probs)
+    filtered.scatter_(-1, sorted_indices, torch.where(keep, sorted_probs, 0.0))
+    return filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(
+        torch.finfo(filtered.dtype).tiny
+    )
+
+
+def _top_p_renorm_torch(probs: torch.Tensor, top_p: torch.Tensor) -> torch.Tensor:
+    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+    cumulative_before = sorted_probs.cumsum(dim=-1) - sorted_probs
+    keep = cumulative_before < top_p.view(-1, 1)
+    filtered = torch.zeros_like(probs)
+    filtered.scatter_(-1, sorted_indices, torch.where(keep, sorted_probs, 0.0))
+    return filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(
+        torch.finfo(filtered.dtype).tiny
+    )
 
 
 def _sample_independent(
@@ -265,10 +306,20 @@ def _sample_independent_batched(
             .to(torch.int32)
             .contiguous()
         )
-        probs = _fused_top_k_renorm(probs, tk)
+        if current_platform.is_rocm() and (
+            _fused_top_k_renorm is None or not _has_sgl_kernel_op("top_k_renorm_probs")
+        ):
+            probs = _top_k_renorm_torch(probs, tk)
+        else:
+            probs = _fused_top_k_renorm(probs, tk)
     if top_p is not None:
         tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
-        probs = _fused_top_p_renorm(probs, tp)
+        if current_platform.is_rocm() and (
+            _fused_top_p_renorm is None or not _has_sgl_kernel_op("top_p_renorm_probs")
+        ):
+            probs = _top_p_renorm_torch(probs, tp)
+        else:
+            probs = _fused_top_p_renorm(probs, tp)
 
     codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
     if seeds_B is not None:

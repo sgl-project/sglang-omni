@@ -3,7 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Qwen2Config, Qwen2Model
 
+from sglang_omni.platforms import current_platform
+
 from .istft import ISTFTHead
+
+
+def _qwen2_config(backbone_args):
+    config = Qwen2Config.from_dict(config_dict=backbone_args)
+    if current_platform.is_rocm():
+        config._attn_implementation = "sdpa"
+    return config
 
 
 class StreamingLinearUpsample(nn.Module):
@@ -71,7 +80,7 @@ class Encoder(nn.Module):
         self, encoder_args, input_dim=320, hop_size=320, latent_dim=64, patch_size=-1
     ):
         super().__init__()
-        config = Qwen2Config.from_dict(config_dict=encoder_args)
+        config = _qwen2_config(encoder_args)
         self.encoder = Qwen2Model(config)
         self.input_dim = input_dim
         self.hop_size = hop_size
@@ -135,7 +144,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, decoder_args, output_dim=320, latent_dim=64, patch_size=-1):
         super().__init__()
-        config = Qwen2Config.from_dict(config_dict=decoder_args)
+        config = _qwen2_config(decoder_args)
         self.decoder = Qwen2Model(config)
         self.output_dim = output_dim
         self.latent_dim = latent_dim

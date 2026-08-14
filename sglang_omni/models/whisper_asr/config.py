@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from sglang_omni.config import AudioChunkingConfig, PipelineConfig, StageConfig
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.whisper_asr"
 
@@ -40,7 +41,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
             factory_args={
                 "device": "cuda:0",
-                "enable_encoder_cuda_graph": True,
+                "enable_encoder_cuda_graph": current_platform.supports_device_graphs(),
                 "request_build_max_workers": 2,
                 "request_build_max_pending": 16,
                 "prefill_coalesce_requests": 2,
