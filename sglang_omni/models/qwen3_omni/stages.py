@@ -273,6 +273,27 @@ def _nested_tensor_bytes(value: Any) -> int:
     return 0
 
 
+def _encoder_batch_wait_ms() -> int:
+    raw = os.getenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", "")
+    if not raw:
+        return 50
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring non-integer SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%r; using 50",
+            raw,
+        )
+        return 50
+    if value < 0:
+        logger.warning(
+            "Ignoring negative SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%d; using 50",
+            value,
+        )
+        return 50
+    return value
+
+
 def _encoder_cache_trace_enabled() -> bool:
     value = os.getenv("SGLANG_OMNI_TRACE_ENCODER_CACHE", "")
     return value.lower() not in ("", "0", "false", "no")
@@ -852,7 +873,7 @@ def create_image_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
         request_cost_fn=_create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     )
@@ -924,7 +945,7 @@ def create_audio_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
     )
 
 
