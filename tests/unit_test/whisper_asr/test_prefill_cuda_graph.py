@@ -41,6 +41,43 @@ def test_whisper_prefill_capture_populates_encoder_metadata(
     assert batch.encoder_out_cache_loc is None
 
 
+def test_whisper_prefill_runner_registers_self_and_cross_attention_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    self_attention_layers = [object(), object()]
+    cross_attention_layers = [object(), object()]
+    decoder_layers = [
+        SimpleNamespace(
+            self_attn=SimpleNamespace(attn=self_attention),
+            encoder_attn=SimpleNamespace(attn=cross_attention),
+        )
+        for self_attention, cross_attention in zip(
+            self_attention_layers, cross_attention_layers
+        )
+    ]
+    model_runner = SimpleNamespace(
+        model=SimpleNamespace(
+            model=SimpleNamespace(
+                decoder=SimpleNamespace(layers=decoder_layers),
+            )
+        ),
+        attention_layers=[],
+    )
+    initialized: list[object] = []
+    monkeypatch.setattr(
+        WhisperPrefillCudaGraphRunner.__mro__[1],
+        "__init__",
+        lambda self, runner: initialized.append(runner),
+    )
+
+    WhisperPrefillCudaGraphRunner(model_runner)
+
+    assert model_runner.attention_layers == (
+        self_attention_layers + cross_attention_layers
+    )
+    assert initialized == [model_runner]
+
+
 @pytest.mark.parametrize("forward_mode", [ForwardMode.EXTEND, ForwardMode.MIXED])
 def test_whisper_prefill_replay_preserves_encoder_metadata(
     monkeypatch: pytest.MonkeyPatch,

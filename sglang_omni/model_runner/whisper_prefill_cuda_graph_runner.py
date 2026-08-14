@@ -15,6 +15,13 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
 class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
     """Preserve encoder-decoder metadata omitted by SGLang's generic runner."""
 
+    def __init__(self, model_runner: Any) -> None:
+        decoder = model_runner.model.model.decoder
+        self_attention_layers = [layer.self_attn.attn for layer in decoder.layers]
+        cross_attention_layers = [layer.encoder_attn.attn for layer in decoder.layers]
+        model_runner.attention_layers = self_attention_layers + cross_attention_layers
+        super().__init__(model_runner)
+
     def capture_prepare(self, num_tokens: int) -> tuple[ForwardBatch, Any]:
         forward_batch, attn_backend = super().capture_prepare(num_tokens)
         encoder_lens_cpu = [1] * forward_batch.batch_size
