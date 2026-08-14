@@ -169,15 +169,19 @@ class QwenTalkerModelRunner(ModelRunner):
         requests: list,
     ) -> GenerationBatchResult | None:
         del schedule_batch
-        has_projected = forward_batch.input_embeds is not None or any(
-            bool(req.data.input_embeds_are_projected) for req in requests
-        )
-        if not has_projected:
-            return None
-
         projected_flags = [
             bool(req.data.input_embeds_are_projected) for req in requests
         ]
+        has_tensor_requests = any(
+            req.data.prefill_input_embeds is not None for req in requests
+        )
+        if (
+            forward_batch.input_embeds is None
+            and not any(projected_flags)
+            and not has_tensor_requests
+        ):
+            return None
+
         has_projected_requests = any(projected_flags)
         if has_projected_requests and not all(projected_flags):
             raise RuntimeError(
@@ -187,7 +191,7 @@ class QwenTalkerModelRunner(ModelRunner):
 
         input_embeds_are_projected = has_projected_requests
         input_embeds = forward_batch.input_embeds
-        if has_projected_requests:
+        if has_projected_requests or has_tensor_requests:
             parts: list[torch.Tensor] = []
             for sched_req in requests:
                 req = sched_req.data.req
