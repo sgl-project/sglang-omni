@@ -66,6 +66,27 @@ def create_thinker_scheduler(
             disable_cuda_graph=True,
         )
 
+    try:
+        infrastructure = create_sglang_infrastructure(
+            server_args,
+            gpu_id,
+            tp_rank=tp_rank,
+            nccl_port=nccl_port,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            capture_hidden_layers=capture_hidden_layers,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            defer_cuda_graph_capture=defer_cuda_graph_capture,
+            enable_prefill_input_embeds=enable_prefill_input_embeds,
+        )
+    finally:
+        if defer_cuda_graph_capture:
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
+                disable_cuda_graph=saved_disable_cuda_graph,
+                enable_return_hidden_states=saved_return_hidden_states,
+            )
+
     (
         model_worker,
         tree_cache,
@@ -74,25 +95,9 @@ def create_thinker_scheduler(
         prefill_mgr,
         decode_mgr,
         model_config,
-    ) = create_sglang_infrastructure(
-        server_args,
-        gpu_id,
-        tp_rank=tp_rank,
-        nccl_port=nccl_port,
-        model_arch_override="Qwen3OmniThinkerForCausalLM",
-        capture_hidden_layers=capture_hidden_layers,
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        defer_cuda_graph_capture=defer_cuda_graph_capture,
-        enable_prefill_input_embeds=enable_prefill_input_embeds,
-    )
+    ) = infrastructure
 
     if defer_cuda_graph_capture:
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
-            disable_cuda_graph=saved_disable_cuda_graph,
-            enable_return_hidden_states=saved_return_hidden_states,
-        )
         model_worker.model_runner.init_cuda_graphs()
 
     if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
