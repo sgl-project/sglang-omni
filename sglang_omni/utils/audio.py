@@ -242,11 +242,15 @@ def load_audio(
         trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
         audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
-        audio = torchaudio.functional.resample(
+        # Note (Lixiang Wang): the fast WAV path already routes through the cached
+        # kernel; everything the fast path declines — non-WAV containers, mono=False,
+        # trim_top_db, WAV encodings _parse_wav_bytes rejects — used to rebuild the
+        # sinc kernel on every request instead.
+        audio = _cached_resample(
             audio,
             int(sample_rate),
             target_sample_rate,
-            **dict(resample_kwargs or {}),
+            resample_kwargs,
         )
     if mono:
         audio = audio.squeeze(0)

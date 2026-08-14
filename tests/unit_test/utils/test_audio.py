@@ -310,6 +310,58 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     assert samples.shape == (1600,)
 
 
+@pytest.mark.parametrize("sample_rate", [22050, 44100, 48000])
+def test_load_audio_general_path_matches_uncached_resample(
+    monkeypatch, sample_rate
+) -> None:
+    """Routing the general path through the cached kernel must not move a bit."""
+    import torchaudio
+
+    wav = _sine_wav_bytes(sample_rate=sample_rate)
+    monkeypatch.setattr(audio, "_is_riff_wav", lambda data: False)
+
+    cached = load_audio(wav, target_sample_rate=16000)
+
+    def uncached(waveform, orig_freq, new_freq, resample_kwargs):
+        return torchaudio.functional.resample(
+            waveform, int(orig_freq), int(new_freq), **dict(resample_kwargs or {})
+        )
+
+    monkeypatch.setattr(audio, "_cached_resample", uncached)
+    plain = load_audio(wav, target_sample_rate=16000)
+
+    assert cached.dtype == plain.dtype == np.float32
+    assert np.array_equal(cached, plain)
+
+
+def test_load_audio_general_path_uses_cached_kernel(monkeypatch) -> None:
+    # Note (Lixiang Wang): asserting the cache was consulted, not just that the
+    # output is right — a version that silently rebuilt the kernel every call
+    # would still pass the bit-identity test above.
+    monkeypatch.setattr(audio, "_is_riff_wav", lambda data: False)
+    audio._resample_kernel.cache_clear()
+    wav = _sine_wav_bytes(sample_rate=44100)
+
+    for _ in range(3):
+        load_audio(wav, target_sample_rate=16000)
+
+    info = audio._resample_kernel.cache_info()
+    assert info.misses == 1
+    assert info.hits == 2
+
+
+def test_load_audio_general_path_shares_the_kernel_with_the_fast_path() -> None:
+    audio._resample_kernel.cache_clear()
+    wav = _sine_wav_bytes(sample_rate=44100)
+
+    load_audio(wav, target_sample_rate=16000)  # fast path fills the cache
+    load_audio(wav, target_sample_rate=16000, mono=False)  # general path
+
+    info = audio._resample_kernel.cache_info()
+    assert info.misses == 1
+    assert info.hits == 1
+
+
 def test_load_audio_trims_before_resampling() -> None:
     import librosa
     import torch
