@@ -37,6 +37,28 @@ stages:
 
 The graph is captured after SGLang's generation graphs. With pre-LM off, raise `max_prefill_tokens` before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
 
+## Breakable Prefill CUDA Graph
+
+The decoder body uses SGLang's breakable prefill CUDA Graph backend by default.
+Whisper encoder states and cross-attention K/V are prepared outside the captured
+decoder body, while decoder-prefill token counts through 256 use the default
+capture ladder. Startup logs report the capture cost and confirm the active
+buckets with `prefill CUDA graphs attested`.
+
+To disable only the prefill graph while keeping decode and encoder CUDA Graphs
+enabled, override the ASR stage:
+
+```yaml
+config_cls: WhisperASRPipelineConfig
+name: whisper
+model_path: openai/whisper-large-v3
+
+runtime_overrides:
+  asr:
+    server_args_overrides:
+      cuda_graph_backend_prefill: disabled
+```
+
 ## Prefill Coalescing
 
 Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets two requests, while the default 6,144-token atomic budget lets the LM scheduler admit up to four 1,504-token Whisper requests together. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately.
