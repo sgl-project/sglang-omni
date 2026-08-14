@@ -9,6 +9,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.platforms import current_platform
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
@@ -27,6 +28,7 @@ def _visible_gpu_count() -> int:
 
 
 def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
+    is_rocm = current_platform.is_rocm()
     return [
         StageConfig(
             name="preprocessing",
@@ -38,7 +40,12 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
             name="minimax_music3_ar",
             process="minimax_music3_ar",
             factory=f"{_PKG}.stages.create_ar_executor",
-            factory_args={"max_concurrency": 16},
+            factory_args={
+                "max_concurrency": 16,
+                "server_args_overrides": (
+                    {"disable_cuda_graph": True} if is_rocm else {}
+                ),
+            },
             gpu=0,
             next="dit_dav",
             stream_to=["dit_dav"],
