@@ -23,6 +23,12 @@ def _force_cuda_transport_policy(monkeypatch):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_default_remote_transport",
+        lambda: TransportKind.MOONCAKE,
+        raising=False,
+    )
 
 
 def test_comm_router_uses_cuda_ipc_for_same_node_gpu_payload_edges() -> None:
@@ -55,6 +61,61 @@ def test_comm_router_uses_mooncake_only_for_remote_edges() -> None:
     assert router.outbound_stream("remote_decode", torch.empty(1)) is (
         TransportKind.MOONCAKE
     )
+
+
+def test_comm_router_uses_rocm_platform_default_nixl_for_remote_edges(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_default_remote_transport",
+        lambda: TransportKind.NIXL,
+        raising=False,
+    )
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"decode"},
+        remote_stage_names={"remote_decode"},
+        comm_config={"remote_backend": "auto"},
+    )
+
+    assert router.outbound("remote_decode") is TransportKind.NIXL
+    assert router.inbound("remote_decode") is TransportKind.NIXL
+
+
+@pytest.mark.parametrize(
+    ("backend", "transport"),
+    [("nixl", TransportKind.NIXL), ("mooncake", TransportKind.MOONCAKE)],
+)
+def test_comm_router_honors_explicit_remote_backend(
+    backend: str, transport: TransportKind
+) -> None:
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"decode"},
+        remote_stage_names={"remote_decode"},
+        comm_config={"remote_backend": backend},
+    )
+
+    assert router.outbound("remote_decode") is transport
+
+
+def test_comm_router_rejects_unknown_remote_backend() -> None:
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"decode"},
+        remote_stage_names={"remote_decode"},
+        comm_config={"remote_backend": "ucx"},
+    )
+
+    with pytest.raises(ValueError, match="unsupported remote_backend"):
+        router.outbound("remote_decode")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
