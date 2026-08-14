@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -148,6 +149,7 @@ class Stage:
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
+        self._inflight_work_pending: dict[str, int] = {}
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
@@ -303,7 +305,13 @@ class Stage:
                 if isinstance(msg, ShutdownMessage):
                     break
                 if isinstance(msg, TPWorkMessage):
-                    await self._execute(msg.data)
+                    if msg.request_id in self._aborted:
+                        continue
+                    self._active_requests.add(msg.request_id)
+                    await self._execute(
+                        msg.data,
+                        track_inflight_work=self._tracks_multiple_inflight_work(),
+                    )
                     continue
                 await self._handle_message(msg)
         except asyncio.CancelledError:
@@ -409,7 +417,10 @@ class Stage:
         )
 
         payload = msg.data  # StagePayload from coordinator
-        await self._execute(payload)
+        await self._execute(
+            payload,
+            track_inflight_work=self._tracks_multiple_inflight_work(),
+        )
 
     async def _on_data_ready(
         self,
@@ -454,7 +465,6 @@ class Stage:
             await self._send_data_ack(
                 msg, data_ref, success=False, error=_error_text(exc)
             )
-            self._comm.cleanup(request_id)
             await self._wait_for_receive_predecessor(predecessor)
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
@@ -537,7 +547,10 @@ class Stage:
                 event_name="stage_aggregate_ready",
                 metadata={"from_stage": from_stage},
             )
-            await self._execute(merged)
+            await self._execute(
+                merged,
+                track_inflight_work=self._tracks_multiple_inflight_work(),
+            )
 
     async def _on_stream_chunk(
         self,
@@ -641,8 +654,6 @@ class Stage:
         if self._open_pre_payload_stream_if_allowed(request_id):
             self._route_stream_item(request_id, item)
             return
-        with suppress(Exception):
-            self.scheduler.abort(request_id)
         await self._send_failure(
             request_id,
             (
@@ -667,8 +678,6 @@ class Stage:
             request_id,
             error,
         )
-        with suppress(Exception):
-            self.scheduler.abort(request_id)
         await self._send_failure(request_id, str(error))
 
     def _data_ref_from_message(self, msg: DataReadyMessage) -> DataRef:
@@ -799,8 +808,6 @@ class Stage:
 
         if is_done:
             if not self._open_pre_payload_stream_if_allowed(request_id):
-                with suppress(Exception):
-                    self.scheduler.abort(request_id)
                 await self._send_failure(
                     request_id,
                     (
@@ -834,8 +841,26 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    async def _execute(self, payload: Any) -> None:
+    def _tracks_multiple_inflight_work(self) -> bool:
+        return bool(
+            getattr(
+                self.scheduler,
+                "allow_multiple_inflight_per_request",
+                False,
+            )
+        )
+
+    async def _execute(
+        self,
+        payload: Any,
+        *,
+        track_inflight_work: bool = False,
+    ) -> None:
         request_id = payload.request_id
+        if track_inflight_work:
+            self._inflight_work_pending[request_id] = (
+                self._inflight_work_pending.get(request_id, 0) + 1
+            )
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1022,6 +1047,20 @@ class Stage:
             elif out.type == "error":
                 await self._send_failure(out.request_id, str(out.data))
 
+    def _complete_inflight_work(self, request_id: str) -> bool:
+        pending = self._inflight_work_pending.get(request_id, 0)
+        if pending <= 1:
+            self._inflight_work_pending.pop(request_id, None)
+            return False
+        self._inflight_work_pending[request_id] = pending - 1
+        return True
+
+    def _finish_inflight_work(self, request_id: str) -> None:
+        if request_id not in self._active_requests:
+            return
+        if not self._complete_inflight_work(request_id):
+            self._clear_request_state(request_id)
+
     async def _drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
         loop = asyncio.get_running_loop()
@@ -1033,8 +1072,11 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.request_id not in self._active_requests:
+                continue
+
             if out.type == "result":
-                self._clear_request_state(out.request_id)
+                self._finish_inflight_work(out.request_id)
             elif out.type == "stream":
                 continue
             elif out.type == "error":
@@ -1045,7 +1087,15 @@ class Stage:
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
         if not self._owns_external_io:
-            self._clear_request_state(request_id)
+            self._finish_inflight_work(request_id)
+            return
+        next_stages = self.get_next(request_id, result)
+        if next_stages is None and self._tracks_multiple_inflight_work():
+            await self._send_failure(
+                request_id,
+                f"Stage {self.name}: a terminal stage cannot use multiple "
+                "in-flight work per request",
+            )
             return
         # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
@@ -1065,7 +1115,6 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1102,7 +1151,7 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self._clear_request_state(request_id)
+        self._finish_inflight_work(request_id)
 
     async def _send_to_stage(
         self,
@@ -1522,22 +1571,29 @@ class Stage:
         await self.control_plane.send_stream(msg)
 
     async def _send_failure(self, request_id: str, error: str) -> None:
-        self._record_aborted_request_id(request_id)
-        if not self._owns_external_io:
-            self._clear_request_state(request_id)
-            raise RuntimeError(f"Follower stage {self.name} failed: {error}")
-        await self.control_plane.send_complete(
-            CompleteMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                success=False,
-                error=error,
+        if not self._record_aborted_request_id(request_id):
+            return
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
+        with suppress(Exception):
+            self._comm.cleanup(request_id)
+        try:
+            if not self._owns_external_io:
+                raise RuntimeError(f"Follower stage {self.name} failed: {error}")
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=False,
+                    error=error,
+                )
             )
-        )
-        self._clear_request_state(request_id)
+        finally:
+            self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
         self._active_requests.discard(request_id)
+        self._inflight_work_pending.pop(request_id, None)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
             self._stream_queue.close(request_id)
@@ -1564,11 +1620,7 @@ class Stage:
             if request_id not in self._aborted
         ]
         for request_id in active_request_ids:
-            with suppress(Exception):
-                self.scheduler.abort(request_id)
             await self._send_failure(request_id, error)
-            with suppress(Exception):
-                self._comm.cleanup(request_id)
         self.control_plane.close()
 
     async def _abort_listener(self) -> None:
@@ -1584,16 +1636,20 @@ class Stage:
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
 
-    def _record_aborted_request_id(self, request_id: str) -> None:
+    def _record_aborted_request_id(self, request_id: str) -> bool:
+        if request_id in self._aborted:
+            return False
         self._aborted.add(request_id)
         if len(self._aborted) > 10000:
             excess = len(self._aborted) - 5000
             it = iter(self._aborted)
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
+        return True
 
     def _on_abort(self, request_id: str) -> None:
-        self._record_aborted_request_id(request_id)
+        if not self._record_aborted_request_id(request_id):
+            return
         self._comm.cleanup(request_id)
         self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
