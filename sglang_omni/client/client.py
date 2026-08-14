@@ -23,6 +23,7 @@ from sglang_omni.client.types import (
     AbortResult,
     ClientError,
     CompletionAudio,
+    CompletionImage,
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
@@ -92,6 +93,8 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        images: list[CompletionImage] = []
+        content: list[dict[str, Any]] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
@@ -106,6 +109,10 @@ class Client:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.images:
+                images.extend(chunk.images)
+            if chunk.content:
+                content.extend(dict(segment) for segment in chunk.content)
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
             if chunk.finish_reason is not None:
@@ -146,6 +153,8 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            images=images,
+            content=content,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -434,6 +443,36 @@ class Client:
             chunk.sample_rate = sample_rate
 
     @staticmethod
+    def _set_images(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        raw_images = data.get("images")
+        if raw_images is None:
+            return
+        if not isinstance(raw_images, list):
+            raise TypeError("completion images must be an array")
+        images: list[CompletionImage] = []
+        for raw_image in raw_images:
+            if not isinstance(raw_image, dict):
+                raise TypeError("each completion image must be an object")
+            images.append(CompletionImage.from_dict(raw_image))
+        chunk.images = images
+        if images and chunk.modality != "interleaved":
+            chunk.modality = "image"
+
+    @staticmethod
+    def _set_content(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        raw_content = data.get("content")
+        if raw_content is None:
+            return
+        if not isinstance(raw_content, list):
+            raise TypeError("completion content must be an array")
+        content: list[dict[str, Any]] = []
+        for segment in raw_content:
+            if not isinstance(segment, dict):
+                raise TypeError("each completion content segment must be an object")
+            content.append(dict(segment))
+        chunk.content = content
+
+    @staticmethod
     def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
@@ -496,6 +535,8 @@ class Client:
                 if weight_version is not None:
                     chunk.weight_version = weight_version
                 Client._set_audio_data(chunk, audio_result)
+                Client._set_images(chunk, decode_result)
+                Client._set_content(chunk, decode_result)
                 chunk.usage = Client._build_usage_info(
                     decode_result
                 ) or Client._build_usage_info(audio_result)
@@ -529,6 +570,8 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
+            Client._set_images(chunk, result)
+            Client._set_content(chunk, result)
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
@@ -590,6 +633,8 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, data)
+            Client._set_images(chunk, data)
+            Client._set_content(chunk, data)
             return chunk
         if isinstance(data, str):
             chunk.text = data
@@ -634,10 +679,11 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    image_generation = request.metadata.get("image_generation")
 
-    # If we have any media, return a dict with messages and media
+    # If we have any media or output-image configuration, return a structured input.
     # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if audios or images or videos or image_generation is not None:
         result = {"messages": messages}
         if images:
             result["images"] = images
@@ -645,6 +691,8 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             result["audios"] = audios
         if videos:
             result["videos"] = videos
+        if image_generation is not None:
+            result["image_generation"] = image_generation
         for key in (
             "video_fps",
             "video_max_frames",

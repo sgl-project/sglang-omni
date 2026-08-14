@@ -60,6 +60,69 @@ def test_stop_runs_shutdown_callback_once() -> None:
     assert shutdowns == [None]
 
 
+def test_abort_suppresses_all_queued_work_and_cleans_up_once() -> None:
+    computed: list[str] = []
+    cleanups: list[str] = []
+    scheduler = SimpleScheduler(
+        lambda payload: computed.append(payload) or payload,
+        abort_callback=cleanups.append,
+    )
+    scheduler.abort("req-abort")
+    scheduler.abort("req-abort")
+    loop = asyncio.new_event_loop()
+
+    try:
+        scheduler._run_single(
+            IncomingMessage("req-abort", "new_request", "first"), loop
+        )
+        scheduler._run_single(
+            IncomingMessage("req-abort", "new_request", "second"), loop
+        )
+    finally:
+        loop.close()
+
+    assert computed == []
+    assert scheduler.outbox.empty()
+    assert cleanups == ["req-abort"]
+
+
+def test_batch_compute_excludes_aborted_work() -> None:
+    computed: list[str] = []
+
+    def compute_batch(payloads: list[str]) -> list[str]:
+        computed.extend(payloads)
+        return [payload.upper() for payload in payloads]
+
+    def compute_one(payload: str) -> str:
+        computed.append(payload)
+        return payload.upper()
+
+    scheduler = SimpleScheduler(
+        compute_one,
+        batch_compute_fn=compute_batch,
+        max_batch_size=2,
+    )
+    scheduler.abort("req-abort")
+    loop = asyncio.new_event_loop()
+
+    try:
+        scheduler._run_batch(
+            [
+                IncomingMessage("req-abort", "new_request", "discard"),
+                IncomingMessage("req-active", "new_request", "keep"),
+            ],
+            loop,
+        )
+    finally:
+        loop.close()
+
+    result = scheduler.outbox.get_nowait()
+    assert computed == ["keep"]
+    assert result.request_id == "req-active"
+    assert result.data == "KEEP"
+    assert scheduler.outbox.empty()
+
+
 def test_max_concurrency_runs_sync_fn_in_parallel() -> None:
     """Two sync ``compute_fn`` invocations must be in flight simultaneously
     when ``max_concurrency=2``, not serialized."""

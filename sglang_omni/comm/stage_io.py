@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -47,8 +48,7 @@ def relay_device(relay: Relay) -> str:
     device = relay.device
     if not isinstance(device, str):
         raise TypeError(
-            f"{type(relay).__name__}.device must be str, got "
-            f"{type(device).__name__}"
+            f"{type(relay).__name__}.device must be str, got {type(device).__name__}"
         )
     return device
 
@@ -275,8 +275,7 @@ def deserialize_direct_cuda_ipc_stream_chunk(
         return data, None
     if not isinstance(raw_metadata, dict):
         raise TypeError(
-            "direct CUDA IPC metadata must be dict, got "
-            f"{type(raw_metadata).__name__}"
+            f"direct CUDA IPC metadata must be dict, got {type(raw_metadata).__name__}"
         )
     metadata = deserialize_direct_ipc_metadata(raw_metadata)
     if not isinstance(metadata, dict):
@@ -295,6 +294,7 @@ async def write_payload(
     transport: TransportKind,
     from_stage: str | None = None,
     to_stage: str | None = None,
+    object_id: str | None = None,
 ) -> tuple[DataRef, Any]:
     data_without_tensors, tensors = extract_tensors(payload.data)
     packed, entries = _pack_tensors(tensors, device=relay_device(relay))
@@ -310,7 +310,9 @@ async def write_payload(
     )
     data_ref = DataRef(
         version=1,
-        object_id=f"{request_id}:payload:{from_stage or ''}:{to_stage or ''}",
+        object_id=(
+            object_id or f"{request_id}:payload:{from_stage or ''}:{to_stage or ''}"
+        ),
         kind=DataKind.STAGE_PAYLOAD,
         transport=transport,
         layout=DataLayout.PACKED_TENSORS,

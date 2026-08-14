@@ -10,7 +10,13 @@ import pytest
 
 from sglang_omni.client import Client
 from sglang_omni.client.client import _extract_inputs
-from sglang_omni.client.types import GenerateRequest
+from sglang_omni.client.types import (
+    CompletionAudio,
+    CompletionImage,
+    CompletionResult,
+    GenerateRequest,
+    UsageInfo,
+)
 
 
 class _SubmitStubCoordinator:
@@ -34,6 +40,37 @@ class _StreamStubCoordinator:
         del request_id, omni_request
         for message in self._messages:
             yield message
+
+
+def test_completion_result_preserves_legacy_full_positional_constructor() -> None:
+    audio = CompletionAudio(id="audio-1", data="audio-data")
+    images = [CompletionImage(id="image-1", data="image-data")]
+    usage = UsageInfo(prompt_tokens=2, completion_tokens=3, total_tokens=5)
+    logprobs = [[-0.1, 11]]
+    rollout = {"version": 1}
+
+    result = CompletionResult(
+        "request-1",
+        "hello",
+        audio,
+        images,
+        "length",
+        usage,
+        logprobs,
+        rollout,
+        "v7",
+    )
+
+    assert result.request_id == "request-1"
+    assert result.text == "hello"
+    assert result.audio is audio
+    assert result.images is images
+    assert result.finish_reason == "length"
+    assert result.usage is usage
+    assert result.output_token_logprobs is logprobs
+    assert result.omni_rollout is rollout
+    assert result.weight_version == "v7"
+    assert result.content == []
 
 
 def test_completion_surfaces_logprobs_and_weight_version() -> None:

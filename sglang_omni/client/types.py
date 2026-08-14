@@ -20,6 +20,36 @@ class Message:
 
 
 @dataclass
+class CompletionImage:
+    """One image returned by an image-capable completion pipeline."""
+
+    id: str
+    data: str
+    format: str = "png"
+    width: int | None = None
+    height: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionImage":
+        return cls(
+            id=str(data["id"]),
+            data=str(data["data"]),
+            format=str(data.get("format", "png")),
+            width=data.get("width"),
+            height=data.get("height"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "data": self.data,
+            "format": self.format,
+            "width": self.width,
+            "height": self.height,
+        }
+
+
+@dataclass
 class UsageInfo:
     """Token usage details."""
 
@@ -142,6 +172,8 @@ class GenerateChunk:
     modality: str = "text"
     audio_data: Any = None
     sample_rate: int | None = None
+    images: list[CompletionImage] = field(default_factory=list)
+    content: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +192,8 @@ class GenerateChunk:
             "modality": self.modality,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "images": [image.to_dict() for image in self.images],
+            "content": [dict(segment) for segment in self.content],
         }
 
 
@@ -200,11 +234,13 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    images: list[CompletionImage] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
+    content: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

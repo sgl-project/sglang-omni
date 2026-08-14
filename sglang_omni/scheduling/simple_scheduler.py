@@ -6,6 +6,7 @@ No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,6 +43,7 @@ class SimpleScheduler:
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        allow_multiple_inflight_per_request: bool = False,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -66,6 +68,7 @@ class SimpleScheduler:
             )
         self._abort_callback = abort_callback
         self._shutdown_callback = shutdown_callback
+        self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
         self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
         self._abort_lock = threading.Lock()
@@ -80,13 +83,9 @@ class SimpleScheduler:
         except Exception:
             logger.exception("SimpleScheduler: abort cleanup failed for %s", request_id)
 
-    def _consume_if_aborted(self, request_id: str) -> bool:
+    def _is_aborted(self, request_id: str) -> bool:
         with self._abort_lock:
-            if request_id not in self._aborted:
-                return False
-            self._aborted.discard(request_id)
-        self._cleanup_aborted_request(request_id)
-        return True
+            return request_id in self._aborted
 
     def _message_cost(self, msg: IncomingMessage) -> int:
         if self._request_cost_fn is None or msg.type != "new_request":
@@ -159,17 +158,17 @@ class SimpleScheduler:
     def _run_single(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
     ) -> None:
-        if self._consume_if_aborted(msg.request_id):
+        if self._is_aborted(msg.request_id):
             return
         try:
             result = self._fn(msg.data)
             if asyncio.iscoroutine(result):
                 result = loop.run_until_complete(result)
         except Exception:
-            if self._consume_if_aborted(msg.request_id):
+            if self._is_aborted(msg.request_id):
                 return
             raise
-        if self._consume_if_aborted(msg.request_id):
+        if self._is_aborted(msg.request_id):
             return
         self._emit_result(msg.request_id, result, self.outbox)
 
@@ -178,21 +177,25 @@ class SimpleScheduler:
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        if self._batch_fn is None or len(batch) <= 1:
-            for msg in batch:
+        active_batch = [msg for msg in batch if not self._is_aborted(msg.request_id)]
+        if not active_batch:
+            return
+        if self._batch_fn is None or len(active_batch) <= 1:
+            for msg in active_batch:
                 self._run_single(msg, loop)
             return
 
-        payloads = [msg.data for msg in batch]
+        payloads = [msg.data for msg in active_batch]
         results = self._batch_fn(payloads)
         if asyncio.iscoroutine(results):
             results = loop.run_until_complete(results)
-        if len(results) != len(batch):
+        if len(results) != len(active_batch):
             raise ValueError(
-                f"batch_compute_fn returned {len(results)} results for {len(batch)} requests"
+                "batch_compute_fn returned "
+                f"{len(results)} results for {len(active_batch)} requests"
             )
-        for msg, result in zip(batch, results):
-            if self._consume_if_aborted(msg.request_id):
+        for msg, result in zip(active_batch, results):
+            if self._is_aborted(msg.request_id):
                 continue
             self._emit_result(msg.request_id, result, self.outbox)
 
@@ -223,7 +226,7 @@ class SimpleScheduler:
                     continue
 
                 if msg.type == "new_request":
-                    if self._consume_if_aborted(msg.request_id):
+                    if self._is_aborted(msg.request_id):
                         continue
                     batch = [msg]
                     try:
@@ -234,7 +237,7 @@ class SimpleScheduler:
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
                         )
                         for failed_msg in batch:
-                            if self._consume_if_aborted(failed_msg.request_id):
+                            if self._is_aborted(failed_msg.request_id):
                                 continue
                             self._emit_error(
                                 failed_msg.request_id,
@@ -272,17 +275,17 @@ class SimpleScheduler:
                     continue
                 if msg.type != "new_request":
                     continue
-                if self._consume_if_aborted(msg.request_id):
+                if self._is_aborted(msg.request_id):
                     continue
                 try:
                     result = await asyncio.to_thread(
                         self._run_compute_in_thread, msg.data
                     )
-                    if self._consume_if_aborted(msg.request_id):
+                    if self._is_aborted(msg.request_id):
                         continue
                     self._emit_result(msg.request_id, result, self.outbox)
                 except Exception as exc:
-                    if self._consume_if_aborted(msg.request_id):
+                    if self._is_aborted(msg.request_id):
                         continue
                     logger.exception(
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
@@ -309,9 +312,11 @@ class SimpleScheduler:
 
     def abort(self, request_id: str) -> None:
         with self._abort_lock:
+            is_new_abort = request_id not in self._aborted
             self._aborted.add(request_id)
             if len(self._aborted) > 10000:
                 excess = len(self._aborted) - 5000
                 for stale_request_id in list(self._aborted)[:excess]:
                     self._aborted.discard(stale_request_id)
-        self._cleanup_aborted_request(request_id)
+        if is_new_abort:
+            self._cleanup_aborted_request(request_id)
