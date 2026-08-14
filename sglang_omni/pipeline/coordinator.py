@@ -387,12 +387,13 @@ class Coordinator:
             request = OmniRequest(inputs=request)
 
         # Track request
-        self._requests[request_id] = RequestInfo(
+        request_info = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
             terminal_stages=self._resolve_terminal_stages(request),
         )
+        self._requests[request_id] = request_info
 
         # Create future for completion
         loop = asyncio.get_running_loop()
@@ -400,6 +401,7 @@ class Coordinator:
         self._completion_futures[request_id] = future
         if stream_queue is not None:
             self._stream_queues[request_id] = stream_queue
+        partial_results = self._partial_results.get(request_id)
 
         payload = StagePayload(
             request_id=request_id,
@@ -416,11 +418,27 @@ class Coordinator:
 
         # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
-        await self.control_plane.submit_to_stage(
-            self.entry_stage,
-            entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=payload),
-        )
+        try:
+            await self.control_plane.submit_to_stage(
+                self.entry_stage,
+                entry_info.control_endpoint,
+                SubmitMessage(request_id=request_id, data=payload),
+            )
+        except BaseException:
+            # Identity checks keep a failed admission from releasing state that a
+            # re-entrant callback may have replaced with a new owner.
+            if self._requests.get(request_id) is request_info:
+                self._requests.pop(request_id, None)
+            if self._completion_futures.get(request_id) is future:
+                self._completion_futures.pop(request_id, None)
+            if (
+                stream_queue is not None
+                and self._stream_queues.get(request_id) is stream_queue
+            ):
+                self._stream_queues.pop(request_id, None)
+            if self._partial_results.get(request_id) is partial_results:
+                self._partial_results.pop(request_id, None)
+            raise
 
         # Update state
         info = self._requests.get(request_id)
