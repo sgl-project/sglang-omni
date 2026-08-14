@@ -122,6 +122,7 @@ tests/
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── moss_tts/
+    │   ├── test_audio_tokenizer.py
     │   ├── test_pipeline.py
     │   └── test_streaming_vocoder.py
     ├── moss_tts_local/
@@ -129,8 +130,7 @@ tests/
     │   ├── test_radix_hash.py
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
-    │   ├── test_streaming_vocoder.py
-    │   └── test_vocoder_decoder.py
+    │   └── test_streaming_vocoder.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
