@@ -6,6 +6,11 @@ Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA a
 
 > **Intel GPU (XPU)?** This page targets **NVIDIA CUDA**. For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
 
+> **AMD GPU (ROCm)?** Use [Installation — AMD ROCm](./installation_rocm.md).
+> During the transition release, a bare `pip install sglang-omni` remains the
+> legacy CUDA path; ROCm must use the platform manifest or pinned image so CUDA
+> dependencies cannot replace the HIP stack.
+
 ## 🐳 Option A: Docker (recommended)
 
 **1. Pull the image**

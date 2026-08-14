@@ -1,0 +1,149 @@
+schema_version: 1
+
+# Each checkpoint revision was resolved from the Hugging Face Hub on 2026-08-14.
+# Keep the revision pinned so gfx942 and gfx950 execute identical model weights.
+models:
+  - id: minimax_music3
+    architecture: MiniMaxMusic3ForConditionalGeneration
+    checkpoint: MiniMaxAI/MiniMax-Music3
+    revision: bd348f9c49ea3c1b39f33ace3436f8fad435f24e
+    mode: music
+    required_gpus: 1
+
+  - id: arkasr
+    architecture: ArkasrForConditionalGeneration
+    checkpoint: AutoArk-AI/ARK-ASR-3B
+    revision: 1e28271b79edc97635783bea65abc89195a09ed3
+    mode: transcription
+    required_gpus: 1
+
+  - id: audar_tts
+    architecture: AudarTTSForConditionalGeneration
+    checkpoint: audarai/Audar-TTS-V1-Turbo
+    revision: 51f5635f32de3ab45ff28a4b958464532225b247
+    mode: reference_tts
+    config: examples/configs/audar_tts_turbo.yaml
+    required_gpus: 1
+
+  - id: dots_tts
+    architecture: DotsTTSForConditionalGeneration
+    checkpoint: dots-studio/dots.tts-mf
+    revision: c28105adc8228143392b4e346994ff613ee48a06
+    mode: reference_tts
+    config: examples/configs/dots_tts.yaml
+    required_gpus: 1
+
+  - id: fishaudio_s2_pro
+    architecture: FishQwen3OmniForCausalLM
+    checkpoint: fishaudio/s2-pro
+    revision: 1de9996b6be38b745688de084d87a5633f714e4e
+    mode: tts
+    config: examples/configs/s2pro_tts.yaml
+    required_gpus: 1
+
+  - id: fun_asr
+    architecture: FunAsrNanoForConditionalGeneration
+    checkpoint: FunAudioLLM/Fun-ASR-Nano-2512-hf
+    revision: 972ee603a3abb40a66c802ffaa9ba0ce88742b60
+    mode: transcription
+    required_gpus: 1
+
+  - id: higgs_tts
+    architecture: HiggsMultimodalQwen3ForConditionalGeneration
+    checkpoint: bosonai/higgs-tts-3-4b
+    revision: 7556c17e05201fccd9c8cc120bc216dcc7b5d561
+    mode: tts
+    required_gpus: 1
+
+  - id: llada2_uni
+    architecture: LLaDA2MoeModelLM
+    checkpoint: inclusionAI/LLaDA2.0-Uni
+    revision: dc2cde43e008aafd53ab6e4049187ae7e1cbc22e
+    mode: chat
+    required_gpus: 1
+
+  - id: ming_omni
+    architecture: BailingMM2NativeForConditionalGeneration
+    checkpoint: inclusionAI/Ming-flash-omni-2.0
+    revision: 6a2e1dec07066d20f62a743ac7c34284e4a3932d
+    mode: chat_audio
+    launcher: ming
+    required_gpus: 5
+
+  - id: ming_tts
+    architecture: BailingMMNativeForConditionalGeneration
+    checkpoint: inclusionAI/Ming-omni-tts-16.8B-A3B
+    revision: 2efcd28d04f83b1bd471af639b4210c9ecf2cd33
+    mode: tts
+    config: examples/configs/ming_omni_tts.yaml
+    served_model_name: ming-omni-tts
+    required_gpus: 2
+
+  - id: moss_transcribe_diarize
+    architecture: MossTranscribeDiarizeForConditionalGeneration
+    checkpoint: OpenMOSS-Team/MOSS-Transcribe-Diarize
+    revision: e8681d68e7042738ffca8ac8212bc8fcb1131ab8
+    mode: transcription_verbose
+    required_gpus: 1
+
+  - id: moss_tts
+    architecture: MossTTSDelayModel
+    checkpoint: OpenMOSS-Team/MOSS-TTS-v1.5
+    revision: cdd3b911b1585e3f2dbc7775ef10f9926f58850a
+    mode: tts
+    config: examples/configs/moss_tts.yaml
+    required_gpus: 1
+
+  - id: moss_tts_local
+    architecture: MossTTSLocalModel
+    checkpoint: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+    revision: be7766a6735b98bd793f7c79fb720b4d0f5d13b8
+    mode: tts
+    config: examples/configs/moss_tts_local.yaml
+    required_gpus: 1
+
+  - id: qwen3_asr
+    architecture: Qwen3ASRForConditionalGeneration
+    checkpoint: Qwen/Qwen3-ASR-1.7B
+    revision: 7278e1e70fe206f11671096ffdd38061171dd6e5
+    mode: transcription
+    required_gpus: 1
+
+  - id: qwen3_omni
+    architecture: Qwen3OmniMoeForConditionalGeneration
+    checkpoint: Qwen/Qwen3-Omni-30B-A3B-Instruct
+    revision: 26291f793822fb6be9555850f06dfe95f2d7e695
+    mode: chat_audio
+    config: examples/configs/qwen3_omni_colocated_h200.yaml
+    served_model_name: qwen3-omni
+    required_gpus: 1
+
+  - id: qwen3_tts
+    architecture: Qwen3TTSForConditionalGeneration
+    checkpoint: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    revision: fd4b254389122332181a7c3db7f27e918eec64e3
+    mode: reference_tts
+    config: examples/configs/qwen3_tts_1_7b.yaml
+    required_gpus: 1
+
+  - id: voxtral_tts
+    architecture: VoxtralTTSForConditionalGeneration
+    checkpoint: mistralai/Voxtral-4B-TTS-2603
+    revision: b81be46c3777f88621676791b512bb01dc1cb970
+    mode: preset_voice_tts
+    config: examples/configs/voxtral_tts.yaml
+    required_gpus: 1
+
+  - id: whisper_asr
+    architecture: WhisperForConditionalGeneration
+    checkpoint: openai/whisper-large-v3
+    revision: 06f233fe06e710322aca913c1bc4249a0d71fce1
+    mode: transcription
+    required_gpus: 1
+
+  - id: zonos2
+    architecture: Zonos2ForCausalLM
+    checkpoint: Zyphra/zonos2
+    revision: 65f1e80f94b599d474bb6af9094a803dc52f60bd
+    mode: reference_tts
+    required_gpus: 1

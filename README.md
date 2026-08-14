@@ -57,6 +57,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 | Backend | Status | Notes |
 |---------|--------|-------|
 | **NVIDIA CUDA** | ✅ Supported | Default target; full model coverage. |
+| **AMD ROCm** | 🧪 Preview | Functional model E2E is validated on gfx942/MI300X and gfx950/MI355X; models remain preview until their CUDA feature and scheduled stability gates pass. See the [ROCm guide](./docs/get_started/installation_rocm.md) and [support matrix](./docs/developer_reference/rocm_support.md). |
 | **Intel GPU (XPU)** | 🧪 Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
 
 See [Installation — Intel XPU](./docs/get_started/installation_xpu.md).

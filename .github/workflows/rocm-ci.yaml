@@ -1,0 +1,168 @@
+name: ROCm CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+    paths:
+      - "sglang_omni/**"
+      - "sglang_omni_router/**"
+      - "tests/**"
+      - "scripts/rocm/**"
+      - "scripts/ci/run_rocm_*.sh"
+      - "docker/rocm.Dockerfile"
+      - "pyproject*.toml"
+      - ".github/workflows/rocm-ci.yaml"
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Run the scheduled supported-model E2E gate"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: rocm-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+      run_e2e: ${{ steps.gate.outputs.run_e2e }}
+    steps:
+      - id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let allowed = true;
+            if (context.eventName === "pull_request") {
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              const labels = pr.data.labels.map((label) => label.name);
+              allowed = !pr.data.draft && labels.includes("run-ci");
+              core.info(`ROCm trusted-runner gate: draft=${pr.data.draft} labels=${labels}`);
+            }
+            core.setOutput("allowed", allowed ? "true" : "false");
+            const requested = context.eventName === "schedule" ||
+              (context.eventName === "workflow_dispatch" &&
+               context.payload.inputs?.run_e2e !== "false");
+            core.setOutput("run_e2e", requested ? "true" : "false");
+
+  rocm:
+    needs: preflight
+    if: needs.preflight.outputs.allowed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        gpu_arch: [gfx942, gfx950]
+    runs-on: [self-hosted, rocm, "${{ matrix.gpu_arch }}"]
+    timeout-minutes: 360
+    env:
+      ROCM_IMAGE: >-
+        ${{ matrix.gpu_arch == 'gfx942'
+            && vars.SGLANG_OMNI_ROCM_GFX942_IMAGE
+            || vars.SGLANG_OMNI_ROCM_GFX950_IMAGE }}
+      ARTIFACT_DIR: ${{ runner.temp }}/rocm-${{ matrix.gpu_arch }}
+      HF_CACHE_HOST: ${{ vars.SGLANG_OMNI_HF_CACHE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require pinned ROCm image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ROCM_IMAGE}" || "${ROCM_IMAGE}" != *@sha256:* ]]; then
+            echo "Repository variable for ${{ matrix.gpu_arch }} must contain an image digest" >&2
+            exit 1
+          fi
+          if [[ -z "${HF_CACHE_HOST}" || "${HF_CACHE_HOST}" != /* ]]; then
+            echo "SGLANG_OMNI_HF_CACHE must be an absolute runner path" >&2
+            exit 1
+          fi
+
+      - name: Capture host health
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${ARTIFACT_DIR}"
+          {
+            echo "sha=${GITHUB_SHA}"
+            echo "image=${ROCM_IMAGE}"
+            echo "expected_arch=${{ matrix.gpu_arch }}"
+            date --iso-8601=seconds
+            uptime
+            who
+            free -h
+            df -h
+            rocm-smi --showproductname --showuniqueid --showuse --showmemuse --showpids
+            docker ps --no-trunc
+          } 2>&1 | tee "${ARTIFACT_DIR}/host-health.log"
+
+      - name: Pull image
+        run: docker pull "${ROCM_IMAGE}"
+
+      - name: ROCm platform and unit smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --device=/dev/kfd --device=/dev/dri \
+            --group-add video --group-add render \
+            --ipc=host --network=host \
+            --ulimit memlock=-1:-1 \
+            --security-opt seccomp=unconfined \
+            -e EXPECTED_GPU_ARCH=${{ matrix.gpu_arch }} \
+            -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni" \
+            -v "${ARTIFACT_DIR}:/artifacts" \
+            -v "${HF_CACHE_HOST}:/root/.cache/huggingface" \
+            "${ROCM_IMAGE}" bash -lc '
+              set -euo pipefail
+              cd /workspace/sglang-omni
+              ROCM_CI_ARTIFACT_DIR=/artifacts \
+                ./scripts/ci/run_rocm_unit_smoke.sh
+            '
+
+      - name: Functional model matrix E2E
+        if: needs.preflight.outputs.run_e2e == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --device=/dev/kfd --device=/dev/dri \
+            --group-add video --group-add render \
+            --ipc=host --network=host \
+            --ulimit memlock=-1:-1 \
+            --security-opt seccomp=unconfined \
+            -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni" \
+            -v "${ARTIFACT_DIR}:/artifacts" \
+            -v "${HF_CACHE_HOST}:/root/.cache/huggingface" \
+            "${ROCM_IMAGE}" bash -lc '
+              set -euo pipefail
+              cd /workspace/sglang-omni
+              python3 ./scripts/ci/run_rocm_model_e2e.py \
+                --all \
+                --expected-gpu-arch "${{ matrix.gpu_arch }}" \
+                --cache-dir /root/.cache/huggingface \
+                --artifact-dir /artifacts/models
+            '
+
+      - name: Upload ROCm evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocm-${{ matrix.gpu_arch }}-${{ github.sha }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 14

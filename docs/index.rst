@@ -86,6 +86,7 @@ Supported Models
    :caption: Get Started
 
    get_started/installation.md
+   get_started/installation_rocm.md
    get_started/installation_xpu.md
    get_started/release_notes.md
 
@@ -136,6 +137,7 @@ Supported Models
    :caption: Developer Reference
 
    developer_reference/main.md
+   developer_reference/rocm_support.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
    developer_reference/config.md
