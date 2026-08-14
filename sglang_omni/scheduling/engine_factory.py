@@ -27,6 +27,18 @@ def _operator_selected_prefill_graph_backend(
     return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
+def _apply_platform_graph_policy(
+    overrides: dict[str, Any], *, supports_device_graphs: bool
+) -> None:
+    if supports_device_graphs:
+        return
+    overrides["disable_cuda_graph"] = True
+    overrides["disable_prefill_cuda_graph"] = True
+    overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
+    overrides.pop("cuda_graph_bs_prefill", None)
+    overrides.pop("cuda_graph_max_bs_prefill", None)
+
+
 class SGLangGenerationEngineBuilder(ABC):
     """Build the model-neutral parts of a SGLang AR engine stage.
 
@@ -78,6 +90,15 @@ class SGLangGenerationEngineBuilder(ABC):
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
+        )
+        from sglang_omni.platforms import current_platform
+
+        # Owned CUDA-graph runners are not assumed portable merely because
+        # PyTorch exposes them through a cuda-compatible namespace. Keep the
+        # entire generation lifecycle eager until the platform opts in.
+        _apply_platform_graph_policy(
+            overrides,
+            supports_device_graphs=current_platform.supports_device_graphs(),
         )
         self.adjust_overrides(overrides)
         # Left unset, SGLang re-detects off a CUDA-first ladder that can contradict

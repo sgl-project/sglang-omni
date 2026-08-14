@@ -153,7 +153,7 @@ def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
     assert NPUOmniPlatform().enable_code2wav_graph() is False
     assert CPUOmniPlatform().enable_code2wav_graph() is False
     assert CUDAOmniPlatform().enable_code2wav_graph() is True
-    assert ROCMOmniPlatform().enable_code2wav_graph() is True
+    assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
 def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:

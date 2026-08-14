@@ -277,7 +277,15 @@ def get_gpu_startup_lock_path(
     """Return the launch-time lock path for a CUDA logical GPU id."""
 
     source_env = env if env is not None else os.environ
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    # ROCm TP workers are narrowed with a physical ROCR id while their HIP/CUDA
+    # aliases both become logical device zero. Using CUDA_VISIBLE_DEVICES here
+    # would make every rank contend on the same lock and deadlock distributed
+    # initialization while rank zero holds it. Prefer the physical ROCr mapping
+    # whenever it is available.
+    visible_devices_value = source_env.get("ROCR_VISIBLE_DEVICES") or source_env.get(
+        "CUDA_VISIBLE_DEVICES"
+    )
+    visible_devices = parse_cuda_visible_devices(visible_devices_value)
     visible_device = resolve_visible_device_id(logical_gpu_id, visible_devices)
     safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(visible_device)).strip("_")
     if not safe_device:

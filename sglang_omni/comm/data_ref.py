@@ -12,6 +12,7 @@ class TransportKind(str, Enum):
     LOCAL_OBJECT = "local_object"
     CUDA_IPC = "cuda_ipc"
     SHM = "shm"
+    NIXL = "nixl"
     MOONCAKE = "mooncake"
 
 
