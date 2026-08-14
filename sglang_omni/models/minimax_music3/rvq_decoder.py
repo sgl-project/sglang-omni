@@ -150,6 +150,7 @@ class RVQDepthDecoder(nn.Module):
 
 
 _TOP_K = 50
+_PHILOX_VALUES_PER_COUNTER = 4
 
 
 def sample_topk(
@@ -180,11 +181,23 @@ def sample_topk_seeded(
     Returns:
         [rows] sampled column indices.
     """
-    from sglang.srt.layers.sampler import multinomial_with_seed
-
     values = torch.nan_to_num(logits.float(), nan=-1e9, posinf=1e9, neginf=-1e9)
     threshold = torch.topk(values, _TOP_K, dim=-1).values[..., -1, None]
     values = values.masked_fill(values < threshold, -float("inf"))
+
+    if torch.version.hip is not None:
+        probs = torch.nan_to_num(F.softmax(values, dim=-1), nan=0.0)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        samples: list[Tensor] = []
+        for row, seed, position in zip(probs, seeds, positions, strict=True):
+            generator = torch.Generator(device=values.device)
+            generator.manual_seed(int(seed.item()))
+            generator.set_offset(int(position.item()) * _PHILOX_VALUES_PER_COUNTER)
+            samples.append(torch.multinomial(row, 1, generator=generator))
+        return torch.cat(samples)
+
+    from sglang.srt.layers.sampler import multinomial_with_seed
+
     return multinomial_with_seed(values, seeds, positions).squeeze(-1)
 
 
