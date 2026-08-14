@@ -15,6 +15,10 @@ from sglang_omni.models.arkasr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,7 @@ logger = logging.getLogger(__name__)
 class ArkasrEngineBuilder(AsrEngineBuilder):
     model_name = "ARK-ASR"
     model_arch_override = "ArkasrForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -117,6 +122,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
@@ -125,6 +131,33 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
+
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if "context_length" in overrides:
+            self.context_length = int(overrides.pop("context_length"))
+        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
+            return
+        if "cuda_graph_bs_prefill" in overrides:
+            return
+
+        # SGLang clamps prefill max_bs to context_length after merging
+        # explicit buckets, so derive a ladder that remains coherent.
+        caps = [
+            self.context_length,
+            overrides["max_prefill_tokens"],
+            overrides.get("cuda_graph_max_bs_prefill"),
+            overrides.get("max_total_tokens"),
+        ]
+        if overrides["chunked_prefill_size"] > 0:
+            caps.append(overrides["chunked_prefill_size"])
+        ladder = build_default_prefill_cuda_graph_bs(
+            min(int(cap) for cap in caps if cap is not None)
+        )
+        overrides["cuda_graph_bs_prefill"] = ladder
+        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
+
+    def customize_server_args(self, server_args: Any) -> None:
+        self.context_length = int(server_args.context_length)
 
     def setup_model_resources(
         self,
