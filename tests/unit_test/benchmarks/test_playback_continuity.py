@@ -111,7 +111,7 @@ _CONTINUITY_KEYS = (
 
 
 def test_compute_speed_metrics_skips_continuity_for_non_streaming_audio() -> None:
-    # note: (akazaakane) compute_speed_metrics is shared with the ASR/Omni
+    # note (akazaakane): compute_speed_metrics is shared with the ASR/Omni
     # benchmarks, which never emit audio chunks, so the continuity fields must
     # stay absent rather than reporting None for every unrelated request.
     outputs = [
