@@ -178,11 +178,6 @@ python -m sglang_omni.profiler \
   /tmp/whisper_asr_profile/<run-id> --format table
 ```
 
-> **GPU baseline pending.** Before this PR leaves Draft, run the documented
-> 20-sample c1/c2/c4/c8 profile on one fixed GPU type and record the commit,
-> image digest, model and dataset revisions, WER, normal performance metrics,
-> and key interval counts here.
-
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
