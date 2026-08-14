@@ -111,7 +111,9 @@ _CONTINUITY_KEYS = (
 
 
 def test_compute_speed_metrics_skips_continuity_for_non_streaming_audio() -> None:
-    """ASR/Omni workloads share compute_speed_metrics and emit no audio chunks."""
+    # note: (akazaakane) compute_speed_metrics is shared with the ASR/Omni
+    # benchmarks, which never emit audio chunks, so the continuity fields must
+    # stay absent rather than reporting None for every unrelated request.
     outputs = [
         RequestResult(
             request_id="asr-1",
@@ -137,7 +139,6 @@ def test_compute_speed_metrics_skips_continuity_for_non_streaming_audio() -> Non
 
 
 def test_compute_speed_metrics_reports_all_single_chunk_streams() -> None:
-    """Short utterances stay visible as N/A instead of dropping the gate."""
     outputs = [
         RequestResult(
             request_id=f"short-{index}",

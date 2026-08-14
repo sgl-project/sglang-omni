@@ -1563,6 +1563,10 @@ def test_qwen3_tts_streaming_vocoder_decodes_initial_chunk_early() -> None:
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
 
+    # note: (akazaakane) derived from the shipped default instead of hardcoded.
+    # This test asserted a 1-frame emit and broke silently when the default moved
+    # to 8; the property under test is that the initial threshold stays below the
+    # steady stride, not any particular frame count.
     initial_frames = scheduler._default_initial_chunk_frames
     assert initial_frames < scheduler._stream_stride
 
@@ -1648,13 +1652,6 @@ def test_qwen3_tts_streaming_vocoder_zero_initial_chunk_uses_steady_stride() -> 
 
 
 def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() -> None:
-    """A stream ending before the initial chunk still delivers every sample.
-
-    Utterances that reach EOS with fewer than ``initial_chunk_frames`` generated
-    frames emit no streaming chunk, so the final flush carries the whole
-    waveform in one piece. Those requests are single-chunk and therefore N/A for
-    the C50/C100/C200 gates, which is why the benchmark reports the N/A count.
-    """
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
@@ -1680,6 +1677,9 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
         payload.request_id,
         _qwen3_tts_stream_item(all_codes, chunk_id=0, ref_code_len=ref_frames),
     )
+    # note: (akazaakane) emitting nothing here is the contract, not a stall.
+    # Below initial_chunk_frames the stream stays single-chunk until the final
+    # flush, which is also why these requests are N/A for C50/C100/C200.
     assert scheduler.outbox.qsize() == 0
 
     scheduler._on_done(payload.request_id)
@@ -2114,6 +2114,10 @@ def test_qwen3_tts_async_worker_propagates_process_exit(
         device="cpu",
         stream_stride=1,
         stream_followup_stride=1,
+        # note: (akazaakane) pinned alongside the strides so this stays an
+        # error-propagation test: on the shipped default of 8 the single frame
+        # below never reaches the decode threshold, so no plan is built and the
+        # interrupt never fires.
         initial_chunk_frames=1,
     )
     state = scheduler.create_stream_state("request")
@@ -2146,6 +2150,10 @@ def test_qwen3_tts_async_commit_propagates_process_exit(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
         stream_stride=1,
+        # note: (akazaakane) pinned alongside the stride for the same reason as
+        # the worker test above: on the shipped default of 8 the single frame
+        # below never reaches the decode threshold, so _build_decode_plan returns
+        # None and the assertion under it cannot hold.
         initial_chunk_frames=1,
     )
     state = scheduler.create_stream_state("request")
