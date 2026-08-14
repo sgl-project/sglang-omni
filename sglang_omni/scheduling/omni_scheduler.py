@@ -63,6 +63,7 @@ from sglang_omni.scheduling.prefill_coalesce import (
     validate_prefill_coalesce_requests,
     validate_prefill_coalesce_wait_ms,
 )
+from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -203,7 +204,9 @@ class OmniScheduler:
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
-        self.requires_tp_work_fanout: bool = False
+        self.parallel_capabilities = ParallelSchedulerCapabilities(
+            synchronize_abort=int(server_args.tp_size) > 1,
+        )
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
@@ -793,6 +796,10 @@ class OmniScheduler:
         recv_msgs = self._recv_scheduler_messages()
         new_reqs: list = []
         for msg in recv_msgs:
+            if msg.type == "abort":
+                if msg.request_id not in self._aborted_request_ids:
+                    self.abort(msg.request_id)
+                continue
             if msg.request_id in self._aborted_request_ids:
                 continue
 
@@ -1576,6 +1583,11 @@ class OmniScheduler:
         self._running = False
         self._shutdown_resources()
 
+    @property
+    def requires_tp_work_fanout(self) -> bool:
+        """Compatibility view of the TP work-fanout requirement."""
+        return self.parallel_capabilities.fanout_work
+
     def _shutdown_resources(self) -> None:
         with self._shutdown_lock:
             callback = self._shutdown_callback
@@ -1648,6 +1660,18 @@ class OmniScheduler:
             _remove_from_batch(self.last_batch, request_id)
             _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
+
+    def propagate_abort(self, request_id: str) -> None:
+        """Order an external abort through the scheduler's TP broadcast path."""
+        if not self.is_entry_rank:
+            raise RuntimeError("abort propagation must be submitted on the entry rank")
+        self.inbox.put(
+            IncomingMessage(
+                request_id=request_id,
+                type="abort",
+                data=None,
+            )
+        )
 
     def admin(
         self, action: str, payload: dict[str, Any] | None = None

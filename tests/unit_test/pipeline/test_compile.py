@@ -421,7 +421,7 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
 
 
 def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
-    with pytest.raises(ValueError, match="cannot include TP stage"):
+    with pytest.raises(ValueError, match="cannot include parallel stage"):
         PipelineConfig(
             model_path="model",
             stages=[

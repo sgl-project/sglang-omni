@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,9 +24,14 @@ from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.pipeline.parallel_control import (
+    ParallelStageContext,
+    ParallelWorkMessage,
+    RequestDispatchTracker,
+)
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
+from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -47,6 +53,11 @@ from sglang_omni.proto import (
 )
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.types import (
+    AbortDrainScheduler,
+    AbortPropagationScheduler,
+    ParallelSchedulerCapabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +71,28 @@ def _error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+def _resolve_parallel_scheduler_capabilities(
+    scheduler: Any,
+    parallel_context: ParallelStageContext | None,
+    legacy_tp_fanout: TPLeaderFanout | None,
+) -> ParallelSchedulerCapabilities:
+    capabilities = getattr(scheduler, "parallel_capabilities", None)
+    if isinstance(capabilities, ParallelSchedulerCapabilities):
+        return capabilities
+    if parallel_context is None:
+        if legacy_tp_fanout is not None:
+            return ParallelSchedulerCapabilities(
+                fanout_work=bool(getattr(scheduler, "requires_tp_work_fanout", False)),
+                drain_aborted_work=bool(
+                    getattr(scheduler, "requires_tp_work_fanout", False)
+                ),
+            )
+        return ParallelSchedulerCapabilities()
+    if getattr(scheduler, "supports_parallel_stage", None) is False:
+        raise TypeError(f"{type(scheduler).__name__} does not support parallel stages")
+    raise TypeError("parallel stage scheduler must declare parallel_capabilities")
+
+
 class Stage:
     """IO shell for one pipeline stage.
 
@@ -67,14 +100,13 @@ class Stage:
     contract, independent of scheduler implementation.
 
     Note on ``role``: ``role="single"`` means this stage owns its own ZMQ
-    control plane and relay reader (i.e. it is NOT a TP follower). It does
+    control plane and relay reader (i.e. it is not a parallel follower). It does
     **not** imply this stage has its OS process to itself — since the
     declarative topology PR, multiple ``role="single"`` stages can share
     one OS process (and one asyncio event loop). When they do, they share
     a failure domain: see ``_run_process`` in ``stage_workers.py``.
-    ``role="leader"`` / ``role="follower"`` continue to denote TP rank 0
-    vs rank > 0 within a multi-rank TP stage; TP stages must own their OS
-    process exclusively.
+    ``role="leader"`` / ``role="follower"`` denote rank 0 vs rank > 0 within
+    a multi-rank TP or SP stage; parallel stages must own their OS process.
     """
 
     def __init__(
@@ -103,6 +135,7 @@ class Stage:
         local_dispatcher: Any | None = None,
         can_accept_stream_before_payload: bool = False,
         disable_direct_cuda_ipc_payload: bool = False,
+        parallel_context: ParallelStageContext | None = None,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
     ):
@@ -121,7 +154,40 @@ class Stage:
         self._local_dispatcher = local_dispatcher
         self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
-        self._tp_fanout = tp_fanout
+        if parallel_context is not None and tp_fanout is not None:
+            raise ValueError("parallel_context and tp_fanout cannot both be set")
+        self._parallel_context = parallel_context
+        self._parallel_fanout = (
+            parallel_context.fanout if parallel_context is not None else tp_fanout
+        )
+        self._legacy_parallel_scheduler_contract = (
+            parallel_context is None
+            and tp_fanout is not None
+            and not isinstance(
+                getattr(scheduler, "parallel_capabilities", None),
+                ParallelSchedulerCapabilities,
+            )
+        )
+        self._parallel_capabilities = _resolve_parallel_scheduler_capabilities(
+            scheduler,
+            parallel_context,
+            tp_fanout,
+        )
+        if (
+            self._parallel_capabilities.drain_aborted_work
+            and not self._legacy_parallel_scheduler_contract
+            and not isinstance(scheduler, AbortDrainScheduler)
+        ):
+            raise TypeError(
+                "scheduler with drain_aborted_work must implement abort-drain hooks"
+            )
+        if self._parallel_capabilities.synchronize_abort and not isinstance(
+            scheduler, AbortPropagationScheduler
+        ):
+            raise TypeError(
+                "scheduler with synchronize_abort must implement abort propagation"
+            )
+        self._request_dispatch_tracker = RequestDispatchTracker()
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
 
@@ -258,11 +324,11 @@ class Stage:
             self.control_plane.close()
         except Exception as exc:
             _record_cleanup_error("control plane", exc)
-        if self._tp_fanout is not None:
+        if self._parallel_fanout is not None:
             try:
-                self._tp_fanout.close()
+                self._parallel_fanout.close()
             except Exception as exc:
-                _record_cleanup_error("TP fanout", exc)
+                _record_cleanup_error("parallel fanout", exc)
         try:
             await self._comm.close()
         except Exception as exc:
@@ -288,7 +354,7 @@ class Stage:
                 msg = await self.control_plane.recv()
                 if (
                     self.role == "leader"
-                    and self._tp_fanout is not None
+                    and self._parallel_fanout is not None
                     and isinstance(
                         msg,
                         (
@@ -299,10 +365,19 @@ class Stage:
                         ),
                     )
                 ):
-                    await self._tp_fanout.fanout_control(msg)
+                    await self._parallel_fanout.fanout_control(msg)
                 if isinstance(msg, ShutdownMessage):
                     break
-                if isinstance(msg, TPWorkMessage):
+                if isinstance(msg, ParallelWorkMessage):
+                    if msg.dispatch_id is None:
+                        raise RuntimeError(
+                            "parallel-stage work received without a dispatch ID"
+                        )
+                    if not self._request_dispatch_tracker.register_work(
+                        msg.request_id,
+                        msg.dispatch_id,
+                    ):
+                        continue
                     await self._execute(msg.data)
                     continue
                 await self._handle_message(msg)
@@ -843,20 +918,22 @@ class Stage:
         )
         if (
             self.role == "leader"
-            and self._tp_fanout is not None
-            and getattr(self.scheduler, "requires_tp_work_fanout", False)
+            and self._parallel_fanout is not None
+            and self._parallel_capabilities.fanout_work
         ):
-            self._tp_fanout.fanout_work(payload)
+            dispatch_id = self._parallel_fanout.fanout_work(payload)
+            if not self._legacy_parallel_scheduler_contract:
+                self._request_dispatch_tracker.register_work(request_id, dispatch_id)
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )
 
     async def _on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
-        if self.role == "leader" and self._tp_fanout is not None:
+        if self.role == "leader" and self._parallel_fanout is not None:
             local = await self._run_admin_operation(operation)
             try:
-                follower_msgs = await self._tp_fanout.collect_admin_results(
+                follower_msgs = await self._parallel_fanout.collect_admin_results(
                     operation.op_id,
                     timeout_s=float(
                         60.0 if operation.timeout_s is None else operation.timeout_s
@@ -865,14 +942,21 @@ class Stage:
             except Exception as exc:
                 local.success = False
                 local.error = str(exc)
-                local.message = "failed to collect TP follower admin results"
+                local.message = "failed to collect parallel follower admin results"
                 follower_msgs = []
 
             rank_results = [local] + [item.result for item in follower_msgs]
             success = all(item.success for item in rank_results)
             errors = [item.error for item in rank_results if item.error]
             data = dict(local.data)
-            data["tp_size"] = len(rank_results)
+            if self._parallel_context is None:
+                data["tp_size"] = len(rank_results)
+            else:
+                data["parallel_kind"] = self._parallel_context.kind
+                data["parallel_size"] = self._parallel_context.size
+                data[f"{self._parallel_context.kind}_size"] = (
+                    self._parallel_context.size
+                )
             data["rank_results"] = [item.to_dict() for item in rank_results]
             result = AdminResult(
                 op_id=operation.op_id,
@@ -962,7 +1046,11 @@ class Stage:
             message=message,
             data=dict(data or {}),
             error=error,
-            rank=getattr(self.scheduler, "tp_rank", None),
+            rank=(
+                self._parallel_context.rank
+                if self._parallel_context is not None
+                else getattr(self.scheduler, "tp_rank", None)
+            ),
             role=self.role,
         )
 
@@ -987,6 +1075,8 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.type in {"result", "error"}:
+                self._acknowledge_scheduler_terminal(out.request_id)
             if out.request_id not in self._active_requests:
                 continue
 
@@ -1033,14 +1123,31 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.type in {"result", "error"}:
+                self._acknowledge_scheduler_terminal(out.request_id)
             if out.type == "result":
                 self._clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
             elif out.type == "error":
                 raise RuntimeError(
-                    f"TP follower stage {self.name} received scheduler error: {out.data}"
+                    f"Parallel follower stage {self.name} received scheduler error: "
+                    f"{out.data}"
                 )
+
+    def _acknowledge_scheduler_terminal(self, request_id: str) -> None:
+        dispatch_id = self._request_dispatch_tracker.finish_terminal(request_id)
+        if dispatch_id is None:
+            return
+        if self._parallel_capabilities.drain_aborted_work:
+            if not self._legacy_parallel_scheduler_contract:
+                assert isinstance(self.scheduler, AbortDrainScheduler)
+                self.scheduler.acknowledge_request_terminal(
+                    request_id,
+                    dispatch_id,
+                )
+        if self.role == "leader" and self._parallel_fanout is not None:
+            self._parallel_fanout.acknowledge_terminal(request_id, dispatch_id)
 
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
@@ -1575,14 +1682,38 @@ class Stage:
         try:
             while self._running:
                 abort_msg = await self.control_plane.recv_abort()
-                if self.role == "leader" and self._tp_fanout is not None:
-                    await self._tp_fanout.fanout_abort(abort_msg)
-                self._on_abort(abort_msg.request_id)
+                dispatch_id = getattr(abort_msg, "dispatch_id", None)
+                drain_fanned_work = self._request_dispatch_tracker.has_active_work(
+                    abort_msg.request_id
+                )
+                if (
+                    self.role == "leader"
+                    and self._parallel_fanout is not None
+                    and drain_fanned_work
+                ):
+                    dispatch_id = await self._parallel_fanout.fanout_abort(abort_msg)
+                elif self.role == "follower":
+                    if dispatch_id is None:
+                        raise RuntimeError(
+                            "parallel follower abort requires a work dispatch ID"
+                        )
+                    if self._request_dispatch_tracker.should_ignore_abort(
+                        abort_msg.request_id,
+                        dispatch_id,
+                    ):
+                        continue
+                    drain_fanned_work = True
+                self._on_abort(
+                    abort_msg.request_id,
+                    drain_fanned_work=drain_fanned_work,
+                    dispatch_id=dispatch_id,
+                )
         except asyncio.CancelledError:
             pass
         except Exception:
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
+                raise
 
     def _record_aborted_request_id(self, request_id: str) -> None:
         self._aborted.add(request_id)
@@ -1592,11 +1723,48 @@ class Stage:
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
 
-    def _on_abort(self, request_id: str) -> None:
+    def _on_abort(
+        self,
+        request_id: str,
+        *,
+        drain_fanned_work: bool | None = None,
+        dispatch_id: int | None = None,
+    ) -> None:
+        if drain_fanned_work is None:
+            drain_fanned_work = self._request_dispatch_tracker.has_active_work(
+                request_id
+            )
+        if drain_fanned_work:
+            if dispatch_id is None:
+                dispatch_id = self._request_dispatch_tracker.first_active_dispatch_id(
+                    request_id
+                )
+            if dispatch_id is None:
+                raise RuntimeError(
+                    f"Abort for {request_id!r} has no active parallel-stage dispatch"
+                )
+            self._request_dispatch_tracker.record_abort(request_id, dispatch_id)
         self._record_aborted_request_id(request_id)
         self._comm.cleanup(request_id)
         self._clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        if drain_fanned_work:
+            if not self._parallel_capabilities.drain_aborted_work:
+                raise RuntimeError(
+                    "stage-fanned work requires dispatch-aware abort draining"
+                )
+            if self._legacy_parallel_scheduler_contract:
+                self.scheduler.abort(request_id)
+            else:
+                assert isinstance(self.scheduler, AbortDrainScheduler)
+                self.scheduler.mark_request_aborted_for_drain(
+                    request_id,
+                    dispatch_id,
+                )
+        elif self._parallel_capabilities.synchronize_abort:
+            assert isinstance(self.scheduler, AbortPropagationScheduler)
+            self.scheduler.propagate_abort(request_id)
+        else:
+            self.scheduler.abort(request_id)
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
