@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from sglang.srt.configs.model_config import ModelConfig
@@ -23,6 +25,7 @@ from sglang_omni.utils.gpu_memory import (
 )
 
 logger = logging.getLogger(__name__)
+_PREFILL_RUNNER_OVERRIDE_LOCK = Lock()
 
 
 def filter_weights_by_prefix(
@@ -440,7 +443,8 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.runtime_context import get_exec, get_flags
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
-        result = super().init_cuda_graphs(capture_decode_cuda_graph)
+        with self._prefill_cuda_graph_runner_override():
+            result = super().init_cuda_graphs(capture_decode_cuda_graph)
         if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
         return result
@@ -472,6 +476,40 @@ class SGLModelRunner(ModelRunner):
                 "below max_running_requests that raises the reserved headroom."
             )
         return result
+
+    def _prefill_cuda_graph_runner_cls(self):
+        from sglang.srt.model_executor.cuda_graph_config import (
+            Backend as CudaGraphBackend,
+        )
+
+        if (
+            self._model_arch_override == "WhisperForConditionalGeneration"
+            and self.server_args.cuda_graph_config.prefill.backend
+            == CudaGraphBackend.BREAKABLE
+        ):
+            from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
+                WhisperPrefillCudaGraphRunner,
+            )
+
+            return WhisperPrefillCudaGraphRunner
+        return None
+
+    @contextmanager
+    def _prefill_cuda_graph_runner_override(self):
+        runner_cls = self._prefill_cuda_graph_runner_cls()
+        if runner_cls is None:
+            yield
+            return
+
+        from sglang.srt.model_executor.model_runner_components import cuda_graph_setup
+
+        with _PREFILL_RUNNER_OVERRIDE_LOCK:
+            original = cuda_graph_setup.PrefillCudaGraphRunner
+            cuda_graph_setup.PrefillCudaGraphRunner = runner_cls
+            try:
+                yield
+            finally:
+                cuda_graph_setup.PrefillCudaGraphRunner = original
 
     def _weight_update_blocked_reason(self) -> str | None:
         ws = self._weight_share_config

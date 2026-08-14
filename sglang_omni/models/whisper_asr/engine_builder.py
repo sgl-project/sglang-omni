@@ -11,10 +11,15 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+_WHISPER_PREFILL_GRAPH_MAX_TOKENS = 256
 
 
 def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
@@ -62,6 +67,7 @@ def _resolve_encoder_graph_buckets(
 class WhisperASREngineBuilder(AsrEngineBuilder):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -236,6 +242,30 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
         overrides["enable_custom_logit_processor"] = True
+        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
+            overrides.pop("cuda_graph_bs_prefill", None)
+            overrides.pop("cuda_graph_max_bs_prefill", None)
+            return
+        if "cuda_graph_bs_prefill" in overrides:
+            overrides.setdefault(
+                "cuda_graph_max_bs_prefill",
+                max(int(size) for size in overrides["cuda_graph_bs_prefill"]),
+            )
+            return
+
+        cap = min(
+            int(value)
+            for value in (
+                _WHISPER_PREFILL_GRAPH_MAX_TOKENS,
+                overrides.get("max_prefill_tokens"),
+                overrides.get("cuda_graph_max_bs_prefill"),
+                overrides.get("max_total_tokens"),
+            )
+            if value is not None
+        )
+        ladder = build_default_prefill_cuda_graph_bs(cap)
+        overrides["cuda_graph_bs_prefill"] = ladder
+        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -248,6 +278,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
