@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class CommConfig(BaseModel):
-    """Per-stage communication buffer and Mooncake options.
+    """Per-stage communication buffer and remote-transport options.
 
     Transport selection is owned by ``CommRouter`` from stage locality and
     placement. This config only tunes buffer pools and backend-specific
@@ -22,6 +22,7 @@ class CommConfig(BaseModel):
     credits: int = 2
     cuda_ipc_slot_size_kb: int = 64
     cuda_ipc_pool_size_mb: int | None = None
+    remote_backend: Literal["auto", "nixl", "mooncake"] = "auto"
     mooncake_protocol: str = "rdma"
     mooncake_hostname: str | None = None
     mooncake_device_name: str = ""

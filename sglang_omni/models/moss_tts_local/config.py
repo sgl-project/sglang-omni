@@ -15,6 +15,7 @@ from sglang_omni.config import (
     StageRuntimeConfig,
 )
 from sglang_omni.config.runtime import resolve_stage_static_factory_args
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.moss_tts_local"
@@ -240,7 +241,10 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                     "ref_audio_cache_max_bytes", self.ref_audio_cache_max_bytes
                 )
             if stage.factory.endswith("create_vocoder_executor"):
-                stage.factory_args.setdefault("cuda_graph", self.cuda_graph)
+                stage.factory_args.setdefault(
+                    "cuda_graph",
+                    self.cuda_graph and current_platform.supports_device_graphs(),
+                )
                 stage.factory_args.setdefault(
                     "cuda_graph_frames", self.cuda_graph_frames
                 )

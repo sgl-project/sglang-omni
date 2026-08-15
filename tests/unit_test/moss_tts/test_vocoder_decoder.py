@@ -374,6 +374,22 @@ def test_packed_flash_unavailable_uses_source_attention(monkeypatch) -> None:
     assert torch.equal(out_lengths, lengths)
 
 
+def test_rocm_forces_v2_vocoder_attention_to_sdpa(monkeypatch) -> None:
+    monkeypatch.setattr(vocoder_decoder.current_platform, "is_rocm", lambda: True)
+    source = _FallbackProjectedStage()
+    attention = source.transformer.layers[0].self_attn
+    attention.attention_implementation = "flash_attention_2"
+
+    wrapper = MossAudioTokenizerProjectedTransformer(source)
+
+    wrapped_attention = wrapper.transformer.layers[0].self_attn
+    assert attention.attention_implementation == "flash_attention_2"
+    assert wrapped_attention._flash_attn_varlen is None
+    assert wrapped_attention.resolve_attention_implementation(torch.randn(2, 6)) == (
+        "sdpa"
+    )
+
+
 def test_local_causal_flash_plan_chunks_queries_and_overlaps_keys() -> None:
     cu_seqlens = torch.tensor([0, 320, 577], dtype=torch.int32)
 
@@ -643,6 +659,8 @@ def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
 def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
+    if vocoder_decoder.current_platform.is_rocm():
+        pytest.skip("ROCm uses the SDPA vocoder path")
     if vocoder_decoder.flash_attn_varlen_func is None:
         pytest.skip("requires SGLang flash_attn_varlen_func")
 
@@ -677,6 +695,8 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
 def test_sglang_chunked_local_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
+    if vocoder_decoder.current_platform.is_rocm():
+        pytest.skip("ROCm uses the SDPA vocoder path")
     if vocoder_decoder.flash_attn_varlen_func is None:
         pytest.skip("requires SGLang flash_attn_varlen_func")
 
@@ -877,6 +897,7 @@ def test_vocoder_decoder_wraps_legacy_moss_audio_tokenizer_fields() -> None:
     assert wrapped_layer.ffn.linear2 is source_layer.linear2
     assert wrapped_layer.ffn.activation is source_layer.activation
 
+    attention._flash_attn_varlen = lambda *args, **kwargs: None
     attention._can_run_packed_flash = lambda _: True
     assert attention.resolve_attention_implementation(torch.randn(2, 6)) == (
         "flash_attention_2"

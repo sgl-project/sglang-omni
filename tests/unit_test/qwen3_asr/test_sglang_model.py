@@ -62,7 +62,10 @@ def test_forward_uses_available_mrope_positions(
 
     expected_positions = mrope_positions[0] if use_mrope_positions else positions
     assert torch.equal(seen_positions, expected_positions)
-    assert seen_positions.dtype == torch.int32
+    expected_dtype = (
+        torch.int32 if sglang_model.fused_qk_norm_rope is not None else torch.long
+    )
+    assert seen_positions.dtype == expected_dtype
     assert actual is output
 
 
@@ -87,7 +90,7 @@ def test_asr_text_rope_drops_only_multimodal_parameters() -> None:
     assert original["mrope_section"] == [24, 20, 20]
 
 
-def test_fused_asr_qk_norm_rope_is_bound_per_attention() -> None:
+def test_fused_asr_qk_norm_rope_is_bound_per_attention(monkeypatch) -> None:
     def original(positions, hidden_states):
         return positions, hidden_states
 
@@ -108,6 +111,7 @@ def test_fused_asr_qk_norm_rope_is_bound_per_attention() -> None:
         )
     )
 
+    monkeypatch.setattr(sglang_model, "fused_qk_norm_rope", lambda *args: None)
     sglang_model._enable_fused_asr_qk_norm_rope(language_model)
 
     assert supported._asr_unfused_forward_prepare_native is original
@@ -116,6 +120,22 @@ def test_fused_asr_qk_norm_rope_is_bound_per_attention() -> None:
         is sglang_model._fused_asr_forward_prepare_native
     )
     assert unsupported.forward_prepare_native is original
+
+
+def test_fused_asr_qk_norm_rope_stays_native_when_kernel_is_unavailable(
+    monkeypatch,
+) -> None:
+    original = object()
+    attention = SimpleNamespace(head_dim=128, forward_prepare_native=original)
+    language_model = SimpleNamespace(
+        model=SimpleNamespace(layers=[SimpleNamespace(self_attn=attention)])
+    )
+    monkeypatch.setattr(sglang_model, "fused_qk_norm_rope", None)
+
+    sglang_model._enable_fused_asr_qk_norm_rope(language_model)
+
+    assert attention.forward_prepare_native is original
+    assert not hasattr(attention, "_asr_unfused_forward_prepare_native")
 
 
 def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:

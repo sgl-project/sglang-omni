@@ -36,6 +36,7 @@ _BACKENDS = (
     ("communication", "nixl", "nixl._api"),
     ("communication", "mooncake", "mooncake.engine"),
 )
+_ROCM_BACKENDS = (("attention", "aiter", "aiter"),)
 _IMPORT_PROBE_TIMEOUT_SECONDS = 30.0
 _IMPORT_PROBE_CODE = "import importlib, sys; importlib.import_module(sys.argv[1])"
 
@@ -107,9 +108,11 @@ def _distribution_info(module: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _backend_inventory() -> list[dict[str, Any]]:
+def _backend_inventory(
+    extra_backends: tuple[tuple[str, str, str], ...] = (),
+) -> list[dict[str, Any]]:
     backends = []
-    for category, name, module in _BACKENDS:
+    for category, name, module in (*extra_backends, *_BACKENDS):
         import_error = _module_import_error(module)
         distribution, version = _distribution_info(module)
         importable = import_error is None
@@ -264,6 +267,8 @@ def _logical_devices(
     visible_devices: list[int | str],
     inventory: list[dict[str, Any]],
     warnings: list[str],
+    *,
+    accelerator: str,
 ) -> list[dict[str, Any]]:
     if not torch.cuda.is_available():
         return []
@@ -298,26 +303,82 @@ def _logical_devices(
                 f"CUDA_VISIBLE_DEVICES entry {visible_device!r} is a MIG device; "
                 "physical GPU mapping and free memory are unsupported."
             )
+        torch_major = getattr(properties, "major", None)
+        torch_minor = getattr(properties, "minor", None)
         torch_cc = (
-            f"{properties.major}.{properties.minor}" if properties is not None else None
+            f"{torch_major}.{torch_minor}"
+            if torch_major is not None and torch_minor is not None
+            else None
         )
-        devices.append(
-            {
-                "logical_index": logical_index,
-                "visible_device": visible_device,
-                "physical_index": physical.get("physical_index"),
-                "uuid": physical.get("uuid")
-                or str(getattr(properties, "uuid", "") or "")
-                or None,
-                "pci_bus_id": physical.get("pci_bus_id"),
-                "name": physical.get("name") or getattr(properties, "name", None),
-                "compute_capability": physical.get("compute_capability") or torch_cc,
-                "total_memory_bytes": physical.get("total_memory_bytes")
-                or getattr(properties, "total_memory", None),
-                "free_memory_bytes": physical.get("free_memory_bytes"),
-            }
-        )
+        gpu_architecture = getattr(properties, "gcnArchName", None)
+        free_memory = physical.get("free_memory_bytes")
+        if free_memory is None and accelerator == "rocm":
+            try:
+                free_memory = int(torch.cuda.mem_get_info(logical_index)[0])
+            except Exception as exc:
+                warnings.append(
+                    f"PyTorch ROCm memory query failed for logical_index="
+                    f"{logical_index}: {exc}"
+                )
+        device = {
+            "logical_index": logical_index,
+            "visible_device": visible_device,
+            "physical_index": physical.get("physical_index"),
+            "uuid": physical.get("uuid")
+            or str(getattr(properties, "uuid", "") or "")
+            or None,
+            "pci_bus_id": physical.get("pci_bus_id"),
+            "name": physical.get("name") or getattr(properties, "name", None),
+            "compute_capability": physical.get("compute_capability") or torch_cc,
+            "total_memory_bytes": physical.get("total_memory_bytes")
+            or getattr(properties, "total_memory", None),
+            "free_memory_bytes": free_memory,
+        }
+        if accelerator == "rocm":
+            device["compute_capability"] = None
+            device["gpu_architecture"] = gpu_architecture
+        devices.append(device)
     return devices
+
+
+def _accelerator_environment(torch: Any) -> tuple[str, str | None]:
+    version = getattr(torch, "version", None)
+    rocm_version = getattr(version, "hip", None)
+    if rocm_version:
+        return "rocm", "cuda"
+    cuda_version = getattr(version, "cuda", None)
+    if cuda_version:
+        return "cuda", "cuda"
+    xpu = getattr(torch, "xpu", None)
+    if xpu is not None and bool(xpu.is_available()):
+        return "xpu", "xpu"
+    return "cpu", "cpu"
+
+
+def _selected_backend_policy(
+    accelerator: str, backends: list[dict[str, Any]]
+) -> dict[str, str]:
+    available = {item["name"] for item in backends if item["importable"]}
+    if accelerator == "rocm":
+        return {
+            "attention": "aiter" if "aiter" in available else "torch-sdpa",
+            "moe": "auto (AITER/Triton)",
+            "intra_node_transport": "gpu_ipc",
+            "remote_transport": "nixl",
+        }
+    if accelerator == "cuda":
+        return {
+            "attention": "flashinfer" if "flashinfer" in available else "auto",
+            "moe": "auto",
+            "intra_node_transport": "gpu_ipc",
+            "remote_transport": "mooncake",
+        }
+    return {
+        "attention": "platform default",
+        "moe": "platform default",
+        "intra_node_transport": "shm",
+        "remote_transport": "unsupported",
+    }
 
 
 def collect_gpu_diagnostics(
@@ -329,41 +390,92 @@ def collect_gpu_diagnostics(
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
-    visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
-    visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
-    pynvml = pynvml_module if pynvml_module is not None else _try_import_pynvml()
+    accelerator, device_type = _accelerator_environment(torch)
+    visible_variable = (
+        next(
+            (
+                name
+                for name in (
+                    "ROCR_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                    "CUDA_VISIBLE_DEVICES",
+                )
+                if source_env.get(name)
+            ),
+            "ROCR_VISIBLE_DEVICES",
+        )
+        if accelerator == "rocm"
+        else "CUDA_VISIBLE_DEVICES"
+    )
+    visible_value = source_env.get(visible_variable)
+    visible_devices = parse_cuda_visible_devices(visible_value)
+    pynvml = (
+        pynvml_module
+        if pynvml_module is not None
+        else (_try_import_pynvml() if accelerator == "cuda" else None)
+    )
 
     inventory, system, warnings = _nvml_inventory(pynvml)
     try:
-        devices = _logical_devices(torch, visible_devices, inventory, warnings)
+        devices = _logical_devices(
+            torch,
+            visible_devices,
+            inventory,
+            warnings,
+            accelerator=accelerator,
+        )
     finally:
         if pynvml is not None:
             _shutdown_nvml(pynvml)
 
-    backends = _backend_inventory()
+    backends = _backend_inventory(_ROCM_BACKENDS if accelerator == "rocm" else ())
     warnings.extend(
         backend["reason"]
         for backend in backends
         if backend["installed"] and not backend["importable"]
     )
-    return {
+    environment = {
+        "cuda_visible_devices": source_env.get("CUDA_VISIBLE_DEVICES"),
+        **system,
+        "cuda_runtime_version": _cuda_runtime_version(),
+        "pytorch_version": getattr(torch, "__version__", None),
+        "pytorch_cuda_build": getattr(getattr(torch, "version", None), "cuda", None),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "logical_device_count": len(devices),
+    }
+    if accelerator == "rocm":
+        environment.update(
+            {
+                "accelerator": accelerator,
+                "device_type": device_type,
+                "visible_devices_variable": visible_variable,
+                "rocr_visible_devices": source_env.get("ROCR_VISIBLE_DEVICES"),
+                "hip_visible_devices": source_env.get("HIP_VISIBLE_DEVICES"),
+                "pytorch_rocm_build": getattr(
+                    getattr(torch, "version", None), "hip", None
+                ),
+                "gpu_architectures": sorted(
+                    {
+                        str(device["gpu_architecture"])
+                        for device in devices
+                        if device.get("gpu_architecture")
+                    }
+                ),
+            }
+        )
+    report = {
         "schema_version": 1,
-        "environment": {
-            "cuda_visible_devices": visible_value,
-            **system,
-            "cuda_runtime_version": _cuda_runtime_version(),
-            "pytorch_version": getattr(torch, "__version__", None),
-            "pytorch_cuda_build": getattr(
-                getattr(torch, "version", None), "cuda", None
-            ),
-            "cuda_available": bool(torch.cuda.is_available()),
-            "logical_device_count": len(devices),
-        },
+        "environment": environment,
         "gpus": devices,
         "backends": backends,
         "warnings": warnings,
     }
+    if accelerator == "rocm":
+        report["selected_backend_policy"] = _selected_backend_policy(
+            accelerator, backends
+        )
+    return report
 
 
 def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
@@ -371,30 +483,62 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
 
     environment = report["environment"]
     visible = environment["cuda_visible_devices"]
-    lines = [
-        "SGLang-Omni GPU diagnostics (no model loaded)",
-        f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
-        f"Driver: {environment['driver_version'] or 'unavailable'}",
-        (
-            "CUDA driver/runtime: "
-            f"{environment['cuda_driver_api_version'] or 'unavailable'} / "
-            f"{environment['cuda_runtime_version'] or 'unavailable'}"
-        ),
-        (
-            "PyTorch/CUDA build: "
-            f"{environment['pytorch_version'] or 'unavailable'} / "
-            f"{environment['pytorch_cuda_build'] or 'unavailable'}"
-        ),
-        "GPUs:",
-    ]
+    accelerator = environment.get("accelerator", "cuda")
+    if accelerator != "rocm":
+        lines = [
+            "SGLang-Omni GPU diagnostics (no model loaded)",
+            f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
+            f"Driver: {environment['driver_version'] or 'unavailable'}",
+            (
+                "CUDA driver/runtime: "
+                f"{environment['cuda_driver_api_version'] or 'unavailable'} / "
+                f"{environment['cuda_runtime_version'] or 'unavailable'}"
+            ),
+            (
+                "PyTorch/CUDA build: "
+                f"{environment['pytorch_version'] or 'unavailable'} / "
+                f"{environment['pytorch_cuda_build'] or 'unavailable'}"
+            ),
+            "GPUs:",
+        ]
+    else:
+        visible_variable = environment["visible_devices_variable"]
+        visible = environment.get(visible_variable.lower())
+        lines = [
+            "SGLang-Omni GPU diagnostics (no model loaded)",
+            "Accelerator: rocm",
+            f"{visible_variable}: {visible if visible is not None else '<unset>'}",
+            f"Driver: {environment['driver_version'] or 'unavailable'}",
+            (
+                "CUDA-compatible driver/runtime: "
+                f"{environment['cuda_driver_api_version'] or 'unavailable'} / "
+                f"{environment['cuda_runtime_version'] or 'unavailable'}"
+            ),
+            (
+                "PyTorch/ROCm build: "
+                f"{environment['pytorch_version'] or 'unavailable'} / "
+                f"{environment.get('pytorch_rocm_build') or 'unavailable'}"
+            ),
+            "GPUs:",
+        ]
     if not report["gpus"]:
-        lines.append("  No CUDA devices are visible to PyTorch.")
+        lines.append(
+            "  No ROCm devices are visible to PyTorch."
+            if accelerator == "rocm"
+            else "  No CUDA devices are visible to PyTorch."
+        )
     for device in report["gpus"]:
+        architecture_text = (
+            f"arch={device.get('gpu_architecture') or 'unknown'} "
+            if accelerator == "rocm"
+            else ""
+        )
         lines.append(
             f"  logical {device['logical_index']} -> physical "
             f"{device['physical_index']} visible={device['visible_device']} "
             f"name={device['name'] or 'unknown'} "
             f"cc={device['compute_capability'] or 'unknown'} "
+            f"{architecture_text}"
             f"memory={format_bytes_gib(device['free_memory_bytes'])}/"
             f"{format_bytes_gib(device['total_memory_bytes'])} "
             f"uuid={device['uuid'] or 'unknown'} "
@@ -417,6 +561,12 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
             f"version={backend['version'] or '-'}"
         )
 
+    if accelerator == "rocm":
+        lines.append("Selected policy:")
+        lines.extend(
+            f"  {name}: {value}"
+            for name, value in report.get("selected_backend_policy", {}).items()
+        )
     if report["warnings"]:
         lines.append("Warnings:")
         lines.extend(f"  {warning}" for warning in report["warnings"])

@@ -31,6 +31,12 @@ class OmniPlatform(DeviceMixin):
 
         return TransportKind.SHM
 
+    def get_default_remote_transport(self) -> TransportKind:
+        """Return the platform default for an explicitly remote stage edge."""
+        from sglang_omni.comm.data_ref import TransportKind
+
+        return TransportKind.MOONCAKE
+
     def get_fused_qk_norm_rope(self):
         """Get the fused QK norm RoPE kernel if available, else return None."""
         return None
@@ -52,3 +58,7 @@ class OmniPlatform(DeviceMixin):
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
+
+    def supports_device_graphs(self) -> bool:
+        """Whether device-graph capture is a supported Omni runtime primitive."""
+        return False

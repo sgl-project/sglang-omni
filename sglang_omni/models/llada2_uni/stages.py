@@ -7,8 +7,13 @@ import logging
 from typing import Any
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
+
+
+def _dllm_attention_backend() -> str:
+    return "aiter" if current_platform.is_rocm() else "flashinfer"
 
 
 def _event_to_dict(event) -> dict[str, Any]:
@@ -93,7 +98,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 
     overrides: dict[str, Any] = {
-        "attention_backend": "flashinfer",
+        "attention_backend": _dllm_attention_backend(),
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }

@@ -48,12 +48,55 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
     spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
 
     assert platform.is_rocm()
-    assert (
-        platform.get_stage_process_env(spec, {"CUDA_VISIBLE_DEVICES": "3,4"})[
-            "CUDA_VISIBLE_DEVICES"
-        ]
-        == "4"
+    updates = platform.get_stage_process_env(spec, {"ROCR_VISIBLE_DEVICES": "3,4"})
+
+    assert updates["ROCR_VISIBLE_DEVICES"] == "4"
+    assert updates["HIP_VISIBLE_DEVICES"] == "0"
+    assert updates["CUDA_VISIBLE_DEVICES"] == "0"
+    assert updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+
+
+def test_rocm_platform_accepts_logical_aliases_after_rocr_mask() -> None:
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    updates = platform.get_stage_process_env(
+        spec,
+        {
+            "ROCR_VISIBLE_DEVICES": "3,4",
+            "HIP_VISIBLE_DEVICES": "0,1",
+            "CUDA_VISIBLE_DEVICES": "0,1",
+        },
     )
+
+    assert updates["ROCR_VISIBLE_DEVICES"] == "4"
+    assert updates["HIP_VISIBLE_DEVICES"] == "0"
+    assert updates["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_rocm_platform_rejects_conflicting_visibility_namespaces() -> None:
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    with pytest.raises(ValueError, match="conflicting accelerator visibility"):
+        platform.get_stage_process_env(
+            spec,
+            {
+                "ROCR_VISIBLE_DEVICES": "3,4",
+                "HIP_VISIBLE_DEVICES": "5,6",
+            },
+        )
+
+
+def test_rocm_platform_uses_nixl_and_disables_owned_graphs() -> None:
+    from sglang_omni.comm.data_ref import TransportKind
+
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+
+    assert platform.get_intra_node_transport() is TransportKind.CUDA_IPC
+    assert platform.get_default_remote_transport() is TransportKind.NIXL
+    assert platform.enable_code2wav_graph() is False
+    assert platform.supports_device_graphs() is False
 
 
 def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:

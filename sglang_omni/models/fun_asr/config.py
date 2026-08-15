@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_asr"
 
@@ -37,7 +38,7 @@ class FunASRPipelineConfig(PipelineConfig):
                 "max_running_requests": 32,
                 "max_new_tokens": 200,
                 "enable_encoder_torch_compile": False,
-                "enable_encoder_cuda_graph": True,
+                "enable_encoder_cuda_graph": current_platform.supports_device_graphs(),
                 "enable_pre_lm_encoder": True,
                 "pre_lm_cache_max_entries": 4096,
                 "pre_lm_cache_size_bytes": 2 * 1024**3,

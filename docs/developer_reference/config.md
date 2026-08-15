@@ -106,8 +106,9 @@ Derived from stages:
   `PipelineConfig`
 - `terminal_stages`: computed from stages with `terminal=True`
 - `gpu_placement`: computed from stages with `gpu` set
-- communication transport: inferred from stage locality and placement
-  (`local_object`, `cuda_ipc`, host shared memory, or `mooncake`)
+- communication transport: inferred from stage locality, placement, platform,
+  and `CommConfig.remote_backend` (`local_object`, GPU IPC using the compatible
+  `cuda_ipc` wire value, host shared memory, `nixl`, or `mooncake`)
 
 ## `PipelineConfig` Reference
 
@@ -131,8 +132,10 @@ Derived values are computed from stages, not manually maintained:
 - `gpu_placement`: stage name to GPU id or TP GPU list for stages with `gpu`
 
 `CommConfig` is the per-stage communication tuning block. It contains
-`slot_size_mb`, `credits`, `mooncake_protocol`, `mooncake_hostname`, and
-`mooncake_device_name`. It does not select a transport backend.
+`slot_size_mb`, `credits`, `cuda_ipc_slot_size_kb`, `cuda_ipc_pool_size_mb`,
+`remote_backend`, `mooncake_protocol`, `mooncake_hostname`, and
+`mooncake_device_name`. `remote_backend` accepts `auto`, `nixl`, or `mooncake`;
+`auto` resolves to Mooncake on CUDA and NIXL on ROCm.
 
 ### Stage Fusion
 

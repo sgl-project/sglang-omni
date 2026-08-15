@@ -81,7 +81,24 @@ def _is_invalid_audio_source(source: bytes | str) -> bool:
 def _load_with_torchaudio(
     source: bytes | str, *, source_name: str
 ) -> tuple[torch.Tensor, int]:
-    _ensure_torchaudio_decoder_ready()
+    try:
+        _ensure_torchaudio_decoder_ready()
+    except ImportError:
+        if not torch.version.hip:
+            raise
+        import soundfile
+
+        decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
+        try:
+            samples, sample_rate = soundfile.read(
+                decoder_source, dtype="float32", always_2d=True
+            )
+        except soundfile.LibsndfileError as exc:
+            raise AudioDecodeError(
+                f"Could not decode {source_name} audio input"
+            ) from exc
+        return torch.from_numpy(np.ascontiguousarray(samples.T)), int(sample_rate)
+
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
     try:
         return torchaudio.load(decoder_source)
@@ -217,6 +234,7 @@ def load_audio(
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
         # startup when mono=True without changing channel-preserving loads.
+        fast = None
         if mono and trim_top_db is None and _is_riff_wav(source):
             fast = _try_fast_wav_decode(
                 source, target_sample_rate, resample_kwargs=resample_kwargs
@@ -225,6 +243,25 @@ def load_audio(
                 return fast
         audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     elif isinstance(source, str):
+        # Torch 2.9 routes torchaudio.load through TorchCodec, but published
+        # TorchCodec wheels are not ABI-compatible with the ROCm 7.2 image.
+        # Keep the native WAV path available for local reference audio too.
+        fast = None
+        if torch.version.hip and mono and trim_top_db is None:
+            try:
+                with open(source, "rb") as audio_file:
+                    prefix = audio_file.read(12)
+                    if _is_riff_wav(prefix):
+                        data = prefix + audio_file.read()
+                        fast = _try_fast_wav_decode(
+                            data,
+                            target_sample_rate,
+                            resample_kwargs=resample_kwargs,
+                        )
+            except OSError:
+                pass
+        if fast is not None:
+            return fast
         audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     else:
         raise ValueError(

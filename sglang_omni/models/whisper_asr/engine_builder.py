@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
 logger = logging.getLogger(__name__)
@@ -139,7 +140,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["chunked_prefill_size"] = 0
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+        defaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -150,6 +151,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
+        # SGLang's encoder-decoder auto-resolution currently selects
+        # FlashInfer before its ROCm availability guard, leaving an undefined
+        # wrapper symbol at backend construction. AITER currently returns an
+        # empty decode for Whisper cross-attention and Triton rejects
+        # encoder-decoder models, so use SGLang's portable native backend.
+        if current_platform.is_rocm():
+            defaults["attention_backend"] = "torch_native"
+        return defaults
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model

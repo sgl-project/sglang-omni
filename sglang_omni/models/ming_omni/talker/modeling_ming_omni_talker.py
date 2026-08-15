@@ -24,6 +24,7 @@ import torch.nn as nn
 import torchaudio
 from transformers import Qwen2Config, Qwen2Model, StaticCache
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .configuration_bailing_talker import MingOmniTalkerConfig
@@ -37,6 +38,12 @@ from .talker_module.dit import DiT
 logger = logging.getLogger(__name__)
 
 _TOKEN_DONE = object()
+
+
+def _cache_positions(past_seen_tokens, new_token_count: int, device):
+    """Build cache positions when Transformers returns a scalar tensor length."""
+    return torch.arange(new_token_count, device=device) + past_seen_tokens
+
 
 # ---------- Optional: onnxruntime for speaker embedding ----------
 try:
@@ -543,11 +550,18 @@ class MingOmniTalker(nn.Module):
                     )
                 else:
                     past_seen_tokens = past_key_values.get_seq_length()
-                    cache_position = torch.arange(
-                        past_seen_tokens,
-                        past_seen_tokens + inputs_embeds.shape[1],
-                        device=inputs_embeds.device,
-                    )
+                    if current_platform.is_rocm():
+                        cache_position = _cache_positions(
+                            past_seen_tokens,
+                            inputs_embeds.shape[1],
+                            inputs_embeds.device,
+                        )
+                    else:
+                        cache_position = torch.arange(
+                            past_seen_tokens,
+                            past_seen_tokens + inputs_embeds.shape[1],
+                            device=inputs_embeds.device,
+                        )
 
                     if model_graph is None:
                         model_graph = torch.cuda.CUDAGraph()
@@ -998,12 +1012,25 @@ class MingOmniTalker(nn.Module):
         speech_parts = []
         spk_emb_list = []
         for x in prompt_wav_path:
-            speech_tmp, sample_rate = torchaudio.load(x, backend="soundfile")
+            if current_platform.is_rocm():
+                from sglang_omni.utils.audio import load_audio
+
+                sample_rate = int(audio_detokenizer.config.sample_rate)
+                speech_tmp = torch.from_numpy(
+                    load_audio(
+                        x,
+                        source_name="Ming voice prompt",
+                        target_sample_rate=sample_rate,
+                        mono=True,
+                    )
+                ).unsqueeze(0)
+            else:
+                speech_tmp, sample_rate = torchaudio.load(x, backend="soundfile")
+                if sample_rate != audio_detokenizer.config.sample_rate:
+                    speech_tmp = torchaudio.transforms.Resample(
+                        sample_rate, audio_detokenizer.config.sample_rate
+                    )(speech_tmp)
             speech_tmp1 = speech_tmp.clone()
-            if sample_rate != audio_detokenizer.config.sample_rate:
-                speech_tmp = torchaudio.transforms.Resample(
-                    sample_rate, audio_detokenizer.config.sample_rate
-                )(speech_tmp)
             speech_parts.append(speech_tmp)
 
             if self.spkemb_extractor is not None:

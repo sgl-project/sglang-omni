@@ -29,6 +29,37 @@ def test_engine_builder_import_is_cpu_only() -> None:
     assert issubclass(TtsEngineBuilder, SGLangGenerationEngineBuilder)
 
 
+def test_non_graph_platform_forces_generation_and_prefill_eager() -> None:
+    from sglang_omni.scheduling.engine_factory import _apply_platform_graph_policy
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+    overrides = {
+        "disable_cuda_graph": False,
+        "disable_prefill_cuda_graph": False,
+        "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+        "cuda_graph_bs_prefill": [4, 8],
+        "cuda_graph_max_bs_prefill": 8,
+    }
+
+    _apply_platform_graph_policy(overrides, supports_device_graphs=False)
+
+    assert overrides["disable_cuda_graph"] is True
+    assert overrides["disable_prefill_cuda_graph"] is True
+    assert overrides["cuda_graph_backend_prefill"] == CudaGraphBackend.DISABLED
+    assert "cuda_graph_bs_prefill" not in overrides
+    assert "cuda_graph_max_bs_prefill" not in overrides
+
+
+def test_graph_platform_preserves_generation_policy() -> None:
+    from sglang_omni.scheduling.engine_factory import _apply_platform_graph_policy
+
+    overrides = {"disable_cuda_graph": False}
+
+    _apply_platform_graph_policy(overrides, supports_device_graphs=True)
+
+    assert overrides == {"disable_cuda_graph": False}
+
+
 def test_asr_engine_builder_preserves_model_path() -> None:
     from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 
@@ -91,6 +122,12 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "supports_device_graphs",
+        lambda: True,
+        raising=False,
     )
     monkeypatch.setattr(
         "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"

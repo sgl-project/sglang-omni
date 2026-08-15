@@ -154,6 +154,21 @@ def test_load_audio_accepts_file_uri(tmp_path) -> None:
     assert samples.shape == (1600,)
 
 
+def test_load_audio_accepts_local_wav_without_torchcodec(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "reference.wav"
+    path.write_bytes(_wav_bytes())
+
+    monkeypatch.setattr(
+        audio,
+        "_ensure_torchaudio_decoder_ready",
+        lambda: pytest.fail("local PCM WAV should not require TorchCodec"),
+    )
+
+    samples = load_audio(str(path))
+
+    assert samples.shape == (1600,)
+
+
 class _FakeHTTPResponse:
     def __init__(self, content: bytes) -> None:
         self.content = content
@@ -312,6 +327,7 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
 
 def test_load_audio_trims_before_resampling() -> None:
     import librosa
+    import soundfile
     import torch
     import torchaudio
 
@@ -325,7 +341,10 @@ def test_load_audio_trims_before_resampling() -> None:
         wav_file.setframerate(sample_rate)
         wav_file.writeframes((values * 32767).astype("<i2").tobytes())
     wav = buffer.getvalue()
-    raw, sample_rate = torchaudio.load(io.BytesIO(wav))
+    raw_values, sample_rate = soundfile.read(
+        io.BytesIO(wav), dtype="float32", always_2d=True
+    )
+    raw = torch.from_numpy(raw_values.T.copy())
     expected, _ = librosa.effects.trim(raw.numpy(), top_db=30)
     resample_kwargs = {
         "lowpass_filter_width": 64,

@@ -153,7 +153,7 @@ class CommRouter:
 
     def _physical_outbound(self, target: str) -> TransportKind:
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if self.self_is_gpu and target in self.gpu_stage_names:
             return self._intra_node_transport(target)
         return TransportKind.SHM
@@ -165,7 +165,7 @@ class CommRouter:
                 f"{type(data).__name__}"
             )
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if data.device.type != current_platform.device_type:
             return TransportKind.SHM
         if self.self_is_gpu and target in self.gpu_stage_names:
@@ -177,7 +177,7 @@ class CommRouter:
 
     def inbound(self, from_stage: str) -> TransportKind:
         if from_stage in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if self.self_is_gpu and from_stage in self.gpu_stage_names:
             return current_platform.get_intra_node_transport()
         return TransportKind.SHM
@@ -212,7 +212,7 @@ class CommRouter:
 
     def outbound_payload(self, target: str, payload: Any) -> TransportKind:
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         devices = _tensor_devices(getattr(payload, "data", payload))
         if not devices or devices == {"cpu"}:
             return TransportKind.SHM
@@ -238,6 +238,18 @@ class CommRouter:
 
     def inbound_relay(self, from_stage: str) -> Relay:
         return self.relay(self.inbound(from_stage))
+
+    def _remote_transport(self) -> TransportKind:
+        backend = str(self.comm_config.get("remote_backend", "auto")).lower()
+        if backend == "auto":
+            return current_platform.get_default_remote_transport()
+        if backend == "nixl":
+            return TransportKind.NIXL
+        if backend == "mooncake":
+            return TransportKind.MOONCAKE
+        raise ValueError(
+            f"unsupported remote_backend={backend!r}; expected auto, nixl, or mooncake"
+        )
 
     def _build_relay(self, kind: TransportKind) -> Relay:
         cfg = self.comm_config
@@ -265,6 +277,19 @@ class CommRouter:
                 credits=credits,
                 slot_size_kb=cuda_ipc_slot_size_kb,
                 pool_size_mb=cuda_ipc_pool_size_mb,
+            )
+        if kind is TransportKind.NIXL:
+            device = (
+                f"{current_platform.device_type}:{self.gpu_id}"
+                if self.gpu_id is not None
+                else "cpu"
+            )
+            return create_relay(
+                "nixl",
+                engine_id=engine_id,
+                device=device,
+                slot_size_mb=slot_size_mb,
+                credits=credits,
             )
         if kind is TransportKind.MOONCAKE:
             if self.gpu_id is not None and not current_platform.is_cuda_alike():

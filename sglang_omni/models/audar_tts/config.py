@@ -8,6 +8,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.audar_tts"
 
@@ -32,6 +33,10 @@ def _stages() -> list[StageConfig]:
             process="pipeline",
             factory=f"{_PKG}.stages.create_tts_engine_executor",
             gpu=0,
+            # llama.cpp 0.3.34 can abort during asynchronous GGML-HIP decode.
+            # Scope the workaround to this ROCm worker and preserve any
+            # operator-provided value through env-default semantics.
+            env=({"AMD_SERIALIZE_KERNEL": "3"} if current_platform.is_rocm() else {}),
             next="vocoder",
         ),
         StageConfig(

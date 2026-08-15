@@ -66,6 +66,22 @@ def test_capture_selects_value_equal_positions_to_eager(
 
 
 @pytest.mark.parametrize(
+    ("kernel", "expected_dtype"),
+    [(None, torch.int64), (lambda *args: None, torch.int32)],
+)
+def test_eager_positions_use_dtype_required_by_rope_path(
+    monkeypatch: pytest.MonkeyPatch,
+    kernel,
+    expected_dtype: torch.dtype,
+) -> None:
+    monkeypatch.setattr(sglang_model, "fused_qk_norm_rope", kernel)
+
+    positions = _eager_positions(monkeypatch, _forward_batch(carries_mrope=True))
+
+    assert positions.dtype == expected_dtype
+
+
+@pytest.mark.parametrize(
     ("positions_dtype", "expect_same_object"),
     [(torch.int64, False), (torch.int32, True)],
 )
