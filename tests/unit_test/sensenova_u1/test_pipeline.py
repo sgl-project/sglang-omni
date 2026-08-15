@@ -49,6 +49,13 @@ def test_sensenova_u1_pipeline_configs_register_architecture_and_alias() -> None
     assert serving_args["max_concurrency"] == 16
     assert serving_args["enable_cuda_graph"] is True
     assert serving_args["cuda_graph_bs"] == [1, 8, 16]
+    assert serving_args["eager_prefix_cache_max_entries"] == 4
+    assert serving_args["eager_decode_graph_cache_max_entries"] == 2
+    assert serving_args["eager_decode_graph_max_captures"] == 4
+    assert serving_args["eager_prefix_cache_max_tokens"] == 2048
+    assert serving_args["eager_decode_graph_max_total_tokens"] == 1024
+    assert default.stages[0].factory_args["max_total_tokens"] == 4096
+    assert flow.stages[0].factory_args["max_total_tokens"] == 4096
 
 
 def test_sensenova_u1_config_manager_resolves_raw_hf_config_and_variant(tmp_path) -> None:

@@ -998,6 +998,7 @@ def test_sensenova_u1_native_stage_factory_fails_if_hf_modeling_imported(
         create_sensenova_u1_flow_executor,
         create_sensenova_u1_interleave_executor,
         create_sensenova_u1_native_executor,
+        create_sensenova_u1_native_serving_executor,
     )
 
     polluted_name = "sensenova_u1.models.neo_unify.modeling_neo_chat"
@@ -1013,6 +1014,10 @@ def test_sensenova_u1_native_stage_factory_fails_if_hf_modeling_imported(
             device="cpu",
         ),
         lambda: create_sensenova_u1_interleave_executor(
+            str(MODEL_PATH),
+            device="cpu",
+        ),
+        lambda: create_sensenova_u1_native_serving_executor(
             str(MODEL_PATH),
             device="cpu",
         ),
