@@ -62,7 +62,10 @@ def test_forward_uses_available_mrope_positions(
 
     expected_positions = mrope_positions[0] if use_mrope_positions else positions
     assert torch.equal(seen_positions, expected_positions)
-    assert seen_positions.dtype == torch.int32
+    expected_dtype = (
+        torch.int32 if sglang_model.fused_qk_norm_rope is not None else torch.long
+    )
+    assert seen_positions.dtype == expected_dtype
     assert actual is output
 
 
