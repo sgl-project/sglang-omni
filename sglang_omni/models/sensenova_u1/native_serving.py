@@ -7,6 +7,7 @@ import hashlib
 import os
 import time
 from array import array
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -296,6 +297,11 @@ class SenseNovaU1NativeServingExecutor:
         enable_deterministic_inference: bool = False,
         prefill_cuda_graph_backend: str = "disabled",
         prefill_cuda_graph_bs: list[int] | None = None,
+        eager_prefix_cache_max_entries: int = 4,
+        eager_decode_graph_cache_max_entries: int = 2,
+        eager_decode_graph_max_captures: int = 4,
+        eager_prefix_cache_max_tokens: int = 2048,
+        eager_decode_graph_max_total_tokens: int = 1024,
     ) -> None:
         assert_no_hf_modeling_imported(context="before native serving executor")
         from sglang_omni.models.sensenova_u1.hf_config import (
@@ -308,7 +314,32 @@ class SenseNovaU1NativeServingExecutor:
         self.config = load_u1_llm_config(model_path)
         self.vocab_size = int(self.config.vocab_size)
         self.max_running_requests = max(int(max_running_requests), 1)
+        self.max_total_tokens = int(max_total_tokens)
+        if self.max_total_tokens <= 0:
+            raise ValueError("max_total_tokens must be positive")
         self.enable_radix_cache = bool(enable_radix_cache)
+        self.eager_prefix_cache_max_entries = max(
+            int(eager_prefix_cache_max_entries),
+            0,
+        )
+        self.eager_decode_graph_cache_max_entries = max(
+            int(eager_decode_graph_cache_max_entries),
+            0,
+        )
+        self.eager_decode_graph_max_captures = max(
+            int(eager_decode_graph_max_captures),
+            0,
+        )
+        self.eager_prefix_cache_max_tokens = int(eager_prefix_cache_max_tokens)
+        self.eager_decode_graph_max_total_tokens = int(
+            eager_decode_graph_max_total_tokens
+        )
+        if self.eager_prefix_cache_max_tokens <= 0:
+            raise ValueError("eager_prefix_cache_max_tokens must be positive")
+        if self.eager_decode_graph_max_total_tokens <= 0:
+            raise ValueError(
+                "eager_decode_graph_max_total_tokens must be positive"
+            )
         if cuda_graph_bs is None:
             cuda_graph_bs = [self.max_running_requests]
         cuda_graph_bs = sorted({int(value) for value in cuda_graph_bs})
@@ -395,18 +426,21 @@ class SenseNovaU1NativeServingExecutor:
                     text_model.force_mot_gen_for_prefill_graph_capture = False
         self.server_args = server_args
         self.prefill_cuda_graph_enabled = prefill_cuda_graph_enabled
-        self._eager_text_decode_graphs: dict[
-            tuple[int, int, int, str],
+        self._eager_text_decode_graphs: OrderedDict[
+            tuple[Any, ...],
             _NativeEagerDecodeGraph,
-        ] = {}
-        self._eager_text_prefill_cache: dict[
+        ] = OrderedDict()
+        self._eager_text_prefill_cache: OrderedDict[
             str,
             tuple[
                 torch.Tensor,
                 list[tuple[torch.Tensor, torch.Tensor]],
                 bool,
             ],
-        ] = {}
+        ] = OrderedDict()
+        self._eager_text_decode_graph_evictions = 0
+        self._eager_text_decode_graph_captures = 0
+        self._eager_text_prefill_cache_evictions = 0
         dtype_obj = next(self.model_worker.model_runner.model.parameters()).dtype
         device_obj = torch.device(self.model_worker.device)
         self.vision_model = SenseNovaU1NativeVisionModel.from_model_path(
@@ -558,6 +592,205 @@ class SenseNovaU1NativeServingExecutor:
                     data[name] = None
         return data
 
+    @staticmethod
+    def _tensor_bytes(tensor: torch.Tensor) -> int:
+        return int(tensor.numel()) * int(tensor.element_size())
+
+    @classmethod
+    def _prefix_cache_entry_tensor_bytes(
+        cls,
+        entry: tuple[
+            torch.Tensor,
+            list[tuple[torch.Tensor, torch.Tensor]],
+            bool,
+        ],
+    ) -> int:
+        logits, caches, _ = entry
+        tensors = [logits]
+        tensors.extend(tensor for pair in caches for tensor in pair)
+        return sum(cls._tensor_bytes(tensor) for tensor in tensors)
+
+    @classmethod
+    def _decode_graph_tensor_bytes(cls, runner: _NativeEagerDecodeGraph) -> int:
+        tensors: list[torch.Tensor] = []
+        tensors.extend(tensor for pair in runner.initial_caches for tensor in pair)
+        tensors.extend(runner.decode_indexes)
+        tensors.extend(runner.generated_tokens)
+        tensors.extend(tensor for pair in runner.final_caches for tensor in pair)
+        tensors.extend(
+            tensor
+            for cache_step in runner.cache_history
+            for pair in cache_step
+            for tensor in pair
+        )
+        tensors.extend([runner.input_token, runner.last_logits])
+        seen: set[int] = set()
+        retained_bytes = 0
+        for tensor in tensors:
+            if not isinstance(tensor, torch.Tensor) or id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            retained_bytes += cls._tensor_bytes(tensor)
+        return retained_bytes
+
+    @staticmethod
+    def _release_prefix_cache_entry(
+        entry: tuple[
+            torch.Tensor,
+            list[tuple[torch.Tensor, torch.Tensor]],
+            bool,
+        ],
+    ) -> None:
+        _, caches, _ = entry
+        caches.clear()
+
+    @staticmethod
+    def _release_decode_graph(runner: _NativeEagerDecodeGraph) -> None:
+        for graph in runner.graphs:
+            reset = getattr(graph, "reset", None)
+            if callable(reset):
+                reset()
+        runner.graphs.clear()
+        runner.initial_caches.clear()
+        runner.decode_indexes.clear()
+        runner.generated_tokens.clear()
+        runner.final_caches.clear()
+        runner.cache_history.clear()
+        runner.source_prefix_cache_key = None
+        runner.graph_pool = None
+        runner.input_token = None  # type: ignore[assignment]
+        runner.last_logits = None  # type: ignore[assignment]
+
+    def eager_runtime_cache_snapshot(self) -> dict[str, Any]:
+        return {
+            "prefix_cache_entries": len(self._eager_text_prefill_cache),
+            "prefix_cache_max_entries": self.eager_prefix_cache_max_entries,
+            "prefix_cache_max_tokens": self.eager_prefix_cache_max_tokens,
+            "prefix_cache_evictions": self._eager_text_prefill_cache_evictions,
+            "prefix_cache_tensor_bytes": sum(
+                self._prefix_cache_entry_tensor_bytes(entry)
+                for entry in self._eager_text_prefill_cache.values()
+            ),
+            "decode_graph_entries": len(self._eager_text_decode_graphs),
+            "decode_graph_max_entries": self.eager_decode_graph_cache_max_entries,
+            "decode_graph_captures": self._eager_text_decode_graph_captures,
+            "decode_graph_max_captures": self.eager_decode_graph_max_captures,
+            "decode_graph_max_total_tokens": (
+                self.eager_decode_graph_max_total_tokens
+            ),
+            "decode_graph_evictions": self._eager_text_decode_graph_evictions,
+            "decode_graph_tensor_bytes": sum(
+                self._decode_graph_tensor_bytes(runner)
+                for runner in self._eager_text_decode_graphs.values()
+            ),
+        }
+
+    def clear_eager_runtime_caches(self) -> dict[str, Any]:
+        before = self.eager_runtime_cache_snapshot()
+        while self._eager_text_prefill_cache:
+            _, entry = self._eager_text_prefill_cache.popitem(last=False)
+            self._release_prefix_cache_entry(entry)
+        while self._eager_text_decode_graphs:
+            _, runner = self._eager_text_decode_graphs.popitem(last=False)
+            self._release_decode_graph(runner)
+        return {
+            "before": before,
+            "after": self.eager_runtime_cache_snapshot(),
+        }
+
+    def shutdown(self) -> None:
+        self.clear_eager_runtime_caches()
+
+    def _get_eager_prefix_cache_entry(
+        self,
+        key: str,
+    ) -> tuple[
+        torch.Tensor,
+        list[tuple[torch.Tensor, torch.Tensor]],
+        bool,
+    ] | None:
+        entry = self._eager_text_prefill_cache.pop(key, None)
+        if entry is not None:
+            self._eager_text_prefill_cache[key] = entry
+        return entry
+
+    def _put_eager_prefix_cache_entry(
+        self,
+        key: str,
+        entry: tuple[
+            torch.Tensor,
+            list[tuple[torch.Tensor, torch.Tensor]],
+            bool,
+        ],
+    ) -> None:
+        if self.eager_prefix_cache_max_entries <= 0:
+            self._release_prefix_cache_entry(entry)
+            return
+        existing = self._eager_text_prefill_cache.pop(key, None)
+        if existing is not None:
+            self._release_prefix_cache_entry(existing)
+        while (
+            len(self._eager_text_prefill_cache)
+            >= self.eager_prefix_cache_max_entries
+        ):
+            _, evicted = self._eager_text_prefill_cache.popitem(last=False)
+            self._release_prefix_cache_entry(evicted)
+            self._eager_text_prefill_cache_evictions += 1
+        self._eager_text_prefill_cache[key] = entry
+
+    def _get_eager_decode_graph(
+        self,
+        key: tuple[Any, ...],
+    ) -> _NativeEagerDecodeGraph | None:
+        runner = self._eager_text_decode_graphs.pop(key, None)
+        if runner is not None:
+            self._eager_text_decode_graphs[key] = runner
+        return runner
+
+    def _put_eager_decode_graph(
+        self,
+        key: tuple[Any, ...],
+        runner: _NativeEagerDecodeGraph,
+    ) -> None:
+        if self.eager_decode_graph_cache_max_entries <= 0:
+            self._release_decode_graph(runner)
+            return
+        existing = self._eager_text_decode_graphs.pop(key, None)
+        if existing is not None:
+            self._release_decode_graph(existing)
+        while (
+            len(self._eager_text_decode_graphs)
+            >= self.eager_decode_graph_cache_max_entries
+        ):
+            _, evicted = self._eager_text_decode_graphs.popitem(last=False)
+            self._release_decode_graph(evicted)
+            self._eager_text_decode_graph_evictions += 1
+        self._eager_text_decode_graphs[key] = runner
+
+    def _reserve_eager_decode_graph_slot(
+        self,
+        key: tuple[Any, ...],
+    ) -> None:
+        existing = self._eager_text_decode_graphs.pop(key, None)
+        if existing is not None:
+            self._release_decode_graph(existing)
+        while (
+            len(self._eager_text_decode_graphs)
+            >= self.eager_decode_graph_cache_max_entries
+        ):
+            _, evicted = self._eager_text_decode_graphs.popitem(last=False)
+            self._release_decode_graph(evicted)
+            self._eager_text_decode_graph_evictions += 1
+
+    def _try_reserve_eager_decode_graph_capture(self) -> bool:
+        if (
+            self._eager_text_decode_graph_captures
+            >= self.eager_decode_graph_max_captures
+        ):
+            return False
+        self._eager_text_decode_graph_captures += 1
+        return True
+
     def cached_prefix_length(
         self,
         *,
@@ -599,8 +832,14 @@ class SenseNovaU1NativeServingExecutor:
         for req in list(batch.reqs):
             if getattr(req, "req_pool_idx", None) is None:
                 continue
-            committed_len = int(req.effective_kv_committed_len())
-            prefix_len = int(len(getattr(req, "prefix_indices", [])))
+            try:
+                committed_len = int(req.effective_kv_committed_len())
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                committed_len = None
+            try:
+                prefix_len = int(len(getattr(req, "prefix_indices", [])))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                prefix_len = None
             release_kv_cache(req, self.tree_cache, is_insert=cache_insert)
             finished.append(
                 {
@@ -619,6 +858,112 @@ class SenseNovaU1NativeServingExecutor:
             "after": self._pool_snapshot(),
             "after_cache": self._cache_snapshot(),
         }
+
+    def _detach_prefill_manager_requests(
+        self,
+        reqs: list[Any],
+    ) -> dict[str, Any]:
+        owned = {id(req) for req in reqs}
+        waiting_queue = getattr(self.prefill_manager, "waiting_queue", None)
+        waiting_removed = 0
+        if isinstance(waiting_queue, list):
+            waiting_removed = sum(id(req) in owned for req in waiting_queue)
+            waiting_queue[:] = [req for req in waiting_queue if id(req) not in owned]
+        chunked_removed = False
+        chunked_req = getattr(self.prefill_manager, "chunked_req", None)
+        if chunked_req is not None and id(chunked_req) in owned:
+            inflight = int(getattr(chunked_req, "inflight_middle_chunks", 0) or 0)
+            if inflight > 0:
+                chunked_req.inflight_middle_chunks = inflight - 1
+            self.prefill_manager.chunked_req = None
+            chunked_removed = True
+        return {
+            "waiting_removed": waiting_removed,
+            "waiting_remaining": (
+                None if not isinstance(waiting_queue, list) else len(waiting_queue)
+            ),
+            "chunked_removed": chunked_removed,
+        }
+
+    def _cleanup_prefill_attempt(
+        self,
+        *,
+        prepared: list[dict[str, Any]],
+        batch: Any | None,
+        cache_insert: bool,
+    ) -> dict[str, Any]:
+        from sglang.srt.mem_cache.common import release_kv_cache
+
+        reqs = [item["req"] for item in prepared]
+        manager_cleanup = self._detach_prefill_manager_requests(reqs)
+        if batch is None:
+            release_log = {
+                "released_reqs": 0,
+                "finished_reqs": [],
+                "before": self._pool_snapshot(),
+                "before_cache": self._cache_snapshot(),
+            }
+        else:
+            release_log = self._finish_prefill_batch(
+                batch,
+                cache_insert=cache_insert,
+            )
+        orphan_releases = []
+        for req in reqs:
+            if getattr(req, "req_pool_idx", None) is None:
+                continue
+            release_kv_cache(req, self.tree_cache, is_insert=False)
+            orphan_releases.append(str(req.rid))
+        release_log["orphan_released_rids"] = orphan_releases
+        release_log["manager_cleanup"] = manager_cleanup
+        release_log["after"] = self._pool_snapshot()
+        release_log["after_cache"] = self._cache_snapshot()
+        return release_log
+
+    def _collect_prefill_metadata(
+        self,
+        *,
+        forward_batch: ForwardBatch,
+        forward_batch_log: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        prepare = getattr(
+            self.model_worker.model_runner.model,
+            "last_forward_batch_prepare",
+            None,
+        )
+        attn_metadata = getattr(
+            self.model_worker.model_runner.attn_backend,
+            "forward_metadata",
+            None,
+        )
+        if attn_metadata is not None:
+            backend_mask = getattr(attn_metadata, "custom_mask", None)
+            backend_mask_indptr = getattr(attn_metadata, "mask_indptr", None)
+            forward_batch_log["backend_forward_metadata"] = {
+                "class": type(attn_metadata).__name__,
+                "custom_mask_present": backend_mask is not None,
+                "custom_mask_numel": (
+                    None if backend_mask is None else int(backend_mask.numel())
+                ),
+                "mask_indptr": (
+                    None
+                    if backend_mask_indptr is None
+                    else [
+                        int(x)
+                        for x in backend_mask_indptr.detach().cpu().tolist()
+                    ]
+                ),
+            }
+        if forward_batch.cross_attention_custom_mask is not None:
+            forward_batch_log["custom_mask_shape"] = [
+                int(forward_batch.cross_attention_custom_mask.numel())
+            ]
+            forward_batch_log["custom_mask_dtype"] = str(
+                forward_batch.cross_attention_custom_mask.dtype
+            )
+        states = forward_batch.model_specific_states or {}
+        forward_batch_log["model_specific_state_keys"] = sorted(states.keys())
+        return prepare
 
     def _prepare_prefill_request(
         self,
@@ -948,196 +1293,222 @@ class SenseNovaU1NativeServingExecutor:
             )
         prepared = [self._prepare_prefill_request(**item) for item in requests]
         cache_before_schedule = self._cache_snapshot()
-        for item in prepared:
-            self.prefill_manager.add_one_request(item["req"])
-        batch = self.prefill_manager.schedule_next_batch(
-            self.decode_manager.running_batch,
-            num_allocatable_reqs=len(prepared),
-        )
-        if batch is None:
-            raise RuntimeError("native serving prefill manager returned no batch")
-        if len(batch.reqs) != len(prepared):
-            raise RuntimeError(
-                "native serving prefill manager did not schedule the full batch: "
-                f"scheduled={len(batch.reqs)} requested={len(prepared)}"
-            )
-
-        from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
-
-        resolve_deferred_prefill_inputs(
-            batch,
-            torch.device(self.model_worker.device),
-        )
-        forward_batch = ForwardBatch.init_new(
-            batch,
-            self.model_worker.model_runner,
-            capture_hidden_mode=CaptureHiddenMode.NULL,
-            return_hidden_states_before_norm=False,
-        )
-        forward_batch_log = {
-            "forward_mode": str(forward_batch.forward_mode),
-            "batch_size": int(forward_batch.batch_size),
-            "input_ids_shape": list(forward_batch.input_ids.shape),
-            "positions_shape": list(forward_batch.positions.shape),
-            "mrope_positions_shape": (
-                None
-                if forward_batch.mrope_positions is None
-                else list(forward_batch.mrope_positions.shape)
-            ),
-            "extend_seq_lens_cpu": list(forward_batch.extend_seq_lens_cpu or []),
-            "extend_prefix_lens_cpu": list(forward_batch.extend_prefix_lens_cpu or []),
-            "rids": list(forward_batch.rids or []),
-            "requested_batch_size": len(prepared),
-            "scheduled_batch_size": int(forward_batch.batch_size),
-            "radix_cache_enabled": self.enable_radix_cache,
-            "cache_before_schedule": cache_before_schedule,
-        }
-        extend_lens = list(forward_batch.extend_seq_lens_cpu or [])
-        prefix_lens = list(forward_batch.extend_prefix_lens_cpu or [])
-        sidecar_input_embeds = self._attach_prefill_sidecar(
-            prepared=prepared,
-            forward_batch=forward_batch,
-            forward_batch_log=forward_batch_log,
-        )
-        if self.prefill_cuda_graph_enabled:
-            self.model_worker.model_runner.model.prepare_forward_batch(
-                forward_batch
-            )
-        per_request_log = []
-        for idx, (item, req) in enumerate(zip(prepared, batch.reqs)):
-            prefix_len = int(prefix_lens[idx]) if idx < len(prefix_lens) else 0
-            extend_len = int(extend_lens[idx]) if idx < len(extend_lens) else 0
-            per_request_log.append(
-                {
-                    "batch_index": idx,
-                    "rid": str(req.rid),
-                    "input_tokens": int(item["input_ids"].numel()),
-                    "prefix_len": prefix_len,
-                    "extend_len": extend_len,
-                    "cache_hit": prefix_len > 0,
-                    "cache_extra_key": item["cache_extra_key"],
-                    "image_token_count": int(item["image_token_tag"].sum().item()),
-                }
-            )
-        forward_batch_log["per_request"] = per_request_log
-        forward_batch_log["cache_hit_requests"] = sum(
-            1 for item in per_request_log if item["cache_hit"]
-        )
-        forward_batch_log["cache_hit_tokens"] = sum(
-            int(item["prefix_len"]) for item in per_request_log
-        )
-
-        torch.cuda.synchronize(device) if device.type == "cuda" else None
-        dense_calls_before = None
-        dense_calls_after = None
+        batch = None
+        cleanup_complete = False
         try:
-            from sglang_omni.models.sensenova_u1 import (
-                attention_backend as _u1_attn,
+            for item in prepared:
+                self.prefill_manager.add_one_request(item["req"])
+            batch = self.prefill_manager.schedule_next_batch(
+                self.decode_manager.running_batch,
+                num_allocatable_reqs=len(prepared),
+            )
+            if batch is None:
+                raise RuntimeError("native serving prefill manager returned no batch")
+            if len(batch.reqs) != len(prepared):
+                raise RuntimeError(
+                    "native serving prefill manager did not schedule the full batch: "
+                    f"scheduled={len(batch.reqs)} requested={len(prepared)}"
+                )
+
+            from sglang_omni.model_runner.base import (
+                resolve_deferred_prefill_inputs,
             )
 
-            dense_calls_before = int(
-                getattr(_u1_attn, "CUSTOM_MASK_DENSE_ATTENTION_CALLS", 0)
+            resolve_deferred_prefill_inputs(
+                batch,
+                torch.device(self.model_worker.device),
             )
-        except Exception:
-            _u1_attn = None
-        start = time.perf_counter()
-        with torch.inference_mode(), block_hf_modeling_imports():
-            batch_result = self.model_worker.forward_batch_generation(
-                forward_batch,
-                batch=batch,
+            forward_batch = ForwardBatch.init_new(
+                batch,
+                self.model_worker.model_runner,
+                capture_hidden_mode=CaptureHiddenMode.NULL,
+                return_hidden_states_before_norm=False,
             )
-        torch.cuda.synchronize(device) if device.type == "cuda" else None
-        if _u1_attn is not None:
-            dense_calls_after = int(
-                getattr(_u1_attn, "CUSTOM_MASK_DENSE_ATTENTION_CALLS", 0)
-            )
-            forward_batch_log["custom_mask_dense_attention_calls_delta"] = (
-                dense_calls_after - (dense_calls_before or 0)
-            )
-        elapsed = time.perf_counter() - start
-        forward_batch_log["can_run_cuda_graph"] = bool(
-            getattr(batch_result, "can_run_cuda_graph", False)
-        )
-        logits = batch_result.logits_output.next_token_logits
-        if logits is None:
-            raise RuntimeError("native serving prefill produced no logits")
-        if int(logits.shape[0]) != len(prepared):
-            raise RuntimeError(
-                "native serving logits batch size mismatch: "
-                f"logits={list(logits.shape)} requests={len(prepared)}"
-            )
-        prepare = getattr(
-            self.model_worker.model_runner.model,
-            "last_forward_batch_prepare",
-            None,
-        )
-        attn_metadata = getattr(
-            self.model_worker.model_runner.attn_backend,
-            "forward_metadata",
-            None,
-        )
-        if attn_metadata is not None:
-            backend_mask = getattr(attn_metadata, "custom_mask", None)
-            backend_mask_indptr = getattr(attn_metadata, "mask_indptr", None)
-            forward_batch_log["backend_forward_metadata"] = {
-                "class": type(attn_metadata).__name__,
-                "custom_mask_present": backend_mask is not None,
-                "custom_mask_numel": (
-                    None if backend_mask is None else int(backend_mask.numel())
-                ),
-                "mask_indptr": (
+            forward_batch_log = {
+                "forward_mode": str(forward_batch.forward_mode),
+                "batch_size": int(forward_batch.batch_size),
+                "input_ids_shape": list(forward_batch.input_ids.shape),
+                "positions_shape": list(forward_batch.positions.shape),
+                "mrope_positions_shape": (
                     None
-                    if backend_mask_indptr is None
-                    else [int(x) for x in backend_mask_indptr.detach().cpu().tolist()]
+                    if forward_batch.mrope_positions is None
+                    else list(forward_batch.mrope_positions.shape)
                 ),
+                "extend_seq_lens_cpu": list(
+                    forward_batch.extend_seq_lens_cpu or []
+                ),
+                "extend_prefix_lens_cpu": list(
+                    forward_batch.extend_prefix_lens_cpu or []
+                ),
+                "rids": list(forward_batch.rids or []),
+                "requested_batch_size": len(prepared),
+                "scheduled_batch_size": int(forward_batch.batch_size),
+                "radix_cache_enabled": self.enable_radix_cache,
+                "cache_before_schedule": cache_before_schedule,
             }
-        if forward_batch.cross_attention_custom_mask is not None:
-            forward_batch_log["custom_mask_shape"] = [
-                int(forward_batch.cross_attention_custom_mask.numel())
-            ]
-            forward_batch_log["custom_mask_dtype"] = str(
-                forward_batch.cross_attention_custom_mask.dtype
+            extend_lens = list(forward_batch.extend_seq_lens_cpu or [])
+            prefix_lens = list(forward_batch.extend_prefix_lens_cpu or [])
+            sidecar_input_embeds = self._attach_prefill_sidecar(
+                prepared=prepared,
+                forward_batch=forward_batch,
+                forward_batch_log=forward_batch_log,
             )
-        states = forward_batch.model_specific_states or {}
-        forward_batch_log["model_specific_state_keys"] = sorted(states.keys())
-        forward_batch_log["resource_release"] = self._finish_prefill_batch(
-            batch,
-            cache_insert=cache_insert,
-        )
+            if self.prefill_cuda_graph_enabled:
+                self.model_worker.model_runner.model.prepare_forward_batch(
+                    forward_batch
+                )
+            per_request_log = []
+            for idx, (item, req) in enumerate(zip(prepared, batch.reqs)):
+                prefix_len = (
+                    int(prefix_lens[idx]) if idx < len(prefix_lens) else 0
+                )
+                extend_len = (
+                    int(extend_lens[idx]) if idx < len(extend_lens) else 0
+                )
+                per_request_log.append(
+                    {
+                        "batch_index": idx,
+                        "rid": str(req.rid),
+                        "input_tokens": int(item["input_ids"].numel()),
+                        "prefix_len": prefix_len,
+                        "extend_len": extend_len,
+                        "cache_hit": prefix_len > 0,
+                        "cache_extra_key": item["cache_extra_key"],
+                        "image_token_count": int(
+                            item["image_token_tag"].sum().item()
+                        ),
+                    }
+                )
+            forward_batch_log["per_request"] = per_request_log
+            forward_batch_log["cache_hit_requests"] = sum(
+                1 for item in per_request_log if item["cache_hit"]
+            )
+            forward_batch_log["cache_hit_tokens"] = sum(
+                int(item["prefix_len"]) for item in per_request_log
+            )
 
-        assert_no_hf_modeling_imported(context="after native prefill batch")
-        results: list[NativeServingResult] = []
-        for idx, item in enumerate(prepared):
-            row_logits = logits[idx : idx + 1]
-            next_token_id = int(torch.argmax(row_logits[0].float()).item())
-            item_log = dict(forward_batch_log)
-            item_log["this_request"] = per_request_log[idx]
-            results.append(
-                NativeServingResult(
-                    request_id=str(item["request_id"]),
-                    next_token_id=next_token_id,
-                    logits_shape=list(row_logits.shape),
-                    logits_dtype=str(row_logits.dtype),
-                    logits_device=str(row_logits.device),
-                    logits_all_finite=bool(torch.isfinite(row_logits).all().item()),
-                    forward_elapsed_s=elapsed,
-                    backend_name=type(self.model_worker.model_runner.attn_backend).__name__,
-                    prepare_metadata=prepare,
-                    forward_batch_log=item_log,
-                    input_embeds_used=sidecar_input_embeds is not None,
-                    input_embeds_shape=(
-                        None
-                        if sidecar_input_embeds is None
-                        else list(sidecar_input_embeds.shape)
-                    ),
-                    batch_index=idx,
-                    batch_size=len(prepared),
-                    cache_inserted=bool(cache_insert),
-                    cache_extra_key=item["cache_extra_key"],
-                    next_token_logits=row_logits.detach().float().cpu(),
+            torch.cuda.synchronize(device) if device.type == "cuda" else None
+            dense_calls_before = None
+            try:
+                from sglang_omni.models.sensenova_u1 import (
+                    attention_backend as _u1_attn,
+                )
+
+                dense_calls_before = int(
+                    getattr(
+                        _u1_attn,
+                        "CUSTOM_MASK_DENSE_ATTENTION_CALLS",
+                        0,
+                    )
+                )
+            except (AttributeError, ImportError):
+                _u1_attn = None
+            start = time.perf_counter()
+            with torch.inference_mode(), block_hf_modeling_imports():
+                batch_result = self.model_worker.forward_batch_generation(
+                    forward_batch,
+                    batch=batch,
+                )
+            torch.cuda.synchronize(device) if device.type == "cuda" else None
+            if _u1_attn is not None:
+                dense_calls_after = int(
+                    getattr(
+                        _u1_attn,
+                        "CUSTOM_MASK_DENSE_ATTENTION_CALLS",
+                        0,
+                    )
+                )
+                forward_batch_log[
+                    "custom_mask_dense_attention_calls_delta"
+                ] = dense_calls_after - (dense_calls_before or 0)
+            elapsed = time.perf_counter() - start
+            forward_batch_log["can_run_cuda_graph"] = bool(
+                getattr(batch_result, "can_run_cuda_graph", False)
+            )
+            logits_output = getattr(batch_result, "logits_output", None)
+            logits = (
+                None
+                if logits_output is None
+                else getattr(logits_output, "next_token_logits", None)
+            )
+            if logits is None:
+                raise RuntimeError("native serving prefill produced no logits")
+            if int(logits.shape[0]) != len(prepared):
+                raise RuntimeError(
+                    "native serving logits batch size mismatch: "
+                    f"logits={list(logits.shape)} requests={len(prepared)}"
+                )
+            prepare = self._collect_prefill_metadata(
+                forward_batch=forward_batch,
+                forward_batch_log=forward_batch_log,
+            )
+            result_rows = []
+            for idx in range(len(prepared)):
+                row_logits = logits[idx : idx + 1]
+                result_rows.append(
+                    {
+                        "next_token_id": int(
+                            torch.argmax(row_logits[0].float()).item()
+                        ),
+                        "logits_shape": list(row_logits.shape),
+                        "logits_dtype": str(row_logits.dtype),
+                        "logits_device": str(row_logits.device),
+                        "logits_all_finite": bool(
+                            torch.isfinite(row_logits).all().item()
+                        ),
+                        "next_token_logits": row_logits.detach().float().cpu(),
+                    }
+                )
+
+            forward_batch_log["resource_release"] = (
+                self._cleanup_prefill_attempt(
+                    prepared=prepared,
+                    batch=batch,
+                    cache_insert=cache_insert,
                 )
             )
-        return results
+            batch = None
+            cleanup_complete = True
+            assert_no_hf_modeling_imported(context="after native prefill batch")
+            results: list[NativeServingResult] = []
+            for idx, (item, row) in enumerate(zip(prepared, result_rows)):
+                item_log = dict(forward_batch_log)
+                item_log["this_request"] = per_request_log[idx]
+                results.append(
+                    NativeServingResult(
+                        request_id=str(item["request_id"]),
+                        next_token_id=row["next_token_id"],
+                        logits_shape=row["logits_shape"],
+                        logits_dtype=row["logits_dtype"],
+                        logits_device=row["logits_device"],
+                        logits_all_finite=row["logits_all_finite"],
+                        forward_elapsed_s=elapsed,
+                        backend_name=type(
+                            self.model_worker.model_runner.attn_backend
+                        ).__name__,
+                        prepare_metadata=prepare,
+                        forward_batch_log=item_log,
+                        input_embeds_used=sidecar_input_embeds is not None,
+                        input_embeds_shape=(
+                            None
+                            if sidecar_input_embeds is None
+                            else list(sidecar_input_embeds.shape)
+                        ),
+                        batch_index=idx,
+                        batch_size=len(prepared),
+                        cache_inserted=bool(cache_insert),
+                        cache_extra_key=item["cache_extra_key"],
+                        next_token_logits=row["next_token_logits"],
+                    )
+                )
+            return results
+        finally:
+            if not cleanup_complete:
+                self._cleanup_prefill_attempt(
+                    prepared=prepared,
+                    batch=batch,
+                    cache_insert=False,
+                )
 
     def run_greedy_decode_batch(
         self,
@@ -1439,6 +1810,11 @@ class SenseNovaU1NativeServingExecutor:
         total_start = time.perf_counter()
         repeat_kv_cache = self._native_eager_repeated_kv_cache_enabled()
         use_static_kv_cache = self._native_eager_static_kv_cache_enabled()
+        eager_prefix_cache_eligible = bool(
+            self._native_eager_prefix_cache_enabled()
+            and self.eager_prefix_cache_max_entries > 0
+            and int(input_ids.numel()) <= self.eager_prefix_cache_max_tokens
+        )
         eager_prefix_cache_key = (
             self._eager_text_prefix_cache_key(
                 input_ids=input_ids,
@@ -1447,19 +1823,20 @@ class SenseNovaU1NativeServingExecutor:
                 input_embeds=input_embeds,
                 repeat_kv_cache=repeat_kv_cache,
             )
-            if self._native_eager_prefix_cache_enabled()
+            if eager_prefix_cache_eligible
             else None
         )
-        eager_prefix_cache_hit = bool(
-            eager_prefix_cache_key is not None
-            and eager_prefix_cache_key in self._eager_text_prefill_cache
+        prefix_cache_entry = (
+            None
+            if eager_prefix_cache_key is None
+            else self._get_eager_prefix_cache_entry(eager_prefix_cache_key)
         )
+        eager_prefix_cache_hit = prefix_cache_entry is not None
         torch.cuda.synchronize(device) if device.type == "cuda" else None
         prefill_start = time.perf_counter()
         if eager_prefix_cache_hit:
-            logits, caches, prefill_logits_finite = self._eager_text_prefill_cache[
-                eager_prefix_cache_key
-            ]
+            assert prefix_cache_entry is not None
+            logits, caches, prefill_logits_finite = prefix_cache_entry
         else:
             with torch.inference_mode(), block_hf_modeling_imports():
                 hidden_states, caches = model.model.eager_text_prefill_with_cache(
@@ -1477,10 +1854,13 @@ class SenseNovaU1NativeServingExecutor:
                 logits = model.eager_text_logits(hidden_states)
             prefill_logits_finite = bool(torch.isfinite(logits).all().item())
             if eager_prefix_cache_key is not None:
-                self._eager_text_prefill_cache[eager_prefix_cache_key] = (
-                    logits.detach(),
-                    caches,
-                    prefill_logits_finite,
+                self._put_eager_prefix_cache_entry(
+                    eager_prefix_cache_key,
+                    (
+                        logits.detach(),
+                        caches,
+                        prefill_logits_finite,
+                    ),
                 )
         torch.cuda.synchronize(device) if device.type == "cuda" else None
         prefill_elapsed = time.perf_counter() - prefill_start
@@ -1512,6 +1892,9 @@ class SenseNovaU1NativeServingExecutor:
             and forced_token_ids is None
             and not suppress_ids
             and capture_step is None
+            and self.eager_decode_graph_cache_max_entries > 0
+            and int(input_ids.numel()) + int(decode_steps)
+            <= self.eager_decode_graph_max_total_tokens
         )
         if full_loop_graph_used:
             graph_key = (
@@ -1527,10 +1910,14 @@ class SenseNovaU1NativeServingExecutor:
                 compiled_add_rms_layers,
                 self._native_eager_graph_mode(),
             )
-            graph_created = graph_key not in self._eager_text_decode_graphs
+            graph_runner = self._get_eager_decode_graph(graph_key)
+            graph_created = graph_runner is None
             if graph_created:
-                self._eager_text_decode_graphs[graph_key] = (
-                    self._capture_eager_text_decode_graph(
+                if not self._try_reserve_eager_decode_graph_capture():
+                    full_loop_graph_used = False
+                else:
+                    self._reserve_eager_decode_graph_slot(graph_key)
+                    graph_runner = self._capture_eager_text_decode_graph(
                         model=model,
                         caches=caches,
                         input_token_id=next_token_id,
@@ -1543,8 +1930,13 @@ class SenseNovaU1NativeServingExecutor:
                         use_static_kv_cache=bool(graph_key[4]),
                         bf16_argmax=bool(graph_key[5]),
                     )
-                )
-            graph_runner = self._eager_text_decode_graphs[graph_key]
+                    self._eager_text_decode_graphs[graph_key] = graph_runner
+            if not full_loop_graph_used:
+                graph_runner = None
+            if graph_runner is None:
+                graph_created = False
+        if full_loop_graph_used:
+            assert graph_runner is not None
             torch.cuda.synchronize(device)
             decode_start = time.perf_counter()
             skip_initial_copy = bool(

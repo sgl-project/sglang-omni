@@ -26,6 +26,18 @@ from sglang_omni.models.sensenova_u1.hf_runner import (
     _extract_request,
     _extract_text_and_images_from_content,
 )
+from sglang_omni.models.sensenova_u1.limits import (
+    U1_MAX_TOTAL_TOKENS,
+    generated_image_span_token_count,
+    parse_int_param,
+    validate_image_count,
+    validate_image_size,
+    validate_input_image_count,
+    validate_max_new_tokens,
+    validate_num_steps,
+    validate_token_budget_components,
+    validate_total_token_budget,
+)
 from sglang_omni.models.sensenova_u1.sglang_model import (
     _blocked_hf_modeling_modules,
     assert_no_hf_modeling_imported,
@@ -92,18 +104,13 @@ def _stage_params(params: dict[str, Any], stage_name: str) -> dict[str, Any]:
     return merged
 
 
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
-
-
 def _cfg_interval(value: Any) -> tuple[float, float]:
     if value is None:
         return (0.0, 1.0)
-    interval = tuple(float(x) for x in value)
+    try:
+        interval = tuple(float(x) for x in value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cfg_interval must contain exactly two floats.") from exc
     if len(interval) != 2:
         raise ValueError("cfg_interval must contain exactly two floats.")
     return (interval[0], interval[1])
@@ -117,7 +124,12 @@ def _extract_prompt_images_system(inputs: Any) -> tuple[str, list[Any], str | No
         return inputs, images, system_message
 
     if isinstance(inputs, dict):
-        images.extend(_coerce_image(img) for img in inputs.get("images") or [])
+        raw_images = inputs.get("images")
+        if raw_images is None:
+            raw_images = []
+        if not isinstance(raw_images, (list, tuple)):
+            raise ValueError("images must be a list or tuple.")
+        images.extend(_coerce_image(img) for img in raw_images)
         if "image" in inputs:
             images.append(_coerce_image(inputs["image"]))
         if "system_message" in inputs:
@@ -165,14 +177,19 @@ def _params_from_payload(
     if not isinstance(image_config, dict):
         image_config = {}
 
-    width = _positive_int(
-        params.get("width", params.get("image_width", image_config.get("width"))),
-        256,
+    width_value = params.get(
+        "width",
+        params.get("image_width", image_config.get("width", 256)),
     )
-    height = _positive_int(
-        params.get("height", params.get("image_height", image_config.get("height"))),
-        256,
+    height_value = params.get(
+        "height",
+        params.get("image_height", image_config.get("height", 256)),
     )
+    width, height = validate_image_size(
+        256 if width_value is None else width_value,
+        256 if height_value is None else height_value,
+    )
+    validate_input_image_count(images)
 
     chat_template_kwargs = params.get("chat_template_kwargs")
     if not isinstance(chat_template_kwargs, dict):
@@ -182,6 +199,19 @@ def _params_from_payload(
         think_mode = bool(chat_template_kwargs["enable_thinking"])
 
     seed_value = params.get("seed", image_config.get("seed", 20260813))
+    num_steps = validate_num_steps(params.get("num_steps", 2))
+    max_images = validate_image_count(
+        params.get("max_images", 1),
+        name="max_images",
+    )
+    max_new_tokens = validate_max_new_tokens(
+        params.get("max_new_tokens", params.get("max_tokens", 512))
+    )
+    validate_total_token_budget(
+        image_size=(width, height),
+        image_count=max_images,
+        max_new_tokens=max_new_tokens,
+    )
     system_message = str(
         params.get(
             "system_message",
@@ -198,12 +228,12 @@ def _params_from_payload(
         timestep_shift=float(params.get("timestep_shift", 1.0)),
         enable_timestep_shift=bool(params.get("enable_timestep_shift", True)),
         cfg_interval=_cfg_interval(params.get("cfg_interval", (0.0, 1.0))),
-        num_steps=int(params.get("num_steps", 2)),
-        max_images=int(params.get("max_images", 1)),
-        max_new_tokens=int(params.get("max_new_tokens", params.get("max_tokens", 512))),
+        num_steps=num_steps,
+        max_images=max_images,
+        max_new_tokens=max_new_tokens,
         t_eps=float(params.get("t_eps", 0.05)),
         think_mode=think_mode,
-        seed=int(seed_value),
+        seed=parse_int_param(seed_value, name="seed"),
         system_message=system_message,
     )
     return request, images
@@ -251,6 +281,12 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         dtype: str | torch.dtype = "bfloat16",
         attn_backend: str = "auto",
         load_with_info: bool = False,
+        max_total_tokens: int = U1_MAX_TOTAL_TOKENS,
+        eager_prefix_cache_max_entries: int = 4,
+        eager_decode_graph_cache_max_entries: int = 2,
+        eager_decode_graph_max_captures: int = 4,
+        eager_prefix_cache_max_tokens: int = 2048,
+        eager_decode_graph_max_total_tokens: int = 1024,
     ) -> None:
         super().__init__(
             model_path=model_path,
@@ -259,6 +295,18 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
             dtype=dtype,
             attn_backend=attn_backend,
             load_with_info=load_with_info,
+            max_total_tokens=max_total_tokens,
+            eager_prefix_cache_max_entries=eager_prefix_cache_max_entries,
+            eager_decode_graph_cache_max_entries=(
+                eager_decode_graph_cache_max_entries
+            ),
+            eager_decode_graph_max_captures=(
+                eager_decode_graph_max_captures
+            ),
+            eager_prefix_cache_max_tokens=eager_prefix_cache_max_tokens,
+            eager_decode_graph_max_total_tokens=(
+                eager_decode_graph_max_total_tokens
+            ),
         )
 
     def _build_condition_prefix(
@@ -271,6 +319,8 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         think_mode: bool,
         assistant_append: str | None = None,
         prompt_image_count: int | None = None,
+        reserved_text_tokens: int = 0,
+        reserved_image_tokens: int = 0,
     ) -> NativeFlowPrefix:
         prompt_image_count = len(images) if prompt_image_count is None else int(prompt_image_count)
         prompt = _apply_prompt_image_prefix(prompt, prompt_image_count)
@@ -287,6 +337,12 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         )
         query = self._replace_image_tokens(query, grid_hw)
         input_ids = self.tokenizer(query, return_tensors="pt")["input_ids"][0]
+        validate_token_budget_components(
+            prefix_tokens=int(input_ids.numel()),
+            text_tokens=int(reserved_text_tokens),
+            image_tokens=int(reserved_image_tokens),
+            max_total_tokens=self.max_total_tokens,
+        )
         indexes = self._get_thw_indexes(input_ids, grid_hw)
         image_token_tag = input_ids == self.img_context_token_id
         if pixel_values is not None and grid_hw is not None:
@@ -507,8 +563,22 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         if use_official_hybrid_mask:
             raise RuntimeError("native interleave runner cannot use official HF mask")
         assert_no_hf_modeling_imported(context="before native interleave generation")
+        image_size = validate_image_size(*request.image_size)
+        num_steps = validate_num_steps(request.num_steps)
+        max_images = validate_image_count(
+            request.max_images,
+            name="max_images",
+        )
+        max_new_tokens = validate_max_new_tokens(request.max_new_tokens)
+        validate_total_token_budget(
+            image_size=image_size,
+            image_count=max_images,
+            max_new_tokens=max_new_tokens,
+            max_total_tokens=self.max_total_tokens,
+        )
         start = time.perf_counter()
         input_images = [_coerce_image(image) for image in (images or [])]
+        validate_input_image_count(input_images)
         base_assistant = self._base_assistant_append(request.think_mode)
         generated_text = ""
         generated_image_tensors: list[torch.Tensor] = []
@@ -521,10 +591,14 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         forced_image_requests = 0
         terminal_reason = "max_new_tokens"
         prefix: NativeFlowPrefix | None = None
+        generated_image_span_tokens = generated_image_span_token_count(
+            image_size
+        )
 
-        while current_generated_tokens < int(request.max_new_tokens):
-            remaining_tokens = int(request.max_new_tokens) - current_generated_tokens
-            suppress_image = len(generated_images) >= max(1, int(request.max_images))
+        while current_generated_tokens < max_new_tokens:
+            remaining_tokens = max_new_tokens - current_generated_tokens
+            remaining_image_slots = max_images - len(generated_images)
+            suppress_image = remaining_image_slots <= 0
             prefix = self._build_condition_prefix(
                 prompt=request.prompt,
                 system_message=request.system_message,
@@ -533,6 +607,10 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
                 think_mode=request.think_mode,
                 assistant_append=base_assistant + generated_text,
                 prompt_image_count=len(input_images),
+                reserved_text_tokens=remaining_tokens,
+                reserved_image_tokens=(
+                    max(remaining_image_slots, 0) * generated_image_span_tokens
+                ),
             )
             text, segment_token_ids, decode_stats = self._generate_text_until_boundary(
                 prefix=prefix,
@@ -557,6 +635,8 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
                     request,
                     seed=int(request.seed),
                 )
+                if flow_request.num_steps != num_steps:
+                    raise RuntimeError("interleave flow num_steps changed unexpectedly")
                 image_tensor, flow_stats = self.generate_interleave_image_tensor(
                     flow_request,
                     input_images,

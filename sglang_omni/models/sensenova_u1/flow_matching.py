@@ -28,6 +28,17 @@ from safetensors import safe_open
 from torch import nn
 from transformers import AutoTokenizer
 
+from sglang_omni.models.sensenova_u1.limits import (
+    U1_MAX_TOTAL_TOKENS,
+    generated_image_token_count,
+    parse_int_param,
+    validate_image_count,
+    validate_image_size,
+    validate_input_image_count,
+    validate_num_steps,
+    validate_token_budget_components,
+    validate_total_token_budget,
+)
 from sglang_omni.models.sensenova_u1.native_serving import (
     SenseNovaU1NativeServingExecutor,
 )
@@ -432,6 +443,75 @@ def compare_pil_images(a: Image.Image, b: Image.Image) -> dict[str, Any]:
     }
 
 
+def _validated_flow_params_from_request(
+    inputs: Any,
+    params: dict[str, Any],
+    *,
+    max_total_tokens: int,
+) -> tuple[FlowRequestParams, list[Any]]:
+    data = inputs if isinstance(inputs, dict) else {"prompt": str(inputs)}
+    merged = {**data, **params}
+    mode = str(merged.get("mode") or merged.get("task") or "t2i").lower()
+    if mode in {"text_to_image", "txt2img"}:
+        mode = "t2i"
+    if mode in {"image_to_image", "edit", "editing"}:
+        mode = "it2i"
+    if mode not in {"t2i", "it2i"}:
+        raise ValueError(f"Unsupported U1 flow mode: {mode!r}")
+    width, height = validate_image_size(
+        merged.get("width", merged.get("image_width", 256)),
+        merged.get("height", merged.get("image_height", 256)),
+    )
+    cfg_interval_value = merged.get("cfg_interval", (0.0, 1.0))
+    try:
+        cfg_interval = tuple(float(x) for x in cfg_interval_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cfg_interval must contain exactly two floats.") from exc
+    if len(cfg_interval) != 2:
+        raise ValueError("cfg_interval must contain exactly two floats.")
+    raw_images = merged.get("images")
+    if raw_images is None:
+        raw_images = []
+    if not isinstance(raw_images, (list, tuple)):
+        raise ValueError("images must be a list or tuple.")
+    raw_images = list(raw_images)
+    if "image" in merged:
+        raw_images.append(merged["image"])
+    validate_input_image_count(raw_images)
+    images = [_coerce_image(img) for img in raw_images]
+    num_steps = validate_num_steps(merged.get("num_steps", 2))
+    batch_size = validate_image_count(
+        merged.get("batch_size", 1),
+        name="batch_size",
+        maximum=1,
+    )
+    validate_total_token_budget(
+        image_size=(width, height),
+        image_count=batch_size,
+        max_total_tokens=max_total_tokens,
+    )
+    request = FlowRequestParams(
+        mode=mode,
+        prompt=str(merged.get("prompt", "")),
+        image_size=(width, height),
+        cfg_scale=float(merged.get("cfg_scale", 1.0)),
+        img_cfg_scale=float(merged.get("img_cfg_scale", 1.0)),
+        cfg_norm=str(merged.get("cfg_norm", "none")),
+        timestep_shift=float(merged.get("timestep_shift", 1.0)),
+        enable_timestep_shift=bool(merged.get("enable_timestep_shift", True)),
+        cfg_interval=(float(cfg_interval[0]), float(cfg_interval[1])),
+        num_steps=num_steps,
+        batch_size=batch_size,
+        t_eps=float(merged.get("t_eps", 0.05)),
+        think_mode=bool(merged.get("think_mode", False)),
+        seed=parse_int_param(
+            merged.get("seed", 20260813),
+            name="seed",
+        ),
+    )
+    return request, images
+
+
 class SenseNovaU1FlowMatchingFallbackRunner(SenseNovaU1UnderstandingRunner):
     """T2I/IT2I runner for U1 flow matching inside SGLang-Omni."""
 
@@ -454,42 +534,16 @@ class SenseNovaU1FlowMatchingFallbackRunner(SenseNovaU1UnderstandingRunner):
             load_with_info=load_with_info,
         )
 
-    def _flow_params_from_request(self, inputs: Any, params: dict[str, Any]) -> tuple[FlowRequestParams, list[Any]]:
-        data = inputs if isinstance(inputs, dict) else {"prompt": str(inputs)}
-        merged = {**data, **params}
-        mode = str(merged.get("mode") or merged.get("task") or "t2i").lower()
-        if mode in {"text_to_image", "txt2img"}:
-            mode = "t2i"
-        if mode in {"image_to_image", "edit", "editing"}:
-            mode = "it2i"
-        if mode not in {"t2i", "it2i"}:
-            raise ValueError(f"Unsupported U1 flow mode: {mode!r}")
-        width = int(merged.get("width", merged.get("image_width", 256)))
-        height = int(merged.get("height", merged.get("image_height", 256)))
-        cfg_interval_value = merged.get("cfg_interval", (0.0, 1.0))
-        cfg_interval = tuple(float(x) for x in cfg_interval_value)
-        if len(cfg_interval) != 2:
-            raise ValueError("cfg_interval must contain exactly two floats.")
-        images = [_coerce_image(img) for img in (merged.get("images") or [])]
-        if "image" in merged:
-            images.append(_coerce_image(merged["image"]))
-        request = FlowRequestParams(
-            mode=mode,
-            prompt=str(merged.get("prompt", "")),
-            image_size=(width, height),
-            cfg_scale=float(merged.get("cfg_scale", 1.0)),
-            img_cfg_scale=float(merged.get("img_cfg_scale", 1.0)),
-            cfg_norm=str(merged.get("cfg_norm", "none")),
-            timestep_shift=float(merged.get("timestep_shift", 1.0)),
-            enable_timestep_shift=bool(merged.get("enable_timestep_shift", True)),
-            cfg_interval=(float(cfg_interval[0]), float(cfg_interval[1])),
-            num_steps=int(merged.get("num_steps", 2)),
-            batch_size=int(merged.get("batch_size", 1)),
-            t_eps=float(merged.get("t_eps", 0.05)),
-            think_mode=bool(merged.get("think_mode", False)),
-            seed=int(merged.get("seed", 20260813)),
+    def _flow_params_from_request(
+        self,
+        inputs: Any,
+        params: dict[str, Any],
+    ) -> tuple[FlowRequestParams, list[Any]]:
+        return _validated_flow_params_from_request(
+            inputs,
+            params,
+            max_total_tokens=U1_MAX_TOTAL_TOKENS,
         )
-        return request, images
 
     def scheduler_params(self, request: FlowRequestParams) -> dict[str, Any]:
         assert self.model is not None
@@ -698,8 +752,13 @@ class SenseNovaU1FlowMatchingRunner:
         attention_backend: str | None = None,
         load_with_info: bool = False,
         mem_fraction_static: float = 0.65,
-        max_total_tokens: int = 8192,
+        max_total_tokens: int = U1_MAX_TOTAL_TOKENS,
         max_running_requests: int = 2,
+        eager_prefix_cache_max_entries: int = 4,
+        eager_decode_graph_cache_max_entries: int = 2,
+        eager_decode_graph_max_captures: int = 4,
+        eager_prefix_cache_max_tokens: int = 2048,
+        eager_decode_graph_max_total_tokens: int = 1024,
     ) -> None:
         del vendor_root, load_with_info
         assert_no_hf_modeling_imported(context="before native flow runner init")
@@ -729,6 +788,9 @@ class SenseNovaU1FlowMatchingRunner:
         self.max_shift = float(self.raw_config.get("max_shift", 1.15))
         self.base_image_seq_len = int(self.raw_config.get("base_image_seq_len", 64))
         self.max_image_seq_len = int(self.raw_config.get("max_image_seq_len", 4096))
+        self.max_total_tokens = int(max_total_tokens)
+        if self.max_total_tokens <= 0:
+            raise ValueError("max_total_tokens must be positive")
         self.last_native_flow_stats: dict[str, Any] = {}
         self.native_flow_prefill_cuda_graph_enabled = (
             self._native_flow_prefill_cuda_graph_enabled()
@@ -762,6 +824,17 @@ class SenseNovaU1FlowMatchingRunner:
                 max_total_tokens=max_total_tokens,
                 max_running_requests=max_running_requests,
                 enable_radix_cache=True,
+                eager_prefix_cache_max_entries=eager_prefix_cache_max_entries,
+                eager_decode_graph_cache_max_entries=(
+                    eager_decode_graph_cache_max_entries
+                ),
+                eager_decode_graph_max_captures=(
+                    eager_decode_graph_max_captures
+                ),
+                eager_prefix_cache_max_tokens=eager_prefix_cache_max_tokens,
+                eager_decode_graph_max_total_tokens=(
+                    eager_decode_graph_max_total_tokens
+                ),
                 prefill_cuda_graph_backend=(
                     "breakable"
                     if self.native_flow_prefill_cuda_graph_enabled
@@ -788,6 +861,9 @@ class SenseNovaU1FlowMatchingRunner:
         self.img_start_token_id = int(self.tokenizer.convert_tokens_to_ids("<img>"))
         self.img_end_token_id = int(self.tokenizer.convert_tokens_to_ids("</img>"))
         assert_no_hf_modeling_imported(context="after native flow runner init")
+
+    def shutdown(self) -> None:
+        self.executor.shutdown()
 
     def _calculate_dynamic_mu(self, image_seq_len: int) -> float:
         denom = self.max_image_seq_len - self.base_image_seq_len
@@ -1049,6 +1125,7 @@ class SenseNovaU1FlowMatchingRunner:
         images: list[Any],
         system_message: str,
         assistant_append: str,
+        reserved_image_tokens: int = 0,
     ) -> NativeFlowPrefix:
         image_count = prompt.count("<image>")
         if len(images) > image_count:
@@ -1066,6 +1143,12 @@ class SenseNovaU1FlowMatchingRunner:
         )
         query = self._replace_image_tokens(query, grid_hw)
         input_ids = self.tokenizer(query, return_tensors="pt")["input_ids"][0]
+        validate_token_budget_components(
+            prefix_tokens=int(input_ids.numel()),
+            text_tokens=0,
+            image_tokens=int(reserved_image_tokens),
+            max_total_tokens=self.max_total_tokens,
+        )
         indexes = self._get_thw_indexes(input_ids, grid_hw)
         image_token_tag = input_ids == self.img_context_token_id
         if pixel_values is not None and grid_hw is not None:
@@ -1253,18 +1336,34 @@ class SenseNovaU1FlowMatchingRunner:
         system_message: str,
         assistant_append: str,
     ) -> tuple[torch.Tensor, NativeFlowRunStats]:
-        if request.batch_size != 1:
-            raise NotImplementedError("native U1 flow supports batch_size=1 in this path")
+        width, height = validate_image_size(*request.image_size)
+        num_steps = validate_num_steps(request.num_steps)
+        batch_size = validate_image_count(
+            request.batch_size,
+            name="batch_size",
+            maximum=1,
+        )
+        validate_input_image_count(images)
+        if batch_size != 1:
+            raise NotImplementedError(
+                "native U1 flow supports batch_size=1 in this path"
+            )
         if request.cfg_scale != 1.0 or request.img_cfg_scale != 1.0:
             raise NotImplementedError("native U1 flow path currently supports cfg scales of 1.0")
         assert_no_hf_modeling_imported(context="before native flow generation")
-        width, height = request.image_size
         merge_size = int(1 / self.downsample_ratio)
         token_h = height // (self.patch_size * merge_size)
         token_w = width // (self.patch_size * merge_size)
         grid_h = height // self.patch_size
         grid_w = width // self.patch_size
         image_token_num = token_h * token_w
+        if image_token_num != generated_image_token_count((width, height)):
+            raise RuntimeError("native U1 generated image token geometry mismatch")
+        validate_total_token_budget(
+            image_size=(width, height),
+            image_count=batch_size,
+            max_total_tokens=self.max_total_tokens,
+        )
         gen_grid_hw = torch.tensor(
             [[grid_h, grid_w]],
             dtype=torch.long,
@@ -1275,6 +1374,7 @@ class SenseNovaU1FlowMatchingRunner:
             images=images,
             system_message=system_message,
             assistant_append=assistant_append,
+            reserved_image_tokens=image_token_num,
         )
         self._prime_prefix_cache(prefix)
         image_t_index = int(prefix.indexes[0].max().item()) + 1
@@ -1295,7 +1395,7 @@ class SenseNovaU1FlowMatchingRunner:
         timesteps = torch.linspace(
             0.0,
             1.0,
-            request.num_steps + 1,
+            num_steps + 1,
             device=self.torch_device,
         )
         if request.enable_timestep_shift:
@@ -1308,7 +1408,7 @@ class SenseNovaU1FlowMatchingRunner:
         forward_elapsed: list[float] = []
         hidden_logs: list[dict[str, Any]] = []
         backend_name = None
-        for step_i in range(request.num_steps):
+        for step_i in range(num_steps):
             t = timesteps[step_i]
             t_next = timesteps[step_i + 1]
             z = self.patchify(image_prediction, self.patch_size * merge_size)
@@ -1367,42 +1467,16 @@ class SenseNovaU1FlowMatchingRunner:
         assert_no_hf_modeling_imported(context="after native flow generation")
         return image_prediction.detach(), stats
 
-    def _flow_params_from_request(self, inputs: Any, params: dict[str, Any]) -> tuple[FlowRequestParams, list[Any]]:
-        data = inputs if isinstance(inputs, dict) else {"prompt": str(inputs)}
-        merged = {**data, **params}
-        mode = str(merged.get("mode") or merged.get("task") or "t2i").lower()
-        if mode in {"text_to_image", "txt2img"}:
-            mode = "t2i"
-        if mode in {"image_to_image", "edit", "editing"}:
-            mode = "it2i"
-        if mode not in {"t2i", "it2i"}:
-            raise ValueError(f"Unsupported U1 flow mode: {mode!r}")
-        width = int(merged.get("width", merged.get("image_width", 256)))
-        height = int(merged.get("height", merged.get("image_height", 256)))
-        cfg_interval_value = merged.get("cfg_interval", (0.0, 1.0))
-        cfg_interval = tuple(float(x) for x in cfg_interval_value)
-        if len(cfg_interval) != 2:
-            raise ValueError("cfg_interval must contain exactly two floats.")
-        images = [_coerce_image(img) for img in (merged.get("images") or [])]
-        if "image" in merged:
-            images.append(_coerce_image(merged["image"]))
-        request = FlowRequestParams(
-            mode=mode,
-            prompt=str(merged.get("prompt", "")),
-            image_size=(width, height),
-            cfg_scale=float(merged.get("cfg_scale", 1.0)),
-            img_cfg_scale=float(merged.get("img_cfg_scale", 1.0)),
-            cfg_norm=str(merged.get("cfg_norm", "none")),
-            timestep_shift=float(merged.get("timestep_shift", 1.0)),
-            enable_timestep_shift=bool(merged.get("enable_timestep_shift", True)),
-            cfg_interval=(float(cfg_interval[0]), float(cfg_interval[1])),
-            num_steps=int(merged.get("num_steps", 2)),
-            batch_size=int(merged.get("batch_size", 1)),
-            t_eps=float(merged.get("t_eps", 0.05)),
-            think_mode=bool(merged.get("think_mode", False)),
-            seed=int(merged.get("seed", 20260813)),
+    def _flow_params_from_request(
+        self,
+        inputs: Any,
+        params: dict[str, Any],
+    ) -> tuple[FlowRequestParams, list[Any]]:
+        return _validated_flow_params_from_request(
+            inputs,
+            params,
+            max_total_tokens=self.max_total_tokens,
         )
-        return request, images
 
     @torch.inference_mode()
     def generate_t2i_tensor(

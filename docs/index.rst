@@ -76,6 +76,9 @@ Supported Models
    * - `inclusionAI/LLaDA2.0-Uni <https://huggingface.co/inclusionAI/LLaDA2.0-Uni>`_
      - Multimodal
      - Text + image understanding and generation
+   * - `sensenova/SenseNova-U1-8B-MoT-Interleaved <https://huggingface.co/sensenova/SenseNova-U1-8B-MoT-Interleaved>`_
+     - Multimodal
+     - Native image understanding and interleaved text-image generation
 
 
 .. toctree::
@@ -107,6 +110,7 @@ Supported Models
    cookbook/qwen3_omni.md
    cookbook/ming_omni.md
    cookbook/llada2_uni.md
+   cookbook/sensenova_u1.md
 
 .. toctree::
    :maxdepth: 1

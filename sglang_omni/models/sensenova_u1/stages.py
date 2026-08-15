@@ -14,6 +14,12 @@ def create_sensenova_u1_flow_executor(
     vendor_root: str | None = None,
     attn_backend: str = "auto",
     max_concurrency: int = 1,
+    max_total_tokens: int = 4096,
+    eager_prefix_cache_max_entries: int = 4,
+    eager_decode_graph_cache_max_entries: int = 2,
+    eager_decode_graph_max_captures: int = 4,
+    eager_prefix_cache_max_tokens: int = 2048,
+    eager_decode_graph_max_total_tokens: int = 1024,
 ) -> Any:
     from sglang_omni.models.sensenova_u1.flow_matching import (
         SenseNovaU1FlowMatchingRunner,
@@ -32,11 +38,22 @@ def create_sensenova_u1_flow_executor(
             device=device,
             dtype=dtype,
             attn_backend=attn_backend,
+            max_total_tokens=max_total_tokens,
+            eager_prefix_cache_max_entries=eager_prefix_cache_max_entries,
+            eager_decode_graph_cache_max_entries=(
+                eager_decode_graph_cache_max_entries
+            ),
+            eager_decode_graph_max_captures=eager_decode_graph_max_captures,
+            eager_prefix_cache_max_tokens=eager_prefix_cache_max_tokens,
+            eager_decode_graph_max_total_tokens=(
+                eager_decode_graph_max_total_tokens
+            ),
         )
     assert_no_hf_modeling_imported(context="after native U1 flow stage factory")
     return SimpleScheduler(
         runner.complete_payload,
         max_concurrency=max_concurrency,
+        shutdown_callback=runner.shutdown,
     )
 
 
@@ -48,6 +65,12 @@ def create_sensenova_u1_interleave_executor(
     vendor_root: str | None = None,
     attn_backend: str = "auto",
     max_concurrency: int = 1,
+    max_total_tokens: int = 4096,
+    eager_prefix_cache_max_entries: int = 4,
+    eager_decode_graph_cache_max_entries: int = 2,
+    eager_decode_graph_max_captures: int = 4,
+    eager_prefix_cache_max_tokens: int = 2048,
+    eager_decode_graph_max_total_tokens: int = 1024,
 ) -> Any:
     from sglang_omni.models.sensenova_u1.interleave import (
         SenseNovaU1InterleaveRunner,
@@ -68,6 +91,16 @@ def create_sensenova_u1_interleave_executor(
             device=device,
             dtype=dtype,
             attn_backend=attn_backend,
+            max_total_tokens=max_total_tokens,
+            eager_prefix_cache_max_entries=eager_prefix_cache_max_entries,
+            eager_decode_graph_cache_max_entries=(
+                eager_decode_graph_cache_max_entries
+            ),
+            eager_decode_graph_max_captures=eager_decode_graph_max_captures,
+            eager_prefix_cache_max_tokens=eager_prefix_cache_max_tokens,
+            eager_decode_graph_max_total_tokens=(
+                eager_decode_graph_max_total_tokens
+            ),
         )
     assert_no_hf_modeling_imported(
         context="after native U1 interleave stage factory"
@@ -75,6 +108,7 @@ def create_sensenova_u1_interleave_executor(
     return SimpleScheduler(
         runner.complete_payload,
         max_concurrency=max_concurrency,
+        shutdown_callback=runner.shutdown,
     )
 
 
@@ -116,6 +150,11 @@ def create_sensenova_u1_native_serving_executor(
     max_batch_wait_ms: int = 10,
     enable_cuda_graph: bool = True,
     cuda_graph_bs: list[int] | None = None,
+    eager_prefix_cache_max_entries: int = 4,
+    eager_decode_graph_cache_max_entries: int = 2,
+    eager_decode_graph_max_captures: int = 4,
+    eager_prefix_cache_max_tokens: int = 2048,
+    eager_decode_graph_max_total_tokens: int = 1024,
 ) -> Any:
     from sglang_omni.models.sensenova_u1.native_serving import (
         SenseNovaU1NativeServingExecutor,
@@ -139,6 +178,15 @@ def create_sensenova_u1_native_serving_executor(
             enable_radix_cache=True,
             disable_cuda_graph=not enable_cuda_graph,
             cuda_graph_bs=cuda_graph_bs or [1, 8, 16],
+            eager_prefix_cache_max_entries=eager_prefix_cache_max_entries,
+            eager_decode_graph_cache_max_entries=(
+                eager_decode_graph_cache_max_entries
+            ),
+            eager_decode_graph_max_captures=eager_decode_graph_max_captures,
+            eager_prefix_cache_max_tokens=eager_prefix_cache_max_tokens,
+            eager_decode_graph_max_total_tokens=(
+                eager_decode_graph_max_total_tokens
+            ),
         )
     assert_no_hf_modeling_imported(context="after native U1 serving stage factory")
     return SimpleScheduler(
@@ -147,7 +195,7 @@ def create_sensenova_u1_native_serving_executor(
         max_batch_size=max_concurrency,
         max_batch_wait_ms=max_batch_wait_ms,
         max_concurrency=1,
-        shutdown_callback=lambda: None,
+        shutdown_callback=executor.shutdown,
     )
 
 

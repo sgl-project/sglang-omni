@@ -37,6 +37,12 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
                 "dtype": "bfloat16",
                 "attn_backend": "auto",
                 "max_concurrency": 1,
+                "max_total_tokens": 4096,
+                "eager_prefix_cache_max_entries": 4,
+                "eager_decode_graph_cache_max_entries": 2,
+                "eager_decode_graph_max_captures": 4,
+                "eager_prefix_cache_max_tokens": 2048,
+                "eager_decode_graph_max_total_tokens": 1024,
             },
             runtime=StageRuntimeConfig(
                 resources=StageResourceConfig(total_gpu_memory_fraction=0.75)
@@ -65,6 +71,12 @@ class SenseNovaU1FlowPipelineConfig(SenseNovaU1PipelineConfig):
                 "dtype": "bfloat16",
                 "attn_backend": "auto",
                 "max_concurrency": 1,
+                "max_total_tokens": 4096,
+                "eager_prefix_cache_max_entries": 4,
+                "eager_decode_graph_cache_max_entries": 2,
+                "eager_decode_graph_max_captures": 4,
+                "eager_prefix_cache_max_tokens": 2048,
+                "eager_decode_graph_max_total_tokens": 1024,
             },
             runtime=StageRuntimeConfig(
                 resources=StageResourceConfig(total_gpu_memory_fraction=0.75)
@@ -126,6 +138,11 @@ class SenseNovaU1NativeServingPipelineConfig(SenseNovaU1PipelineConfig):
                 "max_batch_wait_ms": 10,
                 "enable_cuda_graph": True,
                 "cuda_graph_bs": [1, 8, 16],
+                "eager_prefix_cache_max_entries": 4,
+                "eager_decode_graph_cache_max_entries": 2,
+                "eager_decode_graph_max_captures": 4,
+                "eager_prefix_cache_max_tokens": 2048,
+                "eager_decode_graph_max_total_tokens": 1024,
             },
             runtime=StageRuntimeConfig(
                 resources=StageResourceConfig(total_gpu_memory_fraction=0.70)
