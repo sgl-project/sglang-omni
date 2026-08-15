@@ -26,6 +26,7 @@ from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.linear import (
+    ColumnParallelLinear,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     ReplicatedLinear,
@@ -102,6 +103,7 @@ __all__ = [
     "get_layer_id",
     "RMSNorm",
     "SiluAndMul",
+    "ColumnParallelLinear",
     "MergedColumnParallelLinear",
     "QKVParallelLinear",
     "ReplicatedLinear",

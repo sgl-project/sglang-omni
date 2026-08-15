@@ -156,6 +156,91 @@ def build_u1_hybrid_allowed_matrix(
     return causal | same_image_span
 
 
+def build_u1_hybrid_backend_mask(
+    indexes: torch.Tensor,
+    image_token_tag: torch.Tensor,
+    extend_seq_lens: list[int] | torch.Tensor,
+    extend_prefix_lens: list[int] | torch.Tensor | None = None,
+) -> tuple[torch.Tensor | None, torch.Tensor]:
+    """Build a flattened backend custom mask for SGLang prefill attention.
+
+    SGLang's extend kernels receive only this round's query/KV tensors plus a
+    cached prefix. They consume one flat mask per request with row-major shape
+    ``q_len x (prefix_len + q_len)``. Prefix columns are already before every
+    query row, so they remain visible; current-chunk columns use U1's hybrid
+    causal/image-span policy.
+    """
+
+    if indexes.ndim != 2 or indexes.shape[0] != 3:
+        raise ValueError("indexes must have shape (3, total_extend_tokens).")
+    tag = image_token_tag.reshape(-1).to(device=indexes.device, dtype=torch.bool)
+    if tag.numel() != indexes.shape[1]:
+        raise ValueError("image_token_tag length must match indexes length.")
+
+    if isinstance(extend_seq_lens, torch.Tensor):
+        seq_lens = [int(x) for x in extend_seq_lens.detach().cpu().tolist()]
+    else:
+        seq_lens = [int(x) for x in extend_seq_lens]
+    if extend_prefix_lens is None:
+        prefix_lens = [0] * len(seq_lens)
+    elif isinstance(extend_prefix_lens, torch.Tensor):
+        prefix_lens = [int(x) for x in extend_prefix_lens.detach().cpu().tolist()]
+    else:
+        prefix_lens = [int(x) for x in extend_prefix_lens]
+    if len(seq_lens) != len(prefix_lens):
+        raise ValueError("extend_seq_lens and extend_prefix_lens length mismatch.")
+
+    parts: list[torch.Tensor] = []
+    indptr = [0]
+    token_offset = 0
+    for q_len, prefix_len in zip(seq_lens, prefix_lens):
+        if q_len < 0 or prefix_len < 0:
+            raise ValueError("extend lengths and prefix lengths must be non-negative.")
+        if q_len == 0:
+            indptr.append(indptr[-1])
+            continue
+        req_indexes = indexes[:, token_offset : token_offset + q_len]
+        req_tag = tag[token_offset : token_offset + q_len]
+        if req_indexes.shape[1] != q_len or req_tag.numel() != q_len:
+            raise ValueError(
+                "indexes/image_token_tag do not cover all extend tokens."
+            )
+
+        t = req_indexes[0]
+        key_pos = torch.arange(q_len, device=indexes.device)
+        query_pos = torch.arange(q_len, device=indexes.device)
+        causal = key_pos.unsqueeze(0) <= query_pos.unsqueeze(1)
+        same_t = t.unsqueeze(1) == t.unsqueeze(0)
+        same_image_span = (
+            same_t
+            & req_tag.unsqueeze(1)
+            & req_tag.unsqueeze(0)
+        )
+        current_allowed = causal | same_image_span
+        if prefix_len:
+            prefix_allowed = torch.ones(
+                (q_len, prefix_len), dtype=torch.bool, device=indexes.device
+            )
+            allowed = torch.cat([prefix_allowed, current_allowed], dim=1)
+        else:
+            allowed = current_allowed
+        flat = allowed.reshape(-1).to(dtype=torch.uint8)
+        parts.append(flat)
+        indptr.append(indptr[-1] + int(flat.numel()))
+        token_offset += q_len
+
+    if token_offset != indexes.shape[1]:
+        raise ValueError("extend lengths do not consume all provided indexes tokens.")
+
+    indptr_tensor = torch.tensor(indptr, dtype=torch.int64, device=indexes.device)
+    if not parts:
+        return None, indptr_tensor
+    mask = torch.cat(parts, dim=0)
+    if not bool(image_token_tag.reshape(-1).to(dtype=torch.bool).any().item()):
+        return None, indptr_tensor
+    return mask, indptr_tensor
+
+
 def create_u1_hybrid_mask(
     index: torch.Tensor,
     *,

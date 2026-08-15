@@ -42,6 +42,7 @@ _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "MossTTSDelaySGLangModel": ("language_config", None),
     "MossTTSLocalSGLangModel": ("language_config", None),
     "MossTranscribeDiarizeForConditionalGeneration": ("text_config", None),
+    "SenseNovaU1NativeForCausalLM": ("llm_config", None),
 }
 
 
@@ -139,6 +140,12 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
+        if arch == "SenseNovaU1NativeForCausalLM":
+            model_config.model_is_mrope = True
+            model_config.is_multimodal = True
+            model_config.head_dim = int(text_cfg.head_dim)
+            model_config.v_head_dim = model_config.head_dim
+            model_config.vocab_size = int(text_cfg.vocab_size)
         if arch == "MingTTSSGLangModel":
             model_config.head_dim = int(text_cfg.head_dim)
             model_config.v_head_dim = model_config.head_dim
