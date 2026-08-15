@@ -4,6 +4,7 @@
 Provides the following endpoints:
 - POST /v1/chat/completions  — Text (+ audio) chat completions
 - POST /v1/audio/speech      — Text-to-speech synthesis
+- POST /v1/audio/translations — Translate audio speech to English
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
 - WS   /v1/audio/speech/stream — Stateful TTS WebSocket streaming
 - POST /v1/audio/transcriptions — Speech-to-text transcription
@@ -120,6 +121,7 @@ from sglang_omni.serve.streaming import (
     close_async_iterator_if_supported as _close_async_iterator_if_supported,
 )
 from sglang_omni.serve.transcriptions import register_transcriptions
+from sglang_omni.serve.translations import register_translations
 
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
@@ -175,6 +177,7 @@ def create_app(
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
+    supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
@@ -196,6 +199,8 @@ def create_app(
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
             lowered into backend reference-audio requests.
+        supports_audio_translation: Whether the configured pipeline supports
+            ``/v1/audio/translations``.
         required_speech_reference_count: Exact reference count required before
             dispatching a speech request to the backend.
         speech_reference_text_required: Whether each speech reference requires
@@ -235,6 +240,7 @@ def create_app(
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
     app.state.architectures = [a for a in (architectures or []) if a]
+    app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = (
         audio_chunking or AudioChunkingConfig()
     )  # allow_audio_chunking default false
@@ -270,6 +276,7 @@ def create_app(
     _register_speech_batch(app)
     _register_speech_ws(app)
     register_transcriptions(app)
+    register_translations(app)
     if enable_realtime:
         _register_realtime(app)
 

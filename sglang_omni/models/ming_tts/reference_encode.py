@@ -9,7 +9,6 @@ from typing import Any
 import onnxruntime
 import torch
 import torchaudio
-import torchaudio.compliance.kaldi as kaldi
 import torchaudio.functional as F
 
 from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
@@ -27,6 +26,7 @@ from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
 )
+from sglang_omni.utils.audio_features import cached_fbank
 
 
 class MingSpeakerEmbeddingExtractor:
@@ -48,10 +48,9 @@ class MingSpeakerEmbeddingExtractor:
     def __call__(self, waveform: Any) -> Any:
         if not isinstance(waveform, torch.Tensor):
             waveform = torch.as_tensor(waveform)
-        feat = kaldi.fbank(
+        feat = cached_fbank(
             waveform,
             num_mel_bins=80,
-            dither=0,
             sample_frequency=self.target_sr,
         )
         feat = feat - feat.mean(dim=0, keepdim=True)

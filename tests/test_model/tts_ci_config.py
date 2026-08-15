@@ -29,6 +29,11 @@ class TtsCiThresholdPreset:
     stream_wer_corpus: float
     similarity_mean_min: float
     utmos_mean_min: float
+    # Note: (Jiaxin Deng) False while the values are seeds rather than
+    # worst-of-N observations from the CI runner. A seed can be far off for a
+    # topology it was not measured on, so gating on one fails builds for no
+    # reason or waves regressions through; a contract test refuses that pair.
+    calibrated: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,49 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
     _MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
+# Qwen3-TTS 1.7B. This is the variant the community deploys, and it is gated as
+# a single instance: on one H100 the tuned single instance beats the same-card
+# MPS-DP2 pool on peak throughput and holds a several-fold better first-audio
+# latency, so colocation is no longer the recommended topology for it.
+#
+# Note: (Jiaxin Deng) calibrated on the CI host, lane 0,1 pinned cpuset
+# (2-15,66-79), worst-of-5 clean rounds with destructive rejection
+# (run .tune-runs/20260813T021112Z_tts_qwen3tts_r5). Raw pre-slack references
+# only; the CI slack calculation is unchanged.
+QWEN3_TTS_VC_WER_MAX_CORPUS = 0.011
+QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0116
+QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
+    QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
+)
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.4295639038086
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.195
+QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
+
+_QWEN3_TTS_VC_NON_STREAM_P95 = {
+    16: {
+        "throughput_qps": 17.66,
+        "output_tok_per_req_s": 71.1,
+        "latency_mean_s": 0.901,
+        "rtf_mean": 0.2236,
+    }
+}
+
+_QWEN3_TTS_VC_STREAM_P95 = {
+    16: {
+        "throughput_qps": 15.324,
+        "latency_mean_s": 1.039,
+        "rtf_mean": 0.257,
+    }
+}
+
+QWEN3_TTS_VC_NON_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+
 
 TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
     "higgs": TtsCiPreset(
@@ -128,6 +176,31 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=HIGGS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=HIGGS_VC_UTMOS_MEAN_MIN,
+        ),
+    ),
+    "qwen3-tts": TtsCiPreset(
+        model=TtsCiModelPreset(
+            model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            ref_format="references",
+            # Note: (Jiaxin Deng) the shipped defaults cap the AR engine at 16
+            # running requests and colocate every stage in one process; both are
+            # what kept this variant behind, so CI measures the tuned point.
+            worker_extra_args=(
+                "--max-running-requests 64 "
+                "--cuda-graph-max-bs 64 "
+                "--talker-torch-compile-max-bs 64 "
+                "--isolate-stage vocoder"
+            ),
+            startup_timeout=300,
+            gate_thresholds=True,
+        ),
+        thresholds=TtsCiThresholdPreset(
+            non_stream_speed=QWEN3_TTS_VC_NON_STREAM_THRESHOLDS,
+            stream_speed=QWEN3_TTS_VC_STREAM_THRESHOLDS,
+            wer_corpus=QWEN3_TTS_VC_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
+            utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
         ),
     ),
     "moss": TtsCiPreset(

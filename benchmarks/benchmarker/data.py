@@ -22,6 +22,8 @@ class RequestResult:
     error: str = ""
     audio_ttfp_s: float | None = None
     inter_chunk_s: list[float] = field(default_factory=list)
+    chunk_audio_duration_s: list[float] = field(default_factory=list)
+    max_playback_underrun_s: float | None = None
     text_ttft_s: float | None = None
     audio_chunk_count: int = 0
     first_audio_payload_bytes: int = 0

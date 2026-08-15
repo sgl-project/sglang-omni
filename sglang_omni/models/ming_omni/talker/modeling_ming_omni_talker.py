@@ -22,8 +22,9 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 import torch.nn as nn
 import torchaudio
-import torchaudio.compliance.kaldi as kaldi
 from transformers import Qwen2Config, Qwen2Model, StaticCache
+
+from sglang_omni.utils.audio_features import cached_fbank
 
 from .configuration_bailing_talker import MingOmniTalkerConfig
 from .front.number_en import normalize_numbers
@@ -71,7 +72,7 @@ class SpkembExtractor:
         self.target_sr = target_sr
 
     def _extract_spk_embedding(self, speech):
-        feat = kaldi.fbank(speech, num_mel_bins=80, dither=0, sample_frequency=16000)
+        feat = cached_fbank(speech, num_mel_bins=80, sample_frequency=16000)
         feat = feat - feat.mean(dim=0, keepdim=True)
         embedding = (
             self.campplus_session.run(

@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MOSS-TTS Local non-streaming vocoder decoder with packed attention.
+"""Shared MOSS audio-tokenizer non-streaming decoder with packed attention.
 
 The wrapper keeps the upstream codec embeddings, pretransform stages, and
 waveform projection. It replaces only the non-streaming projected transformer
 attention path so decoder frames can run through SGLang's packed varlen
-FlashAttention.
+FlashAttention. Both MOSS-Audio-Tokenizer-v2 (MOSS-TTS Local) and the legacy
+MOSS-Audio-Tokenizer used by MOSS-TTS Delay are supported; the latter exposes
+equivalent primitives under older field names.
 """
 
 from __future__ import annotations
 
 import importlib
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from itertools import accumulate
 from typing import Any
 
 import torch
@@ -23,11 +26,53 @@ try:
 except ImportError:
     flash_attn_varlen_func = None
 
+from sglang_omni.models.moss_tts.vocoder_kernels import (
+    apply_exact_interleaved_rope_inplace,
+)
 
 # note (Zhang Yiyang): FA3 local-window attention diverges from SDPA when one
 # varlen sequence spans multiple 128-token query tiles. Pack each tile as an
 # independent sequence in one kernel launch.
 _FA3_LOCAL_WINDOW_QUERY_TILE_SIZE = 128
+_FLASH_ATTENTION_BACKEND = "flash_attention_2"
+
+
+def _single_module(source: nn.Module, singular: str, plural: str) -> nn.Module:
+    module = getattr(source, singular, None)
+    if module is not None:
+        return module
+    modules = getattr(source, plural, None)
+    if modules is None or len(modules) != 1:
+        raise ValueError(
+            f"MOSS vocoder expects one {singular!r} module; "
+            f"got {plural}={modules!r}"
+        )
+    return modules[0]
+
+
+class _LegacyFeedForward(nn.Module):
+    """Expose the legacy Linear-GELU-Linear fields as one callable module."""
+
+    def __init__(self, source: nn.Module) -> None:
+        super().__init__()
+        self.linear1 = source.linear1
+        self.linear2 = source.linear2
+        self.activation = source.activation
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear2(self.activation(self.linear1(x)))
+
+
+def _feed_forward(source: nn.Module) -> nn.Module:
+    ffn = getattr(source, "ffn", None)
+    if ffn is not None:
+        return ffn
+    if (
+        getattr(source, "linear1", None) is None
+        or getattr(source, "linear2", None) is None
+    ):
+        raise ValueError("MOSS vocoder transformer layer has no supported FFN")
+    return _LegacyFeedForward(source)
 
 
 @dataclass(frozen=True)
@@ -45,13 +90,21 @@ def _build_local_causal_flash_plan(
     *,
     context: int,
     query_chunk_size: int = _FA3_LOCAL_WINDOW_QUERY_TILE_SIZE,
+    sequence_lengths: Sequence[int] | None = None,
 ) -> _LocalCausalFlashPlan:
     if context <= 0:
         raise ValueError(f"local causal context must be positive, got {context}")
     if query_chunk_size <= 0:
         raise ValueError(f"query_chunk_size must be positive, got {query_chunk_size}")
 
-    sequence_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to("cpu").tolist()
+    if sequence_lengths is None:
+        sequence_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to("cpu").tolist()
+    else:
+        sequence_lengths = [int(length) for length in sequence_lengths]
+        if len(sequence_lengths) != int(cu_seqlens.shape[0]) - 1:
+            raise ValueError(
+                "sequence_lengths must match the number of packed sequences"
+            )
     q_lengths: list[int] = []
     k_lengths: list[int] = []
     key_starts: list[int] = []
@@ -157,6 +210,46 @@ def _pack_padded_sequence(
     return packed_x, valid_mask, cu_seqlens, position_ids
 
 
+def _pack_padded_sequence_from_host_lengths(
+    x: torch.Tensor,
+    input_lengths: torch.Tensor,
+    input_lengths_cpu: Sequence[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pack with matching device/host lengths without synchronizing the device."""
+
+    batch_size, max_seqlen, hidden_size = x.shape
+    lengths = list(map(int, input_lengths_cpu))
+    if len(lengths) != batch_size:
+        raise ValueError("input_lengths_cpu must match the decoder batch size")
+    if input_lengths.ndim != 1 or int(input_lengths.numel()) != batch_size:
+        raise ValueError("input_lengths must match the decoder batch size")
+    if input_lengths.device != x.device:
+        raise ValueError("input_lengths and decoder inputs must share one device")
+    if any(length < 0 or length > max_seqlen for length in lengths):
+        raise ValueError("input_lengths_cpu must be within the padded sequence")
+
+    total_tokens = sum(lengths)
+    cu_seqlens = torch.tensor(
+        [0, *accumulate(lengths)],
+        device=x.device,
+        dtype=torch.int32,
+    )
+    batch_ids = torch.repeat_interleave(
+        torch.arange(batch_size, device=x.device, dtype=torch.long),
+        input_lengths,
+        output_size=total_tokens,
+    )
+    position_ids = torch.arange(total_tokens, device=x.device, dtype=torch.long)
+    position_ids = position_ids - cu_seqlens[:-1].to(torch.long).index_select(
+        0, batch_ids
+    )
+    flat_indices = batch_ids * max_seqlen + position_ids
+    packed_x = x.reshape(batch_size * max_seqlen, hidden_size).index_select(
+        0, flat_indices
+    )
+    return packed_x, flat_indices, cu_seqlens, position_ids
+
+
 def _pack_unpadded_sequence(
     x: torch.Tensor,
     position_ids_cache: "_PositionIdsCache",
@@ -182,6 +275,17 @@ def _unpack_packed_sequence(
     return x
 
 
+def _unpack_packed_sequence_from_indices(
+    packed_x: torch.Tensor,
+    flat_indices: torch.Tensor,
+    batch_size: int,
+    max_seqlen: int,
+) -> torch.Tensor:
+    x = packed_x.new_zeros(batch_size * max_seqlen, packed_x.shape[-1])
+    x.index_copy_(0, flat_indices, packed_x)
+    return x.view(batch_size, max_seqlen, packed_x.shape[-1])
+
+
 def _unpack_unpadded_sequence(
     packed_x: torch.Tensor,
 ) -> torch.Tensor:
@@ -195,6 +299,7 @@ class _MossPackedRopeCache:
         self._head_dim = 0
         self._cos: torch.Tensor | None = None
         self._sin: torch.Tensor | None = None
+        self._cos_sin: torch.Tensor | None = None
 
     def get(
         self,
@@ -210,6 +315,7 @@ class _MossPackedRopeCache:
         if (
             self._cos is not None
             and self._sin is not None
+            and self._cos_sin is not None
             and self._device == device
             and self._head_dim == head_dim
             and self._cos.shape[0] >= max_positions
@@ -227,7 +333,23 @@ class _MossPackedRopeCache:
         self._head_dim = head_dim
         self._cos = torch.cos(phase)
         self._sin = torch.sin(phase)
+        self._cos_sin = torch.cat((self._cos, self._sin), dim=-1)
         return self._cos, self._sin
+
+    def get_cos_sin_cache(
+        self,
+        *,
+        device: torch.device,
+        head_dim: int,
+        max_positions: int,
+    ) -> torch.Tensor:
+        self.get(
+            device=device,
+            head_dim=head_dim,
+            max_positions=max_positions,
+        )
+        assert self._cos_sin is not None
+        return self._cos_sin[:max_positions]
 
 
 def _apply_cached_packed_rope(
@@ -249,6 +371,20 @@ def _apply_cached_packed_rope(
     _, _, head_dim = q.shape
     if head_dim <= 0 or head_dim % 2 != 0:
         raise ValueError(f"RoPE requires an even head_dim, got {head_dim}")
+    if q.device.type == "cuda":
+        cos_sin_cache = cache.get_cos_sin_cache(
+            device=q.device,
+            head_dim=head_dim,
+            max_positions=max_positions,
+        )
+        if apply_exact_interleaved_rope_inplace(
+            q,
+            k,
+            cos_sin_cache,
+            position_ids,
+        ):
+            return q, k
+
     cos_cache, sin_cache = cache.get(
         device=q.device,
         head_dim=head_dim,
@@ -285,7 +421,7 @@ def _apply_cached_packed_rope(
     return q_out, k_out
 
 
-class MossTTSLocalAttention(nn.Module):
+class MossAudioTokenizerAttention(nn.Module):
     """MOSS local-causal self attention over dense or packed decoder frames."""
 
     def __init__(
@@ -296,8 +432,8 @@ class MossTTSLocalAttention(nn.Module):
     ) -> None:
         super().__init__()
         object.__setattr__(self, "source", source)
-        self.in_proj = source.in_proj
-        self.out_proj = source.out_proj
+        self.in_proj = _single_module(source, "in_proj", "in_projs")
+        self.out_proj = _single_module(source, "out_proj", "out_projs")
         self.embed_dim = int(source.embed_dim)
         self.num_heads = int(source.num_heads)
         self.head_dim = int(
@@ -311,6 +447,7 @@ class MossTTSLocalAttention(nn.Module):
         self.causal = bool(source.causal)
         self.context = source.context
         self.rope = source.rope
+        self._legacy_api = not hasattr(source, "resolve_attention_implementation")
         self._flash_attn_varlen = flash_attn_varlen_func
         max_period = self.rope.max_period if self.rope is not None else 10000.0
         self._packed_rope_cache = packed_rope_cache or _MossPackedRopeCache(
@@ -318,19 +455,51 @@ class MossTTSLocalAttention(nn.Module):
         )
 
     def resolve_attention_implementation(self, x: torch.Tensor) -> str:
-        if (
-            self.source.attention_implementation == "flash_attention_2"
-            and self._can_run_packed_flash(x)
-        ):
-            return "flash_attention_2"
-        return self.source.resolve_attention_implementation(x, is_streaming=False)
+        preferred = getattr(self.source, "attention_implementation", None)
+        if preferred is None:
+            # Note (Zhang Yiyang): The legacy MOSS-Audio-Tokenizer attention has
+            # no backend selector, but implements the same local-causal operation.
+            # Prefer packed FlashAttention when its device and dtype requirements
+            # are satisfied.
+            preferred = _FLASH_ATTENTION_BACKEND
+        if preferred == _FLASH_ATTENTION_BACKEND and self._can_run_packed_flash(x):
+            return _FLASH_ATTENTION_BACKEND
+        resolver = getattr(self.source, "resolve_attention_implementation", None)
+        if resolver is None:
+            return "sdpa"
+        return resolver(x, is_streaming=False)
+
+    def supports_packed_flash(
+        self,
+        device: torch.device,
+        dtype: torch.dtype | None,
+    ) -> bool:
+        if dtype is None or self._flash_attn_varlen is None or device.type != "cuda":
+            return False
+        preferred = getattr(self.source, "attention_implementation", None)
+        if preferred not in (None, _FLASH_ATTENTION_BACKEND):
+            return False
+        if getattr(self.source, "_get_backend_check_dtype", None) is not None:
+            # Preserve the v2/Local contract, whose packed path is BF16-only.
+            return dtype == torch.bfloat16
+        return dtype in (torch.float16, torch.bfloat16)
 
     def _can_run_packed_flash(self, x: torch.Tensor) -> bool:
-        if self._flash_attn_varlen is None:
-            return False
-        if x.device.type != "cuda":
-            return False
-        return self.source._get_backend_check_dtype(x) == torch.bfloat16
+        dtype_resolver = getattr(self.source, "_get_backend_check_dtype", None)
+        if dtype_resolver is not None:
+            backend_dtype = dtype_resolver(x)
+        else:
+            backend_dtype = x.dtype
+            try:
+                autocast_enabled = torch.is_autocast_enabled("cuda")
+            except TypeError:
+                autocast_enabled = torch.is_autocast_enabled()
+            if autocast_enabled:
+                try:
+                    backend_dtype = torch.get_autocast_dtype("cuda")
+                except TypeError:
+                    backend_dtype = torch.get_autocast_gpu_dtype()
+        return self.supports_packed_flash(x.device, backend_dtype)
 
     def forward(
         self,
@@ -367,10 +536,9 @@ class MossTTSLocalAttention(nn.Module):
             )
         if input_lengths is None:
             raise ValueError("dense attention requires input_lengths")
-        return self.source(
-            query,
-            input_lengths=input_lengths,
-        )
+        if self._legacy_api:
+            return self.source(query, query, query)
+        return self.source(query, input_lengths=input_lengths)
 
     def _project_qkv(
         self, x: torch.Tensor
@@ -421,7 +589,11 @@ class MossTTSLocalAttention(nn.Module):
             max_positions=max_seqlen,
         )
         assert self._flash_attn_varlen is not None
-        if self.causal and self.context is not None:
+        if (
+            self.causal
+            and self.context is not None
+            and max_seqlen > _FA3_LOCAL_WINDOW_QUERY_TILE_SIZE
+        ):
             context = int(self.context)
             plan = local_flash_plan or _build_local_causal_flash_plan(
                 cu_seqlens,
@@ -468,7 +640,7 @@ class MossTTSLocalAttention(nn.Module):
         return (max(int(self.context) - 1, 0), 0)
 
 
-class MossTTSLocalTransformerLayer(nn.Module):
+class MossAudioTokenizerTransformerLayer(nn.Module):
     """One MOSS vocoder transformer layer."""
 
     def __init__(
@@ -483,14 +655,12 @@ class MossTTSLocalTransformerLayer(nn.Module):
         self.norm2 = source.norm2
         self.layer_scale_1 = source.layer_scale_1
         self.layer_scale_2 = source.layer_scale_2
-        self.ffn = source.ffn
-        self.self_attn = MossTTSLocalAttention(
+        self.ffn = _feed_forward(source)
+        self.self_attn = MossAudioTokenizerAttention(
             source.self_attn,
             packed_rope_cache=packed_rope_cache,
         )
-        assert (
-            isinstance(self.ffn, nn.Sequential) and len(self.ffn) >= 3
-        ), "MOSS vocoder transformer layer requires Linear-GELU-Linear FFN"
+        assert callable(self.ffn), "MOSS vocoder transformer layer requires an FFN"
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         residual = x
@@ -502,7 +672,7 @@ class MossTTSLocalTransformerLayer(nn.Module):
         return x
 
 
-class MossTTSLocalTransformer(nn.Module):
+class MossAudioTokenizerTransformer(nn.Module):
     """MOSS vocoder transformer body."""
 
     def __init__(self, source: nn.Module) -> None:
@@ -511,7 +681,7 @@ class MossTTSLocalTransformer(nn.Module):
         packed_rope_cache = _MossPackedRopeCache(max_period=source.max_period)
         self.layers = nn.ModuleList(
             [
-                MossTTSLocalTransformerLayer(
+                MossAudioTokenizerTransformerLayer(
                     layer,
                     packed_rope_cache=packed_rope_cache,
                 )
@@ -527,6 +697,16 @@ class MossTTSLocalTransformer(nn.Module):
     def resolve_attention_implementation(self, x: torch.Tensor) -> str:
         assert len(self.layers) > 0, "MOSS vocoder transformer must have layers"
         return self.layers[0].self_attn.resolve_attention_implementation(x)
+
+    def supports_packed_flash(
+        self,
+        device: torch.device,
+        dtype: torch.dtype | None,
+    ) -> bool:
+        return bool(self.layers) and all(
+            layer.self_attn.supports_packed_flash(device, dtype)
+            for layer in self.layers
+        )
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         if self.positional_embedding in {"sin", "sin_rope"}:
@@ -551,7 +731,7 @@ class MossTTSLocalTransformer(nn.Module):
         return x
 
 
-class MossTTSLocalProjectedTransformer(nn.Module):
+class MossAudioTokenizerProjectedTransformer(nn.Module):
     """Projected transformer decoder stage with the MOSS input/output layout."""
 
     def __init__(self, source: nn.Module) -> None:
@@ -559,20 +739,29 @@ class MossTTSLocalProjectedTransformer(nn.Module):
         object.__setattr__(self, "source", source)
         self.input_proj = source.input_proj
         self.output_proj = source.output_proj
-        self.transformer = MossTTSLocalTransformer(source.transformer)
+        self.transformer = MossAudioTokenizerTransformer(source.transformer)
         self._position_ids_cache = _PositionIdsCache()
 
     def forward(
         self,
         x: torch.Tensor,
         input_lengths: torch.Tensor,
+        *,
+        input_lengths_cpu: Sequence[int] | None = None,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.input_proj(x.transpose(1, 2))
         backend = self.transformer.resolve_attention_implementation(x)
         if backend == "flash_attention_2":
             batch_size, max_seqlen, _ = x.shape
-            max_valid_seqlen = int(input_lengths.max().item()) if max_seqlen else 0
+            if input_lengths_cpu is not None:
+                if len(input_lengths_cpu) != batch_size:
+                    raise ValueError(
+                        "input_lengths_cpu must match the decoder batch size"
+                    )
+                max_valid_seqlen = max(map(int, input_lengths_cpu), default=0)
+            else:
+                max_valid_seqlen = int(input_lengths.max().item()) if max_seqlen else 0
             if max_valid_seqlen == 0:
                 x = x.new_zeros(x.shape)
             else:
@@ -583,16 +772,32 @@ class MossTTSLocalProjectedTransformer(nn.Module):
                         self._position_ids_cache,
                     )
                     valid_mask = None
+                    flat_indices = None
+                elif input_lengths_cpu is not None:
+                    packed_x, flat_indices, cu_seqlens, position_ids = (
+                        _pack_padded_sequence_from_host_lengths(
+                            x,
+                            input_lengths,
+                            input_lengths_cpu,
+                        )
+                    )
+                    valid_mask = None
                 else:
                     packed_x, valid_mask, cu_seqlens, position_ids = (
                         _pack_padded_sequence(x, input_lengths)
                     )
+                    flat_indices = None
                 first_attention = self.transformer.layers[0].self_attn
                 local_flash_plan = None
-                if first_attention.causal and first_attention.context is not None:
+                if (
+                    first_attention.causal
+                    and first_attention.context is not None
+                    and max_valid_seqlen > _FA3_LOCAL_WINDOW_QUERY_TILE_SIZE
+                ):
                     local_flash_plan = _build_local_causal_flash_plan(
                         cu_seqlens,
                         context=int(first_attention.context),
+                        sequence_lengths=input_lengths_cpu,
                     )
                 packed_x = self.transformer(
                     packed_x,
@@ -603,22 +808,36 @@ class MossTTSLocalProjectedTransformer(nn.Module):
                     local_flash_plan=local_flash_plan,
                     **kwargs,
                 )
-                x = (
-                    _unpack_unpadded_sequence(packed_x)
-                    if valid_mask is None
-                    else _unpack_packed_sequence(
+                if is_unpadded_single:
+                    x = _unpack_unpadded_sequence(packed_x)
+                elif flat_indices is not None:
+                    x = _unpack_packed_sequence_from_indices(
+                        packed_x,
+                        flat_indices,
+                        batch_size,
+                        max_seqlen,
+                    )
+                else:
+                    assert valid_mask is not None
+                    x = _unpack_packed_sequence(
                         packed_x,
                         valid_mask,
                         batch_size,
                         max_seqlen,
                     )
-                )
         else:
             x = self.transformer(x, input_lengths=input_lengths, **kwargs)
         return self.output_proj(x).transpose(1, 2), input_lengths
 
+    def supports_packed_flash(
+        self,
+        device: torch.device,
+        dtype: torch.dtype | None,
+    ) -> bool:
+        return self.transformer.supports_packed_flash(device, dtype)
 
-class MossTTSLocalVocoderDecoder(nn.Module):
+
+class MossAudioTokenizerVocoderDecoder(nn.Module):
     """Iterable MOSS vocoder decoder with patched projected transformers."""
 
     def __init__(self, source: nn.Module) -> None:
@@ -633,7 +852,7 @@ class MossTTSLocalVocoderDecoder(nn.Module):
     def _wrap_stage(stage: nn.Module) -> nn.Module:
         module_type = stage.module_type
         if module_type == "Transformer":
-            return MossTTSLocalProjectedTransformer(stage)
+            return MossAudioTokenizerProjectedTransformer(stage)
         if module_type == "PatchedPretransform":
             return stage
         raise ValueError(
@@ -650,11 +869,69 @@ class MossTTSLocalVocoderDecoder(nn.Module):
     def __getitem__(self, index: int) -> nn.Module:
         return self.stages[index]
 
+    def supports_packed_flash(
+        self,
+        device: str | torch.device,
+        dtype: torch.dtype | None,
+    ) -> bool:
+        device = torch.device(device)
+        transformer_stages = [
+            stage
+            for stage in self.stages
+            if isinstance(stage, MossAudioTokenizerProjectedTransformer)
+        ]
+        return bool(transformer_stages) and all(
+            stage.supports_packed_flash(device, dtype) for stage in transformer_stages
+        )
+
+    @staticmethod
+    def _update_cpu_lengths(
+        stage: nn.Module,
+        input_lengths: Sequence[int],
+    ) -> list[int]:
+        if isinstance(stage, MossAudioTokenizerProjectedTransformer):
+            return list(map(int, input_lengths))
+        patch_size = int(getattr(stage, "patch_size", 0))
+        if patch_size <= 0:
+            raise ValueError("MOSS patched pretransform requires patch_size > 0")
+        if bool(getattr(stage, "is_downsample", False)):
+            return [int(length) // patch_size for length in input_lengths]
+        return [int(length) * patch_size for length in input_lengths]
+
+    def output_lengths(self, input_lengths: Sequence[int]) -> list[int]:
+        output_lengths = list(map(int, input_lengths))
+        for stage in self.stages:
+            output_lengths = self._update_cpu_lengths(stage, output_lengths)
+        return output_lengths
+
     def forward(
         self,
         x: torch.Tensor,
         input_lengths: torch.Tensor,
+        *,
+        input_lengths_cpu: Sequence[int] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        cpu_lengths = (
+            None if input_lengths_cpu is None else list(map(int, input_lengths_cpu))
+        )
         for stage in self.stages:
-            x, input_lengths = stage(x, input_lengths)
+            if isinstance(stage, MossAudioTokenizerProjectedTransformer):
+                x, input_lengths = stage(
+                    x,
+                    input_lengths,
+                    input_lengths_cpu=cpu_lengths,
+                )
+            else:
+                x, input_lengths = stage(x, input_lengths)
+            if cpu_lengths is not None:
+                cpu_lengths = self._update_cpu_lengths(stage, cpu_lengths)
         return x, input_lengths
+
+
+__all__ = [
+    "MossAudioTokenizerAttention",
+    "MossAudioTokenizerProjectedTransformer",
+    "MossAudioTokenizerTransformer",
+    "MossAudioTokenizerTransformerLayer",
+    "MossAudioTokenizerVocoderDecoder",
+]

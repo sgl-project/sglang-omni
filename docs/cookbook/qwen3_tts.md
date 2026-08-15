@@ -190,6 +190,12 @@ streaming for both this HTTP endpoint and `/v1/audio/speech/stream` WebSocket
 sessions with `stream_audio=true`. CustomVoice and VoiceDesign remain
 non-streaming.
 
+When `initial_codec_chunk_frames` is omitted, Qwen3-TTS Base defaults to `8`
+codec frames for the first vocoder chunk so concurrent streams stay continuous.
+Pass a smaller value only when trading continuity for lower time-to-first-audio.
+Utterances that finish in fewer than `8` generated codec frames never reach the
+first chunk, so their audio arrives complete in a single final flush.
+
 ## Generation Parameters
 
 | Parameter | Default | Notes |
@@ -207,6 +213,7 @@ non-streaming.
 | `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
+| `initial_codec_chunk_frames` | `8` (model default when omitted) | First Base streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 
 ## Model Variants
 

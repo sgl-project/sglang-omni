@@ -10,6 +10,8 @@ SGLang's native Qwen2 decoder. The checkpoint's tokenizer and config are loaded
 with `trust_remote_code=True` (the served `ServerArgs` also sets it), so the
 first launch will prompt to execute the checkpoint's bundled code.
 
+ARK-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
+
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
@@ -21,10 +23,49 @@ hf download AutoArk-AI/ARK-ASR-3B
 ## Server Configuration
 
 ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
+Async decode is enabled by default for decode batches of at least two requests,
+allowing the shared one-step-lookahead path to overlap host-side result
+processing with the next GPU decode forward. Use `--decode-mode sync` to disable
+it, or tune the crossover with `--async-lookahead-min-batch-size`.
+Request concurrency and audio-encoder batching are controlled separately:
+
+- `max_running_requests` defaults to `32` and limits requests admitted by the
+  ASR scheduler.
+- `encoder_max_batch_size` defaults to `8` and limits the number of uncached
+  audio items processed by one encoder forward. Larger cache-miss batches are
+  processed as sequential encoder microbatches, so request concurrency does
+  not directly create an unbounded encoder batch.
 
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
+  --port 8000
+```
+
+The encoder activation memory is in addition to the model weights and KV
+cache. For long clips or high concurrency, leave additional runtime headroom
+by lowering SGLang's static memory fraction, for example:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --mem-fraction-static 0.75 \
+  --port 8000
+```
+
+`mem_fraction_static` controls the SGLang memory budget for model weights and
+the KV-cache pool; it does not replace `encoder_max_batch_size`. The two
+settings protect different parts of the serving path. ARK does not override
+SGLang's default static memory fraction; use `0.75` when long clips or high
+concurrency still need additional encoder headroom and the reduced KV-cache
+capacity is acceptable.
+
+To force synchronous decode while comparing modes, use:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --decode-mode sync \
   --port 8000
 ```
 

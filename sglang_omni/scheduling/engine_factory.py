@@ -7,12 +7,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
 
-from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
-
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
+    nested_prefill_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -25,14 +24,7 @@ def _operator_selected_prefill_graph_backend(
         return False
     if "cuda_graph_backend_prefill" in server_args_overrides:
         return True
-
-    config = server_args_overrides.get("cuda_graph_config")
-    if isinstance(config, CudaGraphConfig):
-        config = config.to_dict()
-    if not isinstance(config, Mapping):
-        return False
-    prefill_config = config.get("prefill")
-    return isinstance(prefill_config, Mapping) and "backend" in prefill_config
+    return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
 class SGLangGenerationEngineBuilder(ABC):
@@ -55,18 +47,24 @@ class SGLangGenerationEngineBuilder(ABC):
         self,
         model_path: str,
         *,
-        device: str = "cuda:0",
+        device: str | None = None,
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
         server_args_overrides: dict[str, Any] | None = None,
     ) -> Any:
+        import torch
+
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
+        from sglang_omni.utils.device import place_device_spec, resolve_device_spec
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        if gpu_id is not None:
-            device = f"cuda:{gpu_id}"
-        gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+        device = (
+            resolve_device_spec(None, gpu_id)
+            if device is None
+            else place_device_spec(device, gpu_id)
+        )
+        gpu_id = torch.device(device).index or 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
         self.gpu_id = gpu_id
@@ -82,6 +80,17 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        # Left unset, SGLang re-detects off a CUDA-first ladder that can contradict
+        # placement. It owns the type, not the index.
+        resolved_type = torch.device(device).type
+        requested_type = overrides.get("device")
+        if requested_type is not None and requested_type != resolved_type:
+            raise ValueError(
+                f"server_args_overrides set device={requested_type!r}, but this stage "
+                f"resolved to {device!r}. Omni owns placement, so drop the override or "
+                f"set device={resolved_type!r}."
+            )
+        overrides["device"] = resolved_type
 
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,

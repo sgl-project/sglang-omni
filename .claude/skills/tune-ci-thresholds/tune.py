@@ -2707,6 +2707,11 @@ def _load_yaml(path, top_is_dict=False):
             if ind(ln) < need: return r
             key, _, rest = ln.strip().partition(":")
             key, rest = key.strip(), rest.strip()
+            # Note: (Jiaxin Deng) quoted keys such as "0,1" in
+            # gpu_group_cpusets must lose their quotes like values do, or
+            # lane resolution parses '"0' as an int and dies.
+            if len(key) >= 2 and key[0] == '"' and key[-1] == '"':
+                key = key[1:-1]
             idx[0] += 1
             if rest: r[key] = sc(rest); continue
             if idx[0] < len(lines) and lines[idx[0]].lstrip().startswith("- "):
@@ -3734,10 +3739,16 @@ def _wait_pytest_with_watchdog(
     poll_s = _PYTEST_POLL_S
     if cpuset:
         ContentionSampler = _import_contention_sampler()
+        # Note: (Jiaxin Deng) root the own-work tree at the container init,
+        # not the pytest pid: stage supervisors double-fork at launch and
+        # reparent to init, so a pytest-rooted tree counts the run's own
+        # vocoder/preprocessing CPU as foreign and aborts on itself.
+        # /proc/stat core counters are host-global, so genuinely external
+        # intruders on the lane are still caught.
         sampler = ContentionSampler(
             parse_cpuset_spec(cpuset),
             interval_s=_CPUSET_MONITOR_INTERVAL_S,
-            root_pid=pytest_proc.pid,
+            root_pid=1,
         )
         sampler.start()
         poll_s = min(_PYTEST_POLL_S, _CPUSET_MONITOR_INTERVAL_S)

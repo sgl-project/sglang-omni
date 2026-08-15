@@ -7,9 +7,7 @@ visual embeddings for Qwen3-Omni's thinker stage.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -22,15 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 class ThinkerModelRunner(ModelRunner):
-    def __init__(
-        self,
-        tp_worker: Any,
-        output_processor: Any,
-        *,
-        should_capture_hidden: Callable[[Any], bool] | None = None,
-    ):
+    def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._should_capture_hidden = should_capture_hidden
 
         model = self.model
         self._outer_model = model.thinker
@@ -43,37 +34,6 @@ class ThinkerModelRunner(ModelRunner):
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
-
-    @contextlib.contextmanager
-    def _text_only_capture_guard(self, requests: list[Any]):
-        # note (jiaxin deng): drop hidden-capture for an all-text batch, shared by
-        # sync execute() and async execute_launch so both take the same path.
-        capture_layers = self._text_model.layers_to_capture
-        if not (capture_layers and not self._batch_should_capture_hidden(requests)):
-            yield
-            return
-        saved_capture_layers = list(capture_layers)
-        self._text_model.layers_to_capture = []
-        try:
-            yield
-        finally:
-            self._text_model.layers_to_capture = saved_capture_layers
-
-    def execute(self, scheduler_output: Any):
-        with self._text_only_capture_guard(scheduler_output.requests):
-            return super().execute(scheduler_output)
-
-    def execute_launch(self, scheduler_output: Any):
-        with self._text_only_capture_guard(scheduler_output.requests):
-            return super().execute_launch(scheduler_output)
-
-    def _batch_should_capture_hidden(self, requests: list[Any]) -> bool:
-        if self._should_capture_hidden is None:
-            return True
-        for request in requests:
-            if self._should_capture_hidden(request):
-                return True
-        return False
 
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
         if not schedule_batch.forward_mode.is_extend():
@@ -136,6 +96,26 @@ class ThinkerModelRunner(ModelRunner):
         req._omni_mm_positions = positions
         return positions
 
+    @staticmethod
+    def _plan_modality_chunk(
+        positions: torch.Tensor,
+        consumed: dict[str, Any],
+        modality: str,
+        prefix: int,
+        length: int,
+    ) -> tuple[torch.Tensor, Any, int]:
+        """Plan the embed slice for positions in ``[prefix, prefix + length)``.
+
+        The caller owns cursor advancement; this helper never mutates ``consumed``.
+        """
+        in_chunk = (positions >= prefix) & (positions < prefix + length)
+        relative_positions = positions[in_chunk] - prefix
+        return (
+            relative_positions,
+            consumed.get(modality, 0),
+            relative_positions.numel(),
+        )
+
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
@@ -184,18 +164,13 @@ class ThinkerModelRunner(ModelRunner):
             positions = self._req_mm_token_positions(req, pad_values)
             chunk_positions: dict[str, torch.Tensor] = {}
             for modality in ("image", "video", "audio"):
-                mod_positions = positions[modality]
-                if mod_positions.numel() == 0:
-                    chunk_positions[modality] = mod_positions
-                    continue
-                in_chunk = (mod_positions >= prefix) & (mod_positions < prefix + length)
-                rel = mod_positions[in_chunk] - prefix
+                rel, offset, n_tokens = self._plan_modality_chunk(
+                    positions[modality], consumed, modality, prefix, length
+                )
                 chunk_positions[modality] = rel
-                n_tokens = rel.numel()
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None or n_tokens == 0:
                     continue
-                offset = consumed.get(modality, 0)
                 chunk_offsets[modality] = (offset, n_tokens)
                 scatter_rows.append(rel + start)
                 scatter_srcs.append(embeds[offset : offset + n_tokens])

@@ -21,7 +21,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self,
         *,
         max_running_requests: int,
+        encoder_max_batch_size: int,
         max_new_tokens: int,
+        enable_async_decode: bool,
+        async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
@@ -30,7 +33,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         request_build_max_pending: int | None,
     ) -> None:
         self.max_running_requests = max_running_requests
+        self.encoder_max_batch_size = encoder_max_batch_size
         self.max_new_tokens = int(max_new_tokens)
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
@@ -83,7 +89,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        del model, server_args, generation_cuda_graph_enabled
+        del server_args, generation_cuda_graph_enabled
+        model.set_encoder_max_batch_size(self.encoder_max_batch_size)
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
@@ -98,6 +105,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

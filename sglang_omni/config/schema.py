@@ -415,6 +415,10 @@ class PipelineConfig(BaseModel):
         """Return whether uploaded voices can be lowered as reference audio."""
         return False
 
+    def supports_audio_translation(self) -> bool:
+        """Return whether this pipeline can serve /v1/audio/translations."""
+        return False
+
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

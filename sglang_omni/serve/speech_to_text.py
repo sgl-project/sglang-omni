@@ -131,9 +131,12 @@ def build_speech_to_text_generate_request(
     max_new_tokens: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
+    detect_language: bool = False,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
     params: dict[str, Any] = {"task": task}
+    if detect_language:
+        params["detect_language"] = True
     metadata: dict[str, Any] = {"task": "asr"}
     explicit_fields: list[str] = []
     if language is not None:
@@ -168,6 +171,39 @@ def build_speech_to_text_generate_request(
 # note (Junnan Li): Keep the old name while stacked callers migrate to the
 # endpoint-neutral shared API.
 build_transcription_generate_request = build_speech_to_text_generate_request
+
+
+async def detect_speech_language(
+    client: Client,
+    *,
+    audio_bytes: bytes,
+    filename: str | None,
+    content_type: str | None,
+    model: str,
+    request_id: str,
+) -> str | None:
+    """Identify the spoken language with one greedy decoder step."""
+    gen_req = build_speech_to_text_generate_request(
+        audio_bytes=audio_bytes,
+        filename=filename,
+        content_type=content_type,
+        model=model,
+        language=None,
+        prompt=None,
+        temperature=None,
+        max_new_tokens=1,
+        detect_language=True,
+    )
+    try:
+        result = await client.completion(gen_req, request_id=f"{request_id}-lang")
+    except Exception:
+        logger.warning(
+            "Language detection failed for %s; using the default language",
+            request_id,
+        )
+        return None
+    code = (result.text or "").strip()
+    return code or None
 
 
 async def complete_speech_to_text_request(

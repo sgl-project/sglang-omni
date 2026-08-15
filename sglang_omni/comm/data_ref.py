@@ -122,6 +122,7 @@ class DataRef(msgspec.Struct, frozen=True):
     tensors: tuple[TensorMeta, ...] = ()
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
+    device: str | None = None
     offset: int | None = None
     metadata: dict[str, Any] | None = None
     metadata_tensors: tuple[MetadataTensorRef, ...] = ()
@@ -146,6 +147,8 @@ class DataRef(msgspec.Struct, frozen=True):
             value["shape"] = list(self.shape)
         if self.dtype is not None:
             value["dtype"] = self.dtype
+        if self.device is not None:
+            value["device"] = self.device
         if self.offset is not None:
             value["offset"] = self.offset
         if self.metadata is not None:
@@ -172,6 +175,7 @@ class DataRef(msgspec.Struct, frozen=True):
             ),
             shape=_int_tuple(value, "shape") if "shape" in value else None,
             dtype=_optional(value, "dtype", str),
+            device=_optional(value, "device", str),
             offset=_required(value, "offset", int) if "offset" in value else None,
             metadata=(
                 _required(value, "metadata", dict) if "metadata" in value else None
