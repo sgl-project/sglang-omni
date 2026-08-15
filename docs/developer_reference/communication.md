@@ -191,7 +191,7 @@ control message. Both put and get operations expose
 `await wait_for_completion(timeout=...)`. Stages keep the operation alive until
 the transfer is safe to release.
 
-The CUDA IPC relay owns a bounded sender-side GPU pool. Its allocation granule
+The GPU IPC relay owns a bounded sender-side GPU pool. Its allocation granule
 defaults to 64 KiB and is configurable with `cuda_ipc_slot_size_kb`. A tensor may
 reserve several contiguous slots, but those slots remain one logical transfer.
 The sender publishes one `DataReadyMessage`, the receiver copies from the
@@ -206,13 +206,14 @@ stage locality and placement:
 | Transport | Selection rule |
 | --- | --- |
 | `local_object` | Source and target stages share one OS process and the payload is eligible for direct local dispatch. |
-| Direct PyTorch CUDA IPC | Source and target share one placement, are in separate processes, and the runtime can prove compatible process-local CUDA ordinals. The payload or stream chunk must also be direct-codec eligible. |
-| `cuda_ipc` | Same-node GPU edge that does not use direct PyTorch CUDA IPC. The pooled relay supports same-GPU and cross-GPU movement. |
+| Direct PyTorch GPU IPC | Source and target share one placement, are in separate processes, and the runtime can prove compatible process-local accelerator ordinals. The payload or stream chunk must also be direct-codec eligible. |
+| `cuda_ipc` | Compatible v1 wire value for the same-node GPU IPC relay. PyTorch uses this API namespace on CUDA and ROCm/HIP. |
 | `shm` | Same-node host/CPU transfer where the selected edge is not GPU-to-GPU. |
-| `mooncake` | Cross-node stage edges listed as remote. Mooncake owns protocol selection for those transfers. |
+| `nixl` | Cross-node stage edges when selected explicitly, or by `auto` on ROCm. The supported ROCm path uses NIXL's UCX plugin with UCX built `--with-rocm`. |
+| `mooncake` | Cross-node stage edges when selected explicitly, or by `auto` on CUDA. Mooncake owns protocol selection for those transfers. |
 
-`CommConfig` can tune slot size, credits, and Mooncake connection options per
-stage. It does not select a transport backend.
+`CommConfig` can tune slot size, credits, CUDA-compatible GPU IPC pool sizing,
+remote backend, and Mooncake connection options per stage.
 
 Each backend owns only transport mechanics. It does not route requests, perform
 fan-in, choose downstream stages, or interpret model payloads.

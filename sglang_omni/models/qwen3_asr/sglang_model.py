@@ -6,7 +6,6 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from sgl_kernel import fused_qk_norm_rope
 from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
@@ -24,9 +23,15 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.platforms import current_platform
+
 from .configuration_qwen3_asr import Qwen3ASRConfig
 
 logger = logging.getLogger(__name__)
+if current_platform.is_rocm():
+    fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
+else:
+    from sgl_kernel import fused_qk_norm_rope
 
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
@@ -92,6 +97,9 @@ def _enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
     # note (luojiaxuan): the CUDA kernel operates in place on packed QKV and
     # replaces split + two RMSNorm launches + RoPE for the equivalent text
     # positions. Keep the original bound method for non-bfloat16 fallbacks.
+    if fused_qk_norm_rope is None:
+        logger.info("Qwen3-ASR fused QK norm RoPE is unavailable; using native path")
+        return
     for layer in language_model.model.layers:
         attention = layer.self_attn
         if attention.head_dim not in (64, 128, 256):
@@ -225,8 +233,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
     ) -> torch.Tensor:
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions[0]
+        # The optional fused kernel consumes int32 position ids, while the
+        # native SGLang rotary op (used on ROCm) dispatches on torch.long.
+        # Keep the conversion aligned with the path installed above rather
+        # than making the native fallback inherit a CUDA-kernel constraint.
         positions = positions.to(
-            dtype=torch.int32,
+            dtype=torch.int32 if fused_qk_norm_rope is not None else torch.long,
             device=input_ids.device,
             non_blocking=True,
         ).contiguous()

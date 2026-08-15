@@ -330,6 +330,7 @@ def test_gpu_startup_lock_path_uses_visible_device_mapping(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,MIG-GPU-deadbeef/1/2")
 
     first = gpu_memory.get_gpu_startup_lock_path(0, base_dir=tmp_path)
@@ -337,6 +338,22 @@ def test_gpu_startup_lock_path_uses_visible_device_mapping(
 
     assert first.name == "sglang_omni_gpu_3_startup.lock"
     assert second.name == "sglang_omni_gpu_MIG-GPU-deadbeef_1_2_startup.lock"
+
+
+def test_gpu_startup_lock_path_uses_physical_rocm_mapping(tmp_path) -> None:
+    first = gpu_memory.get_gpu_startup_lock_path(
+        0,
+        env={"ROCR_VISIBLE_DEVICES": "2", "CUDA_VISIBLE_DEVICES": "0"},
+        base_dir=tmp_path,
+    )
+    second = gpu_memory.get_gpu_startup_lock_path(
+        0,
+        env={"ROCR_VISIBLE_DEVICES": "3", "CUDA_VISIBLE_DEVICES": "0"},
+        base_dir=tmp_path,
+    )
+
+    assert first.name == "sglang_omni_gpu_2_startup.lock"
+    assert second.name == "sglang_omni_gpu_3_startup.lock"
 
 
 def test_gpu_startup_lock_releases_after_exception(

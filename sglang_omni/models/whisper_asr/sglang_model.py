@@ -25,6 +25,7 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+from sglang_omni.platforms import current_platform
 
 
 class WhisperEncoderAttention(nn.Module):
@@ -161,6 +162,8 @@ class WhisperSGLangSelfAttention(nn.Module):
         key = self.k_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
         value = self.v_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
+        if current_platform.is_rocm():
+            attn_output = attn_output.reshape(-1, self.embed_dim)
         return self.out_proj(attn_output)
 
 
@@ -208,6 +211,8 @@ class WhisperSGLangCrossAttention(nn.Module):
                 -1, self.num_heads, self.head_dim
             )
         attn_output = self.attn(query, key, value, forward_batch)
+        if current_platform.is_rocm():
+            attn_output = attn_output.reshape(-1, self.embed_dim)
         return self.out_proj(attn_output)
 
 

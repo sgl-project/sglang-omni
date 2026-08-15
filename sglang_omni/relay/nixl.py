@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 from typing import Any, Callable, Dict
 
@@ -24,11 +23,18 @@ try:
     NIXL_AVAILABLE = True
 except ImportError as e:
     logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
+    NixlAgent = None
+    nixl_agent_config = None
     NIXL_AVAILABLE = False
 
 
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
+        if not NIXL_AVAILABLE or NixlAgent is None or nixl_agent_config is None:
+            raise RuntimeError(
+                "NIXL relay requested, but nixl._api is unavailable. Install the "
+                "pinned NIXL ROCm binding and UCX built with GPU support."
+            )
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
         self._nixl = NixlAgent(str(uuid.uuid4()), config)
@@ -81,32 +87,24 @@ class PutOperation(NixlOperation):
         if self._completed:
             return
 
-        start = time.time()
-        try:
-            while True:
-                notifs = self._conn._nixl.get_new_notifs()
-                found = False
-                for msgs in notifs.values():
-                    if self._expected_notification in msgs:
-                        found = True
-                        break
-
-                if found:
-                    break
-
-                if time.time() - start > timeout:
-                    raise TimeoutError(
-                        f"PutOperation timed out waiting for {self._expected_notification}"
-                    )
-
-                # Non-blocking wait
-                await asyncio.sleep(0.0001)
-        finally:
-            # Regardless of success or timeout, we mark complete.
-            # In a real system, you might want distinct handling for timeout vs success.
-            self._completed = True
-            # Release the credit so new puts can happen
-            self._on_completion_cb()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            notifs = self._conn._nixl.get_new_notifs()
+            if any(
+                self._expected_notification in messages for messages in notifs.values()
+            ):
+                self._completed = True
+                self._on_completion_cb()
+                return
+            if loop.time() >= deadline:
+                # The remote side may still be reading this registered buffer. Keep
+                # the sender credit pinned; a later wait can observe completion.
+                raise TimeoutError(
+                    "NIXL put timed out waiting for receiver notification "
+                    f"{self._expected_notification!r}; sender memory remains pinned"
+                )
+            await asyncio.sleep(0.0001)
 
 
 class GetOperation(NixlOperation):
@@ -138,32 +136,34 @@ class GetOperation(NixlOperation):
         if self._completed:
             return
 
-        try:
-            # 1. Wait for RDMA Transfer
-            while True:
-                state = self._conn._nixl.check_xfer_state(self._handle)
-                if state == "DONE":
-                    break
-                elif state != "PROC":
-                    raise RuntimeError(f"Transfer failed with state: {state}")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            state = self._conn._nixl.check_xfer_state(self._handle)
+            if state == "DONE":
+                break
+            if state != "PROC":
+                self._conn._nixl.release_xfer_handle(self._handle)
+                self._handle = None
+                self._completed = True
+                self._on_completion_cb()
+                raise RuntimeError(f"NIXL transfer failed with state: {state}")
+            if loop.time() >= deadline:
+                # Do not release the handle or pool credit while NIXL may still DMA
+                # into the registered destination range.
+                raise TimeoutError(
+                    "NIXL get timed out with an active transfer; destination memory "
+                    "remains pinned"
+                )
+            await asyncio.sleep(0.00001)
 
-                await asyncio.sleep(0.00001)
-
-            # 2. Cleanup Handle
-            self._conn._nixl.release_xfer_handle(self._handle)
-            self._handle = None
-
-            # 3. Perform Copy (Pool -> Dest)
-            # This ensures data is valid before the user gets control back
-            # Note: This is a GPU-GPU copy (fast), but conceptually blocking the stream.
-            src_view = self._src_pool_tensor[: self._copy_size]
-            dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
-            dest_view.copy_(src_view)
-
-        finally:
-            self._completed = True
-            # 4. Release Local Credit (Buffer is now free)
-            self._on_completion_cb()
+        self._conn._nixl.release_xfer_handle(self._handle)
+        self._handle = None
+        src_view = self._src_pool_tensor[: self._copy_size]
+        dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+        dest_view.copy_(src_view)
+        self._completed = True
+        self._on_completion_cb()
 
 
 # ==========================================
@@ -185,12 +185,13 @@ class NixlRelay(Relay):
         self.connection = Connection(engine_id)
 
         # 1. Parse Device ID
+        self.device_type, _, raw_device_id = device.partition(":")
         self.device_id = 0
-        if "cuda" in device and ":" in device:
+        if raw_device_id:
             try:
-                self.device_id = int(device.split(":")[1])
+                self.device_id = int(raw_device_id)
             except ValueError:
-                self.device_id = 0
+                raise ValueError(f"invalid NIXL device {device!r}") from None
 
         # 2. Initialize memory pool
         slot_bytes = slot_size_mb * 1024 * 1024
@@ -209,12 +210,9 @@ class NixlRelay(Relay):
         logger.info(
             f"[{engine_id}] Registering Pool ({total_pool_bytes / 1024**2:.2f} MB) on {device}..."
         )
-        if NIXL_AVAILABLE:
-            mem_type = "VRAM" if "cuda" in device else "DRAM"
-            reg_list = [(self.pool_ptr, total_pool_bytes, self.device_id, mem_type)]
-            self.pool_handle = self.connection._nixl.register_memory(reg_list, mem_type)
-        else:
-            self.pool_handle = 1
+        mem_type = "DRAM" if self.device_type == "cpu" else "VRAM"
+        reg_list = [(self.pool_ptr, total_pool_bytes, self.device_id, mem_type)]
+        self.pool_handle = self.connection._nixl.register_memory(reg_list, mem_type)
 
     async def put_async(
         self,
@@ -240,11 +238,15 @@ class NixlRelay(Relay):
             pool_slice.copy_(tensor_view)
 
             # 3. Prepare Metadata
-            mem_type = "VRAM" if "cuda" in self.device else "DRAM"
+            mem_type = "DRAM" if self.device_type == "cpu" else "VRAM"
+            notification = (
+                f"sglang-omni:{request_id or 'request'}:{uuid.uuid4().hex}"
+            ).encode()
             payload = {
                 "engine_id": self.engine_id,
                 "agent_meta": self.connection.get_agent_metadata(),
                 "mem_type": mem_type,
+                "notification": notification,
                 "transfer_info": {
                     "offset": offset,
                     "size": size_bytes,
@@ -258,7 +260,7 @@ class NixlRelay(Relay):
             return PutOperation(
                 connection=self.connection,
                 metadata=payload,
-                expected_notification=b"done",
+                expected_notification=notification,
                 on_completion_cb=lambda: self.allocator.release(offset),
             )
 
@@ -295,8 +297,11 @@ class NixlRelay(Relay):
             remote_agent_name = self.connection.ensure_remote_agent(
                 remote_engine_id, remote_agent_meta
             )
-            mem_type = "VRAM" if "cuda" in self.device else "DRAM"
+            mem_type = "DRAM" if self.device_type == "cpu" else "VRAM"
             remote_mem_type = metadata.get("mem_type", mem_type)
+            notification = metadata.get("notification")
+            if not isinstance(notification, bytes) or not notification:
+                raise ValueError("NIXL metadata is missing a receiver notification")
 
             # 2. Prepare RDMA
             local_phys_addr = self.pool_ptr + local_offset
@@ -322,7 +327,7 @@ class NixlRelay(Relay):
                 indices,
                 remote_handle,
                 indices,
-                notif_msg=f"done".encode(),
+                notif_msg=notification,
             )
             self.connection._nixl.transfer(xfer_handle)
 
@@ -347,8 +352,7 @@ class NixlRelay(Relay):
         pass
 
     def close(self):
-        if NIXL_AVAILABLE:
-            try:
-                self.connection._nixl.deregister_memory(self.pool_handle)
-            except:
-                pass
+        try:
+            self.connection._nixl.deregister_memory(self.pool_handle)
+        except Exception:
+            logger.exception("[%s] failed to deregister NIXL memory", self.engine_id)

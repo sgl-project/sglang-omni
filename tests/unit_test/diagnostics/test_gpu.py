@@ -100,7 +100,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_torch = _FakeTorch()
     fake_torch.cuda.properties.reverse()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda *_: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "1,0"},
@@ -122,9 +122,59 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
         "backends",
         "warnings",
     }
+    assert report["schema_version"] == 1
+    assert "accelerator" not in report["environment"]
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "logical 0 -> physical 1" in rendered
     assert fake_nvml.shutdown_called is True
+
+
+def test_collect_gpu_diagnostics_reports_rocm_architecture_and_policy(
+    monkeypatch,
+) -> None:
+    class _FakeRocmCuda(_FakeCuda):
+        def __init__(self) -> None:
+            self.properties = [
+                SimpleNamespace(
+                    name="AMD Instinct MI355X",
+                    gcnArchName="gfx950:sramecc+:xnack-",
+                    total_memory=288 * 1024**3,
+                    uuid="",
+                )
+            ]
+
+        def mem_get_info(self, index: int) -> tuple[int, int]:
+            assert index == 0
+            return 280 * 1024**3, 288 * 1024**3
+
+    class _FakeRocmTorch:
+        __version__ = "2.11.0+rocm7.2"
+        version = SimpleNamespace(cuda=None, hip="7.2")
+
+        def __init__(self) -> None:
+            self.cuda = _FakeRocmCuda()
+
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda *_: [])
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"ROCR_VISIBLE_DEVICES": "3"},
+        torch_module=_FakeRocmTorch(),
+        pynvml_module=None,
+    )
+
+    assert report["environment"]["accelerator"] == "rocm"
+    assert report["environment"]["device_type"] == "cuda"
+    assert report["environment"]["visible_devices_variable"] == ("ROCR_VISIBLE_DEVICES")
+    assert report["environment"]["cuda_visible_devices"] is None
+    assert report["environment"]["rocr_visible_devices"] == "3"
+    assert report["environment"]["pytorch_rocm_build"] == "7.2"
+    assert report["environment"]["gpu_architectures"] == ["gfx950:sramecc+:xnack-"]
+    assert report["gpus"][0]["gpu_architecture"] == "gfx950:sramecc+:xnack-"
+    assert report["gpus"][0]["free_memory_bytes"] == 280 * 1024**3
+    assert report["selected_backend_policy"]["remote_transport"] == "nixl"
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "Accelerator: rocm" in rendered
+    assert "arch=gfx950:sramecc+:xnack-" in rendered
 
 
 def test_nvml_inventory_failure_is_isolated_per_physical_device(
@@ -142,7 +192,7 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda *_: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,2"},
@@ -168,7 +218,7 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda *_: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,1"},
@@ -201,7 +251,7 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
         )
     ]
     monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda *_: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},

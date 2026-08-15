@@ -48,6 +48,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_STREAM_STRIDE,
     HiggsStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import current_platform
 
 # _REF_PATH_HASH_MEMO is the shared memo object, re-exported so tests can
 # reset it; the underscored alias keeps this module's historical API.
@@ -515,6 +516,8 @@ def create_vocoder_executor(
 
     Codec weights are extracted from the TTS checkpoint itself.
     """
+    if not current_platform.supports_device_graphs():
+        decode_cuda_graph_frame_counts = ()
     if compile_decode and decode_cuda_graph_frame_counts:
         raise ValueError(
             "compile_decode and decode_cuda_graph_frame_counts are mutually exclusive"

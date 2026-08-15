@@ -15,7 +15,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
     _patched_spawn_env,
 )
-from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -157,6 +157,7 @@ def test_xpu_tp_rank_keeps_its_card_despite_an_inherited_cuda_marker(
     monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     spec = StageLaunchConfig(
         stage_name="thinker",
         role="follower",
@@ -211,6 +212,31 @@ def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> Non
         assert os.environ["SGLANG_TEST_STAGE_ENV"] == "default"
 
     assert "SGLANG_TEST_STAGE_ENV" not in os.environ
+
+
+def test_spawn_env_applies_audar_rocm_stage_default_before_child_start(
+    monkeypatch,
+) -> None:
+    from sglang_omni.models.audar_tts import config as audar_config
+
+    monkeypatch.delenv("AMD_SERIALIZE_KERNEL", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+    monkeypatch.setattr(audar_config, "current_platform", ROCMOmniPlatform())
+    tts_stage = next(
+        stage for stage in audar_config._stages() if stage.name == "tts_engine"
+    )
+    spec = StageLaunchConfig(
+        stage_name="tts_engine",
+        factory=tts_stage.factory,
+        tp_size=1,
+        gpu_id=0,
+        env_defaults=tts_stage.env,
+    )
+
+    with _patched_spawn_env(_worker_spec(spec)):
+        assert os.environ["AMD_SERIALIZE_KERNEL"] == "3"
+
+    assert "AMD_SERIALIZE_KERNEL" not in os.environ
 
 
 def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:

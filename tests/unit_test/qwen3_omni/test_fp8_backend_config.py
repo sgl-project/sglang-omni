@@ -10,12 +10,13 @@ import pytest
 
 from sglang_omni.model_runner import model_worker
 from sglang_omni.platforms import cuda
-from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.utils.misc import model_config_has_moe
 from tests.unit_test.fakes import FakeServerArgs
 
 cuda_platform = CUDAOmniPlatform()
+rocm_platform = ROCMOmniPlatform()
 
 
 class _StrictServerArgsDouble:
@@ -90,6 +91,51 @@ def _model_config(
         hf_text_config=SimpleNamespace(**attrs),
         hf_config=SimpleNamespace(quantization_config=quantization_config),
     )
+
+
+@pytest.mark.parametrize(
+    ("moe_backend", "fp8_backend", "error_match"),
+    [
+        ("cutlass", "auto", "CUTLASS and FlashInfer"),
+        ("flashinfer_cutlass", "auto", "CUTLASS and FlashInfer"),
+        ("auto", "deep_gemm", "fp8_gemm_runner_backend"),
+        ("auto", "cutlass", "fp8_gemm_runner_backend"),
+    ],
+)
+def test_rocm_backend_policy_rejects_nvidia_only_runners(
+    moe_backend: str,
+    fp8_backend: str,
+    error_match: str,
+) -> None:
+    args = _server_args(
+        moe_runner_backend=moe_backend,
+        fp8_gemm_runner_backend=fp8_backend,
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        rocm_platform.apply_model_worker_backend_policy(
+            args,
+            _model_config(quantization=None),
+            "Qwen3OmniTalker",
+        )
+
+
+@pytest.mark.parametrize("backend", ["auto", "aiter", "triton"])
+def test_rocm_backend_policy_preserves_portable_runners(backend: str) -> None:
+    args = _server_args(
+        moe_runner_backend=backend,
+        fp8_gemm_runner_backend=backend,
+    )
+
+    result = rocm_platform.apply_model_worker_backend_policy(
+        args,
+        _model_config(quantization=None),
+        "Qwen3OmniTalker",
+    )
+
+    assert result is None
+    assert args.moe_runner_backend == backend
+    assert args.fp8_gemm_runner_backend == backend
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,8 @@ from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
     STOP_CODE,
     HiggsBatchedSamplerState,
+    _top_k_renorm_torch,
+    _top_p_renorm_torch,
     batched_step,
     step,
 )
@@ -26,6 +28,18 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 GREEDY_TOP_K = 1
 N = 8
 V = 1026
+
+
+def test_torch_sampling_renorm_fallbacks_support_per_row_limits() -> None:
+    probs = torch.tensor([[0.5, 0.3, 0.2], [0.6, 0.25, 0.15]])
+
+    top_k = _top_k_renorm_torch(probs, torch.tensor([1, 2]))
+    top_p = _top_p_renorm_torch(probs, torch.tensor([0.5, 0.7]))
+
+    assert torch.allclose(top_k.sum(dim=-1), torch.ones(2))
+    assert torch.equal(top_k.ne(0).sum(dim=-1), torch.tensor([1, 2]))
+    assert torch.allclose(top_p.sum(dim=-1), torch.ones(2))
+    assert torch.equal(top_p.ne(0).sum(dim=-1), torch.tensor([1, 2]))
 
 
 def _peaky_logits(target_codes_BN: torch.Tensor) -> torch.Tensor:
