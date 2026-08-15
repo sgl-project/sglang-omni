@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.ming_tts"
 
@@ -13,6 +18,18 @@ PREPROCESSING_STAGE = "preprocessing"
 REFERENCE_ENCODE_STAGE = "reference_encode"
 TTS_ENGINE_STAGE = "tts_engine"
 AUDIO_DECODE_STAGE = "audio_decode"
+
+_REFERENCE_ENCODE_GPU_MEMORY_FRACTION = 0.08
+_TTS_ENGINE_GPU_MEMORY_FRACTION = 0.72
+_AUDIO_DECODE_GPU_MEMORY_FRACTION = 0.12
+
+
+def _gpu_budget(fraction: float) -> StageRuntimeConfig:
+    # A fresh instance per stage: pydantic assigns these by reference and
+    # _apply_process_edge_resources rebinds runtime.resources in place.
+    return StageRuntimeConfig(
+        resources=StageResourceConfig(total_gpu_memory_fraction=fraction)
+    )
 
 
 class MingTTSPipelineConfig(PipelineConfig):
@@ -52,9 +69,9 @@ class MingTTSPipelineConfig(PipelineConfig):
     ) -> dict[tuple[str, str], dict[str, float]]:
         return {
             (TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE): {
-                REFERENCE_ENCODE_STAGE: 0.08,
-                TTS_ENGINE_STAGE: 0.72,
-                AUDIO_DECODE_STAGE: 0.12,
+                REFERENCE_ENCODE_STAGE: _REFERENCE_ENCODE_GPU_MEMORY_FRACTION,
+                TTS_ENGINE_STAGE: _TTS_ENGINE_GPU_MEMORY_FRACTION,
+                AUDIO_DECODE_STAGE: _AUDIO_DECODE_GPU_MEMORY_FRACTION,
             }
         }
 
@@ -73,6 +90,7 @@ class MingTTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_reference_encode_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=_gpu_budget(_REFERENCE_ENCODE_GPU_MEMORY_FRACTION),
             next=TTS_ENGINE_STAGE,
         ),
         StageConfig(
@@ -81,17 +99,19 @@ class MingTTSPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"dtype": "bfloat16"},
             gpu=0,
+            runtime=_gpu_budget(_TTS_ENGINE_GPU_MEMORY_FRACTION),
             next=AUDIO_DECODE_STAGE,
         ),
         StageConfig(
             name=AUDIO_DECODE_STAGE,
-            process="pipeline",
+            process=AUDIO_DECODE_STAGE,
             factory=f"{_PKG}.stages.create_audio_decode_executor",
             factory_args={
                 "dtype": "bfloat16",
                 "decode_mode": "chunked",
             },
             gpu=0,
+            runtime=_gpu_budget(_AUDIO_DECODE_GPU_MEMORY_FRACTION),
             terminal=True,
         ),
     ]

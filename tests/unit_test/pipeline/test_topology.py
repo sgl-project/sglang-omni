@@ -392,7 +392,7 @@ def test_moss_tts_local_default_already_isolates_vocoder() -> None:
     ].total_gpu_memory_fraction == pytest.approx(1.0)
 
 
-def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
+def test_ming_tts_isolates_audio_decode_by_default() -> None:
     from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
 
     config = MingTTSPipelineConfig(model_path="dummy")
@@ -401,18 +401,17 @@ def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
         for stage in config.stages
         if stage.gpu is not None
     } == {
-        "reference_encode": None,
-        "tts_engine": None,
-        "audio_decode": None,
+        "reference_encode": 0.08,
+        "tts_engine": 0.72,
+        "audio_decode": 0.12,
     }
-    assert [stage.process for stage in config.stages] == ["pipeline"] * 4
-
-    isolated = apply_stage_process_overrides(config, isolate_stages=["vocoder"])
-
-    assert [stage.process for stage in config.stages] == ["pipeline"] * 4
-    assert [
-        (group.name, group.stage_names) for group in _topology(isolated).groups
-    ] == [
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+        "audio_decode",
+    ]
+    assert [(group.name, group.stage_names) for group in _topology(config).groups] == [
         (
             "pipeline",
             ("preprocessing", "reference_encode", "tts_engine"),
@@ -421,22 +420,57 @@ def test_ming_tts_preserves_default_and_can_isolate_vocoder_role() -> None:
     ]
     assert build_stage_placement_plan(config).gpus[
         0
-    ].total_gpu_memory_fraction == pytest.approx(0.0)
-    assert {
-        stage.name: stage.runtime.resources.total_gpu_memory_fraction
-        for stage in isolated.stages
-        if stage.gpu is not None
-    } == {
-        "reference_encode": 0.08,
-        "tts_engine": 0.72,
-        "audio_decode": 0.12,
-    }
-    assert build_stage_placement_plan(isolated).gpus[
-        0
     ].total_gpu_memory_fraction == pytest.approx(0.92)
 
+    # The new default is what --isolate-stage vocoder used to produce. Rebuild
+    # the pre-change topology and run the role over it; comparing the new config
+    # against itself proves nothing, since the override early-returns for a stage
+    # that already runs alone.
+    legacy = config.model_copy(deep=True)
+    for stage in legacy.stages:
+        stage.process = "pipeline"
+        stage.runtime.resources = StageResourceConfig()
+    assert (
+        apply_stage_process_overrides(legacy, isolate_stages=["vocoder"]).model_dump()
+        == config.model_dump()
+    )
 
-def test_ming_isolation_resources_do_not_change_default_placement_limit() -> None:
+    # Existing --isolate-stage vocoder launch commands stay accepted.
+    assert (
+        apply_stage_process_overrides(config, isolate_stages=["vocoder"]).model_dump()
+        == config.model_dump()
+    )
+
+    # Operators can opt back out to the single-process topology.
+    opted_out = apply_stage_process_overrides(
+        config, stage_processes=["audio_decode=pipeline"]
+    )
+    assert [stage.process for stage in opted_out.stages] == ["pipeline"] * 4
+    assert [
+        (group.name, group.stage_names) for group in _topology(opted_out).groups
+    ] == [
+        (
+            "pipeline",
+            ("preprocessing", "reference_encode", "tts_engine", "audio_decode"),
+        )
+    ]
+
+    # Each stage owns its runtime block: pydantic assigns by reference and
+    # _apply_process_edge_resources rebinds runtime.resources in place.
+    stages = {stage.name: stage for stage in config.stages}
+    assert len({id(stage.runtime) for stage in config.stages}) == len(config.stages)
+    stages["reference_encode"].runtime.resources = StageResourceConfig(
+        total_gpu_memory_fraction=0.42
+    )
+    assert stages[
+        "audio_decode"
+    ].runtime.resources.total_gpu_memory_fraction == pytest.approx(0.12)
+
+
+def test_ming_default_budgets_are_subject_to_the_placement_limit() -> None:
+    """The isolation budgets ship in the default topology, so a limit below
+    their total now rejects at startup instead of only on --isolate-stage.
+    moss_tts_local has behaved this way since its vocoder split landed."""
     from sglang_omni.config import PlacementConfig
     from sglang_omni.models.ming_tts.config import MingTTSPipelineConfig
 
@@ -445,10 +479,14 @@ def test_ming_isolation_resources_do_not_change_default_placement_limit() -> Non
         placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.90),
     )
 
-    _topology(config)
-
     with pytest.raises(ValueError, match="exceeds placement limit 0.900"):
-        apply_stage_process_overrides(config, isolate_stages=["vocoder"])
+        _topology(config)
+
+    headroom = MingTTSPipelineConfig(
+        model_path="dummy",
+        placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.95),
+    )
+    _topology(headroom)
 
 
 def test_fishaudio_preserves_default_and_can_isolate_vocoder() -> None:
