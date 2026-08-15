@@ -148,7 +148,7 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert config.terminal_stages == ["asr"]
     assert config.gpu_placement == {"asr": 0}
     assert config.stages[0].factory.endswith("create_sglang_qwen3_asr_executor")
-    assert config.stages[0].factory_args["device"] == "cuda:0"
+    assert config.stages[0].factory_args["device"] is None
     assert config.stages[0].factory_args["max_running_requests"] == 64
     assert config.stages[0].factory_args["enable_torch_compile"] is True
     assert config.stages[0].factory_args["torch_compile_max_bs"] == 2

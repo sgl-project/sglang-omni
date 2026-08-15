@@ -1,3 +1,4 @@
+import torch
 from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
 from sglang.srt.multimodal.customized_mm_processor_utils import (
     register_customized_processor,

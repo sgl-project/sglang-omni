@@ -9,6 +9,7 @@ from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 def _is_npu_available() -> bool:
@@ -17,6 +18,14 @@ def _is_npu_available() -> bool:
     except AttributeError:
         return False
     return bool(npu.is_available())
+
+
+def _is_xpu_available() -> bool:
+    try:
+        xpu = torch.xpu
+    except AttributeError:
+        return False
+    return bool(xpu.is_available())
 
 
 def _load_platform_class(qualname: str) -> type[OmniPlatform]:
@@ -43,6 +52,8 @@ def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return CPUOmniPlatform()
     if type(platform) is SRTPlatform and _is_npu_available():
         return NPUOmniPlatform()
+    if type(platform) is SRTPlatform and _is_xpu_available():
+        return XPUOmniPlatform()
     qualname = f"{type(platform).__module__}.{type(platform).__qualname__}"
     return _load_platform_class(qualname)()
 

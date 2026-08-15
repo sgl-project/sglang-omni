@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
+from sglang.srt.runtime_context import get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -310,7 +311,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 alt_stream=self.alt_stream,
             )
             use_fused_set_kv_buffer = (
-                enable_fused_set_kv_buffer(forward_batch)
+                current_platform.is_cuda()
+                and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
             )
             q, k = self.rotary_emb(
@@ -626,7 +628,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             prefix=add_prefix(prefix, "embed_tokens"),
         )
 
-        alt_stream = torch.get_device_module().Stream()
+        alt_stream = get_stream("alt") if current_platform.is_cuda() else None
         result = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeThinkerTextDecoderLayer(

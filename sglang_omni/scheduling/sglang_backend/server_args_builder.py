@@ -15,6 +15,12 @@ _DECODE_CUDA_GRAPH_ALIASES = {
 }
 
 
+def _platform_device_type() -> str:
+    from sglang_omni.platforms import current_platform
+
+    return current_platform.device_type
+
+
 def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
     """Translate Omni's legacy public knobs to SGLang 0.5.16 decode fields."""
     for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
@@ -61,6 +67,7 @@ def build_sglang_server_args(
     kwargs.setdefault("cuda_graph_backend_prefill", CudaGraphBackend.DISABLED)
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
+    kwargs.setdefault("device", _platform_device_type())
     server_args = ServerArgs(**kwargs)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).

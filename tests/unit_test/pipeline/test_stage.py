@@ -10,6 +10,7 @@ import threading
 import pytest
 import torch
 
+import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef, TransportKind
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
@@ -36,6 +37,19 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+@pytest.fixture(autouse=True)
+def _cuda_ipc_capable_platform(monkeypatch):
+    """These stage tests assert the cuda_ipc transport contract on any host, so pin
+    the policy that supplies it rather than the host's own platform.
+    """
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_intra_node_transport",
+        lambda: TransportKind.CUDA_IPC,
+        raising=False,
+    )
 
 
 class _CloseAwareControlPlane(RecordingStageControlPlane):
