@@ -73,8 +73,14 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator() -> None:
     xpu_branch = source.split('elif device == "xpu":', 1)
     assert len(xpu_branch) == 2, "SGLang no longer has a dedicated XPU branch"
     xpu_body = xpu_branch[1].split("elif device ==", 1)[0]
-    assert "mem_get_info" in xpu_body
     assert "memory_allocated" in xpu_body, "the allocator cross-check is gone"
+    # What matters is that free memory stays bounded by the allocator, not how
+    # SGLang spells it. 0.5.16 queried mem_get_info and capped the result with
+    # min(driver_free, total - allocated); 0.5.17 dropped the driver query and
+    # derives total - allocated directly. Only a *raw* mem_get_info result --
+    # the shape that over-allocates on drivers reporting total as free -- fails.
+    if "mem_get_info" in xpu_body:
+        assert "min(" in xpu_body, "mem_get_info is no longer capped by the allocator"
 
     if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
         return

@@ -16,9 +16,14 @@ _ORIG = ForwardBatch._compute_mrope_positions
 
 @pytest.fixture(autouse=True)
 def _upstream(monkeypatch):
+    # SGLang 0.5.17 reads rl_on_policy_target off the exec config bag
+    # (get_exec().deterministic) instead of get_server_args(), and
+    # forward_batch_info no longer imports get_server_args at all.
     monkeypatch.setattr(
-        "sglang.srt.model_executor.forward_batch_info.get_server_args",
-        lambda: SimpleNamespace(rl_on_policy_target=None),
+        "sglang.srt.model_executor.forward_batch_info.get_exec",
+        lambda: SimpleNamespace(
+            deterministic=SimpleNamespace(rl_on_policy_target=None)
+        ),
     )
     monkeypatch.setattr(mrope_fast_path, "_orig_compute_mrope_positions", _ORIG)
 
