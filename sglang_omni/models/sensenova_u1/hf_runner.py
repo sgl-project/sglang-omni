@@ -191,6 +191,81 @@ def _patch_model_class_compat() -> None:
             module.create_block_causal_mask = create_u1_hybrid_mask
 
 
+def _refresh_official_vision_rope_cache(vision_model: Any) -> None:
+    """Rebuild non-persistent NEOVision RoPE buffers after HF loading.
+
+    Transformers 4.57 can leave the public U1 vision tower's non-persistent
+    cos/sin buffers with invalid values after ``AutoModel.from_pretrained``.
+    The official source computes those buffers deterministically in
+    ``NEOVisionEmbeddings.__init__``; refresh them here so HF oracle runs use
+    the intended vision path rather than corrupted compatibility-load state.
+    """
+
+    embeddings = getattr(vision_model, "embeddings", None)
+    config = getattr(vision_model, "config", None)
+    if embeddings is None or config is None:
+        return
+
+    device = next(vision_model.parameters()).device
+    embed_dim = int(getattr(config, "hidden_size"))
+    rope_dim_part = embed_dim // 2
+    max_position = int(getattr(config, "max_position_embeddings_vision"))
+    base = float(getattr(config, "rope_theta_vision"))
+    inv_freq = 1.0 / (
+        base
+        ** (
+            torch.arange(0, rope_dim_part, 2, device=device, dtype=torch.float32)
+            / rope_dim_part
+        )
+    )
+    positions = torch.arange(max_position, device=device, dtype=torch.float32)
+    freqs = torch.outer(positions, inv_freq)
+    cos = torch.cos(freqs)
+    sin = torch.sin(freqs)
+    embeddings.cos_cached_x = cos
+    embeddings.sin_cached_x = sin
+    embeddings.cos_cached_y = cos.clone()
+    embeddings.sin_cached_y = sin.clone()
+
+
+def _refresh_official_u1_rope_caches(model: Any) -> None:
+    vision_model = getattr(model, "vision_model", None)
+    if vision_model is not None:
+        _refresh_official_vision_rope_cache(vision_model)
+    fm_modules = getattr(model, "fm_modules", None)
+    if fm_modules is not None and "vision_model_mot_gen" in fm_modules:
+        _refresh_official_vision_rope_cache(fm_modules["vision_model_mot_gen"])
+
+
+def _force_official_llm_attn_implementation(model: Any, backend: str) -> None:
+    """Apply an explicit Transformers backend after U1 model construction.
+
+    Public U1 resets ``llm_config._attn_implementation`` to ``"eager"``
+    inside ``NEOChatModel.__init__``. The package-level backend flag therefore
+    does not switch the understanding tower by itself.
+    """
+
+    if backend not in {"eager", "sdpa"}:
+        return
+    language_model = getattr(model, "language_model", None)
+    if language_model is None:
+        return
+    configs: list[Any] = [
+        getattr(getattr(model, "config", None), "llm_config", None),
+        getattr(language_model, "config", None),
+        getattr(getattr(language_model, "model", None), "config", None),
+    ]
+    configs.extend(
+        getattr(module, "config", None) for module in language_model.modules()
+    )
+    seen: set[int] = set()
+    for config in configs:
+        if config is None or id(config) in seen:
+            continue
+        seen.add(id(config))
+        config._attn_implementation = backend
+
+
 @contextmanager
 def _official_block_mask_scope():
     """Temporarily restore official U1 block mask functions for references."""
@@ -344,22 +419,32 @@ class SenseNovaU1UnderstandingRunner:
 
         _patch_model_class_compat()
         sensenova_u1.set_attn_backend(self.attn_backend)
-        config = AutoConfig.from_pretrained(self.model_path)
+        config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=True)
         _patch_llm_config_compat(config, self.model_path)
         check_checkpoint_compatibility(config)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_path,
+            trust_remote_code=True,
+        )
         kwargs = {"config": config, "torch_dtype": self.dtype}
         if load_with_info:
             model, info = AutoModel.from_pretrained(
                 self.model_path,
                 output_loading_info=True,
+                trust_remote_code=True,
                 **kwargs,
             )
             self.loading_info = dict(info)
         else:
-            model = AutoModel.from_pretrained(self.model_path, **kwargs)
+            model = AutoModel.from_pretrained(
+                self.model_path,
+                trust_remote_code=True,
+                **kwargs,
+            )
             self.loading_info = {}
         self.model = model.eval().to(self.device)
+        _force_official_llm_attn_implementation(self.model, self.attn_backend)
+        _refresh_official_u1_rope_caches(self.model)
         self.tokenizer = tokenizer
 
     @property

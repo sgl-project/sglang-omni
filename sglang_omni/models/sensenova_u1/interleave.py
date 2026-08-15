@@ -1,25 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SenseNova U1 interleaved text-image generation runner.
-
-This M4 path keeps the official NEOChatModel interleave loop inside an
-SGLang-Omni stage. The loop autoregressively emits text, switches into U1
-flow-matching when the model emits an image start token, re-encodes the
-generated image, and then continues text generation from the updated KV cache.
-"""
+"""SenseNova U1 interleaved text-image generation runner."""
 
 from __future__ import annotations
 
+import os
 import time
-from contextlib import nullcontext
 from dataclasses import asdict, dataclass
-from types import SimpleNamespace
 from typing import Any
 
 import torch
 from PIL import Image
 
 from sglang_omni.models.sensenova_u1.flow_matching import (
+    FlowRequestParams,
+    NativeFlowPrefix,
     SenseNovaU1FlowMatchingRunner,
+    _build_neo_prompt,
     pil_to_data_url,
     u1_tensor_to_pil,
 )
@@ -29,7 +25,10 @@ from sglang_omni.models.sensenova_u1.hf_runner import (
     _coerce_image,
     _extract_request,
     _extract_text_and_images_from_content,
-    _official_block_mask_scope,
+)
+from sglang_omni.models.sensenova_u1.sglang_model import (
+    _blocked_hf_modeling_modules,
+    assert_no_hf_modeling_imported,
 )
 from sglang_omni.proto import StagePayload
 
@@ -233,6 +232,13 @@ def interleave_segments(text: str, image_items: list[dict[str, Any]]) -> list[di
     return segments
 
 
+def _apply_prompt_image_prefix(prompt: str, image_count: int) -> str:
+    prompt_image_count = prompt.count("<image>")
+    if image_count > prompt_image_count:
+        prompt = "<image>\n" * (image_count - prompt_image_count) + prompt
+    return prompt
+
+
 class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
     """End-to-end U1 text-image-text generation runner."""
 
@@ -255,6 +261,241 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
             load_with_info=load_with_info,
         )
 
+    def _build_condition_prefix(
+        self,
+        *,
+        prompt: str,
+        images: list[Any],
+        generated_image_tensors: list[torch.Tensor] | None = None,
+        system_message: str,
+        think_mode: bool,
+        assistant_append: str | None = None,
+        prompt_image_count: int | None = None,
+    ) -> NativeFlowPrefix:
+        prompt_image_count = len(images) if prompt_image_count is None else int(prompt_image_count)
+        prompt = _apply_prompt_image_prefix(prompt, prompt_image_count)
+        pixel_values, grid_hw = self._load_interleave_prefix_images(
+            images,
+            generated_image_tensors or [],
+        )
+        if assistant_append is None:
+            assistant_append = None if think_mode else "<think>\n\n</think>\n\n"
+        query = _build_neo_prompt(
+            user_text=prompt,
+            system_message=system_message,
+            assistant_append=assistant_append,
+        )
+        query = self._replace_image_tokens(query, grid_hw)
+        input_ids = self.tokenizer(query, return_tensors="pt")["input_ids"][0]
+        indexes = self._get_thw_indexes(input_ids, grid_hw)
+        image_token_tag = input_ids == self.img_context_token_id
+        if pixel_values is not None and grid_hw is not None:
+            input_embeds = self.executor.compose_input_embeds(
+                input_ids=input_ids,
+                image_token_tag=image_token_tag,
+                pixel_values=pixel_values,
+                grid_hw=grid_hw,
+            )
+            if input_embeds is None:
+                raise RuntimeError("native interleave image compose returned no embeds")
+        else:
+            input_embeds = self._token_embeds(input_ids)
+        return NativeFlowPrefix(
+            input_ids=input_ids.to(dtype=torch.long),
+            indexes=indexes.to(dtype=torch.long),
+            image_token_tag=image_token_tag.to(dtype=torch.bool),
+            input_embeds=input_embeds.detach(),
+            cache_extra_key=None,
+            cache_insert_log={
+                "skipped": True,
+                "reason": "native_interleave_text_state_machine_no_prefix_insert",
+                "prefix_tokens": int(input_ids.numel()),
+                "image_token_count": int(image_token_tag.sum().item()),
+            },
+        )
+
+    def _generated_tensor_to_native_pixels(
+        self,
+        image_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        tensor = image_tensor.detach()
+        if tensor.ndim == 4:
+            tensor = tensor[0]
+        if tensor.ndim != 3:
+            raise ValueError(
+                "generated interleave image tensor must have shape [3,H,W] or [1,3,H,W]"
+            )
+        pred_img = tensor.unsqueeze(0).to(
+            device=self.torch_device,
+            dtype=torch.bfloat16,
+        )
+        raw_img = pred_img * 0.5 + 0.5
+        mean = torch.tensor(
+            [0.485, 0.456, 0.406],
+            dtype=raw_img.dtype,
+            device=raw_img.device,
+        ).view(1, 3, 1, 1)
+        std = torch.tensor(
+            [0.229, 0.224, 0.225],
+            dtype=raw_img.dtype,
+            device=raw_img.device,
+        ).view(1, 3, 1, 1)
+        pixel_values = (raw_img - mean) / std
+        c, h, w = pixel_values[0].shape
+        ps = self.patch_size
+        if h % ps != 0 or w % ps != 0:
+            raise ValueError(
+                f"generated image shape {(h, w)} must be divisible by patch_size={ps}"
+            )
+        grid_h = h // ps
+        grid_w = w // ps
+        flat = (
+            pixel_values[0]
+            .view(c, grid_h, ps, grid_w, ps)
+            .permute(1, 3, 0, 2, 4)
+            .reshape(grid_h * grid_w, c * ps**2)
+        )
+        return (
+            flat.cpu(),
+            torch.tensor([[grid_h, grid_w]], dtype=torch.long),
+        )
+
+    def _load_interleave_prefix_images(
+        self,
+        input_images: list[Any],
+        generated_image_tensors: list[torch.Tensor],
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        pixel_parts: list[torch.Tensor] = []
+        grid_parts: list[torch.Tensor] = []
+        if input_images:
+            pixel_values, grid_hw = self._load_input_images(input_images)
+            if pixel_values is not None and grid_hw is not None:
+                pixel_parts.append(pixel_values.cpu())
+                grid_parts.append(grid_hw.cpu())
+        for image_tensor in generated_image_tensors:
+            pixel_values, grid_hw = self._generated_tensor_to_native_pixels(image_tensor)
+            pixel_parts.append(pixel_values)
+            grid_parts.append(grid_hw)
+        if not pixel_parts:
+            return None, None
+        return torch.cat(pixel_parts, dim=0), torch.cat(grid_parts, dim=0)
+
+    def _generate_text_until_boundary(
+        self,
+        *,
+        prefix: NativeFlowPrefix,
+        max_new_tokens: int,
+        suppress_token_ids: list[int] | None = None,
+    ) -> tuple[str, list[int], dict[str, Any]]:
+        eos_token_id = int(self.tokenizer.convert_tokens_to_ids("<|im_end|>"))
+        max_new_tokens = max(int(max_new_tokens), 0)
+        if max_new_tokens == 0:
+            return "", [], {
+                "stop_reason": "max_new_tokens",
+                "generated_tokens": 0,
+                "raw_generated_token_ids": [],
+                "terminal_token_id": None,
+                "eos_token_id": eos_token_id,
+                "img_start_token_id": self.img_start_token_id,
+                "native_decode_stats": None,
+                "native_decode_mode": self._native_interleave_text_decode_mode(),
+            }
+
+        decode_mode = self._native_interleave_text_decode_mode()
+        if decode_mode == "eager_text_decode":
+            decode_result = self.executor.run_eager_text_decode(
+                input_ids=prefix.input_ids,
+                indexes=prefix.indexes,
+                image_token_tag=prefix.image_token_tag,
+                input_embeds=prefix.input_embeds,
+                decode_steps=max_new_tokens,
+                suppress_token_ids=suppress_token_ids,
+            )
+            raw_ids = [int(x) for x in decode_result.generated_token_ids]
+        else:
+            if suppress_token_ids:
+                raise NotImplementedError(
+                    "native interleave image-cap suppression currently requires eager text decode"
+                )
+            decode_result = self.executor.run_greedy_decode_batch(
+                [
+                    {
+                        "request_id": f"u1-native-interleave-text-{time.time_ns()}",
+                        "input_ids": prefix.input_ids,
+                        "indexes": prefix.indexes,
+                        "image_token_tag": prefix.image_token_tag,
+                        "input_embeds": prefix.input_embeds,
+                        "cache_extra_key": prefix.cache_extra_key,
+                    }
+                ],
+                decode_steps=max_new_tokens,
+                suppress_token_ids=suppress_token_ids,
+            )
+            raw_ids = [int(x) for x in decode_result.generated_token_ids[0]]
+        text_token_ids: list[int] = []
+        terminal_token_id: int | None = None
+        stop_reason = "max_new_tokens"
+        for token_id in raw_ids:
+            if token_id == eos_token_id:
+                terminal_token_id = token_id
+                stop_reason = "eos"
+                break
+            if token_id == self.img_start_token_id:
+                terminal_token_id = token_id
+                stop_reason = "image_start_pending_native_flow"
+                break
+            text_token_ids.append(token_id)
+            if len(text_token_ids) >= max_new_tokens:
+                stop_reason = "max_new_tokens"
+                break
+        text = self.tokenizer.decode(text_token_ids, skip_special_tokens=True)
+        return text, text_token_ids, {
+            "stop_reason": stop_reason,
+            "generated_tokens": len(text_token_ids),
+            "raw_generated_token_ids": raw_ids,
+            "terminal_token_id": terminal_token_id,
+            "eos_token_id": eos_token_id,
+            "img_start_token_id": self.img_start_token_id,
+            "native_decode_mode": decode_mode,
+            "native_decode_stats": decode_result.to_dict(),
+        }
+
+    def _base_assistant_append(self, think_mode: bool) -> str:
+        return "" if think_mode else "<think>\n\n</think>\n\n"
+
+    def _flow_request_from_interleave(
+        self,
+        request: InterleaveRequestParams,
+        *,
+        seed: int,
+    ) -> FlowRequestParams:
+        return FlowRequestParams(
+            mode="t2i",
+            prompt=request.prompt,
+            image_size=request.image_size,
+            cfg_scale=request.cfg_scale,
+            img_cfg_scale=request.img_cfg_scale,
+            cfg_norm=request.cfg_norm,
+            timestep_shift=request.timestep_shift,
+            enable_timestep_shift=request.enable_timestep_shift,
+            cfg_interval=request.cfg_interval,
+            num_steps=request.num_steps,
+            batch_size=1,
+            t_eps=request.t_eps,
+            think_mode=False,
+            seed=seed,
+        )
+
+    @staticmethod
+    def _native_interleave_text_decode_mode() -> str:
+        value = os.environ.get(
+            "SENSENOVA_U1_NATIVE_INTERLEAVE_EAGER_TEXT_DECODE",
+            "",
+        ).lower()
+        if value in {"0", "false", "no", "off"}:
+            return "sglang_cached_decode"
+        return "eager_text_decode"
+
     @torch.inference_mode()
     def generate_interleave(
         self,
@@ -263,41 +504,139 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
         *,
         use_official_hybrid_mask: bool = False,
     ) -> InterleaveResult:
-        assert self.model is not None and self.tokenizer is not None
-        ctx = _official_block_mask_scope() if use_official_hybrid_mask else nullcontext()
-        generation_config = SimpleNamespace(max_new_tokens=request.max_new_tokens)
+        if use_official_hybrid_mask:
+            raise RuntimeError("native interleave runner cannot use official HF mask")
+        assert_no_hf_modeling_imported(context="before native interleave generation")
         start = time.perf_counter()
-        with ctx:
-            text, image_tensors = self.model.interleave_gen(
-                self.tokenizer,
-                request.prompt,
-                images=[_coerce_image(image) for image in (images or [])],
-                generation_config=generation_config,
-                cfg_scale=request.cfg_scale,
-                img_cfg_scale=request.img_cfg_scale,
-                cfg_norm=request.cfg_norm,
-                max_images=request.max_images,
-                enable_timestep_shift=request.enable_timestep_shift,
-                timestep_shift=request.timestep_shift,
-                image_size=request.image_size,
-                num_steps=request.num_steps,
-                cfg_interval=request.cfg_interval,
-                t_eps=request.t_eps,
-                verbose=False,
+        input_images = [_coerce_image(image) for image in (images or [])]
+        base_assistant = self._base_assistant_append(request.think_mode)
+        generated_text = ""
+        generated_image_tensors: list[torch.Tensor] = []
+        generated_images: list[Image.Image] = []
+        decode_stats_by_segment: list[dict[str, Any]] = []
+        flow_stats_by_image: list[dict[str, Any]] = []
+        image_elapsed_s: list[float] = []
+        current_generated_tokens = 0
+        forced_image_cap = False
+        forced_image_requests = 0
+        terminal_reason = "max_new_tokens"
+        prefix: NativeFlowPrefix | None = None
+
+        while current_generated_tokens < int(request.max_new_tokens):
+            remaining_tokens = int(request.max_new_tokens) - current_generated_tokens
+            suppress_image = len(generated_images) >= max(1, int(request.max_images))
+            prefix = self._build_condition_prefix(
+                prompt=request.prompt,
                 system_message=request.system_message,
+                images=input_images,
+                generated_image_tensors=generated_image_tensors,
                 think_mode=request.think_mode,
-                seed=request.seed,
+                assistant_append=base_assistant + generated_text,
+                prompt_image_count=len(input_images),
             )
+            text, segment_token_ids, decode_stats = self._generate_text_until_boundary(
+                prefix=prefix,
+                max_new_tokens=remaining_tokens,
+                suppress_token_ids=[self.img_start_token_id] if suppress_image else None,
+            )
+            native_decode_stats = decode_stats.get("native_decode_stats") or {}
+            if suppress_image:
+                suppressed_hits = int(native_decode_stats.get("suppressed_token_hits", 0))
+                if suppressed_hits > 0:
+                    forced_image_cap = True
+                    forced_image_requests += suppressed_hits
+            generated_text += text
+            current_generated_tokens += len(segment_token_ids)
+            decode_stats_by_segment.append(decode_stats)
+
+            stop_reason = str(decode_stats["stop_reason"])
+            if stop_reason == "image_start_pending_native_flow" and not suppress_image:
+                image_started_at = time.perf_counter()
+                flow_assistant_prefix = base_assistant + generated_text + "<img>"
+                flow_request = self._flow_request_from_interleave(
+                    request,
+                    seed=int(request.seed),
+                )
+                image_tensor, flow_stats = self.generate_interleave_image_tensor(
+                    flow_request,
+                    input_images,
+                    system_message=request.system_message,
+                    assistant_prefix=flow_assistant_prefix,
+                )
+                generated_image_tensors.append(image_tensor.detach())
+                generated_images.extend(u1_tensor_to_pil(image_tensor.detach()))
+                generated_text += "<image>"
+                image_elapsed_s.append(time.perf_counter() - image_started_at)
+                flow_stats_by_image.append(flow_stats.to_dict())
+                continue
+
+            terminal_reason = "eos" if stop_reason == "eos" else "max_new_tokens"
+            break
+
         elapsed = time.perf_counter() - start
-        token_ids = self.tokenizer(
-            text,
-            add_special_tokens=False,
-        )["input_ids"]
-        stats = dict(getattr(self.model, "last_interleave_generation_stats", {}) or {})
+        guard_after = _blocked_hf_modeling_modules()
+        assert_no_hf_modeling_imported(context="after native interleave generation")
+        stop_reason = (
+            f"forced_cap_then_{terminal_reason}"
+            if forced_image_cap
+            else terminal_reason
+        )
+        token_ids = [
+            int(x)
+            for x in self.tokenizer(
+                generated_text,
+                add_special_tokens=False,
+            )["input_ids"]
+        ]
+        stats = {
+            "forced_native_single_image": False,
+            "text_only_state_machine": len(generated_images) == 0,
+            "image_state_machine_implemented": True,
+            "native_full_prefill_interleave_state_machine": True,
+            "forced_image_cap": forced_image_cap,
+            "forced_image_requests": forced_image_requests,
+            "natural_eos": terminal_reason == "eos" and not forced_image_cap,
+            "eos_reached": terminal_reason == "eos",
+            "stop_reason": stop_reason,
+            "generated_tokens": current_generated_tokens,
+            "generated_images": len(generated_images),
+            "image_elapsed_s": image_elapsed_s,
+            "condition_prefix_tokens": int(prefix.input_ids.numel()) if prefix else 0,
+            "condition_prefix_image_tokens": (
+                int(prefix.image_token_tag.sum().item()) if prefix else 0
+            ),
+            "native_decode_mode": (
+                decode_stats_by_segment[-1]["native_decode_mode"]
+                if decode_stats_by_segment
+                else self._native_interleave_text_decode_mode()
+            ),
+            "native_decode_segments": decode_stats_by_segment,
+            "native_flow_stats": {
+                "runs": flow_stats_by_image,
+                "hf_modeling_imported_after": guard_after,
+            },
+            "raw_generated_token_ids": [
+                int(token_id)
+                for segment in decode_stats_by_segment
+                for token_id in segment["raw_generated_token_ids"]
+            ],
+            "terminal_token_id": (
+                decode_stats_by_segment[-1]["terminal_token_id"]
+                if decode_stats_by_segment
+                else None
+            ),
+            "eos_token_id": (
+                decode_stats_by_segment[-1]["eos_token_id"]
+                if decode_stats_by_segment
+                else int(self.tokenizer.convert_tokens_to_ids("<|im_end|>"))
+            ),
+            "img_start_token_id": self.img_start_token_id,
+            "hf_modeling_imported_after": guard_after,
+        }
         return InterleaveResult(
-            text=str(text),
+            text=str(generated_text),
             token_ids=[int(x) for x in token_ids],
-            images=interleave_tensors_to_pil(list(image_tensors)),
+            images=generated_images,
             stats=stats,
             elapsed_s=elapsed,
         )
@@ -329,7 +668,7 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
             "token_ids": result.token_ids,
             "stats": result.stats,
             "request": asdict(request),
-            "backend": "hf_compatible_interleave_fallback",
+            "backend": "native_sglang_interleave_text_state_machine",
         }
         return {
             "request_id": request_id,
@@ -346,7 +685,7 @@ class SenseNovaU1InterleaveRunner(SenseNovaU1FlowMatchingRunner):
                 "generated_images": len(result.images),
             },
             "stage_name": "u1_interleave",
-            "backend": "hf_compatible_interleave_fallback",
+            "backend": "native_sglang_interleave_text_state_machine",
         }
 
 
