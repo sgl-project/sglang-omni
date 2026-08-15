@@ -119,7 +119,7 @@ class ThinkerModelRunner(ModelRunner):
 
     @staticmethod
     def _ensure_consumed_cursor(req: Any) -> dict[str, Any]:
-        consumed = getattr(req, "_omni_consumed", None)
+        consumed = req._omni_consumed
         if consumed is None:
             consumed = {}
             req._omni_consumed = consumed
