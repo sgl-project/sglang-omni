@@ -43,6 +43,27 @@ The most useful flags are:
 
 If you already have a pipeline config file, you can also pass `--config path/to/config.yaml`. When the config file contains `model_path`, `--model-path` is optional and can be used as an override.
 
+### Unified SGLang CLI
+
+When SGLang-Omni is installed alongside an SGLang release that supports serve
+backend plugins, the same server can be launched through the core executable:
+
+```bash
+sglang serve <model-name-or-path> --model-type omni [additional-arguments]
+```
+
+Config-only launches are supported as well:
+
+```bash
+sglang serve --model-type omni --config path/to/config.yaml
+```
+
+SGLang-Omni intentionally does not install another `sglang` executable. It
+registers an `omni` serve backend with SGLang core, while `sgl-omni serve`
+remains available as a backward-compatible alias. Automatic Omni model
+detection is not enabled yet; select the backend explicitly with
+`--model-type omni`.
+
 ## Check That It Works
 
 ### Health check

@@ -296,6 +296,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.waiting_queue = []
     scheduler.last_batch = None
     scheduler.forward_ct = 0
+    scheduler._sched_idled = False
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
@@ -476,7 +477,7 @@ def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     assert aborts == [("req-follower", False)]
 
 
-def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
+def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
     gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
@@ -500,6 +501,7 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler.forward_ct = 0
+    scheduler._sched_idled = True
 
     def _batch():
         return SimpleNamespace(
@@ -512,11 +514,19 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
             is_extend_in_batch=False,
         )
 
-    scheduler._run_batch(_batch())
+    sync_batch = _batch()
+    scheduler._run_batch(sync_batch)
     assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
+    assert sync_batch.forward_iter == 1
+    assert isinstance(sync_batch.launch_ts, float)
+    assert sync_batch.after_idle_gap is True
 
-    scheduler._run_batch_launch(_batch())
+    async_batch = _batch()
+    scheduler._run_batch_launch(async_batch)
     assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
+    assert async_batch.forward_iter == 2
+    assert async_batch.launch_ts >= sync_batch.launch_ts
+    assert async_batch.after_idle_gap is False
 
 
 def test_omni_scheduler_resolve_drops_retracted_req() -> None:

@@ -100,6 +100,9 @@ audar-tts = [
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
 
+[project.entry-points."sglang.serve_backends"]
+omni = "sglang_omni.cli.sglang_backend:create_backend"
+
 [project.urls]
 Documentation = "https://sgl-project.github.io/sglang-omni/"
 Issues = "https://github.com/sgl-project/sglang-omni/issues"

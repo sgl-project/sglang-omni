@@ -63,6 +63,8 @@ from sglang_omni.scheduling.prefill_coalesce import (
     validate_prefill_coalesce_requests,
     validate_prefill_coalesce_wait_ms,
 )
+from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
+from sglang_omni.vendor.sglang.signature import supported_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +587,7 @@ class OmniScheduler:
         self.device_module = torch.get_device_module(self.device)
 
     def _init_upstream_scheduler_components(self) -> None:
-        """Install the scheduler components required by 0.5.15 hot paths."""
+        """Install the scheduler components required by upstream hot paths."""
         from sglang.srt.managers.scheduler_components.batch_result_processor import (
             SchedulerBatchResultProcessor,
         )
@@ -602,7 +604,7 @@ class OmniScheduler:
             SchedulerPoolStatsObserver,
         )
 
-        self.dp_attn_adapter = SchedulerDPAttnAdapter(
+        dp_attn_kwargs = dict(
             tp_group=self.tp_group,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -611,11 +613,21 @@ class OmniScheduler:
             ps=self.ps,
             server_args=self.server_args,
             model_config=self.model_config,
-            model_runner=self.tp_worker.model_runner,
             enable_overlap=self.enable_overlap,
             spec_algorithm=self.spec_algorithm,
             get_require_mlp_sync=lambda: self.require_mlp_sync,
         )
+        dp_attn_kwargs.update(
+            supported_kwargs(
+                SchedulerDPAttnAdapter,
+                # 0.5.17 made this field required and forwards it to
+                # prepare_mlp_sync_batch_raw, which wants SGLang's ModelRunner.
+                # self._model_runner is Omni's custom runner and is still None
+                # here (it is assigned after this method runs).
+                model_runner=self.tp_worker.model_runner,
+            )
+        )
+        self.dp_attn_adapter = SchedulerDPAttnAdapter(**dp_attn_kwargs)
         self.pool_stats_observer = SchedulerPoolStatsObserver(
             tree_cache=self.tree_cache,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -634,7 +646,12 @@ class OmniScheduler:
             get_running_batch=lambda: self.running_batch,
         )
         empty_queue = types.SimpleNamespace(queue=[], retracted_queue=[])
-        self.load_inquirer = SchedulerLoadInquirer(
+        self.total_prefill_uncached_tokens = 0
+        self.total_prefill_busy_us = 0
+        self.decode_moment_totals: list[float] = [0.0] * 6
+        self._prev_step = None
+        self._sched_idled = False
+        load_inquirer_kwargs = dict(
             disaggregation_mode=self.disaggregation_mode,
             ps=self.ps,
             server_args=self.server_args,
@@ -658,10 +675,20 @@ class OmniScheduler:
             get_spec_total_num_forward_ct=lambda: (
                 self.metrics_reporter.spec_total_num_forward_ct
             ),
-            get_total_prefill_uncached_tokens=lambda: self.total_prefill_uncached_tokens,
-            get_total_prefill_busy_us=lambda: self.total_prefill_busy_us,
-            get_decode_moment_totals=lambda: self.decode_moment_totals,
         )
+        # The 0.5.17 telemetry accessors go through supported_kwargs below, not
+        # into the base dict: 0.5.16's SchedulerLoadInquirer rejects them.
+        current_load_metrics = {
+            "get_total_prefill_uncached_tokens": (
+                lambda: self.total_prefill_uncached_tokens
+            ),
+            "get_total_prefill_busy_us": lambda: self.total_prefill_busy_us,
+            "get_decode_moment_totals": lambda: self.decode_moment_totals,
+        }
+        load_inquirer_kwargs.update(
+            supported_kwargs(SchedulerLoadInquirer, **current_load_metrics)
+        )
+        self.load_inquirer = SchedulerLoadInquirer(**load_inquirer_kwargs)
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
             _stream_output_generation=lambda reqs, return_logprob, **_kwargs: self.stream_output(
@@ -685,7 +712,11 @@ class OmniScheduler:
             draft_worker=self.draft_worker,
             model_worker=self.model_worker,
             logprob_result_processor=SchedulerLogprobResultProcessor(
-                model_config=self.model_config,
+                **supported_kwargs(
+                    SchedulerLogprobResultProcessor,
+                    server_args=self.server_args,
+                    model_config=self.model_config,
+                )
             ),
             output_streamer=self.output_streamer,
             abort_request=lambda request: self.abort(request.rid),
@@ -767,11 +798,13 @@ class OmniScheduler:
         self._refresh_upstream_parallel_state()
 
     def _refresh_upstream_parallel_state(self) -> None:
-        """Build the rank container expected by SGLang 0.5.15 methods."""
+        """Build the rank container expected by upstream scheduler methods."""
         from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 
-        self.ps = ParallelState(
+        self.ps = create_parallel_state(
+            ParallelState,
             tp_rank=self.tp_rank,
+            dcp_size=self.server_args.dcp_size,
             tp_size=self.tp_size,
             pp_rank=self.pp_rank,
             pp_size=self.pp_size,
@@ -787,8 +820,6 @@ class OmniScheduler:
             moe_ep_size=self.moe_ep_size,
             moe_dp_rank=self.moe_dp_rank,
             moe_dp_size=self.moe_dp_size,
-            # Added by 0.5.16; upstream sources it from server_args.
-            dcp_size=self.server_args.dcp_size,
             gpu_id=self.gpu_id,
         )
 
@@ -1214,6 +1245,14 @@ class OmniScheduler:
             self._handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
 
+    def _stamp_batch_launch(self, batch) -> None:
+        """Mirror upstream per-forward bookkeeping for custom runner paths."""
+        self.forward_ct += 1
+        batch.forward_iter = self.forward_ct
+        batch.launch_ts = time.monotonic()
+        batch.after_idle_gap = self._sched_idled
+        self._sched_idled = False
+
     def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
 
@@ -1225,12 +1264,7 @@ class OmniScheduler:
         """
         del pp_proxy_tensors
         self._emit_prefill_start_for_batch(batch)
-        # Mirror upstream run_batch's per-forward counter: OmniScheduler
-        # overrides run_batch, so without this forward_ct stays 0 and
-        # SGLANG_TEST_RETRACT fires every step.
-        self.forward_ct += 1
-        batch.forward_iter = self.forward_ct
-        batch.launch_ts = time.monotonic()
+        self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         mr_output = self._model_runner.execute(sched_output)
         self._emit_prefill_end_for_batch(batch)
@@ -1314,11 +1348,7 @@ class OmniScheduler:
         payload), without waiting. Returns ``(sched_output, pending_step)``; the
         caller holds the pending step (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
-        # One forward per launch; mirror upstream run_batch's per-forward
-        # counter (the matching resolve does no forward, so it must not count).
-        self.forward_ct += 1
-        batch.forward_iter = self.forward_ct
-        batch.launch_ts = time.monotonic()
+        self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
@@ -2163,6 +2193,7 @@ class OmniScheduler:
                 if result is not _FAILED_BATCH_RESULT:
                     self.process_batch_result(batch, result)
             else:
+                self._sched_idled = True
                 self.self_check_during_idle()
                 self._sleep_during_idle()
 
@@ -2456,6 +2487,7 @@ class OmniScheduler:
                     if result is not _FAILED_BATCH_RESULT:
                         self.process_batch_result(batch, result)
                 else:
+                    self._sched_idled = True
                     self.self_check_during_idle()
                     self._sleep_during_idle()
 
