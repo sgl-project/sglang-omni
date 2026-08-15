@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import sglang_omni.platforms as platforms
 from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
@@ -87,6 +88,13 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
+    )
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
@@ -327,6 +335,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         "post_scheduler_setup",
     ]
     assert build_kwargs["max_running_requests"] == 2
+    assert build_kwargs["device"] == "cuda"
     assert build_kwargs["cuda_graph_max_bs"] == 8
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7

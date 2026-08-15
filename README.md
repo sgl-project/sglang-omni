@@ -52,6 +52,15 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 - **Audio transcription and diarization**: [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html), [Fun-ASR](https://sgl-project.github.io/sglang-omni/cookbook/fun_asr.html), [ARK-ASR](https://sgl-project.github.io/sglang-omni/cookbook/arkasr.html), [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) via `/v1/audio/transcriptions`. MOSS-TD supports speaker labels and timestamps (`response_format=verbose_json`).
 - **SGLang-Omni Router**: Multi-worker OpenAI-compatible front door — health, readiness, lifecycle, capability discovery. [Router guide](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html).
 
+## Hardware Support
+
+| Backend | Status | Notes |
+|---------|--------|-------|
+| **NVIDIA CUDA** | ✅ Supported | Default target; full model coverage. |
+| **Intel GPU (XPU)** | 🧪 Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
+
+See [Installation — Intel XPU](./docs/get_started/installation_xpu.md).
+
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/).
 
 ## Quick Start

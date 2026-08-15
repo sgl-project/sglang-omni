@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import sglang_omni.platforms as platforms
 from sglang_omni.config.schema import (
     EndpointsConfig,
     PipelineConfig,
@@ -443,8 +444,13 @@ def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
         )
 
 
-def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:
+def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
+    tmp_path, monkeypatch
+) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
     config = PipelineConfig(
         model_path="model",
         name="mp",

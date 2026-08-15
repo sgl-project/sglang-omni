@@ -24,7 +24,6 @@ from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gp
 
 logger = logging.getLogger(__name__)
 
-
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 _DECODE_MODE = Literal["async", "sync"]

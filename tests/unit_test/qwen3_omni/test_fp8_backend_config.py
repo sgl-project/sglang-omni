@@ -11,6 +11,7 @@ import pytest
 from sglang_omni.model_runner import model_worker
 from sglang_omni.platforms import cuda
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.utils.misc import model_config_has_moe
 from tests.unit_test.fakes import FakeServerArgs
 
@@ -358,6 +359,9 @@ def test_model_worker_backend_policy_precedence(
 ) -> None:
     """Covers quantization, architecture, MoE, hardware, and explicit override precedence."""
     monkeypatch.setattr(
+        model_worker, "current_platform", SimpleNamespace(device_type="cuda")
+    )
+    monkeypatch.setattr(
         cuda,
         "_is_fp8_cutlass_moe_supported",
         lambda: case.cutlass_supported,
@@ -448,6 +452,66 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
             {"fp8_gemm_runner_backend": "triton"},
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("cap_fp8", "expected_moe_backend"),
+    [
+        pytest.param(False, "flashinfer_cutlass", id="cuda_sm90_no_fp8_bf16"),
+        pytest.param(True, "flashinfer_cutlass", id="cuda_with_fp8_bf16"),
+    ],
+)
+def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
+    monkeypatch: pytest.MonkeyPatch,
+    cap_fp8: bool,
+    expected_moe_backend: str,
+) -> None:
+    """A bf16 talker's flashinfer_cutlass->triton downgrade must never be gated on
+    FP8 CUTLASS availability. Off-CUDA is structural now that the policy hangs off
+    CUDAOmniPlatform, so a non-CUDA platform never reaches this kernel choice.
+    """
+    monkeypatch.setattr(cuda, "_is_fp8_cutlass_moe_supported", lambda: cap_fp8)
+    monkeypatch.setattr(cuda, "_is_h20_device", lambda: False)
+
+    server_args = _server_args(moe_runner_backend="auto")
+    model_config = _model_config(quantization=None, has_moe=True)
+
+    effective_quantization = cuda_platform.apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert effective_quantization is None
+    assert server_args.moe_runner_backend == expected_moe_backend
+
+
+@pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
+def test_explicit_cutlass_moe_runner_is_rejected_on_xpu(backend: str) -> None:
+    """An operator asking for a CUDA-only runner is told, not silently remapped."""
+    with pytest.raises(ValueError, match="CUTLASS MoE runners"):
+        XPUOmniPlatform().apply_model_worker_backend_policy(
+            _server_args(moe_runner_backend=backend),
+            _model_config(quantization=None, has_moe=True),
+            "Qwen3OmniThinkerForCausalLM",
+        )
+
+
+def test_auto_moe_runner_is_left_to_sglang_on_xpu() -> None:
+    """SGLang resolves 'auto' to its Triton MoE runner on XPU, so Omni leaves it be.
+    Off-CUDA is structural now: the flashinfer_cutlass choice hangs off
+    CUDAOmniPlatform, so the XPU hook never reaches a CUDA kernel selection.
+    """
+    server_args = _server_args(moe_runner_backend="auto")
+
+    effective_quantization = XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        _model_config(quantization=None, has_moe=True),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert effective_quantization is None
+    assert server_args.moe_runner_backend == "auto"
 
 
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
@@ -730,6 +794,10 @@ def test_configure_backend_policy_fp8_gemm_ordering(
 
     # Patch _is_h20_device so we get deterministic BF16 policy.
     monkeypatch.setattr(cuda, "_is_h20_device", lambda: False)
+
+    monkeypatch.setattr(
+        model_worker, "current_platform", SimpleNamespace(device_type="cuda")
+    )
 
     # Build mock model config matching the shape ModelConfig expects.
     quant_config_in = (
