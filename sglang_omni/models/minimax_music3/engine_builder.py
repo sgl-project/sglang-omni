@@ -112,10 +112,14 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     def setup_model_resources(
         self, model: Any, server_args: Any, *, generation_cuda_graph_enabled: bool
     ) -> None:
-        del generation_cuda_graph_enabled
         from .sglang_model import enable_rvq_depth_cuda_graph
 
-        del server_args
+        if bool(server_args.disable_cuda_graph) or not generation_cuda_graph_enabled:
+            logger.info(
+                "MiniMax Music 3: RVQ depth CUDA graph disabled with the "
+                "generation CUDA graph"
+            )
+            return
         enable_rvq_depth_cuda_graph(
             model, _rvq_graph_buckets(self.max_running_requests)
         )

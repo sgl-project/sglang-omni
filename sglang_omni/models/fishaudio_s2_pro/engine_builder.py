@@ -9,6 +9,7 @@ from typing import Any
 
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -23,6 +24,11 @@ _VALIDATED_AUTO_ATTENTION_BACKENDS = {
 
 
 def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+    if current_platform.is_rocm():
+        # Fast-AR uses the owned PyTorch SDPA cache path on ROCm; this value is
+        # the compatible SGLang backend for the separate Slow-AR layers.
+        return "aiter"
+
     sm_version = get_visible_gpu_sm_version(gpu_id)
     if sm_version is None:
         raise RuntimeError(
@@ -75,7 +81,11 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
-        sm_version = get_visible_gpu_sm_version(self.gpu_id)
+        sm_version = (
+            None
+            if current_platform.is_rocm()
+            else get_visible_gpu_sm_version(self.gpu_id)
+        )
         return {
             "max_running_requests": 64,
             "disable_cuda_graph": False,

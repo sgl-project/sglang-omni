@@ -29,6 +29,7 @@ except ImportError:
 from sglang_omni.models.moss_tts.vocoder_kernels import (
     apply_exact_interleaved_rope_inplace,
 )
+from sglang_omni.platforms import current_platform
 
 # note (Zhang Yiyang): FA3 local-window attention diverges from SDPA when one
 # varlen sequence spans multiple 128-token query tiles. Pack each tile as an
@@ -448,7 +449,9 @@ class MossAudioTokenizerAttention(nn.Module):
         self.context = source.context
         self.rope = source.rope
         self._legacy_api = not hasattr(source, "resolve_attention_implementation")
-        self._flash_attn_varlen = flash_attn_varlen_func
+        self._flash_attn_varlen = (
+            None if current_platform.is_rocm() else flash_attn_varlen_func
+        )
         max_period = self.rope.max_period if self.rope is not None else 10000.0
         self._packed_rope_cache = packed_rope_cache or _MossPackedRopeCache(
             max_period=max_period
@@ -462,6 +465,12 @@ class MossAudioTokenizerAttention(nn.Module):
             # Prefer packed FlashAttention when its device and dtype requirements
             # are satisfied.
             preferred = _FLASH_ATTENTION_BACKEND
+        if (
+            current_platform.is_rocm()
+            and preferred == _FLASH_ATTENTION_BACKEND
+            and self._flash_attn_varlen is None
+        ):
+            return "sdpa"
         if preferred == _FLASH_ATTENTION_BACKEND and self._can_run_packed_flash(x):
             return _FLASH_ATTENTION_BACKEND
         resolver = getattr(self.source, "resolve_attention_implementation", None)
