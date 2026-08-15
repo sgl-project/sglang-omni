@@ -1,6 +1,6 @@
 # Whisper ASR
 
-Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint, but this path is experimental in the current SGLang-Omni tree. Prefer [Qwen3-ASR](qwen3_asr.md) for validated ASR serving.
+Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.
 
 ## Prerequisites
 
@@ -63,6 +63,17 @@ runtime_overrides:
   asr:
     request_build_max_workers: 1
     prefill_coalesce_requests: 0
+```
+
+## Async Decode
+
+Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 32. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --decode-mode sync \
+  --port 8000
 ```
 
 ## Transcribe Audio
@@ -151,8 +162,48 @@ Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and t
 ```bash
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path openai/whisper-base \
-  --max-samples 20 --concurrencies 1,2,4,8 \
+  --max-samples 128 --concurrencies 1,2,4,8,16,32 \
   --repeats 5 --warmup --output whisper_concurrency.json
+```
+
+To reproduce the async-decode comparison below, resolve the pinned checkpoint and start each mode separately on the same GPU:
+
+```bash
+MODEL_REVISION=e37978b90ca9030d5170a5c07aadb050351a65bb
+MODEL_PATH=$(hf download openai/whisper-base --revision "$MODEL_REVISION")
+
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path "$MODEL_PATH" \
+  --mem-fraction-static 0.20 \
+  --port 8000
+
+# Replace the command above with this one for the synchronous baseline.
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path "$MODEL_PATH" \
+  --mem-fraction-static 0.20 \
+  --decode-mode sync \
+  --port 8000
+```
+
+Run the same client command once per mode, changing only the output filename:
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 \
+  --model-path openai/whisper-base \
+  --model-revision e37978b90ca9030d5170a5c07aadb050351a65bb \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --max-samples 128 \
+  --concurrencies 1,2,4,8,16,32 \
+  --repeats 5 \
+  --warmup \
+  --dtype float16 \
+  --cuda-graph \
+  --torch-compile \
+  --max-running-requests 32 \
+  --mem-fraction-static 0.20 \
+  --fingerprint \
+  --output whisper_async.json
 ```
 
 ## Benchmark Results
@@ -179,10 +230,23 @@ The following W-PR2 results were measured separately on the same H200 and 20-sam
 
 All 1,200 measured requests completed successfully. Corpus WER remained 0.0415 in all three modes and at every concurrency. Logs from the optimized run showed `Replaying Whisper encoder CUDA graph batch=2 request_batch=2` and prefill batches with two sequences and 3,008 new tokens.
 
+The async-decode comparison used the 128-sample SeedTTS EN subset on the same H200 with `openai/whisper-base` in FP16, one discarded warmup, and five measured repeats per concurrency. The baseline disabled async decode; all other serving settings were identical.
+
+| Concurrency | Sync req/s | Async req/s | Throughput change | Sync P95 (s) | Async P95 (s) | P95 change | Corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 20.21 | 20.47 | +1.3% | 0.060 | 0.060 | -1.2% | 0.0329 |
+| 2 | 36.39 | 37.42 | +2.8% | 0.067 | 0.064 | -3.5% | 0.0329 |
+| 4 | 58.78 | 59.56 | +1.3% | 0.085 | 0.080 | -6.3% | 0.0329 |
+| 8 | 82.71 | 84.61 | +2.3% | 0.113 | 0.110 | -2.9% | 0.0329 |
+| 16 | 105.92 | 108.70 | +2.6% | 0.168 | 0.165 | -1.5% | 0.0329 |
+| 32 | 112.91 | 120.46 | +6.7% | 0.390 | 0.354 | -9.3% | 0.0329 |
+
+All 7,680 measured requests across both modes completed successfully. Batch size 1 uses the synchronous fast path, so its observed 1.3% difference is run-to-run noise rather than async work. A separate ten-repeat concurrency-32 stability run measured 119.49 req/s and 0.341 s P95 synchronously versus 130.68 req/s and 0.271 s P95 asynchronously, a 9.4% throughput increase and 20.6% P95 reduction. All 128 transcripts matched the synchronous baseline exactly. Request-stage profiling attributed the tail-latency reduction primarily to work after prefill: P95 from prefill completion to request completion fell from 304.6 ms to 195.4 ms, while scheduler queue P95 fell from 32.9 ms to 8.6 ms.
+
 ## Known Limitations
 
-- This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
-  for validated ASR serving.
+- Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
+  operational behavior before production deployment.
 - `verbose_json` returns a single segment spanning the audio duration; `srt`
   and `vtt` are not supported and return HTTP 400.
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA

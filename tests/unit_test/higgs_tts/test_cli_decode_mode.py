@@ -95,7 +95,7 @@ def test_decode_mode_cli_rejects_unsupported_config():
         typer.BadParameter,
         match=(
             "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-            "Qwen3-ASR, ARK-ASR, and the Qwen3-Omni thinker"
+            "Qwen3-ASR, ARK-ASR, Whisper ASR, and the Qwen3-Omni thinker"
         ),
     ):
         apply_decode_mode_cli_overrides(
