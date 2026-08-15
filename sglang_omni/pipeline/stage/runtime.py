@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -175,12 +176,15 @@ class Stage:
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
-                        import torch
+                        from sglang_omni.platforms import current_platform
 
-                        torch.get_device_module().set_device(int(self.gpu_id))
+                        current_platform.set_device(
+                            current_platform.get_device(int(self.gpu_id))
+                        )
                         logger.info(
-                            "Scheduler thread for stage %s set CUDA device to %s",
+                            "Scheduler thread for stage %s set %s device to %s",
                             self.name,
+                            current_platform.device_type,
                             self.gpu_id,
                         )
                     self.scheduler.start()

@@ -13,6 +13,7 @@ from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechPipelineConfig,
     Variants,
 )
+from sglang_omni.platforms import current_platform
 
 
 def _stage(config, name: str):
@@ -54,7 +55,11 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
     assert code2wav.gpu == 0
-    assert code2wav_args["enable_cuda_graph"] is True
+    # The graph runner is CUDA-only, so the config takes the value from the
+    # platform rather than assuming it is on.
+    assert (
+        code2wav_args["enable_cuda_graph"] is current_platform.enable_code2wav_graph()
+    )
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
     assert "enable_batching" not in code2wav.factory_args
     assert "max_batch_wait_ms" not in code2wav.factory_args

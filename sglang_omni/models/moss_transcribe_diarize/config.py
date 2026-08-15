@@ -22,6 +22,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
     """Single-stage batched ASR/diarization pipeline for MOSS-TD checkpoints."""
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
+    requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

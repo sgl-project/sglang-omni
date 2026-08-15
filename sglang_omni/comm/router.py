@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Locality classification and relay ownership for Omni communication."""
-
 from __future__ import annotations
 
 import logging
@@ -137,6 +136,16 @@ class CommRouter:
             and current_platform.get_intra_node_transport() == TransportKind.CUDA_IPC
         )
 
+    def _intra_node_transport(self, target: str) -> TransportKind:
+        # The peer probe reads torch.cuda and warns about a CUDA fallback, so it must
+        # run only once the platform has actually chosen CUDA IPC.
+        transport = current_platform.get_intra_node_transport()
+        if transport is TransportKind.CUDA_IPC and not self._cuda_ipc_peer_available(
+            target
+        ):
+            return TransportKind.SHM
+        return transport
+
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:
             return TransportKind.LOCAL_OBJECT
@@ -146,9 +155,7 @@ class CommRouter:
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
         if self.self_is_gpu and target in self.gpu_stage_names:
-            if not self._cuda_ipc_peer_available(target):
-                return TransportKind.SHM
-            return current_platform.get_intra_node_transport()
+            return self._intra_node_transport(target)
         return TransportKind.SHM
 
     def outbound_stream(self, target: str, data: torch.Tensor) -> TransportKind:
@@ -159,15 +166,13 @@ class CommRouter:
             )
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
-        if not data.is_cuda:
+        if data.device.type != current_platform.device_type:
             return TransportKind.SHM
         if self.self_is_gpu and target in self.gpu_stage_names:
-            if not self._cuda_ipc_peer_available(target):
-                return TransportKind.SHM
-            return current_platform.get_intra_node_transport()
+            return self._intra_node_transport(target)
         raise ValueError(
-            f"cuda stream chunk cannot be sent from {self.stage_name!r} to "
-            f"non-GPU target {target!r}"
+            f"{current_platform.device_type} stream chunk cannot be sent from "
+            f"{self.stage_name!r} to non-GPU target {target!r}"
         )
 
     def inbound(self, from_stage: str) -> TransportKind:
@@ -216,9 +221,7 @@ class CommRouter:
             current_platform.device_type,
         }:
             if self.self_is_gpu and target in self.gpu_stage_names:
-                if not self._cuda_ipc_peer_available(target):
-                    return TransportKind.SHM
-                return current_platform.get_intra_node_transport()
+                return self._intra_node_transport(target)
             return TransportKind.SHM
         raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")
 
@@ -264,6 +267,12 @@ class CommRouter:
                 pool_size_mb=cuda_ipc_pool_size_mb,
             )
         if kind is TransportKind.MOONCAKE:
+            if self.gpu_id is not None and not current_platform.is_cuda_alike():
+                raise NotImplementedError(
+                    f"cross-node transfer from {self.stage_name!r} needs a mooncake "
+                    f"relay, which is built on a literal cuda device; "
+                    f"{current_platform.device_type} is not supported yet"
+                )
             device = f"cuda:{self.gpu_id}" if self.gpu_id is not None else "cpu"
             return create_relay(
                 "mooncake",

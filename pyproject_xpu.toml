@@ -1,0 +1,108 @@
+[build-system]
+# >=77 for the PEP 639 license fields below, which 76.1 and older reject; that also
+# covers the PEP 660 build_editable an editable install needs. Installs here pass
+# --no-build-isolation, so pip never enforces this -- scripts/xpu/install_xpu.sh does.
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+# Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
+# Torch family pinned to +xpu; CUDA-only wheels dropped; deps scoped to the
+# XPU-supported models. sglang is verified against v0.5.16 but cannot be
+# pinned here -- every published wheel pulls CUDA torch.
+
+[project]
+name = "sglang-omni"
+dynamic = ["version"]
+description = "Multi-stage pipeline framework for omni models (Intel XPU build)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # --- Core framework (device-agnostic) ----------------------------------
+    "pyzmq>=25.0.0",
+    "msgpack>=1.0.0",
+    "msgspec",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+    "httpx",
+    "xxhash>=3.0.0",
+    "pybase64>=1.4.0",       # fast base64 decode for inline media (utils/audio.py)
+    "tabulate",
+    "pandas",
+    "typer>=0.9.0",
+
+    # --- PyTorch XPU builds (from --extra-index-url .../whl/xpu) -------------
+    # Pins match SGLang's xpu.Dockerfile; mismatched minors are what the XPU
+    # channel ships.
+    "torch==2.12.0+xpu",
+    "torchvision==0.27.0+xpu",
+    "torchaudio==2.11.0+xpu",
+    "torchcodec==0.12.0",
+
+    # --- Model loading / HF -------------------------------------------------
+    "accelerate>=0.27.0",
+    "transformers==5.12.1",        # Match SGLang 0.5.16, as the CUDA pyproject does
+    "safetensors>=0.4.3",
+    "pillow>=10.0.0",
+    "huggingface-hub>=0.36.0",
+    "datasets>=2.14.0",
+
+    # NOTE: sglang is intentionally NOT pinned here (see the header).
+
+    # --- API server ---------------------------------------------------------
+    "fastapi>=0.110.0",
+    "uvicorn>=0.23.0",
+    "websockets>=12.0",
+    "openai==2.6.1",
+    "openai-harmony==0.0.4",
+    # /v1/realtime — server-side VAD (onnxruntime accepts any protobuf: no conflict)
+    "silero-vad>=5.1",
+    "onnxruntime>=1.17",
+
+    # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------
+    "qwen-vl-utils==0.0.11",
+    "librosa>=0.11.0",
+    "av>=16.1.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+]
+
+[project.optional-dependencies]
+# SeedTTS speaker-sim / WER eval + tests (device-agnostic).
+eval = [
+    "s3prl>=0.4.18",
+    "jiwer",
+    "openai-whisper==20250625",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+# `all` aliases `eval`.
+all = [
+    "s3prl>=0.4.18", "jiwer", "openai-whisper==20250625",
+    "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+sgl-omni = "sglang_omni.cli:app"
+sgl-omni-router = "sglang_omni_router.serve:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "benchmark: performance benchmark tests (may require GPU and long runtime)",
+    "tts_stage(name): select an in-file TTS benchmark CI stage",
+    "gpu: requires an accelerator device (auto-skipped without one)",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sglang_omni*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
+
+[tool.setuptools.package-data]
+"sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+"sglang_omni.models.higgs_tts" = ["configs/*.json"]

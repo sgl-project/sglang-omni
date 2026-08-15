@@ -37,7 +37,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             process="asr",
             factory=f"{_PKG}.stages.create_sglang_qwen3_asr_executor",
             factory_args={
-                "device": "cuda:0",
+                "device": None,
                 "max_running_requests": 64,
                 # Note (Jeffro): This is the floor for the per-request output budget.
                 # The request builder will scale the actual budget with audio duration.
