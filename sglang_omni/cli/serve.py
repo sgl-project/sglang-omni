@@ -45,6 +45,7 @@ _PREFILL_COALESCE_FACTORIES = frozenset(
     {
         "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.qwen3_tts.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.qwen3_omni.stages."
         "create_sglang_thinker_executor_from_config",
         "sglang_omni.models.moss_transcribe_diarize.stages."
@@ -55,7 +56,7 @@ _PREFILL_COALESCE_FACTORIES = frozenset(
     }
 )
 _PREFILL_COALESCE_SUPPORTED_MODELS = (
-    "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
+    "Higgs TTS, MOSS-TTS-Local, Qwen3-TTS, MOSS-Transcribe-Diarize, Fun-ASR, "
     "Qwen3-ASR, Whisper ASR, and the Qwen3-Omni thinker"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (

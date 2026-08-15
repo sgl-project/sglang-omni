@@ -145,6 +145,55 @@ A closed-loop `--concurrencies 16,32,48,64` sweep is still available for
 comparing healthy vs past-ceiling points, but it does not hold overshoot. Each
 concurrency writes inspectable artifacts under `<output-dir>/c<N>/`.
 
+### Prefill Admission Coalescing
+
+Under concurrent load the `tts_engine` stage can coalesce prefill admission:
+instead of admitting each prepared request into its own prefill batch, the
+scheduler briefly holds admission until several requests are ready and prefills
+them together. A prefill step costs the scheduler loop roughly the same
+regardless of batch size, so fuller batches raise throughput — at the cost of a
+time-to-first-audio (TTFA) increase, since early requests wait for the batch to
+fill.
+
+Coalescing is **off by default** and opt-in via the shared CLI flags:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --config examples/configs/qwen3_tts_1_7b.yaml \
+  --prefill-coalesce-requests 4 \
+  --prefill-coalesce-wait-ms 60 \
+  --port 8000
+```
+
+or per-stage in YAML:
+
+```yaml
+runtime_overrides:
+  tts_engine:
+    prefill_coalesce_requests: 4
+    prefill_coalesce_wait_ms: 60.0
+```
+
+The gate engages only when `prefill_coalesce_requests` is `>= 2`. Once engaged,
+admission is released as soon as any of the following holds:
+
+- no decode is in flight, so an idle server never waits;
+- the waiting queue reaches `prefill_coalesce_requests`;
+- the oldest waiting request has waited `prefill_coalesce_wait_ms`.
+
+`prefill_coalesce_wait_ms` is therefore an upper bound rather than a typical
+wait: under heavy load the queue fills first and the deadline is rarely reached.
+
+Match `prefill_coalesce_requests` to the concurrency you actually serve. Light
+load is the worst operating point — with a target the arrival rate never fills,
+every request waits the full deadline in exchange for little throughput. Leave
+coalescing disabled for latency-sensitive traffic.
+
+Coalescing is force-disabled when `tp_size > 1`, with a warning logged at
+startup: the wait deadline reads each rank's local clock, so ranks could
+disagree on expiry and break lockstep scheduling.
+
 ## Synthesizing Speech
 
 ### Text-only Requests

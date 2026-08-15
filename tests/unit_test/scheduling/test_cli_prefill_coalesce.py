@@ -21,6 +21,7 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.llada2_uni.config import LLaDA2UniPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -50,6 +51,7 @@ def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]
     [
         (HiggsTtsPipelineConfig, "tts_engine"),
         (MossTTSLocalPipelineConfig, "tts_engine"),
+        (Qwen3TTSPipelineConfig, "tts_engine"),
         (MossTranscribeDiarizePipelineConfig, "asr"),
         (FunASRPipelineConfig, "asr"),
         (Qwen3ASRPipelineConfig, "asr"),
@@ -128,7 +130,10 @@ def test_wait_only_cli_validates_existing_per_stage_value():
 
 
 def test_rejects_unsupported_pipeline():
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    # LLaDA2-Uni runs its thinker on DllmScheduler, which only mirrors the
+    # OmniScheduler stage interface and has no prefill admission gate to tune,
+    # so it stays a negative example.
+    config = LLaDA2UniPipelineConfig(model_path="dummy")
     with pytest.raises(typer.BadParameter):
         apply_prefill_coalesce_cli_overrides(
             config, prefill_coalesce_requests=32, prefill_coalesce_wait_ms=None

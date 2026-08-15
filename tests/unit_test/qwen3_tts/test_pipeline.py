@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import threading
 import time
@@ -272,6 +273,67 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
     assert tts_engine["server_args_overrides"]["enable_deterministic_inference"]
     assert vocoder["enable_deterministic_inference"]
     assert vocoder["initial_cuda_graph"] is False
+
+
+def test_qwen3_tts_prefill_coalescing_is_opt_in() -> None:
+    signature = inspect.signature(qwen3_stages.create_sglang_tts_engine_executor)
+
+    assert signature.parameters["prefill_coalesce_requests"].default == 0
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 60.0
+
+
+def test_qwen3_tts_factory_forwards_coalescing_params_to_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
+
+    captured: dict[str, object] = {}
+
+    class FakeBuilder:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def build(self, model_path, **kwargs):
+            del model_path, kwargs
+            return "engine"
+
+    monkeypatch.setattr(engine_builder_mod, "Qwen3TtsEngineBuilder", FakeBuilder)
+
+    result = qwen3_stages.create_sglang_tts_engine_executor(
+        "model",
+        prefill_coalesce_requests=4,
+        prefill_coalesce_wait_ms=120.0,
+    )
+
+    assert result == "engine"
+    assert captured["prefill_coalesce_requests"] == 4
+    assert captured["prefill_coalesce_wait_ms"] == 120.0
+
+
+def test_qwen3_tts_extra_scheduler_kwargs_keeps_stream_output_builder() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    builder = Qwen3TtsEngineBuilder(
+        prefill_coalesce_requests=4,
+        prefill_coalesce_wait_ms=120.0,
+    )
+    sentinel = object()
+    builder._stream_output_builder = sentinel
+
+    kwargs = builder.extra_scheduler_kwargs()
+
+    assert kwargs["stream_output_builder"] is sentinel
+    assert kwargs["prefill_coalesce_requests"] == 4
+    assert kwargs["prefill_coalesce_wait_ms"] == 120.0
+
+
+def test_qwen3_tts_coalescing_defaults_leave_gate_disabled() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    kwargs = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
+
+    assert kwargs["prefill_coalesce_requests"] == 0
+    assert kwargs["prefill_coalesce_wait_ms"] == 60.0
 
 
 @pytest.mark.parametrize(
