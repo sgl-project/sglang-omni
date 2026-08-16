@@ -1334,8 +1334,8 @@ def serve(
                 "async|sync. Omit this flag to use the model-specific pipeline "
                 "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
-                "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
-                "MOSS-Transcribe-Diarize, Fun-ASR, Qwen3-ASR, and ARK-ASR."
+                "the next GPU forward. Available for "
+                f"{_ASYNC_DECODE_SUPPORTED_MODELS}."
             ),
         ),
     ] = None,
