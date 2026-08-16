@@ -103,7 +103,9 @@ def load_code2wav_model(
     return model.eval()
 
 
-@dataclass
+# Note (wenyao): identity equality — the pools ask which slot this is, and
+# dataclass value equality would compare buffers, which raises on tensors.
+@dataclass(eq=False)
 class _PinnedSlot:
     """Pool-owned pinned staging buffer for one in-flight D2H window copy.
 
@@ -201,6 +203,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self._default_slot_samples = self._stream_chunk_size * self._total_upsample
         self._pinned_free: list[_PinnedSlot] = []
         self._pinned_created = 0
+        # Note (wenyao): a slot must have exactly one owner at any time.
+        # Quarantined slots are never reused but still count against
+        # _MAX_PINNED_SLOTS, so an event failure cannot inflate the cap.
+        self._pinned_retired: list[_PinnedSlot] = []
+        self._pinned_quarantined: list[_PinnedSlot] = []
 
     @property
     def _chunk_aligned_dispatch(self) -> bool:
@@ -272,13 +279,17 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         leading code equals the codec EOS id is dropped and every other frame
         keeps its arrival order (0-dim frames bypass the check, as in the
         eager path). One host sync per scan instead of one per frame.
+
+        The producer emits 1-D ``[num_quantizers]`` frames; any other rank
+        falls back to the per-frame path rather than stacking into a nested
+        truthy list that would silently drop malformed chunks.
         """
         chunks = state.chunks
         start = state.checked
         if start >= len(chunks):
             return
         unchecked = chunks[start:]
-        if all(codes.ndim >= 1 for codes in unchecked):
+        if all(codes.ndim == 1 for codes in unchecked):
             heads = torch.stack([codes[0] for codes in unchecked])
             is_eos = (heads == self._codec_eos_token_id).tolist()
         else:
@@ -334,6 +345,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         samples = int(wav.numel())
         prev_wait_ns = 0
         prev_waveform: torch.Tensor | None = None
+        prev_materialized_samples = 0
         slot: _PinnedSlot | None = None
         # note (EdwardZhang1108): the first window stays synchronous so
         # time-to-first-audio is unchanged.
@@ -343,7 +355,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 # note (EdwardZhang1108): freeing this request's own pending
                 # window keeps its emission order; the retry cannot miss since
                 # only this thread touches the pool.
+                pending_samples = state.pending.samples
                 prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
+                prev_materialized_samples = pending_samples
                 slot = self._acquire_slot(samples)
         if slot is None:
             audio = wav.reshape(-1).detach().cpu().float().numpy().copy()
@@ -379,28 +393,42 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             if not state.stream_enabled:
                 return prev_waveform
             return torch.from_numpy(audio)
-        # note (EdwardZhang1108): same stream is what makes this safe — the
-        # copy is ordered before any later replay, so the borrowed static
-        # output cannot be overwritten while it drains.
-        slot.buffer[:samples].copy_(
-            wav.reshape(-1).to(torch.float32), non_blocking=True
-        )
-        slot.event.record()
-        if profile_metadata is not None:
-            _emit_event(
-                request_id=request_id,
-                stage=None,
-                event_name="code2wav_decode_launched",
-                metadata={
-                    **execution_metadata,
-                    "window_frames": end - start + context,
-                    "new_frames": end - start,
-                },
+        event_recorded = False
+        try:
+            # note (EdwardZhang1108): same stream is what makes this safe — the
+            # copy is ordered before any later replay, so the borrowed static
+            # output cannot be overwritten while it drains.
+            slot.buffer[:samples].copy_(
+                wav.reshape(-1).to(torch.float32), non_blocking=True
             )
-        if state.pending is not None:
-            # note (EdwardZhang1108): flushed after the launch above so the
-            # host work overlaps the GPU computing this window.
-            prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
+            slot.event.record()
+            event_recorded = True
+            if profile_metadata is not None:
+                _emit_event(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="code2wav_decode_launched",
+                    metadata={
+                        **execution_metadata,
+                        "window_frames": end - start + context,
+                        "new_frames": end - start,
+                    },
+                )
+            if state.pending is not None:
+                # note (EdwardZhang1108): flushed after the launch above so the
+                # host work overlaps the GPU computing this window.
+                pending_samples = state.pending.samples
+                prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
+                prev_materialized_samples = pending_samples
+        except Exception:
+            if event_recorded:
+                self._retire_slot(slot)
+            else:
+                # Note (wenyao): a failed copy or record leaves no trustworthy
+                # completion marker, so this buffer must never go back into
+                # rotation even though it was never handed to a request.
+                self._quarantine_slot(slot)
+            raise
         state.pending = _PendingWindow(slot=slot, samples=samples)
         state.emitted = end
         state.due_since = None
@@ -415,6 +443,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     **execution_metadata,
                     "pipelined": True,
                     "d2h_wait_ns": prev_wait_ns,
+                    "materialized_previous_audio_samples": prev_materialized_samples,
                 },
             )
         return prev_waveform
@@ -428,12 +457,16 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         pending = state.pending
         if pending is None:
             return 0, None
-        state.pending = None
         slot = pending.slot
         wait_start = time.monotonic_ns()
         slot.event.synchronize()
         wait_ns = time.monotonic_ns() - wait_start
         audio = slot.buffer[: pending.samples].numpy().copy()
+
+        # Note (wenyao): every operation above may raise, so the request must
+        # keep owning the slot until synchronization and the host copy both
+        # succeed; releasing first would hand a live D2H target to the pool.
+        state.pending = None
         self._release_slot(slot)
         if audio.size == 0:
             return wait_ns, None
@@ -453,6 +486,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         return torch.empty(samples, dtype=torch.float32, pin_memory=True)
 
     def _acquire_slot(self, samples: int) -> _PinnedSlot | None:
+        self._reap_retired_slots()
         if self._pinned_free:
             slot = self._pinned_free.pop()
         elif self._pinned_created < self._MAX_PINNED_SLOTS:
@@ -464,11 +498,59 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         else:
             return None
         if slot.buffer.numel() < samples:
-            slot.buffer = self._alloc_pinned(samples)
+            try:
+                slot.buffer = self._alloc_pinned(samples)
+            except Exception:
+                # Note (wenyao): the popped slot is not in flight, so returning
+                # it with its original smaller buffer is safe.
+                self._release_slot(slot)
+                raise
         return slot
 
     def _release_slot(self, slot: _PinnedSlot) -> None:
         self._pinned_free.append(slot)
+
+    def _event_query(self, slot: _PinnedSlot) -> bool:
+        if self._device.type == "cuda":
+            with torch.cuda.device(self._device):
+                return bool(slot.event.query())
+        return bool(slot.event.query())
+
+    def _event_synchronize(self, slot: _PinnedSlot) -> None:
+        if self._device.type == "cuda":
+            with torch.cuda.device(self._device):
+                slot.event.synchronize()
+            return
+        slot.event.synchronize()
+
+    def _retire_slot(self, slot: _PinnedSlot) -> None:
+        self._pinned_retired.append(slot)
+
+    def _quarantine_slot(self, slot: _PinnedSlot) -> None:
+        self._pinned_quarantined.append(slot)
+        self._pipeline_active = False
+
+    def _reap_retired_slots(self) -> None:
+        """Non-blockingly return completed retired slots to the free pool.
+
+        Callers hold ``_state_lock``. An event-query error leaves the buffer
+        owned by the scheduler but permanently unavailable for reuse.
+        """
+        if not self._pinned_retired:
+            return
+        still_retired: list[_PinnedSlot] = []
+        for slot in self._pinned_retired:
+            try:
+                complete = self._event_query(slot)
+            except Exception:
+                logger.exception("code2wav failed to query a retired D2H copy")
+                self._quarantine_slot(slot)
+                continue
+            if complete:
+                self._release_slot(slot)
+            else:
+                still_retired.append(slot)
+        self._pinned_retired = still_retired
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Code2WavStreamState
@@ -541,6 +623,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 return
 
     def _next_message(self):
+        # Note (wenyao): ``Event.query()`` is non-blocking, so reaping on this
+        # loop cannot recreate the abort stall it replaces.
+        with self._state_lock:
+            self._reap_retired_slots()
         if self._can_batch_stream_chunks:
             first_chunks: list = []
             for msg in self._drain_inbox():
@@ -656,20 +742,26 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         pending = state.pending
         if pending is None:
             return
+        # Note (wenyao): abort arrives on the stage event-loop thread, so this
+        # must not block on CUDA; running under ``_state_lock`` makes the
+        # handoff to the scheduler thread atomic instead.
+        self._retire_slot(pending.slot)
         state.pending = None
-        try:
-            if self._device.type == "cuda":
-                # note (EdwardZhang1108): abort arrives on the stage
-                # event-loop thread, which never set this stage's device.
-                with torch.cuda.device(self._device):
-                    pending.slot.event.synchronize()
+
+    def on_serving_stop(self) -> None:
+        """Drain retired slots at shutdown, when blocking costs no latency."""
+        retired = self._pinned_retired
+        self._pinned_retired = []
+        for slot in retired:
+            try:
+                self._event_synchronize(slot)
+            except Exception:
+                logger.exception(
+                    "code2wav failed to synchronize a retired D2H copy on shutdown"
+                )
+                self._pinned_quarantined.append(slot)
             else:
-                pending.slot.event.synchronize()
-        except Exception:
-            logger.exception(
-                "code2wav failed to synchronize a pending D2H copy on release"
-            )
-        self._release_slot(pending.slot)
+                self._release_slot(slot)
 
     def select_step_participants(self) -> list[tuple[str, Code2WavStreamState]]:
         now = time.monotonic()

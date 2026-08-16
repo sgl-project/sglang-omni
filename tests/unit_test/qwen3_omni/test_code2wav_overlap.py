@@ -11,6 +11,7 @@ both arms rather than a false pass.
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -30,19 +31,33 @@ from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_pay
 
 
 class _FakeEvent:
-    """CPU stand-in for torch.cuda.Event (record/query/synchronize)."""
+    """CPU stand-in for torch.cuda.Event with controllable completion."""
 
     def __init__(self) -> None:
-        self.synced = False
+        self.complete = True
+        self.sync_error: BaseException | None = None
+        self.query_error: BaseException | None = None
+        self.record_error: BaseException | None = None
+        self.synchronize_calls = 0
+        self.query_calls = 0
+        self.record_calls = 0
 
     def record(self) -> None:
-        pass
+        self.record_calls += 1
+        if self.record_error is not None:
+            raise self.record_error
 
     def query(self) -> bool:
-        return True
+        self.query_calls += 1
+        if self.query_error is not None:
+            raise self.query_error
+        return self.complete
 
     def synchronize(self) -> None:
-        self.synced = True
+        self.synchronize_calls += 1
+        if self.sync_error is not None:
+            raise self.sync_error
+        self.complete = True
 
 
 class _DeviceFakeModel(FakeCode2WavModel):
@@ -183,6 +198,29 @@ def test_overlap_protocol_bitwise_matches_sync(
     assert [item[1] for item in overlap_snapshot] == expected_types
 
 
+def test_overlap_protocol_bitwise_matches_sync_with_threshold_eos(monkeypatch) -> None:
+    def _run(*, overlap: bool) -> list[tuple]:
+        scheduler = _make_scheduler(overlap=overlap)
+        if overlap:
+            _force_pipeline(scheduler, monkeypatch)
+        _seed(scheduler)
+        _feed(scheduler, "req-1", range(9))
+        scheduler._on_chunk(
+            "req-1",
+            StreamItem(
+                9,
+                torch.tensor([2150, 0]),
+                "talker",
+                metadata={"stream": True},
+            ),
+        )
+        _feed(scheduler, "req-1", range(9, 20))
+        scheduler._on_done("req-1")
+        return _drain_snapshot(scheduler)
+
+    assert _run(overlap=True) == _run(overlap=False)
+
+
 def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     control = _run_stream(overlap=False, n_chunks=30)
 
@@ -216,21 +254,171 @@ def test_overlap_nonstreaming_pending_appends_parts_result_only(monkeypatch) -> 
     assert audio.shape == (42,)
 
 
-def test_overlap_abort_releases_pending_slot_and_syncs_event(monkeypatch) -> None:
+def test_overlap_flush_failure_keeps_pending_owned_until_abort(monkeypatch) -> None:
     scheduler = _make_scheduler(overlap=True)
     _force_pipeline(scheduler, monkeypatch)
     _seed(scheduler)
     _feed(scheduler, "req-1", range(20))
 
     state = scheduler._stream_states["req-1"]
-    assert state.pending is not None
-    event = state.pending.slot.event
+    pending = state.pending
+    assert pending is not None
+    event = pending.slot.event
+    event.complete = False
+    event.sync_error = RuntimeError("D2H synchronization failed")
+
+    with pytest.raises(RuntimeError, match="D2H synchronization failed"):
+        scheduler._flush_pending("req-1", state)
+
+    assert state.pending is pending
+    assert pending.slot not in scheduler._pinned_free
 
     scheduler.abort("req-1")
 
-    assert "req-1" not in scheduler._stream_states
-    assert event.synced
-    assert len(scheduler._pinned_free) == 1
+    assert state.pending is None
+    assert pending.slot in scheduler._pinned_retired
+    assert pending.slot not in scheduler._pinned_free
+
+
+def test_overlap_abort_retires_inflight_slot_without_synchronizing(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(20))
+
+    state = scheduler._stream_states["req-1"]
+    pending = state.pending
+    assert pending is not None
+    event = pending.slot.event
+    event.complete = False
+    event.sync_error = AssertionError("abort must not synchronize")
+
+    scheduler.abort("req-1")
+
+    assert event.synchronize_calls == 0
+    assert pending.slot in scheduler._pinned_retired
+    assert pending.slot not in scheduler._pinned_free
+
+
+def test_overlap_acquire_reaps_completed_retired_slot(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(20))
+
+    pending = scheduler._stream_states["req-1"].pending
+    assert pending is not None
+    slot = pending.slot
+    slot.event.complete = False
+    scheduler.abort("req-1")
+
+    slot.event.complete = True
+    acquired = scheduler._acquire_slot(slot.buffer.numel())
+
+    assert acquired is slot
+    assert scheduler._pinned_retired == []
+    assert scheduler._pinned_created == 1
+
+
+def test_overlap_query_failure_quarantines_slot(monkeypatch, caplog) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(20))
+
+    pending = scheduler._stream_states["req-1"].pending
+    assert pending is not None
+    slot = pending.slot
+    slot.event.query_error = RuntimeError("event query failed")
+    scheduler.abort("req-1")
+
+    scheduler._reap_retired_slots()
+
+    assert scheduler._pinned_retired == []
+    assert scheduler._pinned_quarantined == [slot]
+    assert slot not in scheduler._pinned_free
+    assert scheduler._pipeline_active is False
+    assert "failed to query a retired D2H copy" in caplog.text
+
+
+def test_overlap_previous_flush_failure_keeps_both_slots_owned(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(20))
+
+    state = scheduler._stream_states["req-1"]
+    previous = state.pending
+    assert previous is not None
+    previous.slot.event.complete = False
+    previous.slot.event.sync_error = RuntimeError("previous flush failed")
+
+    with pytest.raises(RuntimeError, match="previous flush failed"):
+        _feed(scheduler, "req-1", range(20, 30))
+
+    assert state.pending is previous
+    assert len(scheduler._pinned_retired) == 1
+    current_slot = scheduler._pinned_retired[0]
+    assert current_slot is not previous.slot
+    assert current_slot.event.record_calls == 1
+
+    scheduler.abort("req-1")
+    assert previous.slot in scheduler._pinned_retired
+    assert current_slot in scheduler._pinned_retired
+
+
+def test_overlap_record_failure_quarantines_current_slot(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(10))
+
+    event = _FakeEvent()
+    event.record_error = RuntimeError("event record failed")
+    monkeypatch.setattr(torch.cuda, "Event", lambda: event)
+
+    with pytest.raises(RuntimeError, match="event record failed"):
+        _feed(scheduler, "req-1", range(10, 20))
+
+    assert len(scheduler._pinned_quarantined) == 1
+    assert scheduler._pinned_quarantined[0].event is event
+    assert scheduler._pinned_free == []
+    assert scheduler._pipeline_active is False
+
+
+def test_overlap_slot_growth_failure_returns_original_free_slot(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    slot = scheduler._acquire_slot(2)
+    assert slot is not None
+    scheduler._release_slot(slot)
+
+    def _fail_alloc(samples: int) -> torch.Tensor:
+        raise RuntimeError(f"cannot grow to {samples}")
+
+    monkeypatch.setattr(scheduler, "_alloc_pinned", _fail_alloc)
+
+    with pytest.raises(RuntimeError, match="cannot grow"):
+        scheduler._acquire_slot(slot.buffer.numel() + 1)
+
+    assert scheduler._pinned_free == [slot]
+    assert scheduler._pinned_created == 1
+
+
+def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(20))
+
+    pending = scheduler._stream_states["req-1"].pending
+    assert pending is not None
+    event = pending.slot.event
+
+    scheduler._on_done("req-1")
+
+    assert event.synchronize_calls == 1
+    assert pending.slot in scheduler._pinned_free
 
 
 def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) -> None:
@@ -275,6 +463,12 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
             messages.append(message)
             if message.type == "error":
                 break
+        # Note (wenyao): the reclaim must be observed while the scheduler is
+        # still running — stopping first lets the shutdown drain synchronize
+        # instead, which would hide a missing reap.
+        deadline = time.monotonic() + 2.0
+        while not scheduler._pinned_free and time.monotonic() < deadline:
+            time.sleep(0.01)
     finally:
         scheduler.stop()
         thread.join(timeout=2.0)
@@ -285,8 +479,10 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
     assert "req-1" not in scheduler._stream_states
     # note (EdwardZhang1108): reclaimed via release_stream_resources, which is
     # the only path an aborted request takes.
+    assert [message.type for message in messages] == ["stream", "error"]
+    assert scheduler._pinned_retired == []
     assert len(scheduler._pinned_free) == 1
-    assert scheduler._pinned_free[0].event.synced
+    assert scheduler._pinned_free[0].event.query_calls >= 1
 
 
 def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None:
@@ -431,6 +627,29 @@ def test_overlap_events_order_and_metadata(monkeypatch) -> None:
         if event["event_name"] == "code2wav_decode_start"
     ][1]
     assert first_audio_index < second_start_index  # TTFA event timing unchanged
+
+
+def test_overlap_decode_end_separates_launched_and_materialized_samples(
+    monkeypatch,
+) -> None:
+    events = _activate_event_capture(monkeypatch)
+    scheduler = _make_scheduler(overlap=True)
+    _force_pipeline(scheduler, monkeypatch)
+    _seed(scheduler)
+    _feed(scheduler, "req-1", range(30))
+
+    pipelined_ends = [
+        event
+        for event in events
+        if event["event_name"] == "code2wav_decode_end"
+        and event["metadata"].get("pipelined") is True
+    ]
+
+    assert len(pipelined_ends) == 2
+    assert pipelined_ends[0]["metadata"]["audio_samples"] == 20
+    assert pipelined_ends[0]["metadata"]["materialized_previous_audio_samples"] == 0
+    assert pipelined_ends[1]["metadata"]["audio_samples"] == 20
+    assert pipelined_ends[1]["metadata"]["materialized_previous_audio_samples"] == 20
 
 
 def test_overlap_sync_scheduler_emits_no_new_event_keys(monkeypatch) -> None:
