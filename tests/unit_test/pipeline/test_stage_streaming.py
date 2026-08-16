@@ -308,13 +308,9 @@ def test_inline_stream_chunk_gate() -> None:
     small = torch.zeros(8, dtype=torch.long)
     assert stage_io.should_use_inline_stream_chunk(small, {"token_id": 1})
     assert stage_io.should_use_inline_stream_chunk(small, None)
-    big = torch.zeros(
-        stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT + 1, dtype=torch.uint8
-    )
+    big = torch.zeros(stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT + 1, dtype=torch.uint8)
     assert not stage_io.should_use_inline_stream_chunk(big, None)
-    assert not stage_io.should_use_inline_stream_chunk(
-        small, {"extra": torch.zeros(2)}
-    )
+    assert not stage_io.should_use_inline_stream_chunk(small, {"extra": torch.zeros(2)})
     assert not stage_io.should_use_inline_stream_chunk("not-a-tensor", None)
 
 
