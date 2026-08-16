@@ -487,7 +487,10 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
     assert "req-1" not in scheduler._stream_states
     # note (EdwardZhang1108): reclaimed via release_stream_resources, which is
     # the only path an aborted request takes.
-    assert [message.type for message in messages] == ["stream", "error"]
+    # Note (wenyao): two — the second window's copy had drained before the third
+    # replay failed, so its audio reaches the client instead of dying with the
+    # aborted request.
+    assert [message.type for message in messages] == ["stream", "stream", "error"]
     assert scheduler._pinned_retired == []
     assert len(scheduler._pinned_free) == 1
     assert scheduler._pinned_free[0].event.query_calls >= 1
@@ -637,27 +640,20 @@ def test_overlap_events_order_and_metadata(monkeypatch) -> None:
     assert first_audio_index < second_start_index  # TTFA event timing unchanged
 
 
-def test_overlap_decode_end_separates_launched_and_materialized_samples(
+def test_overlap_drained_window_is_emitted_without_a_further_dispatch(
     monkeypatch,
 ) -> None:
-    events = _activate_event_capture(monkeypatch)
     scheduler = _make_scheduler(overlap=True)
     _force_pipeline(scheduler, monkeypatch)
     _seed(scheduler)
-    _feed(scheduler, "req-1", range(30))
 
-    pipelined_ends = [
-        event
-        for event in events
-        if event["event_name"] == "code2wav_decode_end"
-        and event["metadata"].get("pipelined") is True
-    ]
+    _feed(scheduler, "req-1", range(20))
+    assert scheduler._stream_states["req-1"].pending is not None
+    assert [item[1] for item in _drain_snapshot(scheduler)] == ["stream"]
 
-    assert len(pipelined_ends) == 2
-    assert pipelined_ends[0]["metadata"]["audio_samples"] == 20
-    assert pipelined_ends[0]["metadata"]["materialized_previous_audio_samples"] == 0
-    assert pipelined_ends[1]["metadata"]["audio_samples"] == 20
-    assert pipelined_ends[1]["metadata"]["materialized_previous_audio_samples"] == 20
+    _feed(scheduler, "req-1", range(20, 21))
+    assert scheduler._stream_states["req-1"].pending is None
+    assert [item[1] for item in _drain_snapshot(scheduler)] == ["stream"]
 
 
 def test_overlap_sync_scheduler_emits_no_new_event_keys(monkeypatch) -> None:

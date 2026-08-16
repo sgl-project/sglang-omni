@@ -448,6 +448,22 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             )
         return prev_waveform
 
+    def _decode_and_emit(
+        self, request_id: str, state: Code2WavStreamState
+    ) -> list[OutgoingMessage]:
+        # Note (wenyao): frames arrive per talker decode step but windows only
+        # every stream_chunk_size of them, so waiting for the next dispatch
+        # would hold drained audio for a whole window arrival.
+        messages: list[OutgoingMessage] = []
+        pending = state.pending
+        if pending is not None and pending.slot.event.query():
+            _, waveform = self._flush_pending(request_id, state)
+            if waveform is not None:
+                self._mark_stream_emitted(request_id)
+                messages.append(self._stream_chunk_message(request_id, waveform))
+        messages.extend(super()._decode_and_emit(request_id, state))
+        return messages
+
     def _flush_pending(
         self, request_id: str, state: Code2WavStreamState
     ) -> tuple[int, torch.Tensor | None]:
