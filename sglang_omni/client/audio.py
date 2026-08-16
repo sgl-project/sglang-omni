@@ -349,8 +349,9 @@ def encode_audio(
     if arr.ndim > 1:
         if arr.shape[0] > arr.shape[-1]:
             arr = arr.T
-        # Preserve native stereo for supported non-WAV formats; keep the
-        # historical mono behavior for raw PCM and unsupported channel layouts.
+        # note(chenye): Preserve native stereo for supported non-WAV formats;
+        # keep the historical mono behavior for raw PCM and unsupported
+        # channel layouts.
         if fmt != "wav" and (
             fmt not in ("mp3", "flac", "opus", "aac") or arr.shape[0] != 2
         ):
