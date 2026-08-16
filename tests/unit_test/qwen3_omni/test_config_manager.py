@@ -224,7 +224,8 @@ def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> 
 
 def test_config_manager_rejects_unknown_stage_override(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text("""
+    config_path.write_text(
+        """
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
@@ -232,7 +233,8 @@ stage_overrides:
     runtime:
       resources:
         total_gpu_memory_fraction: 0.05
-""")
+"""
+    )
 
     with pytest.raises(ValueError, match="unknown stage"):
         ConfigManager.from_file(str(config_path))
@@ -242,13 +244,15 @@ def test_config_manager_rejects_unsupported_stage_override_key(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text("""
+    config_path.write_text(
+        """
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
   thinker:
     gpu: 0
-""")
+"""
+    )
 
     with pytest.raises(ValueError, match="supports only runtime"):
         ConfigManager.from_file(str(config_path))
@@ -258,11 +262,13 @@ def test_config_manager_rejects_non_mapping_stage_overrides(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text("""
+    config_path.write_text(
+        """
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
-""")
+"""
+    )
 
     with pytest.raises(ValueError, match="stage_overrides must be a mapping"):
         ConfigManager.from_file(str(config_path))
@@ -272,7 +278,8 @@ def test_config_manager_validates_stage_override_runtime_values(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "bad_colocated.yaml"
-    config_path.write_text("""
+    config_path.write_text(
+        """
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 model_path: dummy
 stage_overrides:
@@ -280,7 +287,8 @@ stage_overrides:
     runtime:
       resources:
         total_gpu_memory_fraction: 1.5
-""")
+"""
+    )
 
     with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
         ConfigManager.from_file(str(config_path))
