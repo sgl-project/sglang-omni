@@ -200,8 +200,10 @@ window's waveform readback runs as an asynchronous device-to-host copy into a
 pinned staging buffer and is materialized while the GPU computes the next
 window, and the codec EOS check runs once per window instead of once per
 frame. The first window of every request stays synchronous, so
-time-to-first-audio is unchanged. Audio bytes and message boundaries are
-identical to the synchronous path. To disable it:
+time-to-first-audio is unchanged. For successfully completed requests, audio
+bytes and message boundaries are identical to the synchronous path. A request
+that fails or is aborted can drop an un-emitted pending window while its
+in-flight staging buffer is retired. To disable it:
 
 ```yaml
 runtime_overrides:
