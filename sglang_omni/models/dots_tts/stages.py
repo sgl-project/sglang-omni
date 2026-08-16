@@ -99,6 +99,8 @@ def preprocess_dots_tts_payload(
     max_generate_length: int,
     max_sequence_length: int,
     default_num_steps: int = 4,
+    audio_span_token_ids: tuple[int, int] | None = None,
+    vocab_size: int | None = None,
 ) -> StagePayload:
     from dots_tts.data.pipelines.tokenizing import build_generation_schedule
     from dots_tts.data.pipelines.tts_pipeline import (
@@ -237,6 +239,14 @@ def preprocess_dots_tts_payload(
             f"dots.tts schedule exceeds context length {max_sequence_length}"
         )
 
+    if audio_span_token_ids is None:
+        audio_span_token_ids = (
+            require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
+            require_token_id(tokenizer, AUDIO_COMP_SPAN_TOKEN),
+        )
+    if vocab_size is None:
+        vocab_size = len(tokenizer)
+
     state = DotsTTSState(
         sample_rate=int(model_config.vocoder.sample_rate),
         prompt_audio_path=prompt_audio,
@@ -306,12 +316,9 @@ def preprocess_dots_tts_payload(
         ),
         stream=bool(params.get("stream", False)),
         generation_schedule=schedule,
-        audio_span_token_ids=[
-            require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
-            require_token_id(tokenizer, AUDIO_COMP_SPAN_TOKEN),
-        ],
+        audio_span_token_ids=list(audio_span_token_ids),
         latent_patch_size=int(model_config.patch_size),
-        vocab_size=len(tokenizer),
+        vocab_size=int(vocab_size),
     )
     if state.num_steps <= 0:
         raise ValueError("dots.tts num_steps must be positive")
@@ -349,6 +356,17 @@ def create_preprocessing_executor(
     max_concurrency: int = 8,
 ) -> SimpleScheduler:
     _root, config, tokenizer, context_length = _load_model_metadata(model_path)
+    from dots_tts.utils.tokenizer import (
+        AUDIO_COMP_SPAN_TOKEN,
+        AUDIO_GEN_SPAN_TOKEN,
+        require_token_id,
+    )
+
+    audio_span_token_ids = (
+        require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
+        require_token_id(tokenizer, AUDIO_COMP_SPAN_TOKEN),
+    )
+    vocab_size = len(tokenizer)
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         return preprocess_dots_tts_payload(
@@ -358,6 +376,8 @@ def create_preprocessing_executor(
             max_generate_length=max_generate_length,
             max_sequence_length=context_length,
             default_num_steps=default_num_steps,
+            audio_span_token_ids=audio_span_token_ids,
+            vocab_size=vocab_size,
         )
 
     return SimpleScheduler(_preprocess, max_concurrency=max_concurrency)
