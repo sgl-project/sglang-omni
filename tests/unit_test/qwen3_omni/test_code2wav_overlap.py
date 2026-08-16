@@ -415,6 +415,14 @@ def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
     assert pending is not None
     event = pending.slot.event
 
+    release_slot = scheduler._release_slot
+
+    def _release_after_synchronize(slot) -> None:
+        assert slot.event.synchronize_calls == 1
+        release_slot(slot)
+
+    monkeypatch.setattr(scheduler, "_release_slot", _release_after_synchronize)
+
     scheduler._on_done("req-1")
 
     assert event.synchronize_calls == 1
