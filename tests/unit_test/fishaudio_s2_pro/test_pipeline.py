@@ -439,6 +439,71 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
 
 
+class _RecordingFishTokenizer(FakeFishTokenizer):
+    vocab_size = 512
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self.additional_stop_token_ids
+        self.metadata_calls: list[str] = []
+        self.added_vocab = {"<|semantic:4095|>": 639}
+
+    def get_added_vocab(self) -> dict[str, int]:
+        self.metadata_calls.append("get_added_vocab")
+        return dict(self.added_vocab)
+
+    def __len__(self) -> int:
+        self.metadata_calls.append("len")
+        return 640
+
+
+def _attach_recording_stop_token_ids(tokenizer: _RecordingFishTokenizer) -> None:
+    tokenizer.additional_stop_token_ids = list(tokenizer.get_added_vocab().values())
+
+
+def test_fish_scheduler_resolves_tokenizer_invariants_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=tokenizer)
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    first = request_builder(make_s2pro_payload(request_id="req-1"))
+    second = request_builder(make_s2pro_payload(request_id="req-2"))
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.added_vocab == original_added_vocab
+    assert first.req.vocab_size == second.req.vocab_size == 640
+    assert first.req.eos_token_ids == second.req.eos_token_ids == {99}
+    assert first.req.sampling_params.stop_token_ids == {99}
+    assert second.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_resolves_tokenizer_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(), tokenizer, request_id="direct"
+    )
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.added_vocab == original_added_vocab
+    assert req_data.req.vocab_size == 640
+    assert req_data.req.eos_token_ids == {99}
+
+
 @pytest.mark.parametrize("top_k", [0, 31])
 def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
     tokenizer = FakeFishTokenizer()
