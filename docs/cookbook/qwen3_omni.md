@@ -14,7 +14,7 @@ docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
 
 ```bash
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install "sglang-omni==0.1.1"
+uv pip install "sglang-omni==0.1.2"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
