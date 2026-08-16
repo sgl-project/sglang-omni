@@ -504,6 +504,21 @@ def test_fish_direct_builder_resolves_tokenizer_invariants(
     assert req_data.req.eos_token_ids == {99}
 
 
+def test_fish_direct_builder_normalizes_explicit_tokenizer_invariants() -> None:
+    tokenizer = FakeFishTokenizer()
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(),
+        tokenizer,
+        request_id="explicit",
+        im_end_token_id=np.int64(99),
+        vocab_size=np.int64(640),
+    )
+
+    assert type(req_data.req.vocab_size) is int
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+
+
 @pytest.mark.parametrize("top_k", [0, 31])
 def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
     tokenizer = FakeFishTokenizer()

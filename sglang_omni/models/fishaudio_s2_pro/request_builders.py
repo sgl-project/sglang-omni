@@ -115,6 +115,11 @@ def build_sglang_tts_request(
             # every request on its first sampled code.
             vocab_size = len(tokenizer)
 
+    # Explicit values come from a tokenizer-prepared adapter lifecycle. Keep
+    # Req/SamplingParams metadata on native Python scalars for direct callers.
+    im_end_token_id = int(im_end_token_id)
+    vocab_size = int(vocab_size)
+
     sampling_params = SamplingParams(
         max_new_tokens=state.max_new_tokens,
         temperature=state.temperature,
