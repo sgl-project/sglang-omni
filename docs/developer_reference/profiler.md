@@ -75,10 +75,19 @@ Supporting events used for finer-grained breakdown:
 | Stage | `stage_stream_chunk_received` | Each stream chunk materialized and ready for the receiver scheduler, including coordinator terminal chunks |
 | AR scheduler | `scheduler_queue_enter` | Built request entered the scheduler queue |
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
+| AR scheduler | `thinker_lookahead_decision` | Async-decode routing decision per decode batch (metadata `use_lookahead`, `bs`, `min_bs`) |
+| AR scheduler | `thinker_lookahead_launch` | Lookahead step launched on the GPU (metadata `bs`) |
+| AR scheduler | `thinker_lookahead_resolve` | Launched step resolved (metadata `bs`, cumulative `query_hit_total` / `query_miss_total` — per-step blocking is the delta between consecutive events) |
 | Code2Wav | `code2wav_decode_start` | Serial decode start: trigger, start/end/new/context/window frames, active and threshold-ready requests, inbox depth |
 | Code2Wav | `code2wav_decode_end` | Repeats the start metadata and adds audio samples plus execution metadata |
 | Code2Wav | `code2wav_batch_start` | Coalesced step start: batch and bucket shape, new/window frames, active requests, inbox depth, oldest wait, fire reason, due-bucket count, and sub-batch decomposition |
 | Code2Wav | `code2wav_batch_end` | Repeats the start metadata and adds audio samples, execution mode, graph key, and fallback reason |
+
+The lookahead events are gated on `recorder.is_active()` at the call site (in
+addition to the recorder's own no-op behavior) so the async decode hot loop
+pays a single boolean check when profiling is off. Note that an **active**
+recorder has a measurable throughput cost on this path — do not benchmark with
+the recorder on.
 
 Custom callsites can call `sglang_omni.profiler.event_recorder.emit(...)` to
 add domain-specific events. Events from inactive recorders are no-ops, so

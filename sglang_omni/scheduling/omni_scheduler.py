@@ -47,6 +47,7 @@ from sglang_omni.profiler.event_recorder import (
     emit_model_path_start as _emit_model_path_start,
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -1432,6 +1433,13 @@ class OmniScheduler:
         self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
+        if _get_event_recorder().is_active() and batch.reqs:
+            _emit_event(
+                request_id=str(getattr(batch.reqs[0], "rid", "")),
+                stage=None,
+                event_name="thinker_lookahead_launch",
+                metadata={"bs": len(batch.reqs)},
+            )
         return sched_output, pending_step
 
     def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
@@ -1448,6 +1456,23 @@ class OmniScheduler:
         mr_output = self._model_runner.execute_resolve(pending_step)
         if mr_output is None:
             return _FAILED_BATCH_RESULT
+        if _get_event_recorder().is_active() and batch.reqs:
+            _emit_event(
+                request_id=str(getattr(batch.reqs[0], "rid", "")),
+                stage=None,
+                event_name="thinker_lookahead_resolve",
+                metadata={
+                    "bs": len(batch.reqs),
+                    # Cumulative counters (base.py increments per resolve): the
+                    # per-step hit/miss is the delta between consecutive events.
+                    "query_hit_total": getattr(
+                        self._model_runner, "_async_query_hit", None
+                    ),
+                    "query_miss_total": getattr(
+                        self._model_runner, "_async_query_miss", None
+                    ),
+                },
+            )
         self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
         return GenerationBatchResult(
             logits_output=None,
@@ -2541,6 +2566,22 @@ class OmniScheduler:
                 and self._batch_is_decode(batch)
                 and (runner is None or runner.lookahead_eligible(batch))
             )
+            if (
+                _get_event_recorder().is_active()
+                and batch is not None
+                and batch.reqs
+                and self._batch_is_decode(batch)
+            ):
+                _emit_event(
+                    request_id=str(getattr(batch.reqs[0], "rid", "")),
+                    stage=None,
+                    event_name="thinker_lookahead_decision",
+                    metadata={
+                        "use_lookahead": use_lookahead,
+                        "bs": len(batch.reqs),
+                        "min_bs": self.async_decode_min_batch_size,
+                    },
+                )
 
             if use_lookahead:
                 try:
