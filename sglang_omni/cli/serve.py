@@ -24,7 +24,6 @@ from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gp
 
 logger = logging.getLogger(__name__)
 
-
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 _DECODE_MODE = Literal["async", "sync"]
@@ -38,11 +37,12 @@ _ASYNC_DECODE_FACTORIES = frozenset(
         "create_sglang_moss_transcribe_diarize_executor",
         "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
         "sglang_omni.models.qwen3_asr.stages.create_sglang_qwen3_asr_executor",
+        "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
     }
 )
 _ASYNC_DECODE_SUPPORTED_MODELS = (
     "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-    "Qwen3-ASR, and the Qwen3-Omni thinker"
+    "Qwen3-ASR, ARK-ASR, and the Qwen3-Omni thinker"
 )
 _PREFILL_COALESCE_FACTORIES = frozenset(
     {
@@ -54,11 +54,12 @@ _PREFILL_COALESCE_FACTORIES = frozenset(
         "create_sglang_moss_transcribe_diarize_executor",
         "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
         "sglang_omni.models.qwen3_asr.stages.create_sglang_qwen3_asr_executor",
+        "sglang_omni.models.whisper_asr.stages.create_sglang_whisper_asr_executor",
     }
 )
 _PREFILL_COALESCE_SUPPORTED_MODELS = (
     "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-    "Qwen3-ASR, and the Qwen3-Omni thinker"
+    "Qwen3-ASR, Whisper ASR, and the Qwen3-Omni thinker"
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -593,33 +594,49 @@ def _validate_parallelism_config(pipeline_config: PipelineConfig) -> None:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def apply_thinker_server_args_cli_overrides(
+def _resolve_backbone_stage(pipeline_config: PipelineConfig) -> str:
+    if any(stage.name == "thinker" for stage in pipeline_config.stages):
+        return "thinker"
+    generation_stage = (
+        type(pipeline_config).generation_sglang_role_to_stage().get("generation")
+    )
+    if generation_stage is None:
+        _raise_unsupported_flag(pipeline_config, "--quantization/--cpu-offload-gb")
+    return generation_stage
+
+
+def apply_backbone_server_args_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
     cpu_offload_gb: int | None,
     quantization: str | None,
     thinker_max_running_requests: int | None = None,
 ) -> PipelineConfig:
-    updates: dict[str, object] = {}
+    backbone_updates: dict[str, object] = {}
     if cpu_offload_gb is not None:
         if cpu_offload_gb < 0:
             raise typer.BadParameter("--cpu-offload-gb must be >= 0")
-        updates["cpu_offload_gb"] = int(cpu_offload_gb)
+        backbone_updates["cpu_offload_gb"] = int(cpu_offload_gb)
     if quantization is not None:
         quantization = quantization.strip()
         if not quantization:
             raise typer.BadParameter("--quantization must not be empty")
-        updates["quantization"] = quantization
+        backbone_updates["quantization"] = quantization
+    if backbone_updates:
+        _apply_stage_server_args_override(
+            pipeline_config,
+            stage_name=_resolve_backbone_stage(pipeline_config),
+            updates=backbone_updates,
+            reason="generation SGLang ServerArgs override",
+        )
+
     if thinker_max_running_requests is not None:
         if thinker_max_running_requests < 1:
             raise typer.BadParameter("--thinker-max-running-requests must be >= 1")
-        updates["max_running_requests"] = int(thinker_max_running_requests)
-
-    if updates:
         _apply_stage_server_args_override(
             pipeline_config,
             stage_name="thinker",
-            updates=updates,
+            updates={"max_running_requests": int(thinker_max_running_requests)},
             reason="thinker SGLang ServerArgs override",
         )
     return pipeline_config
@@ -952,6 +969,8 @@ def apply_torch_compile_cli_overrides(
     talker_torch_compile: str,
     thinker_torch_compile_max_bs: int | None,
     talker_torch_compile_max_bs: int | None,
+    torch_compile: str = "default",
+    torch_compile_max_bs: int | None = None,
 ) -> PipelineConfig:
     thinker_mode = _normalize_stage_toggle_mode(
         "thinker_torch_compile", thinker_torch_compile
@@ -959,6 +978,7 @@ def apply_torch_compile_cli_overrides(
     talker_mode = _normalize_stage_toggle_mode(
         "talker_torch_compile", talker_torch_compile
     )
+    generation_mode = _normalize_stage_toggle_mode("torch_compile", torch_compile)
     _apply_stage_torch_compile_override(
         pipeline_config,
         stage_name="thinker",
@@ -979,6 +999,27 @@ def apply_torch_compile_cli_overrides(
             ),
             mode=talker_mode,
             max_bs=talker_torch_compile_max_bs,
+        )
+    # note (Jeffro): single-stage pipelines (ASR, single-stage TTS) expose no
+    # talker role, so the role-qualified flags cannot reach their SGLang stage.
+    # Route the neutral flags through the generation role the same way
+    # --max-running-requests does.
+    if generation_mode != "default" or torch_compile_max_bs is not None:
+        generation_flag = (
+            "--torch-compile"
+            if generation_mode != "default"
+            else "--torch-compile-max-bs"
+        )
+        generation_stage = (
+            type(pipeline_config).generation_sglang_role_to_stage().get("generation")
+        )
+        if generation_stage is None:
+            _raise_unsupported_flag(pipeline_config, generation_flag)
+        _apply_stage_torch_compile_override(
+            pipeline_config,
+            stage_name=generation_stage,
+            mode=generation_mode,
+            max_bs=torch_compile_max_bs,
         )
     return pipeline_config
 
@@ -1118,14 +1159,21 @@ def serve(
         typer.Option(
             "--cpu-offload-gb",
             "--cpu_offload_gb",
-            help="Set SGLang cpu_offload_gb for the thinker stage.",
+            help=(
+                "Set SGLang cpu_offload_gb for the backbone generation stage "
+                "(thinker for Omni, tts_engine for Higgs/TTS pipelines)."
+            ),
         ),
     ] = None,
     quantization: Annotated[
         str | None,
         typer.Option(
             "--quantization",
-            help="Set SGLang quantization mode for the thinker stage.",
+            help=(
+                "Set SGLang quantization mode (e.g. fp8) for the backbone "
+                "generation stage (thinker for Omni, tts_engine for Higgs/TTS "
+                "pipelines)."
+            ),
         ),
     ] = None,
     log_level: Annotated[
@@ -1246,6 +1294,27 @@ def serve(
             help="Override torch_compile_max_bs for supported SGLang talker stage.",
         ),
     ] = None,
+    torch_compile: Annotated[
+        str,
+        typer.Option(
+            "--torch-compile",
+            "--torch_compile",
+            help=(
+                "torch.compile mode for the SGLang generation stage: "
+                "default|on|off. Use this for single-stage pipelines (ASR, "
+                "single-stage TTS) that expose no talker role."
+            ),
+        ),
+    ] = "default",
+    torch_compile_max_bs: Annotated[
+        int | None,
+        typer.Option(
+            "--torch-compile-max-bs",
+            "--torch_compile_max_bs",
+            min=1,
+            help="Override torch_compile_max_bs for the SGLang generation stage.",
+        ),
+    ] = None,
     enable_realtime: Annotated[
         bool,
         typer.Option(
@@ -1265,7 +1334,7 @@ def serve(
                 "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
                 "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
-                "MOSS-Transcribe-Diarize, Fun-ASR, and Qwen3-ASR."
+                "MOSS-Transcribe-Diarize, Fun-ASR, Qwen3-ASR, and ARK-ASR."
             ),
         ),
     ] = None,
@@ -1400,7 +1469,7 @@ def serve(
         mem_fraction_static=mem_fraction_static,
         thinker_mem_fraction_static=thinker_mem_fraction_static,
     )
-    merged_config = apply_thinker_server_args_cli_overrides(
+    merged_config = apply_backbone_server_args_cli_overrides(
         merged_config,
         cpu_offload_gb=cpu_offload_gb,
         quantization=quantization,
@@ -1431,6 +1500,8 @@ def serve(
         talker_torch_compile=talker_torch_compile,
         thinker_torch_compile_max_bs=thinker_torch_compile_max_bs,
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
+        torch_compile=torch_compile,
+        torch_compile_max_bs=torch_compile_max_bs,
     )
     merged_config = apply_decode_mode_cli_overrides(
         merged_config,

@@ -80,11 +80,16 @@ def create_sglang_moss_transcribe_diarize_executor(
     mm_embedding_cache_size_bytes: int = 0,
     encoder_cache_size_bytes: int = 0,
     enable_torch_compile: bool = False,
-    # note (yichi): async on by default for MOSS-TD; --decode-mode sync to opt out.
+    torch_compile_max_bs: int = 4,
+    # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
+    # --decode-mode sync remains the operator opt-out.
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
-    prefill_coalesce_requests: int = 0,
-    prefill_coalesce_wait_ms: float = 60.0,
+    async_decode_min_batch_size: int = 1,
+    prefill_coalesce_requests: int = 4,
+    prefill_coalesce_wait_ms: float = 12.0,
+    prefill_coalesce_when_idle: bool = True,
+    prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
@@ -112,6 +117,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
         encoder_cache_size_bytes=encoder_cache_size_bytes,
         enable_torch_compile=enable_torch_compile,
+        torch_compile_max_bs=torch_compile_max_bs,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         encoder_chunk_buckets=buckets,
@@ -119,6 +125,13 @@ def create_sglang_moss_transcribe_diarize_executor(
         encoder_max_batch_size=encoder_max_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        prefill_coalesce_requires_pending_builds=(
+            prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
+        ),
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,

@@ -139,11 +139,20 @@ class _TorchCudaApi:
 
 
 class Code2WavCudaGraphRunner:
-    """Atomic exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
+    """Exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
 
     One instance is permanently bound to one model, CUDA device, quantizer
-    count, ``torch.long`` input dtype, and owner process. Build failures disable
-    the complete runner and leave no partial graph matrix published.
+    count, ``torch.long`` input dtype, and owner process. ``batch_size == 1``
+    keys form an atomic tier with the original semantics: any failure there
+    disables the complete runner and leaves no partial matrix published.
+    ``batch_size > 1`` keys are best-effort. All keys share one mempool, whose
+    total stays near the largest member's peak instead of paying that peak
+    once per pool; because pool memory is only reclaimable as a whole, the
+    retry unit is a whole capture attempt. Each attempt captures the batched
+    keys first — largest-first, each followed by a budget check while the pool
+    holds nothing serving depends on — then closes with the atomic tier, so an
+    oversized batched graph can never take down the single-request tier that
+    serving already relies on.
     """
 
     _WARMUP_ITERATIONS = 3
@@ -165,9 +174,15 @@ class Code2WavCudaGraphRunner:
         if self._num_quantizers <= 0:
             raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")
         self._graph_keys = graph_keys
+        self._tier0_keys = tuple(k for k in graph_keys if k.batch_size == 1)
+        self._tier1_keys = tuple(k for k in graph_keys if k.batch_size > 1)
         self._owner_pid = os.getpid()
         self._cuda = cuda_api
         self._graphs: dict[GraphKey, _CapturedGraph] = {}
+        # Note (ruoyu): the scheduler reads the published sizes several times
+        # per step, so they are cached and refreshed where the key set changes
+        # (publish, rollback, runtime disable) instead of rescanned per call.
+        self._sizes_by_frames: dict[int, tuple[int, ...]] = {}
         self._pool: Any | None = None
         self._capture_stream: Any | None = None
         self._enabled = False
@@ -211,87 +226,257 @@ class Code2WavCudaGraphRunner:
             return
         self._memory_stats["total_gpu_memory_fraction"] = fraction
 
-        temporary: dict[GraphKey, _CapturedGraph] = {}
-        pool: Any | None = None
-        capture_stream: Any | None = None
-        before: dict[str, int] | None = None
-        failure_reason: str | None = None
+        tier1_info: dict[str, Any] = {
+            "attempted_key_count": len(self._tier1_keys),
+            "published_key_count": 0,
+            "attempts": 0,
+            "skipped_keys": [],
+            "disable_reason": None,
+            "per_key_footprint_bytes": {},
+        }
+        if self._tier1_keys:
+            self._memory_stats["tier1"] = tier1_info
+
         try:
             with self._cuda.device_context(self._device):
                 before = self._cuda.memory_stats(self._device)
-                self._memory_stats["before"] = before
-                stage_budget = int(before["total_bytes"] * fraction)
-                loaded_model_footprint = before["allocated_bytes"]
-                graph_budget = max(0, stage_budget - loaded_model_footprint)
-                self._memory_stats.update(
-                    {
-                        "stage_budget_bytes": stage_budget,
-                        "loaded_model_footprint_bytes": loaded_model_footprint,
-                        "graph_budget_bytes": graph_budget,
-                    }
-                )
-
-                pool = self._cuda.graph_pool_handle()
-                capture_stream = self._cuda.new_stream(self._device)
-                for key in reversed(self._graph_keys):
-                    self._build_stats["attempted_graph_count"] += 1
-                    temporary[key] = self._capture_graph(
-                        key,
-                        pool=pool,
-                        stream=capture_stream,
-                    )
-
-                # Capture, replay and equivalence checks enqueue CUDA work. Do
-                # not make the all-or-nothing graph matrix visible until every
-                # key has completed on the bound device.
-                self._cuda.synchronize(self._device)
-                gc.collect()
-                self._cuda.empty_cache()
-                after = self._cuda.memory_stats(self._device)
-                self._memory_stats["after"] = after
-                allocated_delta = max(
-                    0,
-                    after["allocated_bytes"] - before["allocated_bytes"],
-                )
-                reserved_delta = max(
-                    0,
-                    after["reserved_bytes"] - before["reserved_bytes"],
-                )
-                graph_footprint = max(allocated_delta, reserved_delta)
-                self._memory_stats["graph_footprint_bytes"] = graph_footprint
-                if graph_footprint > graph_budget:
-                    raise _BuildFailure(
-                        f"memory_budget_exceeded: graph footprint "
-                        f"{graph_footprint} exceeds budget "
-                        f"{graph_budget}",
-                    )
-
         except Exception as exc:
-            failure_reason = (
-                str(exc)
-                if isinstance(exc, _BuildFailure)
-                else f"capture_failed: {type(exc).__name__}: {exc}"
-            )
-
-        if failure_reason is not None:
-            pool = None
-            capture_stream = None
             self._rollback_build(
-                temporary=temporary,
-                reason=failure_reason,
+                temporary={},
+                reason=f"capture_failed: {type(exc).__name__}: {exc}",
             )
             return
+        self._memory_stats["before"] = before
+        stage_budget = int(before["total_bytes"] * fraction)
+        loaded_model_footprint = before["allocated_bytes"]
+        graph_budget = max(0, stage_budget - loaded_model_footprint)
+        self._memory_stats.update(
+            {
+                "stage_budget_bytes": stage_budget,
+                "loaded_model_footprint_bytes": loaded_model_footprint,
+                "graph_budget_bytes": graph_budget,
+            }
+        )
+
+        remaining = list(self._priority_order(self._tier1_keys))
+        while True:
+            if remaining:
+                if tier1_info["attempts"] >= self._TIER1_MAX_ATTEMPTS:
+                    remaining = []
+                else:
+                    tier1_info["attempts"] += 1
+            outcome, payload = self._capture_attempt(
+                before=before,
+                graph_budget=graph_budget,
+                tier1_keys=tuple(remaining),
+                tier1_info=tier1_info,
+            )
+            if outcome == "shrink":
+                remaining = payload
+                continue
+            if outcome == "disable":
+                temporary, reason = payload
+                self._rollback_build(temporary=temporary, reason=reason)
+                return
+            temporary, pool, capture_stream = payload
+            break
 
         self._pool = pool
         self._capture_stream = capture_stream
-        self._graphs = {key: temporary[key] for key in self._graph_keys}
+        self._graphs = {
+            key: temporary[key] for key in self._graph_keys if key in temporary
+        }
+        sizes_by_frames: dict[int, set[int]] = {}
+        for key in self._graphs:
+            sizes_by_frames.setdefault(key.frames, set()).add(key.batch_size)
+        self._sizes_by_frames = {
+            frames: tuple(sorted(sizes, reverse=True))
+            for frames, sizes in sizes_by_frames.items()
+        }
         self._build_stats["published_graph_count"] = len(self._graphs)
+        if self._tier1_keys:
+            tier1_info["published_key_count"] = sum(
+                1 for key in self._graphs if key.batch_size > 1
+            )
+            tier1_info["skipped_keys"] = [
+                {"batch_size": key.batch_size, "frames": key.frames}
+                for key in self._tier1_keys
+                if key not in self._graphs
+            ]
+            if tier1_info["skipped_keys"]:
+                logger.warning(
+                    "Code2Wav tier-1 graphs published %d/%d keys; skipped: %s",
+                    tier1_info["published_key_count"],
+                    len(self._tier1_keys),
+                    tier1_info["skipped_keys"],
+                )
         self._enabled = True
         logger.info(
             "Code2Wav CUDA graph runner published %d exact graphs on %s",
             len(self._graphs),
             self._device,
         )
+
+    # Retries re-capture a strictly smaller key set, so this bound is only a
+    # backstop against footprint measurements that never stabilize.
+    _TIER1_MAX_ATTEMPTS = 6
+
+    def _capture_attempt(
+        self,
+        *,
+        before: dict[str, int],
+        graph_budget: int,
+        tier1_keys: tuple[GraphKey, ...],
+        tier1_info: dict[str, Any],
+    ) -> tuple[str, Any]:
+        """Capture every requested key into one fresh shared pool.
+
+        Tier-1 keys go first, largest-first so the pool's peak blocks are laid
+        down once, each followed by a budget check while the pool holds
+        nothing serving depends on. A violation by the very first key (or by
+        the combined footprint after tier 0, whose members are too small to be
+        worth shrinking individually) excludes the largest remaining
+        batch-size class — small keys share the peak blocks, so only dropping
+        a class meaningfully shrinks the pool. Non-capacity failures on a
+        tier-1 key abandon the tier: shrinking cannot fix a correctness
+        problem, and the atomic tier stays published either way.
+        """
+        temporary: dict[GraphKey, _CapturedGraph] = {}
+        pool: Any | None = None
+        capture_stream: Any | None = None
+        violation_index: int | None = None
+        combined_violation = False
+        tier1_abandoned = False
+        error_reason: str | None = None
+        tier0_started = False
+        try:
+            with self._cuda.device_context(self._device):
+                pool = self._cuda.graph_pool_handle()
+                capture_stream = self._cuda.new_stream(self._device)
+                if tier1_keys:
+                    previous_footprint = self._footprint_since(before)
+                for index, key in enumerate(tier1_keys):
+                    self._build_stats["attempted_graph_count"] += 1
+                    temporary[key] = self._capture_graph(
+                        key,
+                        pool=pool,
+                        stream=capture_stream,
+                    )
+                    self._cuda.synchronize(self._device)
+                    # Warmup's eager activations linger in the allocator cache
+                    # and would count as reserved footprint, dwarfing the pool
+                    # itself; release them so the check measures what is kept.
+                    self._cuda.empty_cache()
+                    footprint = self._footprint_since(before)
+                    tier1_info["per_key_footprint_bytes"][self._key_name(key)] = (
+                        footprint - previous_footprint
+                    )
+                    if footprint > graph_budget:
+                        violation_index = index
+                        break
+                    previous_footprint = footprint
+                if violation_index is None:
+                    tier0_started = True
+                    for key in self._priority_order(self._tier0_keys):
+                        self._build_stats["attempted_graph_count"] += 1
+                        temporary[key] = self._capture_graph(
+                            key,
+                            pool=pool,
+                            stream=capture_stream,
+                        )
+                    # Capture, replay and equivalence checks enqueue CUDA
+                    # work. Do not make the graph matrix visible until every
+                    # key has completed on the bound device.
+                    self._cuda.synchronize(self._device)
+                    gc.collect()
+                    self._cuda.empty_cache()
+                    after = self._cuda.memory_stats(self._device)
+                    self._memory_stats["after"] = after
+                    graph_footprint = max(
+                        0,
+                        after["allocated_bytes"] - before["allocated_bytes"],
+                        after["reserved_bytes"] - before["reserved_bytes"],
+                    )
+                    self._memory_stats["graph_footprint_bytes"] = graph_footprint
+                    if graph_footprint > graph_budget:
+                        if tier1_keys:
+                            combined_violation = True
+                        else:
+                            raise _BuildFailure(
+                                f"memory_budget_exceeded: graph footprint "
+                                f"{graph_footprint} exceeds budget "
+                                f"{graph_budget}",
+                            )
+        except torch.OutOfMemoryError as exc:
+            if not tier1_keys:
+                error_reason = f"capture_failed: {type(exc).__name__}: {exc}"
+            elif tier0_started:
+                combined_violation = True
+            else:
+                violation_index = len(temporary)
+        except Exception as exc:
+            reason = (
+                str(exc)
+                if isinstance(exc, _BuildFailure)
+                else f"capture_failed: {type(exc).__name__}: {exc}"
+            )
+            if tier1_keys and not tier0_started:
+                tier1_info["disable_reason"] = reason
+                tier1_abandoned = True
+            else:
+                error_reason = reason
+
+        if error_reason is not None:
+            return "disable", (temporary, error_reason)
+        if violation_index is None and not combined_violation and not tier1_abandoned:
+            return "published", (temporary, pool, capture_stream)
+
+        # Tear the whole attempt down: pool memory frees only once every
+        # graph captured into it is gone.
+        temporary.clear()
+        pool = None
+        capture_stream = None
+        gc.collect()
+        try:
+            with self._cuda.device_context(self._device):
+                self._cuda.empty_cache()
+        except Exception as cleanup_exc:
+            logger.warning(
+                "Code2Wav graph attempt rollback cleanup failed: %s",
+                cleanup_exc,
+            )
+        if tier1_abandoned:
+            return "shrink", []
+        remaining = list(tier1_keys)
+        if combined_violation or violation_index == 0:
+            oversized_batch = remaining[0].batch_size
+            remaining = [key for key in remaining if key.batch_size < oversized_batch]
+        else:
+            remaining = remaining[:violation_index]
+        return "shrink", remaining
+
+    def _footprint_since(self, before: dict[str, int]) -> int:
+        snapshot = self._cuda.memory_stats(self._device)
+        return max(
+            0,
+            snapshot["allocated_bytes"] - before["allocated_bytes"],
+            snapshot["reserved_bytes"] - before["reserved_bytes"],
+        )
+
+    @staticmethod
+    def _priority_order(keys: tuple[GraphKey, ...]) -> tuple[GraphKey, ...]:
+        # Largest first: the biggest graph lays down the pool's peak blocks so
+        # later captures reuse them instead of growing the pool.
+        return tuple(sorted(keys, key=lambda k: (k.batch_size, k.frames), reverse=True))
+
+    @staticmethod
+    def _key_name(key: GraphKey) -> str:
+        return f"b{key.batch_size}t{key.frames}"
+
+    def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
+        """Batch sizes with a published graph for this window length, largest
+        first; the scheduler decomposes coalesced batches against this."""
+        return self._sizes_by_frames.get(int(frames), ())
 
     def _capture_graph(
         self,
@@ -378,6 +563,7 @@ class Code2WavCudaGraphRunner:
                     snapshot_exc,
                 )
         self._graphs.clear()
+        self._sizes_by_frames = {}
         temporary.clear()
         self._pool = None
         self._capture_stream = None
@@ -481,6 +667,7 @@ class Code2WavCudaGraphRunner:
 
     def _disable_runtime(self, reason: str) -> None:
         self._graphs.clear()
+        self._sizes_by_frames = {}
         self._pool = None
         self._capture_stream = None
         self._enabled = False

@@ -79,6 +79,7 @@ class StageLaunchConfig:
     coordinator_endpoint: str = ""
     abort_endpoint: str = ""
     stage_endpoints: dict[str, str] = field(default_factory=dict)
+    rank_endpoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
@@ -373,7 +374,7 @@ def stage_process_main(
 
     try:
         for stage_spec in spec.stage_specs:
-            _prepare_cuda_environment(stage_spec, log)
+            _prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
@@ -741,6 +742,9 @@ def _construct_stage(
         gpu_id=spec.gpu_id,
         placement_gpu_id=spec.placement_gpu_id,
         endpoints=spec.stage_endpoints,
+        rank_endpoints=spec.rank_endpoints,
+        tp_rank=spec.tp_rank,
+        tp_size=spec.tp_size,
         control_plane=control_plane,
         input_handler=input_handler,
         comm_config=spec.comm_config,
@@ -786,12 +790,20 @@ def _construct_scheduler(
         return factory(**factory_args)
 
 
-def _prepare_cuda_environment(
+def _prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
 ) -> None:
-    """Map TP rank processes to one visible CUDA device before torch init."""
-    if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
+    """Map TP rank processes to their accelerator before torch init.
+
+    Which variables to set is platform policy; this only applies whatever the platform
+    returns, and normalizes gpu_id only when the platform narrowed the process to a
+    single visible device.
+    """
+    if (
+        current_platform.is_cuda_alike()
+        and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
+    ):
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
@@ -806,9 +818,18 @@ def _prepare_cuda_environment(
     if not env_updates:
         return
 
-    mapped_gpu = env_updates["CUDA_VISIBLE_DEVICES"]
     for key, value in env_updates.items():
         os.environ[key] = value
+
+    mapped_gpu = env_updates.get("CUDA_VISIBLE_DEVICES")
+    if mapped_gpu is None:
+        log.info(
+            "TP stage %s rank %d keeps every card visible, using gpu_id=%s",
+            spec.stage_name,
+            spec.tp_rank,
+            spec.gpu_id,
+        )
+        return
 
     _normalize_spec_gpu_id_to_local_device(spec)
     log.info(

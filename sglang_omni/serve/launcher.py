@@ -421,6 +421,7 @@ async def _run_server(
             supports_uploaded_voice_references=(
                 pipeline_config.supports_uploaded_voice_references()
             ),
+            supports_audio_translation=(pipeline_config.supports_audio_translation()),
             required_speech_reference_count=(
                 pipeline_config.required_speech_reference_count
             ),
@@ -436,6 +437,7 @@ async def _run_server(
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
             architectures=[pipeline_config.architecture],
+            audio_chunking=pipeline_config.audio_chunking,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)

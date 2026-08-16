@@ -11,7 +11,9 @@ import logging
 import queue
 import threading
 import time
+import traceback
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -35,6 +37,12 @@ _FRONTEND_CONFIG_FIELDS = (
     "lfr_n",
     "window",
 )
+
+
+@dataclass(frozen=True)
+class _DetachedFailure:
+    exception: Exception
+    formatted_traceback: str
 
 
 def build_cache_namespace(
@@ -339,6 +347,9 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         parts = torch.split(embedding, token_counts, dim=0)
         return [part.clone() for part in parts]
 
+    def attach_before_synchronize(self) -> bool:
+        return False
+
     def synchronize_batch(self) -> None:
         if self._stream is not None:
             self._stream.synchronize()
@@ -348,14 +359,86 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         if key is not None:
             self._cache.put(key, embedding)
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
-        if len(batch) == 1:
-            return False
-        logger.exception(
-            f"Fun-ASR batched audio encode failed for {len(batch)} "
-            f"items; retrying per item"
+    @staticmethod
+    def _detach_failure(exc: Exception) -> _DetachedFailure:
+        formatted_traceback = "".join(traceback.format_exception(exc)).rstrip()
+        message = str(exc)
+        traceback.clear_frames(exc.__traceback__)
+        exc.__traceback__ = None
+        exc.__cause__ = None
+        exc.__context__ = None
+        if isinstance(exc, torch.OutOfMemoryError):
+            detached = torch.OutOfMemoryError(message)
+        elif isinstance(exc, ValueError):
+            detached = ValueError(message)
+        else:
+            detached = RuntimeError(f"{type(exc).__name__}: {message}")
+        return _DetachedFailure(
+            exception=detached,
+            formatted_traceback=formatted_traceback,
         )
-        return True
+
+    def _recover_after_failure(self, exc: Exception) -> None:
+        if (
+            not isinstance(exc, torch.OutOfMemoryError)
+            or self._stream is None
+            or self._device.type != "cuda"
+        ):
+            return
+        try:
+            self._stream.synchronize()
+        except Exception as cleanup_exc:
+            failure = self._detach_failure(cleanup_exc)
+            logger.warning(
+                "Fun-ASR encoder stream cleanup failed after OOM:\n%s",
+                failure.formatted_traceback,
+            )
+        try:
+            with torch.cuda.device(self._device):
+                torch.cuda.empty_cache()
+        except Exception as cleanup_exc:
+            failure = self._detach_failure(cleanup_exc)
+            logger.warning(
+                "Fun-ASR CUDA cache cleanup failed after OOM:\n%s",
+                failure.formatted_traceback,
+            )
+
+    def _handle_batch_failure(
+        self,
+        batch: list[QueueEntry[Any]],
+        exc: Exception,
+    ) -> Exception:
+        failure = self._detach_failure(exc)
+        if len(batch) == 1:
+            logger.error(
+                "Fun-ASR audio encode failed:\n%s",
+                failure.formatted_traceback,
+            )
+        else:
+            logger.error(
+                "Fun-ASR batched audio encode failed for %d items; "
+                "retrying per item:\n%s",
+                len(batch),
+                failure.formatted_traceback,
+            )
+        self._recover_after_failure(failure.exception)
+        return failure.exception
+
+    def _handle_item_failure(
+        self,
+        _entry: QueueEntry[Any],
+        exc: Exception,
+    ) -> Exception:
+        failure = self._detach_failure(exc)
+        logger.error(
+            "Fun-ASR per-item audio encode retry failed:\n%s",
+            failure.formatted_traceback,
+        )
+        self._recover_after_failure(failure.exception)
+        return failure.exception
+
+    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+        return len(batch) > 1
 
     def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
         dequeue_time = time.perf_counter()

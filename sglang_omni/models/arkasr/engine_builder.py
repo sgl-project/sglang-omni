@@ -9,6 +9,10 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoConfig, AutoTokenizer, WhisperFeatureExtractor
 
 from sglang_omni.models.arkasr import request_builders
+from sglang_omni.models.arkasr.encoder_service import (
+    ArkasrPreLMEncoderService,
+    build_cache_namespace,
+)
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
@@ -21,29 +25,62 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self,
         *,
         max_running_requests: int,
+        encoder_max_batch_size: int,
         max_new_tokens: int,
+        enable_async_decode: bool,
+        async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
         mm_attention_backend: str | None,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        enable_pre_lm_encoder: bool = True,
+        pre_lm_cache_max_entries: int = 4096,
+        pre_lm_cache_size_bytes: int = 2 * 1024**3,
+        pre_lm_max_batch_size: int = 8,
+        pre_lm_max_batch_wait_ms: int = 0,
+        pre_lm_max_pending: int = 32,
     ) -> None:
+        if pre_lm_max_batch_size < 1:
+            raise ValueError(
+                f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
+            )
+        if pre_lm_max_batch_wait_ms < 0:
+            raise ValueError(
+                f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
+            )
+        if pre_lm_max_pending < 1:
+            raise ValueError(
+                f"pre_lm_max_pending must be >= 1, got {pre_lm_max_pending}"
+            )
         self.max_running_requests = max_running_requests
+        self.encoder_max_batch_size = encoder_max_batch_size
         self.max_new_tokens = int(max_new_tokens)
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.enable_pre_lm_encoder = enable_pre_lm_encoder
+        self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
+        self.pre_lm_cache_size_bytes = pre_lm_cache_size_bytes
+        self.pre_lm_max_batch_size = pre_lm_max_batch_size
+        self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
+        self.pre_lm_max_pending = pre_lm_max_pending
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.merge_factor = 4
         self.audio_token_id = 151663
         self.context_length = 0
+        self.model_path: str | None = None
+        self.audio_encoder_service: Any = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
+        self.model_path = checkpoint_dir
         self.tokenizer = AutoTokenizer.from_pretrained(
             checkpoint_dir, trust_remote_code=True
         )
@@ -83,8 +120,28 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        del model, server_args, generation_cuda_graph_enabled
+        del generation_cuda_graph_enabled
+        model.set_encoder_max_batch_size(self.encoder_max_batch_size)
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+        if self.enable_pre_lm_encoder:
+            # Note (Akazaakane): Constructed after generation CUDA graphs so the
+            # encoder's dedicated stream never interleaves with graph capture.
+            self.audio_encoder_service = ArkasrPreLMEncoderService(
+                model,
+                cache_namespace=build_cache_namespace(
+                    model,
+                    model_path=self.model_path or "",
+                    feature_extractor=self.feature_extractor,
+                    mm_attention_backend=getattr(
+                        server_args, "mm_attention_backend", None
+                    ),
+                ),
+                cache_max_entries=self.pre_lm_cache_max_entries,
+                cache_max_bytes=self.pre_lm_cache_size_bytes,
+                max_batch_size=self.pre_lm_max_batch_size,
+                max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
+                max_queue_size=self.pre_lm_max_pending,
+            )
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
@@ -94,10 +151,23 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             max_new_tokens=self.max_new_tokens,
             merge_factor=self.merge_factor,
             audio_token_id=self.audio_token_id,
+            audio_encoder_service=self.audio_encoder_service,
         )
+
+    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+        if self.audio_encoder_service is None:
+            return {}
+        return {"shutdown_callback": self.audio_encoder_service.close}
+
+    def cleanup_build_failure(self) -> None:
+        if self.audio_encoder_service is not None:
+            self.audio_encoder_service.close()
+            self.audio_encoder_service = None
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

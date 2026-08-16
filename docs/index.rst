@@ -12,8 +12,8 @@ Core features:
 
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
-- **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -52,6 +52,9 @@ Supported Models
    * - `Zyphra/zonos2 <https://huggingface.co/Zyphra/zonos2>`_
      - TTS
      - MoE TTS, 9 DAC codebooks, voice cloning
+   * - `MiniMaxAI/MiniMax-Music3 <https://huggingface.co/MiniMaxAI/MiniMax-Music3>`_
+     - Music
+     - Text-to-music; lyrics + caption → 32 kHz stereo song
    * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
      - ASR
      - Multilingual transcription with 30 language hints
@@ -66,7 +69,7 @@ Supported Models
      - Multi-speaker transcription + diarization + timestamps
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
-     - Experimental Whisper route; schema served, correctness not yet validated
+     - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
      - Omni
      - Text, image, audio, video → text + audio
@@ -83,6 +86,7 @@ Supported Models
    :caption: Get Started
 
    get_started/installation.md
+   get_started/installation_xpu.md
    get_started/release_notes.md
 
 
@@ -98,6 +102,7 @@ Supported Models
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
    cookbook/dots_tts.md
+   cookbook/minimax_music3.md
    cookbook/zonos2.md
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
@@ -113,6 +118,7 @@ Supported Models
    :caption: General Usage
 
    basic_usage/qwen3_omni.md
+   basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/tts_process_topology.md
    basic_usage/omni_router.md

@@ -24,7 +24,9 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSStreamingVocoderScheduler,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +125,13 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_concurrency: int = 8,
-) -> SimpleScheduler:
+) -> ThreadedSimpleScheduler:
     del model_path
     # note (luojiaxuan): preprocessing must admit several requests at once. A
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
-    return SimpleScheduler(
+    return ThreadedSimpleScheduler(
         preprocess_qwen3_tts_payload,
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
@@ -139,7 +141,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
@@ -164,7 +166,7 @@ create_tts_engine_executor = create_sglang_tts_engine_executor
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
@@ -181,8 +183,7 @@ def create_vocoder_executor(
     followup_batch_wait_ms: int = 1,
     initial_cuda_graph: bool = True,
 ) -> SimpleScheduler:
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+    device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,

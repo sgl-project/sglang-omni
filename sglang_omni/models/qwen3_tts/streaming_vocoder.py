@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
 DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE = 8
-DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 1
+DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 
@@ -38,6 +38,7 @@ _QWEN3_TTS_CODEBOOK_SIZE = 2048
 class _Qwen3TTSStreamState:
     code_chunks: list[torch.Tensor] = field(default_factory=list)
     total_frames: int = 0
+    pruned_frames: int = 0
     ref_frames: int = 0
     emitted_generated_frames: int = 0
     next_decode_generated_frames: int = 0
@@ -49,6 +50,14 @@ class _Qwen3TTSStreamState:
     followup_pending: bool = False
     final_pending: bool = False
     playback_deadline_s: float = 0.0
+
+
+class _Qwen3TTSInvalidCodeRows(ValueError):
+    """Carries which rows of a decode batch held out-of-range codec ids."""
+
+    def __init__(self, indices: list[int], message: str) -> None:
+        super().__init__(message)
+        self.indices = tuple(indices)
 
 
 @dataclass(frozen=True)
@@ -465,8 +474,20 @@ class Qwen3TTSStreamingVocoderScheduler(
         absolute_emitted = state.ref_frames + state.emitted_generated_frames
         window_start = max(0, absolute_emitted - self._stream_left_context_frames)
         window_end = state.ref_frames + generated_frames
+        # Note: (Jiaxin Deng) window_start only moves forward, so frames behind
+        # it are dead; prune whole chunks to keep this cat O(window), not
+        # O(stream) per decode. Slices below translate by the pruned offset.
+        while (
+            state.code_chunks
+            and state.pruned_frames + int(state.code_chunks[0].shape[0]) <= window_start
+        ):
+            state.pruned_frames += int(state.code_chunks.pop(0).shape[0])
         codes = torch.cat(state.code_chunks, dim=0)
-        decoder_input = codes[window_start:window_end].transpose(0, 1).unsqueeze(0)
+        decoder_input = (
+            codes[window_start - state.pruned_frames : window_end - state.pruned_frames]
+            .transpose(0, 1)
+            .unsqueeze(0)
+        )
         return _Qwen3TTSDecodePlan(
             decoder_input=decoder_input,
             absolute_emitted_frames=absolute_emitted,
@@ -482,6 +503,33 @@ class Qwen3TTSStreamingVocoderScheduler(
     ) -> torch.Tensor:
         return self._run_decode_plans([plan], stream=stream)[0]
 
+    def _screen_out_of_range_codes(self, decoder_input: torch.Tensor) -> Any:
+        # Note: (Jiaxin Deng) an out-of-range id makes the codec embedding lookup
+        # raise a device-side assert, which poisons the CUDA context and kills
+        # every in-flight stream in this process; validate_chunk cannot catch it
+        # because it skips device tensors. Clamp into range so the lookup is
+        # always safe, and return the per-row verdict to read back after the
+        # decode's existing sync: rows that needed clamping are failed, never
+        # emitted, so no added synchronization buys the same protection.
+        bad_rows = (
+            ((decoder_input < 0) | (decoder_input >= _QWEN3_TTS_CODEBOOK_SIZE))
+            .flatten(start_dim=1)
+            .any(dim=1)
+        )
+        decoder_input.clamp_(0, _QWEN3_TTS_CODEBOOK_SIZE - 1)
+        return bad_rows
+
+    @staticmethod
+    def _raise_for_bad_rows(bad_rows: Any, count: int) -> None:
+        indices = bad_rows[:count].nonzero().flatten().tolist()
+        if not indices:
+            return
+        raise _Qwen3TTSInvalidCodeRows(
+            indices,
+            "Qwen3-TTS decoder input contains codec ids outside "
+            f"[0, {_QWEN3_TTS_CODEBOOK_SIZE}) in rows {indices}",
+        )
+
     def _run_decode_plans(
         self,
         plans: list[_Qwen3TTSDecodePlan],
@@ -489,8 +537,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         stream: torch.cuda.Stream | None,
     ) -> list[torch.Tensor]:
         decoder_input = torch.cat([plan.decoder_input for plan in plans], dim=0)
+        bad_rows = self._screen_out_of_range_codes(decoder_input)
         with torch.inference_mode():
             if stream is None:
+                self._raise_for_bad_rows(bad_rows, len(plans))
                 waveform = self._decoder.chunked_decode(decoder_input)
             else:
                 stream.wait_stream(torch.cuda.current_stream(self._device))
@@ -504,6 +554,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     if waveform is None:
                         waveform = self._decoder.chunked_decode(decoder_input)
                 stream.synchronize()
+                self._raise_for_bad_rows(bad_rows, len(plans))
         if waveform.ndim == 3:
             if waveform.shape[0] != len(plans):
                 raise RuntimeError(
@@ -684,18 +735,40 @@ class Qwen3TTSStreamingVocoderScheduler(
                 planned.append((request_id, state, plan))
 
         for group in self._group_decode_plans(planned):
+            decoded = self._decode_group(group, stream=self._decode_stream)
+            if decoded is None:
+                continue
+            for entry, waveform in zip(*decoded):
+                request_id, state, plan = entry
+                self._commit_initial(request_id, state, plan, waveform)
+
+    def _decode_group(
+        self,
+        group: list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]],
+        *,
+        stream: torch.cuda.Stream | None,
+    ) -> (
+        tuple[list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]], list] | None
+    ):
+        """Decode a group, failing only the rows that carried invalid codes."""
+        while group:
             try:
                 waveforms = self._run_decode_plans(
-                    [entry[2] for entry in group],
-                    stream=self._decode_stream,
+                    [entry[2] for entry in group], stream=stream
                 )
+            except _Qwen3TTSInvalidCodeRows as exc:
+                bad = set(exc.indices)
+                for index, (request_id, state, _) in enumerate(group):
+                    if index in bad:
+                        self._fail_async_stream(request_id, state, exc)
+                group = [e for i, e in enumerate(group) if i not in bad]
+                continue
             except Exception as exc:
                 for request_id, state, _ in group:
                     self._fail_async_stream(request_id, state, exc)
-                continue
-            for entry, waveform in zip(group, waveforms):
-                request_id, state, plan = entry
-                self._commit_initial(request_id, state, plan, waveform)
+                return None
+            return group, waveforms
+        return None
 
     @staticmethod
     def _group_decode_plans(
@@ -792,16 +865,10 @@ class Qwen3TTSStreamingVocoderScheduler(
                 planned.append((request_id, state, plan))
 
         for group in self._group_decode_plans(planned):
-            try:
-                waveforms = self._run_decode_plans(
-                    [entry[2] for entry in group],
-                    stream=self._followup_decode_stream,
-                )
-            except Exception as exc:
-                for request_id, state, _ in group:
-                    self._fail_async_stream(request_id, state, exc)
+            decoded = self._decode_group(group, stream=self._followup_decode_stream)
+            if decoded is None:
                 continue
-            for entry, waveform in zip(group, waveforms):
+            for entry, waveform in zip(*decoded):
                 request_id, state, plan = entry
                 self._commit_followup(request_id, state, plan, waveform)
 

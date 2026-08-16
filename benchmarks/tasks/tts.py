@@ -41,6 +41,7 @@ from benchmarks.metrics.performance import (
     load_tts_speed_summary,
     print_saved_tts_speed_summary,
 )
+from benchmarks.metrics.playback_continuity import compute_max_playback_underrun_s
 from benchmarks.metrics.speaker_similarity import WavLMSpeakerSimilarity
 from benchmarks.metrics.speaker_similarity_assets import (
     ensure_speaker_similarity_assets,
@@ -1143,6 +1144,13 @@ async def _handle_raw_pcm_streaming_response(
         )
         return
 
+    result.chunk_audio_duration_s = [
+        len(chunk) / bytes_per_second for chunk in pcm_chunks
+    ]
+    result.max_playback_underrun_s = compute_max_playback_underrun_s(
+        chunk_times,
+        result.chunk_audio_duration_s,
+    )
     result.audio_duration_s = len(pcm_bytes) / bytes_per_second
     elapsed = time.perf_counter() - start_time
     result.rtf = elapsed / result.audio_duration_s

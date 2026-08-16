@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import torch
 
 from sglang_omni.models.moss_tts.payload_types import (
-    MossTTSState,
+    load_moss_tts_state,
     resolve_moss_audio_pad_code,
 )
 from sglang_omni.proto import StagePayload
@@ -112,7 +112,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
     ) -> None:
         if origin == "payload":
             payload = source
-            final_state = MossTTSState.from_dict(payload.data)
+            final_state = load_moss_tts_state(payload)
             delayed = final_state.delayed_audio_codes
             n_vq = state.n_vq
             if delayed is not None:
@@ -261,7 +261,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         state: _MossStreamState,
     ) -> dict[str, Any]:
         del request_id
-        final_state = MossTTSState.from_dict(payload.data)
+        final_state = load_moss_tts_state(payload)
         final_state.delayed_audio_codes = None
         final_state.sample_rate = int(state.sample_rate or self._sample_rate)
         data = final_state.to_dict()

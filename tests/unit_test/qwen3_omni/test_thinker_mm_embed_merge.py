@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import types
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -92,6 +93,25 @@ def _base_embeds(runner, forward_batch):
 
 def _rand(n):
     return torch.randn(n, HIDDEN)
+
+
+def test_plan_modality_chunk_is_pure_and_uses_half_open_bounds():
+    runner = _runner()
+    positions = torch.tensor([0, 2, 4], dtype=torch.long)
+    consumed = {"audio": 1}
+
+    relative_positions, offset, count = runner._plan_modality_chunk(
+        positions,
+        consumed,
+        "audio",
+        prefix=2,
+        length=2,
+    )
+
+    assert relative_positions.tolist() == [0]
+    assert offset == 1
+    assert count == 1
+    assert consumed == {"audio": 1}
 
 
 def test_text_only_batch_returns_none():
@@ -196,6 +216,192 @@ def test_chunked_prefill_advances_consumed_offsets():
     torch.testing.assert_close(out2, expected2)
     assert req.omni_model_inputs is None
     assert req._omni_consumed is None
+
+
+def test_cached_prefix_mixed_audio_image_selects_live_embedding_rows():
+    runner = _runner()
+    prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    image_embeds = torch.tensor([[3.0] * HIDDEN, [4.0] * HIDDEN], dtype=torch.float32)
+    req = _req(
+        prompt,
+        {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], audio_embeds[1])
+    torch.testing.assert_close(out[1], image_embeds[1])
+    assert req._omni_consumed == {"audio": 2, "image": 2}
+
+
+def test_cached_prefix_reconstructs_missing_cursors_in_empty_existing_dict():
+    runner = _runner()
+    prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    audio_embeds = _rand(2)
+    image_embeds = _rand(2)
+    existing = {}
+    req = _req(
+        prompt,
+        {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
+        inflight_middle_chunks=1,
+        consumed=existing,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], audio_embeds[1])
+    torch.testing.assert_close(out[1], image_embeds[1])
+    assert req._omni_consumed is existing
+    assert existing == {"audio": 2, "image": 2}
+
+
+def test_cached_prefix_reconstructs_audio_preserving_unrelated_cursor():
+    runner = _runner()
+    prompt = [AUDIO_ID, TEXT, AUDIO_ID, TEXT]
+    audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    existing = {"video": 0}
+    req = _req(
+        prompt,
+        {"audio_embeds": audio_embeds},
+        inflight_middle_chunks=1,
+        consumed=existing,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], audio_embeds[1])
+    assert req._omni_consumed is existing
+    assert existing == {"video": 0, "audio": 2}
+
+
+@pytest.mark.parametrize(
+    ("modality", "token_id"),
+    [("image", IMAGE_ID), ("video", VIDEO_ID), ("audio", AUDIO_ID)],
+)
+def test_cached_prefix_reconstructs_missing_cursor_for_each_modality(
+    modality, token_id
+):
+    runner = _runner()
+    prompt = [token_id, TEXT, token_id, TEXT]
+    embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    req = _req(
+        prompt,
+        {f"{modality}_embeds": embeds},
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], embeds[1])
+    assert req._omni_consumed == {modality: 2}
+
+
+def test_existing_cursor_is_authoritative_over_prefix_derived_offset():
+    runner = _runner()
+    prompt = [AUDIO_ID, TEXT, AUDIO_ID, TEXT]
+    audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    existing = {"audio": 0}
+    req = _req(
+        prompt,
+        {"audio_embeds": audio_embeds},
+        consumed=existing,
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], audio_embeds[0])
+    assert req._omni_consumed is existing
+    assert existing == {"audio": 1}
+
+
+@pytest.mark.parametrize(
+    ("cursor", "error_type"),
+    [
+        pytest.param(-1, ValueError, id="negative"),
+        pytest.param(0.5, TypeError, id="non-integral"),
+        pytest.param(True, TypeError, id="bool"),
+        pytest.param(2, ValueError, id="beyond-end"),
+        pytest.param(1, ValueError, id="live-range-overrun"),
+    ],
+)
+def test_invalid_modality_cursor_fails_before_embedding_scatter(cursor, error_type):
+    runner = _runner()
+    audio_inputs = {"audio_embeds": _rand(1)}
+    req = _req(
+        [AUDIO_ID],
+        audio_inputs,
+        consumed={"audio": cursor},
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req])
+
+    with pytest.raises(error_type, match="audio multimodal cursor"):
+        runner._inject_multimodal_embeds(fb, sb)
+
+    assert req._omni_consumed == {"audio": cursor}
+    assert req.omni_model_inputs is audio_inputs
+
+
+def test_invalid_cursor_container_fails_before_embedding_scatter():
+    runner = _runner()
+    audio_inputs = {"audio_embeds": _rand(1)}
+    req = _req([AUDIO_ID], audio_inputs, consumed=[])
+    fb, sb = _batches([req])
+
+    with pytest.raises(TypeError, match="must be None or a dict"):
+        runner._inject_multimodal_embeds(fb, sb)
+
+    assert req._omni_consumed == []
+
+
+def test_cached_prefix_mixed_visual_audio_deepstack_stays_aligned():
+    runner = _runner()
+    prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    image_embeds = torch.tensor([[3.0] * HIDDEN, [4.0] * HIDDEN], dtype=torch.float32)
+    image_ds = [torch.tensor([[10.0] * HIDDEN, [20.0] * HIDDEN], dtype=torch.float32)]
+    req = _req(
+        prompt,
+        {
+            "audio_embeds": audio_embeds,
+            "image_embeds": image_embeds,
+            "image_deepstack_visual_embeds": image_ds,
+        },
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+
+    torch.testing.assert_close(out[0], audio_embeds[1])
+    torch.testing.assert_close(out[1], image_embeds[1])
+    torch.testing.assert_close(ds[0], image_ds[0][1:2])
+    assert mask.tolist() == [False, True]
+    assert req._omni_consumed == {"audio": 2, "image": 2}
+
+
+def test_cached_prefix_reconstruction_rejects_ambiguous_embedding_rows():
+    runner = _runner()
+    prompt = [AUDIO_ID, TEXT, AUDIO_ID, TEXT]
+    req = _req(
+        prompt,
+        {"audio_embeds": _rand(1)},
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
+    with pytest.raises(ValueError, match="Cannot reconstruct audio multimodal cursor"):
+        runner._inject_multimodal_embeds(fb, sb)
+
+    assert req._omni_consumed == {}
 
 
 def test_image_deepstack_slice_and_mask():
@@ -430,6 +636,19 @@ def _deepstack_mm_batch():
 def test_no_host_syncs_on_hot_path(monkeypatch):
     runner = _runner()
     fb, sb = _mixed_mm_batch()
+    assert _count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
+
+
+def test_cached_prefix_reconstruction_has_no_host_syncs(monkeypatch):
+    runner = _runner()
+    prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    req = _req(
+        prompt,
+        {"audio_embeds": _rand(2), "image_embeds": _rand(2)},
+        inflight_middle_chunks=1,
+    )
+    fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
+
     assert _count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
 
 

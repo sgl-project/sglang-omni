@@ -40,6 +40,7 @@ def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler._request_build_executor = None
     scheduler.request_build_max_pending = 0
     scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
     scheduler._backlogged_request_build_payloads = []
     scheduler._request_build_max_pending_observed = 0
     scheduler._async_pending = None
@@ -67,6 +68,7 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> N
     scheduler = object.__new__(OmniScheduler)
     scheduler._request_admission_lock = threading.RLock()
     scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
     sleep_calls: list[float] = []
     monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
 
@@ -83,6 +85,7 @@ def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> N
     scheduler._engine_paused = False
     scheduler._request_admission_lock = threading.RLock()
     scheduler._pending_request_builds = {"req": object()}
+    scheduler._pending_request_admissions = {}
     scheduler._process_admin_requests = lambda: None
     scheduler.recv_requests = lambda: []
     scheduler._take_deferred_request_payloads = lambda: []
@@ -297,6 +300,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.waiting_queue = []
     scheduler.last_batch = None
     scheduler.forward_ct = 0
+    scheduler._sched_idled = False
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
@@ -477,7 +481,7 @@ def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     assert aborts == [("req-follower", False)]
 
 
-def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
+def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
     gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
@@ -501,6 +505,7 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler.forward_ct = 0
+    scheduler._sched_idled = True
 
     def _batch():
         return SimpleNamespace(
@@ -513,11 +518,19 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
             is_extend_in_batch=False,
         )
 
-    scheduler._run_batch(_batch())
+    sync_batch = _batch()
+    scheduler._run_batch(sync_batch)
     assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
+    assert sync_batch.forward_iter == 1
+    assert isinstance(sync_batch.launch_ts, float)
+    assert sync_batch.after_idle_gap is True
 
-    scheduler._run_batch_launch(_batch())
+    async_batch = _batch()
+    scheduler._run_batch_launch(async_batch)
     assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
+    assert async_batch.forward_iter == 2
+    assert async_batch.launch_ts >= sync_batch.launch_ts
+    assert async_batch.after_idle_gap is False
 
 
 def test_omni_scheduler_resolve_drops_retracted_req() -> None:
@@ -1647,7 +1660,11 @@ def test_omni_scheduler_normalizes_req_token_arrays() -> None:
 
 
 def _construct_omni_scheduler(
-    monkeypatch, *, return_global_server_args: bool = False, **kwargs
+    monkeypatch,
+    *,
+    return_global_server_args: bool = False,
+    server_max_queued_requests: int | None = 7,
+    **kwargs,
 ) -> OmniScheduler | tuple[OmniScheduler, object]:
     """Build an OmniScheduler over the minimum stub surface __init__ touches."""
     monkeypatch.setattr(
@@ -1714,7 +1731,7 @@ def _construct_omni_scheduler(
         page_size=1,
         max_prefill_tokens=32,
         max_running_requests=2,
-        max_queued_requests=7,
+        max_queued_requests=server_max_queued_requests,
         context_length=128,
         chunked_prefill_size=0,
         enable_mixed_chunk=False,
@@ -1769,6 +1786,48 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         )
     ]
     assert scheduler._abort_on_queued_limit(object()) is False
+
+
+def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(
+    monkeypatch,
+) -> None:
+    scheduler = _construct_omni_scheduler(
+        monkeypatch,
+        server_max_queued_requests=None,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+    )
+    payloads = [_new_stage_payload(f"req-{index}") for index in range(40)]
+
+    try:
+        selected, rejected = scheduler._stage_request_build_payloads(payloads)
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler._request_build_backlog_limit is None
+    assert len(selected) == 16
+    assert len(scheduler._backlogged_request_build_payloads) == 24
+    assert rejected == []
+
+
+def test_request_build_backlog_honors_configured_queue_limit(monkeypatch) -> None:
+    scheduler = _construct_omni_scheduler(
+        monkeypatch,
+        server_max_queued_requests=16,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+    )
+    payloads = [_new_stage_payload(f"req-{index}") for index in range(40)]
+
+    try:
+        selected, rejected = scheduler._stage_request_build_payloads(payloads)
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler._request_build_backlog_limit == 16
+    assert len(selected) == 16
+    assert len(scheduler._backlogged_request_build_payloads) == 16
+    assert len(rejected) == 8
 
 
 @pytest.mark.parametrize(
@@ -2022,6 +2081,8 @@ def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler = object.__new__(OmniScheduler)
     shutdowns: list[None] = []
     scheduler._running = True
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_admissions = {}
     scheduler._shutdown_lock = threading.Lock()
     scheduler._shutdown_callback = lambda: shutdowns.append(None)
 
@@ -2056,6 +2117,8 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler._prefill_start_done = {"req-1", "req-2"}
     scheduler._prefill_end_done = set()
     scheduler._request_build_executor = None
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_admissions = {}
     scheduler._shutdown_lock = threading.Lock()
     scheduler._shutdown_callback = None
 
@@ -2419,6 +2482,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     scheduler._aborted_request_ids = set()
     scheduler._aborted_request_id_order = collections.deque()
     scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
     scheduler._backlogged_request_build_payloads = []
     scheduler.waiting_queue = []
     scheduler._abort_callback = None

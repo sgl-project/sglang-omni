@@ -423,6 +423,28 @@ def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     return next(iter(state.encoder_outs))
 
 
+def _extract_thinker_model_inputs(thinker_inputs: dict[str, Any]) -> dict[str, Any]:
+    """Return the model input payload without confusing an empty payload for absence.
+
+    ``merge_for_thinker`` always emits ``model_inputs``.  In particular, a
+    genuine text only request carries ``{"model_inputs": {}}``.  Only legacy
+    payloads that omit that key should fall back to the historical flat shape.
+    """
+    if "model_inputs" in thinker_inputs:
+        model_inputs = thinker_inputs["model_inputs"]
+        if not isinstance(model_inputs, dict):
+            raise TypeError(
+                "Qwen3-Omni thinker model_inputs must be a dict when provided"
+            )
+        return dict(model_inputs)
+
+    return {
+        key: value
+        for key, value in thinker_inputs.items()
+        if key not in ("capture_model_output_keys", "media_cache_keys")
+    }
+
+
 def build_thinker_request(
     state: Qwen3OmniPipelineState,
     *,
@@ -433,11 +455,7 @@ def build_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
-    if not model_inputs:
-        model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
-        }
+    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     if "attention_mask" in model_inputs:
@@ -461,7 +479,9 @@ def _compute_mrope_positions(
     thinker_config: Any,
 ) -> torch.Tensor | None:
     """Compute M-RoPE positions for multimodal inputs."""
-    from sglang.srt.layers.rotary_embedding import MRotaryEmbedding
+    from sglang_omni.models.qwen3_omni.mrope_positions import (
+        get_rope_index_qwen3_omni_vectorized,
+    )
 
     image_grid_thw = model_inputs.get("image_grid_thw")
     video_grid_thw = model_inputs.get("video_grid_thw")
@@ -478,7 +498,7 @@ def _compute_mrope_positions(
 
     ids_2d = input_ids.unsqueeze(0) if input_ids.dim() == 1 else input_ids
 
-    # Move all tensors to CPU — get_rope_index creates CPU tensors internally
+    # Move tensors to CPU — get_rope_index builds CPU tensors internally.
     ids_2d = ids_2d.cpu()
     if isinstance(image_grid_thw, torch.Tensor):
         image_grid_thw = image_grid_thw.cpu()
@@ -498,12 +518,11 @@ def _compute_mrope_positions(
         "audio_seqlens": audio_feature_lengths,
     }
 
-    mrope_positions, mrope_position_delta = MRotaryEmbedding.get_rope_index(
+    mrope_positions, mrope_position_delta = get_rope_index_qwen3_omni_vectorized(
         spatial_merge_size=spatial_merge_size,
         image_token_id=image_token_id,
         video_token_id=video_token_id,
         vision_start_token_id=vision_start_token_id,
-        model_type="qwen3_omni_moe",
         tokens_per_second=tokens_per_second,
         input_ids=ids_2d,
         image_grid_thw=image_grid_thw,
@@ -541,13 +560,7 @@ def build_sglang_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
-    if not model_inputs:
-        model_inputs = {
-            k: v
-            for k, v in thinker_inputs.items()
-            if k not in ("capture_model_output_keys", "media_cache_keys")
-        }
+    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
@@ -759,11 +772,21 @@ def build_sglang_talker_request(
         else None
     )
     if thinker_config is not None and talker_model_inputs:
-        mrope_positions, mrope_position_delta = _compute_mrope_positions(
-            input_ids_tensor.to(dtype=torch.long),
-            talker_model_inputs or {},
-            thinker_config,
+        from sglang_omni.models.qwen3_omni.mrope_positions import (
+            linear_mrope_positions,
+            talker_can_use_linear_mrope,
         )
+
+        ids = input_ids_tensor.to(dtype=torch.long)
+        mm_model_inputs = talker_model_inputs or {}
+        if talker_can_use_linear_mrope(ids, mm_model_inputs, thinker_config):
+            mrope_positions, mrope_position_delta = linear_mrope_positions(
+                int(ids.numel())
+            )
+        else:
+            mrope_positions, mrope_position_delta = _compute_mrope_positions(
+                ids, mm_model_inputs, thinker_config
+            )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta

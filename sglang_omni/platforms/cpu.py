@@ -4,4 +4,5 @@ from sglang_omni.platforms.interface import OmniPlatform
 
 
 class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
-    pass
+    def enable_code2wav_graph(self):
+        return False

@@ -70,7 +70,7 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="image_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_image_encoder_executor",
-        factory_args={"device": current_platform.device_type, "dtype": None},
+        factory_args={"device": None, "dtype": None},
         gpu=gpu,
         next="mm_aggregate",
         project_payload={
@@ -84,7 +84,7 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": current_platform.device_type, "dtype": None},
+        factory_args={"device": None, "dtype": None},
         gpu=gpu,
         next="mm_aggregate",
         project_payload={
@@ -210,8 +210,8 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
         factory_args={
-            "device": current_platform.device_type,
-            "enable_cuda_graph": True,
+            "device": None,
+            "enable_cuda_graph": current_platform.enable_code2wav_graph(),
         },
         gpu=gpu,
         runtime=StageRuntimeConfig(
@@ -266,7 +266,7 @@ def _speech_stages(
             process=process_by_stage["talker_ar"],
             enable_partial_start=enable_partial_start,
         ),
-        _code2wav_stage(gpu=talker_gpu, process=process_by_stage["code2wav"]),
+        _code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
     ]
 
 
