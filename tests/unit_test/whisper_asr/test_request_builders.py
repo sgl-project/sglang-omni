@@ -11,13 +11,13 @@ import numpy as np
 import pytest
 import torch
 
-import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.request_builders import (
     _build_prev_context_tokens,
     _decoder_token_budgets,
     make_whisper_scheduler_adapters,
 )
+from sglang_omni.preprocessing import transcription
 from sglang_omni.proto import OmniRequest, StagePayload
 
 _SOT_PREV = 50361
@@ -30,6 +30,9 @@ class _FakeTokenizer:
     pad_token_id = 3
     vocab_size = 51865
 
+    def __init__(self) -> None:
+        self.prefix_calls: list[tuple[str, str, bool]] = []
+
     def __len__(self) -> int:
         return 51866
 
@@ -40,6 +43,7 @@ class _FakeTokenizer:
         self, *, language: str, task: str, predict_timestamps: bool
     ) -> None:
         assert predict_timestamps is False
+        self.prefix_calls.append((language, task, predict_timestamps))
         self.prefix_language = language
         self.prefix_task = task
 
@@ -53,10 +57,16 @@ class _FakeTokenizer:
         return [_SOT_PREV] + [1000 + i for i in range(len(text))]
 
 
-def _make_request_builder(tokenizer: _FakeTokenizer | None = None):
+def _make_request_builder(
+    tokenizer: _FakeTokenizer | None = None,
+    feature_extractor=None,
+):
     fake_processor = SimpleNamespace(
-        feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
-            SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+        feature_extractor=feature_extractor
+        or (
+            lambda audio, *, sampling_rate, return_tensors: SimpleNamespace(
+                input_features=torch.zeros((1, 128, 3000))
+            )
         ),
     )
     request_builder, _ = make_whisper_scheduler_adapters(
@@ -123,6 +133,53 @@ def test_request_builder_without_prompt_keeps_prefix_only(monkeypatch) -> None:
     expected = [pad_id] * _ENCODER_TOKEN_COUNT + _PREFIX
     assert data.input_ids.tolist() == expected
     assert data.prompt_token_ids == _PREFIX
+
+
+def test_request_builder_reuses_prefix_for_canonical_language(monkeypatch) -> None:
+    tokenizer = _FakeTokenizer()
+    request_builder = _make_request_builder(tokenizer)
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    first = request_builder(_make_payload({"language": "en"}))
+    second = request_builder(_make_payload({"language": "english"}))
+
+    assert tokenizer.prefix_calls == [("english", "transcribe", False)]
+    assert first.input_ids.tolist() == second.input_ids.tolist()
+    assert first.prompt_token_ids == second.prompt_token_ids == _PREFIX
+    assert first.prompt_token_ids is not second.prompt_token_ids
+
+
+def test_request_builder_reuses_features_without_sharing_request_storage(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    def feature_extractor(audio, *, sampling_rate, return_tensors):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+
+    tokenizer = _FakeTokenizer()
+    request_builder = _make_request_builder(tokenizer, feature_extractor)
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    first = request_builder(_make_payload())
+    first_feature = first.req.multimodal_inputs.mm_items[0].feature
+    first_feature.fill_(7.0)
+    second = request_builder(_make_payload())
+    second_feature = second.req.multimodal_inputs.mm_items[0].feature
+
+    assert calls == 1
+    assert first_feature is not second_feature
+    assert torch.count_nonzero(second_feature) == 0
 
 
 def test_request_builder_maps_prompt_to_prev_context(monkeypatch) -> None:
@@ -202,7 +259,7 @@ def test_decoder_budget_invariant_exhaustive() -> None:
             requested_max_new_tokens=requested_max_new,
         )
         assert 1 <= max_new <= 448 - prefix_len
-        for prompt_len in range(0, 301):
+        for prompt_len in range(301):
             prev_block = _build_prev_context_tokens(
                 tokenizer,
                 "x" * prompt_len if prompt_len else None,
