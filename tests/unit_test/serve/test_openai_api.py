@@ -2294,6 +2294,27 @@ def test_transcription_endpoint_maps_invalid_audio_error_to_400() -> None:
     assert "could not decode the uploaded audio" in response.json()["detail"]
 
 
+def test_transcription_endpoint_maps_model_specific_audio_decode_error_to_400() -> None:
+    client = TestClient(
+        create_app(
+            _fault_client(
+                "qwen3-omni",
+                error="Could not decode Fun-ASR audio input",
+            ),
+            model_name="qwen3-omni",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "qwen3-omni"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Could not decode Fun-ASR audio input"
+
+
 def test_transcription_endpoint_preserves_audio_backend_error_as_500() -> None:
     client = TestClient(
         create_app(
