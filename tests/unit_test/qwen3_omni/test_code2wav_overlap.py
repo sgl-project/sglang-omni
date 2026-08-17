@@ -179,10 +179,10 @@ def _run_stream(
 @pytest.mark.parametrize(
     ("n_chunks", "expected_types"),
     [
-        # note (EdwardZhang1108): boundary-exact end is where a naive impl
+        # Note (edwardzh): boundary-exact end is where a naive impl
         # silently drops the pending window.
         (20, ["stream", "stream", "result"]),
-        # note (EdwardZhang1108): pending and tail must not merge.
+        # Note (edwardzh): pending and tail must not merge.
         (21, ["stream", "stream", "stream", "result"]),
     ],
 )
@@ -485,7 +485,7 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
     assert messages[-1].data is replay_error
     assert scheduler._is_aborted("req-1")
     assert "req-1" not in scheduler._stream_states
-    # note (EdwardZhang1108): reclaimed via release_stream_resources, which is
+    # Note (edwardzh): reclaimed via release_stream_resources, which is
     # the only path an aborted request takes.
     # Note (wenyao): two — the second window's copy had drained before the third
     # replay failed, so its audio reaches the client instead of dying with the
@@ -520,7 +520,7 @@ def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None
             grouped.setdefault(item[0], []).append(item)
         return grouped
 
-    # note (EdwardZhang1108): the pipeline defers req-a past req-b, so only
+    # Note (edwardzh): the pipeline defers req-a past req-b, so only
     # per-request order is contractual, not global order.
     assert _by_request(_drain_snapshot(scheduler)) == _by_request(
         _drain_snapshot(control)
@@ -544,7 +544,7 @@ def test_eos_lazy_scan_one_scan_per_window_and_tail_stays_stream_done(
 
     monkeypatch.setattr(scheduler, "_scan_unchecked", _counted_scan)
 
-    # note (EdwardZhang1108): raw ready hits the threshold here, so this fails
+    # Note (edwardzh): raw ready hits the threshold here, so this fails
     # if the scan runs after the gate instead of before it.
     _feed(scheduler, "req-1", range(9))
     scheduler._on_chunk(
@@ -581,7 +581,7 @@ def test_eos_lazy_scan_batches_one_scan_per_threshold_window(monkeypatch) -> Non
     assert scans == [10, 10, 10]
 
     scheduler._on_done("req-1")
-    # note (EdwardZhang1108): stream-done rescans unconditionally.
+    # Note (edwardzh): stream-done rescans unconditionally.
     assert scans == [10, 10, 10, 0]
 
 
@@ -702,7 +702,7 @@ def test_overlap_borrowed_output_copied_before_next_replay(monkeypatch) -> None:
     state = scheduler._stream_states["req-1"]
     scheduler._on_done("req-1")
 
-    # note (EdwardZhang1108): replay N+1 overwrites the static buffer before
+    # Note (edwardzh): replay N+1 overwrites the static buffer before
     # window N flushes, so this fails if the copy is not launch-ordered.
     assert [chunk.tolist() for chunk in state.audio_parts] == [
         [1.0, 1.0],
@@ -715,7 +715,7 @@ def test_overlap_borrowed_output_copied_before_next_replay(monkeypatch) -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_overlap_gpu_real_pinned_event_bitwise() -> None:
     def _run(*, overlap: bool) -> list[tuple]:
-        # note (EdwardZhang1108): bare cuda has no index; only the factory
+        # Note (edwardzh): bare cuda has no index; only the factory
         # normalizes it.
         scheduler = Code2WavScheduler(
             _DeviceFakeModel(total_upsample=2),

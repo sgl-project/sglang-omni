@@ -143,7 +143,7 @@ class Code2WavStreamState:
 class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     """Streaming vocoder scheduler. Same inbox/outbox interface as OmniScheduler."""
 
-    # note (EdwardZhang1108): one slot per stream plus one for the decode in
+    # Note (edwardzh): one slot per stream plus one for the decode in
     # flight, since acquire happens before the previous window is flushed.
     _MAX_PINNED_SLOTS = 32
 
@@ -195,7 +195,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self._can_batch_stream_chunks = self._enable_batching
         if self._enable_batching:
             self._stream_chunk_batch_max = self._batch_ceiling
-        # note (EdwardZhang1108): serial path only — run_step is #1237's and
+        # Note (edwardzh): serial path only — run_step is #1237's and
         # its window shapes are not the ones this pipeline reasons about.
         self._enable_output_overlap = bool(enable_output_overlap)
         self._eos_lazy_scan = self._enable_output_overlap and not self._enable_batching
@@ -252,7 +252,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     ) -> None:
         del request_id
         if self._eos_lazy_scan:
-            # note (EdwardZhang1108): one frame per message, so checking here
+            # Note (edwardzh): one frame per message, so checking here
             # costs one sync per frame; should_decode batches them per window.
             state.chunks.append(codes)
             return
@@ -267,7 +267,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             and state.checked < len(state.chunks)
             and self._ready(state) >= self._stream_chunk_size
         ):
-            # note (EdwardZhang1108): scan before gating — a staged EOS would
+            # Note (edwardzh): scan before gating — a staged EOS would
             # inflate the count and fire a short window, missing the graph key.
             self._scan_unchecked(state)
         return self._ready(state) >= self._stream_chunk_size
@@ -305,7 +305,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState, *, is_final: bool
     ) -> torch.Tensor | None:
         if self._eos_lazy_scan and is_final:
-            # note (EdwardZhang1108): the stream-done flush never goes through
+            # Note (edwardzh): the stream-done flush never goes through
             # should_decode, so the tail is still unscanned here.
             self._scan_unchecked(state)
         start, end = state.emitted, len(state.chunks)
@@ -347,12 +347,12 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         prev_waveform: torch.Tensor | None = None
         prev_materialized_samples = 0
         slot: _PinnedSlot | None = None
-        # note (EdwardZhang1108): the first window stays synchronous so
+        # Note (edwardzh): the first window stays synchronous so
         # time-to-first-audio is unchanged.
         if self._pipeline_active and not is_final and start > 0 and samples > 0:
             slot = self._acquire_slot(samples)
             if slot is None and state.pending is not None:
-                # note (EdwardZhang1108): freeing this request's own pending
+                # Note (edwardzh): freeing this request's own pending
                 # window keeps its emission order; the retry cannot miss since
                 # only this thread touches the pool.
                 pending_samples = state.pending.samples
@@ -395,7 +395,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return torch.from_numpy(audio)
         event_recorded = False
         try:
-            # note (EdwardZhang1108): same stream is what makes this safe — the
+            # Note (edwardzh): same stream is what makes this safe — the
             # copy is ordered before any later replay, so the borrowed static
             # output cannot be overwritten while it drains.
             slot.buffer[:samples].copy_(
@@ -415,7 +415,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     },
                 )
             if state.pending is not None:
-                # note (EdwardZhang1108): flushed after the launch above so the
+                # Note (edwardzh): flushed after the launch above so the
                 # host work overlaps the GPU computing this window.
                 pending_samples = state.pending.samples
                 prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
@@ -739,7 +739,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         try:
             messages: list[OutgoingMessage] = []
             if state is not None and state.pending is not None:
-                # note (EdwardZhang1108): emitted as its own message, not
+                # Note (edwardzh): emitted as its own message, not
                 # merged into the tail, so message boundaries match the
                 # synchronous path; must precede the base's terminal result.
                 _, waveform = self._flush_pending(request_id, state)
