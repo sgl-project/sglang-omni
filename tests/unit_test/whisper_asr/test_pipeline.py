@@ -231,8 +231,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
         is False
     )
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
-    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
+    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 1024
+    # None: the byte budget is derived from the entry count.
+    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] is None
     assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
     assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 0
     assert "max_prefill_tokens" not in config.stages[0].factory_args

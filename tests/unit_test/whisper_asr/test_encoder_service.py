@@ -102,17 +102,63 @@ def _make_service(
     model: _StubModel | None = None,
     *,
     cache_max_entries: int = 16,
+    cache_max_bytes: int | None = None,
     max_batch_size: int = 8,
 ) -> WhisperPreLMEncoderService:
     service = WhisperPreLMEncoderService(
         model or _StubModel(),
         cache_namespace=_NAMESPACE,
+        encoder_token_count=_TOKENS,
         cache_max_entries=cache_max_entries,
-        cache_max_bytes=1 << 20,
+        cache_max_bytes=cache_max_bytes,
         max_batch_size=max_batch_size,
     )
     _SERVICES.append(service)
     return service
+
+
+def test_cache_budget_is_derived_from_entry_count() -> None:
+    service = _make_service(cache_max_entries=16)
+    entry_bytes = _TOKENS * _HIDDEN_SIZE * torch.float32.itemsize
+
+    assert service.entry_bytes == entry_bytes
+    assert service.cache_max_bytes == 16 * entry_bytes
+    assert service.cache_capacity_entries == 16
+    assert service.stats()["cache_capacity_entries"] == 16
+
+
+def test_cache_budget_respects_explicit_byte_cap() -> None:
+    entry_bytes = _TOKENS * _HIDDEN_SIZE * torch.float32.itemsize
+
+    capped = _make_service(cache_max_entries=16, cache_max_bytes=3 * entry_bytes)
+    assert capped.cache_max_bytes == 3 * entry_bytes
+    assert capped.cache_capacity_entries == 3
+
+    # A cap above the derived budget never raises it.
+    loose = _make_service(cache_max_entries=16, cache_max_bytes=100 * entry_bytes)
+    assert loose.cache_max_bytes == 16 * entry_bytes
+    assert loose.cache_capacity_entries == 16
+
+
+def test_cache_capacity_matches_lru_behavior() -> None:
+    # Two entries fit; a third insert must evict the least recently used one.
+    service = _make_service(cache_max_entries=2)
+    for index in range(3):
+        service.encode_item(_make_item(fingerprint=f"fp{index}", fill=float(index)))
+
+    stats = service.stats()
+    assert stats["cache_capacity_entries"] == 2
+    assert stats["cache_entries"] == 2
+    assert stats["cache_evictions"] == 1
+
+
+def test_zero_entries_disables_cache() -> None:
+    service = _make_service(cache_max_entries=0)
+    assert service.cache_capacity_entries == 0
+    item = _make_item(fingerprint="fp0")
+    service.encode_item(item)
+    assert item.precomputed_embeddings is not None
+    assert service.stats()["cache_entries"] == 0
 
 
 def test_expected_audio_tokens() -> None:
