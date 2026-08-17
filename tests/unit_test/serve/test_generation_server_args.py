@@ -18,6 +18,9 @@ from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.moss_transcribe_diarize.config import (
+    MossTranscribeDiarizePipelineConfig,
+)
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
@@ -258,6 +261,68 @@ def test_talker_torch_compile_max_bs_rejects_unsupported_pipeline(
         match=(r"--talker-torch-compile-max-bs is not supported by " r"PipelineConfig"),
     ):
         serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
+
+    launch_server.assert_not_called()
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_flags_reach_single_stage_generation(
+    from_model_path,
+    launch_server,
+) -> None:
+    """MOSS-TD exposes no talker role, so the neutral flags are its only CLI
+    control over the default-on decoder compile."""
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs(torch_compile="off", torch_compile_max_bs=8))
+
+    launched_config = launch_server.call_args.args[0]
+    overrides = _stage_args(launched_config, "asr")["server_args_overrides"]
+    assert overrides["enable_torch_compile"] is False
+    assert overrides["torch_compile_max_bs"] == 8
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_default_leaves_generation_stage_untouched(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs())
+
+    launched_config = launch_server.call_args.args[0]
+    assert "server_args_overrides" not in _stage_args(launched_config, "asr")
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_rejects_unsupported_pipeline(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="stage",
+                process="pipeline",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                terminal=True,
+            )
+        ],
+    )
+    from_model_path.return_value = _DummyManager(config)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=r"--torch-compile is not supported by PipelineConfig",
+    ):
+        serve(**_serve_kwargs(torch_compile="off"))
 
     launch_server.assert_not_called()
 

@@ -905,6 +905,53 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert scheduler.server_args is server_args
 
 
+@pytest.mark.parametrize(
+    "original_return_hidden_states",
+    [False, True],
+)
+def test_qwen_thinker_cuda_graph_capture_restores_args_when_infrastructure_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    original_return_hidden_states: bool,
+) -> None:
+    from sglang_omni.models.qwen3_omni import bootstrap
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+    server_args = FakeServerArgs(
+        disable_cuda_graph=False,
+        enable_return_hidden_states=original_return_hidden_states,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+        ),
+    )
+    infrastructure_state: list[tuple[bool, bool]] = []
+    error = RuntimeError("infrastructure initialization failed")
+
+    def fake_create_infrastructure(*args, **kwargs):
+        del kwargs
+        infrastructure_state.append(
+            (
+                args[0].disable_cuda_graph,
+                args[0].enable_return_hidden_states,
+            )
+        )
+        raise error
+
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_infrastructure,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
+
+    assert exc_info.value is error
+    assert infrastructure_state == [(True, True)]
+    assert server_args.disable_cuda_graph is False
+    assert server_args.enable_return_hidden_states is original_return_hidden_states
+
+
 def test_qwen_text_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

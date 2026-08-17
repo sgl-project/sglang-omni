@@ -569,6 +569,7 @@ def _new_scheduler_for_async_loop():
     s._admin_queue = queue.Queue()
     s._request_admission_lock = threading.RLock()
     s._pending_request_builds = {}
+    s._pending_request_admissions = {}
     s._model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False

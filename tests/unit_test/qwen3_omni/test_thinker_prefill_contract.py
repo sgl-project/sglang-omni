@@ -386,6 +386,30 @@ def test_fresh_cached_prefix_with_only_live_audio_is_sidecar_eligible():
     torch.testing.assert_close(sidecar.input_embeds, expected)
 
 
+def test_cached_prefix_mixed_audio_image_uses_live_rows_in_inherited_eager_path():
+    runner = _runner()
+    prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
+    image_embeds = torch.tensor([[3.0] * HIDDEN, [4.0] * HIDDEN], dtype=torch.float32)
+    request = _request(
+        prompt,
+        {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
+        positions=_positions(image=(1, 3), audio=(0, 2)),
+    )
+    forward_batch, schedule_batch = _batch(
+        [request], chunks=[prompt[2:]], prefix_lens=[2]
+    )
+
+    runner.before_prefill(forward_batch, schedule_batch, [request])
+
+    assert get_omni_prefill_inputs(forward_batch) is None
+    assert (
+        runner.custom_prefill_forward(forward_batch, schedule_batch, [request]) is None
+    )
+    torch.testing.assert_close(forward_batch.input_embeds[0], audio_embeds[1])
+    torch.testing.assert_close(forward_batch.input_embeds[1], image_embeds[1])
+
+
 @pytest.mark.parametrize(
     ("input_ids", "audio_positions", "prefix", "live_chunk", "expected_audio_row"),
     [
@@ -494,7 +518,7 @@ def test_cached_audio_eager_cursor_survives_text_only_middle_chunk():
 
 
 def test_cached_audio_eager_cursor_survives_unsupported_image_sibling():
-    """An unsupported sibling must not prevent per-request cached-audio cursor repair."""
+    """An unsupported sibling must not prevent cached-audio cursor reconstruction."""
     runner = _runner()
     audio_embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
     image_embeds = torch.full((1, HIDDEN), 3.0)
@@ -588,7 +612,7 @@ def test_cached_audio_eager_cursor_preserves_existing_cursor():
         runner._embed_tokens(torch.tensor([8], dtype=torch.long))[0],
     )
     torch.testing.assert_close(forward_batch.input_embeds[2], image_embeds[0])
-    # Qwen repair must not replace shared cursor ownership.
+    # The inherited merge must not replace shared cursor ownership.
     assert audio_request._omni_consumed is existing_cursor
     assert audio_request._omni_consumed == {"audio": 2}
     assert audio_request.omni_model_inputs is not None

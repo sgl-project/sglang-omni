@@ -158,6 +158,57 @@ adversarial / OOD audio. The request builder defensively suppresses every reserv
 marker (all special + `<...>`-added ids except EOS) at sampling via `logit_bias`
 and strips them on decode. This is a verified no-op on clean speech.
 
+## Pre-LM Audio Encoder
+
+Audio encoding runs **before LM admission**, not inside the LM forward. The
+audio encoder executes at request-build time on a dedicated worker thread and
+CUDA stream, and a request is admitted only once its complete LM-ready
+embedding is attached (`MultimodalDataItem.precomputed_embeddings`). Without
+this, every admission stalls the running decode batch for the whole encoder
+forward on the scheduler thread and the default stream.
+
+Encoded embeddings are cached in a bounded CPU LRU keyed on the audio
+fingerprint plus a namespace digest of the encoder pipeline (checkpoint path,
+model config including `merge_factor`, mel front-end fields, dtype, attention
+backend). Changing any of those re-keys the cache rather than serving a stale
+embedding. Concurrent requests for identical audio are deduplicated
+single-flight, so the clip is encoded once.
+
+Request building submits encoder work without waiting for the GPU. The
+scheduler holds the built LM request outside its waiting queue until that
+request's encoder future completes, then performs normal admission on the
+scheduler thread. A bounded encoder queue applies backpressure before mel
+tensors can accumulate without limit.
+
+| knob | default | meaning |
+|---|---|---|
+| `enable_pre_lm_encoder` | `true` | Off falls back to encoding inside the LM forward. |
+| `pre_lm_cache_max_entries` | `4096` | Max cached embeddings. |
+| `pre_lm_cache_size_bytes` | `2 GiB` | Byte budget; LRU evicts past it. |
+| `pre_lm_max_batch_size` | `8` | Max queued requests drained into one `get_audio_feature` call. |
+| `pre_lm_max_batch_wait_ms` | `0` | Batch-formation window. `0` is a greedy drain: items queued while the previous group encoded are taken instantly, so an idle-arrival request pays no batching latency. |
+| `pre_lm_max_pending` | `32` | Max encoder items waiting behind the active batch. |
+
+### How this relates to `encoder_max_batch_size`
+
+The two batch knobs act at different levels and both stay in force:
+
+- `pre_lm_max_batch_size` decides **how many queued requests are handed to one
+  `get_audio_feature` call**.
+- `encoder_max_batch_size` decides **how that call is executed** — it pads and
+  masks the group, then splits it into sequential microbatches to bound
+  encoder activation memory.
+
+Both default to `8`, so one drained group is exactly one encoder microbatch.
+Raising `pre_lm_max_batch_size` above `encoder_max_batch_size` turns a group
+into several bounded forwards; it never widens a single forward, so it does
+not change peak encoder activation memory.
+
+`request_build_max_workers` defaults to **2** and
+`request_build_max_pending` to **16**. These workers only perform CPU request
+construction; encoder concurrency and backpressure are owned by the separate
+pre-LM queue.
+
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on

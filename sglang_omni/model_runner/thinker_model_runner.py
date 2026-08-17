@@ -8,6 +8,7 @@ visual embeddings for Qwen3-Omni's thinker stage.
 from __future__ import annotations
 
 import logging
+from numbers import Integral
 from typing import Any
 
 import torch
@@ -116,6 +117,63 @@ class ThinkerModelRunner(ModelRunner):
             relative_positions.numel(),
         )
 
+    @staticmethod
+    def _ensure_consumed_cursor(req: Any) -> dict[str, Any]:
+        consumed = req._omni_consumed
+        if consumed is None:
+            consumed = {}
+            req._omni_consumed = consumed
+        elif not isinstance(consumed, dict):
+            raise TypeError(
+                "req._omni_consumed must be None or a dict, "
+                f"got {type(consumed).__name__}"
+            )
+        return consumed
+
+    @staticmethod
+    def _validate_modality_cursor(
+        modality: str, offset: Any, row_count: int, live_count: int
+    ) -> int:
+        if not isinstance(offset, Integral) or isinstance(offset, bool):
+            raise TypeError(
+                f"Invalid {modality} multimodal cursor: expected a non-negative "
+                f"integer, got {offset!r}"
+            )
+        offset = int(offset)
+        if offset < 0:
+            raise ValueError(
+                f"Invalid {modality} multimodal cursor: offset {offset} is negative"
+            )
+        if offset > row_count or offset + live_count > row_count:
+            raise ValueError(
+                f"Invalid {modality} multimodal cursor: source range "
+                f"[{offset}, {offset + live_count}) exceeds {row_count} embedding rows"
+            )
+        return offset
+
+    @staticmethod
+    def _reconstruct_missing_cursor(
+        modality: str,
+        positions: torch.Tensor,
+        prefix: int,
+        row_count: int,
+    ) -> int | None:
+        """Recover a missing cursor only when cached rows map unambiguously."""
+        position_count = positions.numel()
+        if prefix <= 0 or position_count == 0:
+            return None
+
+        cached_count = positions[positions < prefix].numel()
+        if cached_count == 0 or cached_count == position_count:
+            return None
+        if position_count != row_count:
+            raise ValueError(
+                f"Cannot reconstruct {modality} multimodal cursor: "
+                f"{position_count} prompt placeholders do not map one-to-one "
+                f"to {row_count} embedding rows"
+            )
+        return cached_count
+
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
@@ -156,8 +214,7 @@ class ThinkerModelRunner(ModelRunner):
             start = offsets[i]
             length = extend_lens[i]
             prefix = 0 if prefix_lens is None else int(prefix_lens[i])
-            consumed = req._omni_consumed or {}
-            req._omni_consumed = consumed
+            consumed = self._ensure_consumed_cursor(req)
             chunk_offsets: dict[str, tuple[int, int]] = {}
             pad_values = omni_inputs.get("pad_values", {})
 
@@ -169,12 +226,28 @@ class ThinkerModelRunner(ModelRunner):
                 )
                 chunk_positions[modality] = rel
                 embeds = omni_inputs.get(f"{modality}_embeds")
-                if embeds is None or n_tokens == 0:
+                if embeds is None:
                     continue
-                chunk_offsets[modality] = (offset, n_tokens)
-                scatter_rows.append(rel + start)
-                scatter_srcs.append(embeds[offset : offset + n_tokens])
-                consumed[modality] = offset + n_tokens
+                row_count = embeds.shape[0]
+                if modality not in consumed:
+                    reconstructed_offset = self._reconstruct_missing_cursor(
+                        modality,
+                        positions[modality],
+                        prefix,
+                        row_count,
+                    )
+                    if reconstructed_offset is not None:
+                        consumed[modality] = reconstructed_offset
+                        offset = reconstructed_offset
+                offset = self._validate_modality_cursor(
+                    modality, offset, row_count, n_tokens
+                )
+                if n_tokens:
+                    chunk_offsets[modality] = (offset, n_tokens)
+                    chunk_embeds = embeds[offset : offset + n_tokens]
+                    scatter_rows.append(rel + start)
+                    scatter_srcs.append(chunk_embeds)
+                    consumed[modality] = offset + n_tokens
 
             ds_embeds = omni_inputs.get("deepstack_visual_embeds")
             image_ds = omni_inputs.get("image_deepstack_visual_embeds")

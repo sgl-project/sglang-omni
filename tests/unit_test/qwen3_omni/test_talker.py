@@ -1140,6 +1140,7 @@ def _build_state_machine_scheduler(
     scheduler._request_build_executor = None
     scheduler.request_build_max_pending = 0
     scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
     scheduler._backlogged_request_build_payloads = deque()
     scheduler._request_build_max_pending_observed = 0
     scheduler.max_req_len = 8192

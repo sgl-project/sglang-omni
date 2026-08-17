@@ -120,6 +120,14 @@ def register_transcriptions(app: FastAPI) -> None:
             # Decode + split in a worker thread: decoding a long file is pure
             # CPU and would stall the event loop.
             plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
+            if plan is not None:
+                try:
+                    # The probe admitted the decode on header metadata, which
+                    # can under-measure estimated containers; the plan knows
+                    # the decoded duration, so re-enforce the cap on truth.
+                    check_total_duration(plan.duration_s, chunking)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         if plan is None:
             gen_req = speech_to_text.build_speech_to_text_generate_request(

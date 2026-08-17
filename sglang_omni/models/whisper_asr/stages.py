@@ -16,13 +16,18 @@ def create_sglang_whisper_asr_executor(
     mem_fraction_static: float = 0.85,
     enable_encoder_cuda_graph: bool = False,
     encoder_graph_batch_buckets: list[int] | None = None,
-    request_build_max_workers: int = 2,
+    request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     prefill_coalesce_requests: int = 2,
     prefill_coalesce_wait_ms: float = 6.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
     prefill_coalesce_after_builds_during_decode: bool = False,
+    enable_pre_lm_encoder: bool = True,
+    pre_lm_cache_max_entries: int = 4096,
+    pre_lm_cache_size_bytes: int = 2 * 1024**3,
+    pre_lm_max_batch_size: int = 8,
+    pre_lm_max_batch_wait_ms: int = 0,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
@@ -44,6 +49,11 @@ def create_sglang_whisper_asr_executor(
         prefill_coalesce_after_builds_during_decode=(
             prefill_coalesce_after_builds_during_decode
         ),
+        enable_pre_lm_encoder=enable_pre_lm_encoder,
+        pre_lm_cache_max_entries=pre_lm_cache_max_entries,
+        pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,
+        pre_lm_max_batch_size=pre_lm_max_batch_size,
+        pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
     ).build(
         model_path,
         device=device,

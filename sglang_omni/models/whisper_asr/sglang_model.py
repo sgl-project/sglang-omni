@@ -9,6 +9,7 @@ CUDA Graph, and torch.compile paths apply to decode.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable, Tuple
 
 import torch
@@ -25,6 +26,8 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WhisperEncoderAttention(nn.Module):
@@ -351,6 +354,36 @@ class WhisperForConditionalGeneration(nn.Module):
         )
         self._encoder_graph_runner.capture(batch_buckets)
 
+    def _run_encoder(self, audio_features: torch.Tensor) -> torch.Tensor:
+        """Run the Whisper encoder with CUDA-graph replay when available."""
+        if self._encoder_graph_runner is not None:
+            try:
+                return self._encoder_graph_runner.run(audio_features)
+            except Exception:
+                logger.exception(
+                    "Whisper encoder CUDA graph replay failed; falling back to eager"
+                )
+        return self.model.encoder(audio_features)
+
+    def encode_audio_features(self, items: list[Any]) -> torch.Tensor:
+        """Batch-encode mel features into encoder states [B, T, H]."""
+        if not items:
+            raise ValueError(
+                "Whisper encode_audio_features requires at least one audio item"
+            )
+        features: list[torch.Tensor] = []
+        reference = next(self.model.encoder.parameters())
+        for item in items:
+            feature = item.feature
+            if feature is None:
+                raise RuntimeError(
+                    "Whisper audio item is missing mel features; cannot encode"
+                )
+            if not isinstance(feature, torch.Tensor):
+                feature = torch.as_tensor(feature)
+            features.append(feature.to(device=reference.device, dtype=reference.dtype))
+        return self._run_encoder(torch.cat(features, dim=0))
+
     def _batch_audio_inputs(
         self,
         forward_batch: ForwardBatch,
@@ -374,6 +407,36 @@ class WhisperForConditionalGeneration(nn.Module):
         if not features:
             return None, None
         return torch.cat(features, dim=0), encoder_lens
+
+    def _batch_precomputed_encoder_states(
+        self,
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor | None:
+        """Collect pre-LM encoder hiddens into a flat cross-attn tensor."""
+        if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
+            return None
+
+        parts: list[torch.Tensor] = []
+        for index, mm_input in enumerate(forward_batch.mm_inputs):
+            if forward_batch.encoder_cached[index] or mm_input is None:
+                continue
+            encoder_len = int(forward_batch.encoder_lens[index].item())
+            for item in mm_input.mm_items:
+                embedding = item.precomputed_embeddings
+                if embedding is None:
+                    continue
+                if not isinstance(embedding, torch.Tensor):
+                    embedding = torch.as_tensor(embedding)
+                if embedding.dim() != 2 or embedding.shape[0] < encoder_len:
+                    raise RuntimeError(
+                        "Whisper precomputed encoder states "
+                        f"{tuple(embedding.shape)} incompatible with "
+                        f"encoder_len={encoder_len}"
+                    )
+                parts.append(embedding[:encoder_len])
+        if not parts:
+            return None
+        return torch.cat(parts, dim=0)
 
     @staticmethod
     def _flat_encoder_result(
@@ -407,23 +470,20 @@ class WhisperForConditionalGeneration(nn.Module):
             get_is_capture_mode,
         )
 
-        audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
-        cross_attention_states = None
+        cross_attention_states = self._batch_precomputed_encoder_states(forward_batch)
+        if cross_attention_states is None:
+            audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
+            if audio_features is not None and encoder_lens is not None:
+                encoder_states = self._run_encoder(audio_features)
+                cross_attention_states = self._flat_encoder_result(
+                    encoder_states,
+                    encoder_lens,
+                )
 
         if get_is_capture_mode():
             skip_cross_attention = False
         else:
             skip_cross_attention = forward_batch.encoder_lens.max() == 0
-
-        if audio_features is not None and encoder_lens is not None:
-            if self._encoder_graph_runner is not None:
-                encoder_states = self._encoder_graph_runner.run(audio_features)
-            else:
-                encoder_states = self.model.encoder(audio_features)
-            cross_attention_states = self._flat_encoder_result(
-                encoder_states,
-                encoder_lens,
-            )
 
         hidden_states = self.model.decoder(
             input_ids=input_ids,

@@ -31,8 +31,10 @@ class QueueEntry(Generic[ItemT]):
 class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     """Run model-owned encoder hooks on a queue-backed worker thread."""
 
-    def __init__(self, *, worker_name: str) -> None:
-        self._queue: queue.Queue[Any] = queue.Queue()
+    def __init__(self, *, worker_name: str, max_queue_size: int = 0) -> None:
+        if max_queue_size < 0:
+            raise ValueError(f"max_queue_size must be >= 0, got {max_queue_size}")
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
         self._worker_state_lock = threading.Lock()
         self._worker_error: Exception | None = None
         self._thread = threading.Thread(
@@ -47,7 +49,17 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         item: ItemT,
         future: concurrent.futures.Future[Any],
     ) -> None:
-        self._queue.put(QueueEntry(item=item, future=future))
+        entry = QueueEntry(item=item, future=future)
+        while True:
+            try:
+                self._queue.put(entry, timeout=0.1)
+                return
+            except queue.Full:
+                with self._worker_state_lock:
+                    if self._worker_error is not None:
+                        raise RuntimeError(
+                            "pre-LM encoder worker has failed"
+                        ) from self._worker_error
 
     def _submit(
         self,
@@ -61,7 +73,11 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 raise RuntimeError(
                     "pre-LM encoder worker has failed"
                 ) from self._worker_error
-            self._enqueue(item, future)
+        self._enqueue(item, future)
+        with self._worker_state_lock:
+            worker_error = self._worker_error
+        if worker_error is not None and not future.done():
+            future.set_exception(worker_error)
         return future
 
     @abstractmethod
