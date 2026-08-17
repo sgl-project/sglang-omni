@@ -1624,17 +1624,17 @@ class OmniScheduler:
             try:
                 # Drain runner stream buffers before the terminal payload; both
                 # use this outbox, so remaining chunks stay ahead of stream done.
-                model_runner = self._model_runner
-                if model_runner is not None:
-                    model_runner.on_request_finished(rid, data)
-                data.output_ids = list(req.output_ids)
-                data.weight_version = self.server_args.weight_version
                 finished_reason = req.finished_reason
                 data.finish_reason = (
                     finished_reason.to_json().get("type")
                     if finished_reason is not None
                     else None
                 )
+                model_runner = self._model_runner
+                if model_runner is not None:
+                    model_runner.on_request_finished(rid, data)
+                data.output_ids = list(req.output_ids)
+                data.weight_version = self.server_args.weight_version
                 self._flush_stream_output(rid, data)
                 result = self._result_adapter(data)
             except Exception as exc:

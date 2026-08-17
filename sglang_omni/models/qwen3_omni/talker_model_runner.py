@@ -23,11 +23,15 @@ class QwenTalkerModelRunner(ModelRunner):
         *,
         code2wav_target: str = "code2wav",
         feedback_enabled: bool = True,
+        codec_coalesce_frames: int = 0,
+        codec_coalesce_first_frames: int = 0,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self._outbox = outbox
         self._code2wav_target = code2wav_target
         self._feedback_enabled = bool(feedback_enabled)
+        self._codec_coalesce_frames = max(int(codec_coalesce_frames), 0)
+        self._codec_coalesce_first_frames = max(int(codec_coalesce_first_frames), 0)
 
     def execute(self, scheduler_output: Any):
         return super().execute(scheduler_output)
@@ -121,26 +125,79 @@ class QwenTalkerModelRunner(ModelRunner):
         # in-graph write to the fixed-address _output_codes/_output_embeds.
         codes_snap = self.model._output_codes[:bs].detach().clone()
         embeds_snap = self.model._output_embeds[:bs].detach().clone()
+        coalesce = self._codec_coalesce_frames
         for idx, sched_req in enumerate(requests):
             req = schedule_batch.reqs[idx]
             code_chunk = codes_snap[idx]
             feedback_row = embeds_snap[idx]
-            # Tell code2wav whether to forward audio chunks to the Coordinator.
-            stage_payload = sched_req.data.stage_payload
-            is_streaming = bool(
-                stage_payload is not None
-                and (stage_payload.request.params or {}).get("stream", False)
-            )
-            self._outbox.put(
-                OutgoingMessage(
-                    request_id=req.rid,
-                    type="stream",
-                    data=code_chunk,
-                    target=self._code2wav_target,
-                    metadata={"stream": is_streaming},
+            if coalesce > 1:
+                pending = sched_req.data.pending_codec_rows
+                # Note (wenyao): flush before appending so the newest row (the
+                # only one that can be EOS) never leaves in a threshold flush;
+                # on_request_finished pops it on a codec-EOS finish, keeping
+                # 2-D chunks EOS-free without a sender-side sync. This costs
+                # one extra talker step of latency per flush (incl. the first);
+                # the delay-free variant (append, then flush pending[:-1]) was
+                # rejected because k-1-row chunks break the first_frames /
+                # code2wav initial-chunk alignment.
+                if len(pending) >= self._coalesce_threshold(sched_req.data):
+                    self._flush_codec_rows(req.rid, sched_req.data)
+                pending.append(code_chunk)
+            else:
+                self._outbox.put(
+                    OutgoingMessage(
+                        request_id=req.rid,
+                        type="stream",
+                        data=code_chunk,
+                        target=self._code2wav_target,
+                        metadata={"stream": self._is_streaming(sched_req.data)},
+                    )
                 )
-            )
             sched_req.data.pending_feedback_queue.append(feedback_row)
+
+    @staticmethod
+    def _is_streaming(data: Any) -> bool:
+        # Tell code2wav whether to forward audio chunks to the Coordinator.
+        stage_payload = data.stage_payload
+        return bool(
+            stage_payload is not None
+            and (stage_payload.request.params or {}).get("stream", False)
+        )
+
+    def _coalesce_threshold(self, data: Any) -> int:
+        # Note (wenyao): the first flush may align with a smaller code2wav
+        # initial chunk so coalescing does not delay first decode; steady-state
+        # flushes use the full coalesce size.
+        first = self._codec_coalesce_first_frames
+        if first > 0 and not data.codec_first_flush_done:
+            return first
+        return self._codec_coalesce_frames
+
+    def _flush_codec_rows(self, request_id: str, data: Any) -> None:
+        pending = data.pending_codec_rows
+        if not pending:
+            return
+        data.codec_first_flush_done = True
+        rows = pending[0] if len(pending) == 1 else torch.stack(pending, dim=0)
+        pending.clear()
+        self._outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=rows,
+                target=self._code2wav_target,
+                metadata={"stream": self._is_streaming(data)},
+            )
+        )
+
+    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+        # Note (wenyao): runs before the terminal payload is enqueued on the
+        # same outbox, so buffered tail frames stay ahead of stream completion.
+        # A "stop" finish means codec EOS for talker requests; the trailing
+        # pending row is that EOS row — drop it instead of decoding it.
+        if req_data.finish_reason == "stop" and req_data.pending_codec_rows:
+            req_data.pending_codec_rows.pop()
+        self._flush_codec_rows(request_id, req_data)
 
     def sample_before_post_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list

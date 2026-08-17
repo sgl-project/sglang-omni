@@ -204,6 +204,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
+        if codes.ndim == 2:
+            # Note (wenyao): sender strips the EOS row before the coalesced
+            # flush, so 2-D chunks need no per-row scan and no D2H sync.
+            state.chunks.extend(codes.unbind(0))
+            return
         if codes.ndim >= 1 and codes[0].item() == self._codec_eos_token_id:
             return
         state.chunks.append(codes)

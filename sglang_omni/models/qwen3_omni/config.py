@@ -192,6 +192,14 @@ def _talker_stage(
             "feedback_enabled": True,
             "enable_partial_start": enable_partial_start,
             "partial_start_min_chunks": 5,
+            # Note (wenyao): >1 coalesces frames per talker→code2wav message;
+            # keep it divisor-aligned with code2wav stream_chunk_size (10) so
+            # decode readiness is unchanged.
+            "codec_coalesce_frames": 10,
+            # Note (wenyao): first flush can align with a smaller code2wav
+            # initial chunk once that is configurable; 0 follows
+            # codec_coalesce_frames.
+            "codec_coalesce_first_frames": 0,
         },
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "talker_max_seq_len"},
