@@ -86,6 +86,28 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
     assert calls == [([1, 2, 4], 3000)]
 
 
+def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
+    calls: list[list[int]] = []
+    builder = _encoder_graph_builder(
+        enable_pre_lm_encoder=False,
+        max_running_requests=32,
+    )
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(
+            max_prefill_tokens=6144,
+            max_running_requests=32,
+        ),
+        generation_cuda_graph_enabled=True,
+    )
+
+    assert calls == [[1, 2, 4]]
+
+
 @pytest.mark.parametrize(
     ("builder_kwargs", "max_prefill_tokens", "expected"),
     [
@@ -130,7 +152,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     )
     defaults = builder.generation_defaults(dtype="float16")
 
-    assert defaults["max_prefill_tokens"] == 4096
+    assert defaults["max_prefill_tokens"] == 6144
     assert defaults["chunked_prefill_size"] == 0
 
     overrides = {"chunked_prefill_size": 0}
@@ -335,6 +357,6 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0
-    assert build_kwargs["max_prefill_tokens"] == 4096
+    assert build_kwargs["max_prefill_tokens"] == 6144
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4

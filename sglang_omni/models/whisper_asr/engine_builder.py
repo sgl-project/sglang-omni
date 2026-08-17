@@ -36,7 +36,7 @@ def _resolve_encoder_graph_buckets(
     # admission, so capture against pre_lm_max_batch_size. Keep
     # max_prefill_tokens // encoder_token_count only for encoder-in-prefill.
     if enable_pre_lm_encoder:
-        max_encoder_batch_size = pre_lm_max_batch_size
+        capture_limit = pre_lm_max_batch_size
     else:
         if max_prefill_tokens < 1:
             raise ValueError(
@@ -46,20 +46,16 @@ def _resolve_encoder_graph_buckets(
             raise ValueError(
                 f"encoder_token_count must be >= 1, got {encoder_token_count}"
             )
-        max_encoder_batch_size = max_prefill_tokens // encoder_token_count
-    max_capture_batch_size = max_encoder_batch_size
+        capture_limit = max_prefill_tokens // encoder_token_count
     if max_running_requests is not None:
         if max_running_requests < 1:
             raise ValueError(
                 "max_running_requests must be >= 1, " f"got {max_running_requests}"
             )
-        max_capture_batch_size = min(
-            max_capture_batch_size,
-            max_running_requests,
-        )
-    resolved = {bucket for bucket in buckets if bucket <= max_capture_batch_size}
-    if max_running_requests is not None and max_capture_batch_size >= 1:
-        resolved.add(max_capture_batch_size)
+        capture_limit = min(capture_limit, max_running_requests)
+    resolved = {bucket for bucket in buckets if bucket <= capture_limit}
+    if max_running_requests is not None and capture_limit >= 1:
+        resolved.add(capture_limit)
     return tuple(sorted(resolved))
 
 
@@ -159,36 +155,38 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        if self.enable_encoder_cuda_graph and generation_cuda_graph_enabled:
-            max_prefill_tokens = int(server_args.max_prefill_tokens)
-            max_running_requests = int(server_args.max_running_requests)
-            resolved_buckets = _resolve_encoder_graph_buckets(
-                self.encoder_graph_batch_buckets,
-                enable_pre_lm_encoder=self.enable_pre_lm_encoder,
-                pre_lm_max_batch_size=self.pre_lm_max_batch_size,
-                max_prefill_tokens=max_prefill_tokens,
-                encoder_token_count=self.encoder_token_count,
-                max_running_requests=(
-                    max_running_requests
-                    if self._using_default_encoder_graph_buckets
-                    else None
-                ),
-            )
-            logger.info(
-                "Resolved Whisper encoder CUDA graph buckets configured=%s "
-                "reachable=%s pre_lm=%s max_prefill_tokens=%d "
-                "encoder_token_count=%d max_running_requests=%d",
-                self.encoder_graph_batch_buckets,
-                resolved_buckets,
-                self.enable_pre_lm_encoder,
-                max_prefill_tokens,
-                self.encoder_token_count,
-                max_running_requests,
-            )
-            model.init_encoder_graphs(
-                resolved_buckets,
-                int(self.processor.feature_extractor.nb_max_frames),
-            )
+        if not self.enable_encoder_cuda_graph or not generation_cuda_graph_enabled:
+            return
+
+        max_prefill_tokens = int(server_args.max_prefill_tokens)
+        max_running_requests = int(server_args.max_running_requests)
+        resolved_buckets = _resolve_encoder_graph_buckets(
+            self.encoder_graph_batch_buckets,
+            enable_pre_lm_encoder=self.enable_pre_lm_encoder,
+            pre_lm_max_batch_size=self.pre_lm_max_batch_size,
+            max_prefill_tokens=max_prefill_tokens,
+            encoder_token_count=self.encoder_token_count,
+            max_running_requests=(
+                max_running_requests
+                if self._using_default_encoder_graph_buckets
+                else None
+            ),
+        )
+        logger.info(
+            "Resolved Whisper encoder CUDA graph buckets configured=%s "
+            "reachable=%s pre_lm=%s max_prefill_tokens=%d "
+            "encoder_token_count=%d max_running_requests=%d",
+            self.encoder_graph_batch_buckets,
+            resolved_buckets,
+            self.enable_pre_lm_encoder,
+            max_prefill_tokens,
+            self.encoder_token_count,
+            max_running_requests,
+        )
+        model.init_encoder_graphs(
+            resolved_buckets,
+            int(self.processor.feature_extractor.nb_max_frames),
+        )
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
@@ -230,7 +228,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "disable_overlap_schedule": True,
             "enable_torch_compile": True,
             "mem_fraction_static": self.mem_fraction_static,
-            "max_prefill_tokens": 4096,
+            "max_prefill_tokens": 6144,
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
