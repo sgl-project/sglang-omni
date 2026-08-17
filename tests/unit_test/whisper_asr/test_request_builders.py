@@ -62,7 +62,7 @@ def _make_request_builder(tokenizer: _FakeTokenizer | None = None):
     request_builder, _ = make_whisper_scheduler_adapters(
         processor=fake_processor,
         tokenizer=tokenizer if tokenizer is not None else _FakeTokenizer(),
-        generation_config=SimpleNamespace(suppress_tokens=None),
+        generation_config=SimpleNamespace(suppress_tokens=None, max_length=None),
         encoder_token_count=_ENCODER_TOKEN_COUNT,
         max_new_tokens=32,
     )
@@ -286,3 +286,136 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
         "english": [1],
         "fr": [2],
     }
+
+
+def test_request_builder_pre_lm_encode_attaches_embeddings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    calls: list[object] = []
+
+    class _Service:
+        def lookup_cached_embedding(self, fingerprint, expected_tokens):
+            return None
+
+        def encode_item(self, item):
+            calls.append(item)
+            item.precomputed_embeddings = torch.ones(
+                (_ENCODER_TOKEN_COUNT, 2), dtype=torch.float32
+            )
+            item.feature = None
+
+        def attach_embedding(self, item, embedding):
+            item.precomputed_embeddings = embedding
+            item.feature = None
+
+    fake_processor = SimpleNamespace(
+        feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
+            SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+        ),
+    )
+    request_builder, _ = make_whisper_scheduler_adapters(
+        processor=fake_processor,
+        tokenizer=_FakeTokenizer(),
+        generation_config=SimpleNamespace(suppress_tokens=None, max_length=None),
+        encoder_token_count=_ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+        audio_encoder_service=_Service(),
+    )
+    data = request_builder(_make_payload())
+    assert len(calls) == 1
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert item.feature is None
+    assert item.precomputed_embeddings is not None
+    assert item.num_audio_tokens == _ENCODER_TOKEN_COUNT
+
+
+def test_request_builder_pre_lm_cache_miss_extracts_and_encodes(monkeypatch) -> None:
+    mel_calls = {"n": 0}
+    lookups: list[tuple[str | None, int]] = []
+
+    def _feature_extractor(audio, *, sampling_rate, return_tensors):
+        mel_calls["n"] += 1
+        return SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    class _Service:
+        def lookup_cached_embedding(self, fingerprint, expected_tokens):
+            lookups.append((fingerprint, expected_tokens))
+            return None
+
+        def encode_item(self, item):
+            assert item.feature is not None
+            item.precomputed_embeddings = torch.ones(
+                (_ENCODER_TOKEN_COUNT, 2), dtype=torch.float32
+            )
+            item.feature = None
+
+        def attach_embedding(self, item, embedding):
+            raise AssertionError("cache miss must encode, not attach")
+
+    fake_processor = SimpleNamespace(feature_extractor=_feature_extractor)
+    request_builder, _ = make_whisper_scheduler_adapters(
+        processor=fake_processor,
+        tokenizer=_FakeTokenizer(),
+        generation_config=SimpleNamespace(suppress_tokens=None, max_length=None),
+        encoder_token_count=_ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+        audio_encoder_service=_Service(),
+    )
+    data = request_builder(_make_payload())
+    assert mel_calls["n"] == 1
+    assert lookups and lookups[0][1] == _ENCODER_TOKEN_COUNT
+    assert data.req.extra_key == lookups[0][0]
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert item.feature is None
+    assert item.precomputed_embeddings is not None
+
+
+def test_request_builder_pre_lm_cache_hit_skips_mel(monkeypatch) -> None:
+    mel_calls = {"n": 0}
+
+    def _feature_extractor(audio, *, sampling_rate, return_tensors):
+        mel_calls["n"] += 1
+        return SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    class _Service:
+        def lookup_cached_embedding(self, fingerprint, expected_tokens):
+            return torch.full((_ENCODER_TOKEN_COUNT, 2), 7.0)
+
+        def encode_item(self, item):
+            raise AssertionError("cache hit must not encode")
+
+        def attach_embedding(self, item, embedding):
+            item.precomputed_embeddings = embedding
+            item.feature = None
+
+    fake_processor = SimpleNamespace(feature_extractor=_feature_extractor)
+    request_builder, _ = make_whisper_scheduler_adapters(
+        processor=fake_processor,
+        tokenizer=_FakeTokenizer(),
+        generation_config=SimpleNamespace(suppress_tokens=None, max_length=None),
+        encoder_token_count=_ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+        audio_encoder_service=_Service(),
+    )
+    data = request_builder(_make_payload())
+    assert mel_calls["n"] == 0
+    item = data.req.multimodal_inputs.mm_items[0]
+    assert item.feature is None
+    assert torch.equal(
+        item.precomputed_embeddings, torch.full((_ENCODER_TOKEN_COUNT, 2), 7.0)
+    )

@@ -104,7 +104,12 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
 
 
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_default_prefill_cuda_graph_bs,
+    )
+
     build_kwargs: dict[str, object] = {}
+    infra_kwargs: list[dict[str, object]] = []
     validations: list[dict[str, object]] = []
     stream_builder_calls: list[dict[str, object]] = []
     stream_output_builder = object()
@@ -177,12 +182,22 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
+        build_kwargs.clear()
         build_kwargs.update(overrides)
+        prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args = FakeServerArgs(**overrides)
-        server_args.cuda_graph_config = SimpleNamespace(
-            prefill=SimpleNamespace(backend="disabled")
-        )
         server_args.mm_attention_backend = None
+        server_args.cuda_graph_config = SimpleNamespace(
+            prefill=SimpleNamespace(
+                backend=overrides.get("cuda_graph_backend_prefill", "disabled"),
+                bs=prefill_bs,
+                max_bs=overrides.get("cuda_graph_max_bs_prefill"),
+            )
+        )
+        server_args._cuda_graph_config_locked = {
+            ("prefill", "backend"),
+            ("prefill", "bs"),
+        }
         return server_args
 
     model_worker = SimpleNamespace(
@@ -207,7 +222,10 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     monkeypatch.setattr(
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
-        lambda *args, **kwargs: (False, infrastructure),
+        lambda *args, **kwargs: (
+            infra_kwargs.append(dict(kwargs)) or False,
+            infrastructure,
+        ),
     )
     monkeypatch.setattr(
         engine_factory,
@@ -219,6 +237,12 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     assert build_kwargs["cuda_graph_max_bs"] == 32
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert build_kwargs["cuda_graph_backend_prefill"] == "breakable"
+    assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        256
+    )
+    assert scheduler.server_args._cuda_graph_config_locked == {("prefill", "bs")}
+    assert infra_kwargs[-1]["enable_prefill_input_embeds"] is True
     assert validations == [
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
@@ -239,6 +263,14 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
     assert scheduler_without_service.shutdown_callback is None
 
+    scheduler_graph_disabled = fun_asr_stages.create_sglang_fun_asr_executor(
+        "dummy", server_args_overrides={"disable_cuda_graph": True}
+    )
+    assert build_kwargs["cuda_graph_backend_prefill"] == "disabled"
+    assert "cuda_graph_bs_prefill" not in build_kwargs
+    assert "enable_prefill_input_embeds" not in infra_kwargs[-1]
+    scheduler_graph_disabled.shutdown_callback()
+
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
@@ -248,4 +280,8 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     with pytest.raises(RuntimeError, match="factory failed"):
         fun_asr_stages.create_sglang_fun_asr_executor("dummy")
 
-    assert encoder_services[1].close_calls == 1
+    assert encoder_services[2].close_calls == 1
+
+
+def test_fun_asr_declares_breakable_prefill_cuda_graph_support() -> None:
+    assert fun_asr_builder.FunASREngineBuilder.supports_breakable_prefill_cuda_graph

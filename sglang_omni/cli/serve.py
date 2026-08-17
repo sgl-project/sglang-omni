@@ -38,11 +38,12 @@ _ASYNC_DECODE_FACTORIES = frozenset(
         "sglang_omni.models.fun_asr.stages.create_sglang_fun_asr_executor",
         "sglang_omni.models.qwen3_asr.stages.create_sglang_qwen3_asr_executor",
         "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
+        "sglang_omni.models.whisper_asr.stages.create_sglang_whisper_asr_executor",
     }
 )
 _ASYNC_DECODE_SUPPORTED_MODELS = (
     "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-    "Qwen3-ASR, ARK-ASR, and the Qwen3-Omni thinker"
+    "Qwen3-ASR, ARK-ASR, Whisper ASR, and the Qwen3-Omni thinker"
 )
 _PREFILL_COALESCE_FACTORIES = frozenset(
     {
@@ -1333,8 +1334,8 @@ def serve(
                 "async|sync. Omit this flag to use the model-specific pipeline "
                 "default. Async mode enables one-step lookahead, "
                 "which can overlap the previous step's host-side collect with "
-                "the next GPU forward. Available for Higgs TTS, MOSS-TTS-Local, "
-                "MOSS-Transcribe-Diarize, Fun-ASR, Qwen3-ASR, and ARK-ASR."
+                "the next GPU forward. Available for "
+                f"{_ASYNC_DECODE_SUPPORTED_MODELS}."
             ),
         ),
     ] = None,
