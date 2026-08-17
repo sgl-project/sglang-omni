@@ -11,7 +11,7 @@ def create_sglang_whisper_asr_executor(
     *,
     device: str = "cuda:0",
     dtype: str = "float16",
-    max_running_requests: int = 32,
+    max_running_requests: int = 64,
     max_new_tokens: int = 256,
     mem_fraction_static: float = 0.85,
     enable_encoder_cuda_graph: bool = False,

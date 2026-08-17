@@ -53,7 +53,7 @@ runtime_overrides:
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 32. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
 
 ```bash
 sgl-omni serve \
@@ -180,13 +180,13 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
   --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
   --max-samples 128 \
-  --concurrencies 1,2,4,8,16,32 \
+  --concurrencies 1,2,4,8,16,32,64 \
   --repeats 3 \
   --warmup \
   --dtype float16 \
   --cuda-graph \
   --torch-compile \
-  --max-running-requests 32 \
+  --max-running-requests 64 \
   --mem-fraction-static 0.30 \
   --fingerprint \
   --output whisper_async.json
