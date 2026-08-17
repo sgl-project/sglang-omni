@@ -173,14 +173,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
+from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import managed_omni_server
-from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
@@ -200,6 +204,7 @@ from benchmarks.tasks.tts import (
     save_generated_audio_metadata,
     save_speed_results,
 )
+from sglang_omni.admission import QueueFullError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -252,6 +257,8 @@ class TtsSeedttsBenchmarkConfig:
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     max_running_requests: int = 64
+    max_queued_requests: int | None = None
+    overshoot_duration_s: float = 10.0
     cuda_graph_max_bs: int = 64
     # note (luojiaxuan): optional sglang-omni pipeline config yaml forwarded
     # to the managed TTS server as ``--config`` (e.g.
@@ -315,22 +322,15 @@ def _build_results_config(
         "request_rate": config.request_rate,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "max_running_requests": config.max_running_requests,
+        "max_queued_requests": config.max_queued_requests,
+        "overshoot_duration_s": config.overshoot_duration_s,
         "cuda_graph_max_bs": config.cuda_graph_max_bs,
         "server_config": config.server_config,
         "quantization": config.quantization,
     }
 
 
-async def run_tts_seedtts_benchmark(
-    config: TtsSeedttsBenchmarkConfig,
-) -> dict:
-    """Generate audio and measure speed. Always saves audio for WER use.
-
-    Returns a dict with keys: summary, per_request, config.
-    """
-    base_url = build_base_url(config)
-    api_url = f"{base_url}/v1/audio/speech"
-
+def _load_benchmark_samples(config: TtsSeedttsBenchmarkConfig) -> list[SampleInput]:
     # Note (Jiaxin Deng): a negative offset would silently slice from the end
     # instead of skipping the first N, contaminating the shard it claims to take.
     if config.sample_offset < 0:
@@ -339,17 +339,34 @@ async def run_tts_seedtts_benchmark(
         )
     if config.sample_offset:
         head = config.sample_offset + (config.max_samples or 0)
-        samples = load_seedtts_samples(
+        return load_seedtts_samples(
             config.meta, head if config.max_samples else None, split=config.lang
         )[config.sample_offset :]
-    else:
-        samples = load_seedtts_samples(
-            config.meta, config.max_samples, split=config.lang
-        )
+    return load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
+
+
+async def run_tts_seedtts_benchmark(
+    config: TtsSeedttsBenchmarkConfig,
+    *,
+    samples: list[SampleInput] | None = None,
+    save_audio: bool = True,
+) -> dict:
+    """Generate audio and measure speed.
+
+    Saves audio by default so the transcribe phase can reuse it.
+    """
+    base_url = build_base_url(config)
+    api_url = f"{base_url}/v1/audio/speech"
+    if samples is None:
+        samples = _load_benchmark_samples(config)
     logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
-    save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
-    os.makedirs(save_audio_dir, exist_ok=True)
+    save_audio_dir = None
+    if save_audio:
+        save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
+        os.makedirs(save_audio_dir, exist_ok=True)
+    else:
+        os.makedirs(config.output_dir, exist_ok=True)
 
     generation_kwargs = _build_generation_kwargs(config)
     send_fn = make_tts_send_fn(
@@ -460,6 +477,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
+        max_queued_requests=args.max_queued_requests,
+        overshoot_duration_s=args.overshoot_duration_s,
         cuda_graph_max_bs=args.cuda_graph_max_bs,
         server_config=args.server_config,
         quantization=args.quantization,
@@ -484,6 +503,220 @@ def _parse_token_count(value: str) -> int | str:
     if token_count <= 0:
         raise argparse.ArgumentTypeError("token count must be positive")
     return token_count
+
+
+def _parse_concurrencies(value: str) -> list[int]:
+    tokens = [token.strip() for token in value.split(",") if token.strip()]
+    if not tokens:
+        raise argparse.ArgumentTypeError(
+            "concurrencies must be a non-empty comma-separated list"
+        )
+    values: list[int] = []
+    for token in tokens:
+        try:
+            parsed = int(token)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid concurrency {token!r}") from exc
+        if parsed <= 0:
+            raise argparse.ArgumentTypeError("concurrency must be > 0")
+        values.append(parsed)
+    return values
+
+
+@dataclass(frozen=True)
+class SustainedOvershootPlan:
+    capacity: int
+    request_rate: float
+    duration_s: float
+    request_count: int
+    concurrency: int
+    overshoot_ratio: float
+
+
+def plan_sustained_overshoot(
+    *,
+    max_running_requests: int,
+    max_queued_requests: int,
+    duration_s: float,
+    request_rate: float | None = None,
+    overshoot_factor: float = 2.0,
+) -> SustainedOvershootPlan:
+    """Open-loop arrivals above ``running + queued`` for ``duration_s``."""
+    if max_running_requests < 1 or max_queued_requests < 1:
+        raise ValueError("max_running_requests and max_queued_requests must be >= 1")
+    if duration_s <= 0 or overshoot_factor <= 1:
+        raise ValueError("overshoot duration_s must be positive and factor > 1")
+    capacity = max_running_requests + max_queued_requests
+    rate = overshoot_factor * capacity if request_rate is None else float(request_rate)
+    if rate <= capacity:
+        raise ValueError(
+            "sustained overshoot requires request_rate > admission capacity "
+            f"({rate} <= {capacity})"
+        )
+    return SustainedOvershootPlan(
+        capacity=capacity,
+        request_rate=rate,
+        duration_s=float(duration_s),
+        request_count=max(1, math.ceil(rate * duration_s)),
+        concurrency=0,
+        overshoot_ratio=rate / capacity,
+    )
+
+
+def expand_samples_for_overshoot(
+    samples: list[SampleInput], request_count: int
+) -> list[SampleInput]:
+    if not samples or request_count < 1:
+        raise ValueError("sustained overshoot requires samples and request_count >= 1")
+    n = len(samples)
+    expanded: list[SampleInput] = []
+    for index in range(request_count):
+        source = samples[index % n]
+        expanded.append(replace(source, sample_id=f"{source.sample_id}#{index}"))
+    return expanded
+
+
+def classify_overshoot_outcomes(records: list[Any]) -> dict[str, Any]:
+    success_ttfa: list[float] = []
+    reject_latency: list[float] = []
+    success = queue_full = other_failed = 0
+    for record in records:
+        if isinstance(record, RequestResult):
+            ok, error, ttfa, latency = (
+                record.is_success,
+                record.error,
+                record.audio_ttfp_s,
+                record.latency_s,
+            )
+        else:
+            ok = bool(record.get("is_success"))
+            error = record.get("error")
+            ttfa = record.get("audio_ttfp_s")
+            latency = float(record.get("latency_s") or 0.0)
+        if ok:
+            success += 1
+            if ttfa is not None:
+                success_ttfa.append(float(ttfa))
+        elif QueueFullError.matches(error):
+            queue_full += 1
+            reject_latency.append(float(latency))
+        else:
+            other_failed += 1
+    return {
+        "total_requests": len(records),
+        "success": success,
+        "queue_full": queue_full,
+        "other_failed": other_failed,
+        "success_ttfa_p95_s": _percentile(success_ttfa, 95),
+        "queue_full_latency_p95_s": _percentile(reject_latency, 95),
+    }
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = min(len(ordered) - 1, max(0, math.ceil(pct / 100.0 * len(ordered)) - 1))
+    return ordered[rank]
+
+
+async def run_tts_concurrency_sweep(
+    config: TtsSeedttsBenchmarkConfig,
+    concurrencies: list[int],
+) -> dict[str, Any]:
+    """Run generate-only once per concurrency and write a summary JSON."""
+    rows: list[dict[str, Any]] = []
+    for concurrency in concurrencies:
+        point_output_dir = os.path.join(config.output_dir, f"c{concurrency}")
+        point = replace(
+            config,
+            concurrency=concurrency,
+            output_dir=point_output_dir,
+        )
+        print(f"[conc={concurrency}] generate pass")
+        results = await run_tts_seedtts_benchmark(point)
+        summary = results["summary"]
+        success = int(summary.get("completed_requests") or 0)
+        failed = int(summary.get("failed_requests") or 0)
+        row = {
+            "concurrency": concurrency,
+            "output_dir": point_output_dir,
+            "success": success,
+            "failed": failed,
+            "latency_p95_s": summary.get("latency_p95_s"),
+            "audio_ttfp_p95_s": summary.get("audio_ttfp_p95_s"),
+            "summary": summary,
+        }
+        rows.append(row)
+        print_speed_summary(summary, config.model, concurrency=concurrency)
+        print(
+            f"  success={success} failed={failed} "
+            f"latency_p95={row['latency_p95_s']} "
+            f"ttfa_p95={row['audio_ttfp_p95_s']}"
+        )
+
+    payload = {
+        "config": _build_results_config(config, base_url=build_base_url(config)),
+        "concurrencies": concurrencies,
+        "rows": rows,
+    }
+    out_path = os.path.join(config.output_dir, "concurrency_sweep.json")
+    os.makedirs(config.output_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info("Wrote concurrency sweep to %s", out_path)
+    return payload
+
+
+async def run_tts_sustained_overshoot(
+    config: TtsSeedttsBenchmarkConfig,
+) -> dict[str, Any]:
+    """Hold offered load above admission capacity instead of stepping concurrency."""
+    if config.max_queued_requests is None:
+        raise ValueError("--sustained-overshoot requires --max-queued-requests")
+    request_rate = None if config.request_rate == float("inf") else config.request_rate
+    plan = plan_sustained_overshoot(
+        max_running_requests=config.max_running_requests,
+        max_queued_requests=config.max_queued_requests,
+        duration_s=config.overshoot_duration_s,
+        request_rate=request_rate,
+    )
+    point = replace(
+        config,
+        concurrency=plan.concurrency,
+        request_rate=plan.request_rate,
+        output_dir=os.path.join(config.output_dir, "overshoot"),
+    )
+    print(
+        f"[overshoot] open-loop rate={plan.request_rate:.3f}/s "
+        f"capacity={plan.capacity} duration={plan.duration_s}s "
+        f"n={plan.request_count}"
+    )
+    corpus = _load_benchmark_samples(config)
+    samples = expand_samples_for_overshoot(corpus, plan.request_count)
+    results = await run_tts_seedtts_benchmark(point, samples=samples, save_audio=False)
+    outcomes = classify_overshoot_outcomes(results["per_request"])
+    payload = {
+        "plan": asdict(plan),
+        "outcomes": outcomes,
+        "summary": results["summary"],
+        "config": results["config"],
+    }
+    out_path = os.path.join(point.output_dir, "sustained_overshoot.json")
+    os.makedirs(point.output_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info("Wrote sustained overshoot to %s", out_path)
+    print_speed_summary(results["summary"], config.model, concurrency=plan.concurrency)
+    print(
+        f"  success={outcomes['success']} queue_full={outcomes['queue_full']} "
+        f"other_failed={outcomes['other_failed']} "
+        f"ttfa_p95={outcomes['success_ttfa_p95_s']} "
+        f"reject_p95={outcomes['queue_full_latency_p95_s']}"
+    )
+    return payload
 
 
 async def benchmark(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -600,10 +833,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
+        "--concurrencies",
+        type=_parse_concurrencies,
+        default=None,
+        help="Comma-separated concurrency levels to sweep (requires --generate-only).",
+    )
+    parser.add_argument(
+        "--sustained-overshoot",
+        action="store_true",
+        help="Open-loop soak above running+queued (needs --generate-only and --max-queued-requests).",
+    )
+    parser.add_argument(
+        "--overshoot-duration-s",
+        type=float,
+        default=10.0,
+        help="Wall-clock seconds to keep offering overshoot load.",
+    )
+    parser.add_argument(
         "--request-rate",
         type=float,
         default=float("inf"),
-        help="Requests per second (inf = send all at once).",
+        help="Requests/s (inf = burst). Soak defaults to 2x capacity if omitted.",
     )
     parser.add_argument(
         "--stream",
@@ -679,6 +929,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--max-queued-requests",
+        type=int,
+        default=None,
+        help=(
+            "SGLang generation stage max_queued_requests for the managed "
+            "server. Omit to leave the pipeline default."
+        ),
+    )
+    parser.add_argument(
         "--cuda-graph-max-bs",
         type=int,
         default=64,
@@ -751,9 +1010,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if (
         args.initial_codec_chunk_frames is not None
         and args.initial_codec_chunk_frames < 0
@@ -761,13 +1018,41 @@ def main() -> None:
         parser.error("--initial-codec-chunk-frames must be non-negative")
     if args.max_running_requests <= 0:
         parser.error("--max-running-requests must be positive")
+    if args.max_queued_requests is not None and args.max_queued_requests < 1:
+        parser.error("--max-queued-requests must be >= 1")
     if args.cuda_graph_max_bs <= 0:
         parser.error("--cuda-graph-max-bs must be positive")
+    if args.concurrencies is not None and not args.generate_only:
+        parser.error("--concurrencies currently requires --generate-only")
+    if args.sustained_overshoot and not args.generate_only:
+        parser.error("--sustained-overshoot currently requires --generate-only")
+    if args.sustained_overshoot and args.concurrencies is not None:
+        parser.error("--sustained-overshoot cannot be combined with --concurrencies")
+    if args.sustained_overshoot and args.max_queued_requests is None:
+        parser.error("--sustained-overshoot requires --max-queued-requests")
+    if args.overshoot_duration_s <= 0:
+        parser.error("--overshoot-duration-s must be positive")
+    if args.sustained_overshoot and args.request_rate != float("inf"):
+        try:
+            plan_sustained_overshoot(
+                max_running_requests=args.max_running_requests,
+                max_queued_requests=args.max_queued_requests,
+                duration_s=args.overshoot_duration_s,
+                request_rate=args.request_rate,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.use_existing_server and not (args.generate_only or args.transcribe_only):
         parser.error(
             "--use-existing-server currently requires --generate-only or "
             "--transcribe-only"
         )
+
+
+def main() -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    _validate_args(parser, args)
     config = _config_from_args(args)
     wait_for_gpu_release = not args.skip_gpu_cleanup
 
@@ -797,8 +1082,16 @@ def main() -> None:
                 run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
+    async def _run_generate() -> None:
+        if args.concurrencies is not None:
+            await run_tts_concurrency_sweep(config, args.concurrencies)
+        elif args.sustained_overshoot:
+            await run_tts_sustained_overshoot(config)
+        else:
+            await benchmark(config)
+
     if args.use_existing_server:
-        asyncio.run(benchmark(config))
+        asyncio.run(_run_generate())
     else:
         with managed_omni_server(
             model_path=config.model,
@@ -806,13 +1099,14 @@ def main() -> None:
             host=config.host,
             server_config=config.server_config,
             max_running_requests=config.max_running_requests,
+            max_queued_requests=config.max_queued_requests,
             cuda_graph_max_bs=config.cuda_graph_max_bs,
             quantization=config.quantization,
             log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
             timeout=args.server_timeout,
             wait_for_gpu_release=wait_for_gpu_release,
         ):
-            asyncio.run(benchmark(config))
+            asyncio.run(_run_generate())
 
     if args.generate_only:
         return

@@ -1,5 +1,16 @@
 # Release Notes
 
+## v0.1.2
+
+Install: `uv pip install "sglang-omni==0.1.2"`.
+
+Highlights since v0.1.1:
+
+- **Models and hardware**: MiniMax Music 3 and experimental Intel XPU support for Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni
+- **ASR**: automatic Qwen3-ASR language detection, `/v1/audio/translations`, long-audio support, and performance improvements
+- **TTS and omni**: improved Qwen3-TTS playback continuity and Qwen3-Omni prefill and Code2Wav performance
+- **Serving and runtime**: `sglang serve --model-type omni`, realtime barge-in, and communication and runtime fixes
+
 ## v0.1.1
 
 First PyPI release. Install: `uv pip install "sglang-omni==0.1.1"`.

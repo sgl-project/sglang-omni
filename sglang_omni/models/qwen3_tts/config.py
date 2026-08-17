@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from sglang_omni.config import PipelineConfig, StageConfig
 
@@ -26,6 +26,13 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "tts_engine"}
+
+    @classmethod
+    def generation_admission_defaults(cls) -> dict[str, Any]:
+        from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+        defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+        return {k: defaults[k] for k in ("max_running_requests", "max_queued_requests")}
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

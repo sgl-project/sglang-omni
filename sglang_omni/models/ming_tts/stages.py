@@ -7,6 +7,14 @@ import logging
 from typing import Any
 
 from sglang_omni.models.ming_tts.audio_config import resolve_ming_tts_audio_vae_config
+from sglang_omni.models.ming_tts.config import (
+    MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE,
+    MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
+    MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
+    MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
+    validate_ming_tts_audio_decode_batch_config,
+    validate_ming_tts_audio_decode_cadence_config,
+)
 from sglang_omni.models.ming_tts.hf_config import (
     MING_TTS_AUDIO_VAE_ATTN_IMPLEMENTATION,
     register_ming_tts_hf_config,
@@ -18,60 +26,6 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
-
-
-def _check_ming_tts_tp_backbone_config(config: Any, tp_size: int) -> None:
-    tp_size = int(tp_size)
-    if tp_size <= 1:
-        return
-
-    llm_config = getattr(config, "llm_config", None)
-    if llm_config is None:
-        raise ValueError("Ming-Omni-TTS TP requires llm_config")
-
-    def require_int_config_field(field: str) -> int:
-        value = getattr(llm_config, field, None)
-        if value is None:
-            raise ValueError(f"Ming-Omni-TTS llm_config is missing {field}")
-        return int(value)
-
-    hidden_size = require_int_config_field("hidden_size")
-    head_dim = require_int_config_field("head_dim")
-    num_heads = require_int_config_field("num_attention_heads")
-    num_kv_heads = require_int_config_field("num_key_value_heads")
-    if min(hidden_size, head_dim, num_heads, num_kv_heads) <= 0:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires positive hidden/head dimensions: "
-            f"hidden_size={hidden_size}, head_dim={head_dim}, "
-            f"num_attention_heads={num_heads}, "
-            f"num_key_value_heads={num_kv_heads}"
-        )
-    if head_dim * num_heads != hidden_size:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires head_dim * num_attention_heads "
-            f"to equal hidden_size ({head_dim} * {num_heads} != {hidden_size})"
-        )
-    if hidden_size % tp_size != 0:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires hidden_size divisible by tp_size: "
-            f"hidden_size={hidden_size}, tp_size={tp_size}"
-        )
-    if num_heads % tp_size != 0:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires attention heads divisible by tp_size: "
-            f"num_attention_heads={num_heads}, tp_size={tp_size}"
-        )
-    if num_kv_heads >= tp_size and num_kv_heads % tp_size != 0:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires KV heads divisible by tp_size: "
-            f"num_key_value_heads={num_kv_heads}, tp_size={tp_size}"
-        )
-    if num_kv_heads < tp_size and tp_size % num_kv_heads != 0:
-        raise ValueError(
-            "Ming-Omni-TTS TP requires KV heads to divide or be divisible "
-            f"by tp_size: num_key_value_heads={num_kv_heads}, "
-            f"tp_size={tp_size}"
-        )
 
 
 def create_preprocessing_executor(
@@ -199,17 +153,24 @@ def create_audio_decode_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    decode_mode: str = "chunked",
     keep_latents: bool = False,
-    max_batch_size: int = 1,
-    max_batch_wait_ms: int = 0,
-) -> SimpleScheduler:
-    if decode_mode != "chunked":
-        raise ValueError("Ming-Omni-TTS currently supports only decode_mode='chunked'")
+    initial_chunk_patches: int = MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
+    steady_chunk_patches: int = MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
+    max_batch_size: int = MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE,
+    max_batch_wait_ms: int = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
+) -> Any:
+    validate_ming_tts_audio_decode_cadence_config(
+        initial_chunk_patches=initial_chunk_patches,
+        steady_chunk_patches=steady_chunk_patches,
+    )
+    max_batch_size, max_batch_wait_ms = validate_ming_tts_audio_decode_batch_config(
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
-    from sglang_omni.models.ming_tts.audio_decode import (
-        MingAudioDecoder,
-        MingTTSBatchVocoder,
+    from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
+    from sglang_omni.models.ming_tts.streaming_vocoder import (
+        MingTTSStreamingVocoderScheduler,
     )
 
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -229,12 +190,19 @@ def create_audio_decode_executor(
     report = load_ming_tts_audio_vae_weights(checkpoint_dir, decoder.audio_vae)
     logger.info("%s", report.summary())
 
-    vocoder = MingTTSBatchVocoder(
-        decoder,
-        decode_mode=decode_mode,
-        keep_latents=keep_latents,
+    logger.info(
+        "Ming-Omni-TTS AudioVAE streaming cadence: "
+        "initial_patches=%d steady_patches=%d",
+        initial_chunk_patches,
+        steady_chunk_patches,
     )
-    return vocoder.build_scheduler(
+    return MingTTSStreamingVocoderScheduler(
+        decoder,
+        patch_size=int(config.audio_patch_size),
+        latent_dim=int(config.latent_dim),
+        initial_chunk_patches=initial_chunk_patches,
+        steady_chunk_patches=steady_chunk_patches,
+        keep_latents=keep_latents,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )
