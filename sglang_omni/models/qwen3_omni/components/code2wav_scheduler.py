@@ -345,7 +345,6 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         samples = int(wav.numel())
         prev_wait_ns = 0
         prev_waveform: torch.Tensor | None = None
-        prev_materialized_samples = 0
         slot: _PinnedSlot | None = None
         # Note (edwardzh): the first window stays synchronous so
         # time-to-first-audio is unchanged.
@@ -355,9 +354,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 # Note (edwardzh): freeing this request's own pending
                 # window keeps its emission order; the retry cannot miss since
                 # only this thread touches the pool.
-                pending_samples = state.pending.samples
                 prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
-                prev_materialized_samples = pending_samples
                 slot = self._acquire_slot(samples)
         if slot is None:
             audio = wav.reshape(-1).detach().cpu().float().numpy().copy()
@@ -417,9 +414,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             if state.pending is not None:
                 # Note (edwardzh): flushed after the launch above so the
                 # host work overlaps the GPU computing this window.
-                pending_samples = state.pending.samples
                 prev_wait_ns, prev_waveform = self._flush_pending(request_id, state)
-                prev_materialized_samples = pending_samples
         except Exception:
             if event_recorded:
                 self._retire_slot(slot)
@@ -443,7 +438,6 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     **execution_metadata,
                     "pipelined": True,
                     "d2h_wait_ns": prev_wait_ns,
-                    "materialized_previous_audio_samples": prev_materialized_samples,
                 },
             )
         return prev_waveform

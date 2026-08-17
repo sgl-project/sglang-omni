@@ -77,7 +77,7 @@ Supporting events used for finer-grained breakdown:
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
 | Code2Wav | `code2wav_decode_start` | Serial decode start: trigger, start/end/new/context/window frames, active and threshold-ready requests, inbox depth |
 | Code2Wav | `code2wav_decode_launched` | Pipelined serial window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode and window/new-frame counts |
-| Code2Wav | `code2wav_decode_end` | Repeats start metadata and adds the current decode's `audio_samples` plus execution metadata; output-overlap runs also include `pipelined`, `materialized_previous_audio_samples`, and the previous window's post-EOS-scan `d2h_wait_ns` |
+| Code2Wav | `code2wav_decode_end` | Repeats start metadata and adds the current decode's `audio_samples` plus execution metadata; output-overlap runs also include `pipelined` and the previous window's post-EOS-scan `d2h_wait_ns` |
 | Code2Wav | `code2wav_batch_start` | Coalesced step start: batch and bucket shape, new/window frames, active requests, inbox depth, oldest wait, fire reason, due-bucket count, and sub-batch decomposition |
 | Code2Wav | `code2wav_batch_end` | Repeats the start metadata and adds audio samples, execution mode, graph key, and fallback reason |
 
