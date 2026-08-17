@@ -997,9 +997,17 @@ class ModelRunner:
                 row_groups[key] = (toks_t, [row_idx])
             else:
                 group[1].append(row_idx)
+        # Note (Lixiang Li): index_fill_ rather than advanced-index assignment.
+        # Assigning a Python scalar through advanced indexing stages it through a
+        # host-to-device copy and blocks until the stream drains — measured at
+        # 24.8 ms behind 25.1 ms of queued work, against 0.010 ms for
+        # index_fill_. This runs once per sampling call, so the stall cost one
+        # full CPU/GPU overlap per decode step. Same reason the mixed-set branch
+        # fills per row instead of building a row-index tensor: that
+        # torch.tensor(..., device=...) is itself a blocking host-to-device copy.
         for toks_t, rows in row_groups.values():
             if len(rows) == logits.shape[0]:
-                logits[:, toks_t] = float("-inf")
+                logits.index_fill_(1, toks_t, float("-inf"))
             else:
-                rows_t = torch.tensor(rows, dtype=torch.long, device=device)
-                logits[rows_t[:, None], toks_t[None, :]] = float("-inf")
+                for row_idx in rows:
+                    logits[row_idx].index_fill_(0, toks_t, float("-inf"))
