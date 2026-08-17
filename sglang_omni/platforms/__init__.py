@@ -8,6 +8,7 @@ from sglang.srt.platforms.interface import SRTPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
 
 
@@ -35,6 +36,8 @@ def _load_platform_class(qualname: str) -> type[OmniPlatform]:
 
 
 def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
+    if platform.is_musa():
+        return MUSAOmniPlatform()
     if platform.is_cuda():
         return CUDAOmniPlatform()
     if platform.is_rocm():
