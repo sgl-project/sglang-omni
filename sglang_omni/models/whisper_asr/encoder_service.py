@@ -101,7 +101,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             if self._device.type == "cuda"
             else None
         )
-        
+
         self._entry_bytes = (
             int(encoder_token_count) * self._hidden_size * self._dtype.itemsize
         )
