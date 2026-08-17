@@ -61,11 +61,14 @@ def _resolve_language(value: Any) -> str:
     return _LANGUAGE_ALIASES.get(language, language)
 
 
-def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
+def _build_suppress_token_ids(
+    generation_config: GenerationConfig,
+) -> tuple[int, ...] | None:
     suppress_tokens = generation_config.suppress_tokens
     if not suppress_tokens:
         return None
-    return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
+    token_ids = tuple(int(token_id) for token_id in suppress_tokens if token_id >= 0)
+    return token_ids or None
 
 
 def _build_prefix_tokens(tokenizer: Any, *, language: str, task: str) -> list[int]:
@@ -124,7 +127,13 @@ def make_whisper_scheduler_adapters(
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
-    logit_bias = _build_logit_bias(generation_config)
+    # note (Lixiang Li): the suppress set is a model constant, so build the id
+    # tuple once here and let the shared sparse suppression path in
+    # ModelRunner._apply_codec_suppress_tokens cache one device tensor for the
+    # whole fleet. Passing it as a SamplingParams logit_bias instead made
+    # SGLang materialize a dense [batch, vocab] float32 tensor and fill it with
+    # one scalar store per suppressed id per request.
+    suppress_token_ids = _build_suppress_token_ids(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
     # across request-build workers.
     tokenizer_lock = Lock()
@@ -231,12 +240,16 @@ def make_whisper_scheduler_adapters(
                 audio_encoder_service.attach_embedding(audio_item, cached_embedding)
 
         temperature = float(params.get("temperature") or 0.0)
+        # note (Lixiang Li): language identification biases the language tokens
+        # upward rather than suppressing anything, so it keeps the dense
+        # logit_bias; it samples a single token and never suppressed tokens.
+        request_suppress_tokens = None if detect_language else suppress_token_ids
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
-            logit_bias=language_token_bias if detect_language else logit_bias,
+            logit_bias=language_token_bias if detect_language else None,
         )
         sampling_params.normalize(tokenizer=None)
 
@@ -249,7 +262,11 @@ def make_whisper_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        # note (Lixiang Li): handed over by reference, not copied into
+        # ``data.suppress_tokens`` — the tuple is a model constant shared by
+        # every request, and the shared path derives its cache key from the
+        # contents either way.
+        req._codec_suppress_tokens = request_suppress_tokens
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),

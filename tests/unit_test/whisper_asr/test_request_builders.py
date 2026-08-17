@@ -53,7 +53,12 @@ class _FakeTokenizer:
         return [_SOT_PREV] + [1000 + i for i in range(len(text))]
 
 
-def _make_request_builder(tokenizer: _FakeTokenizer | None = None):
+def _make_request_builder(
+    tokenizer: _FakeTokenizer | None = None,
+    *,
+    suppress_tokens: list[int] | None = None,
+    lang_to_id: dict[str, int] | None = None,
+):
     fake_processor = SimpleNamespace(
         feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
             SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
@@ -62,7 +67,11 @@ def _make_request_builder(tokenizer: _FakeTokenizer | None = None):
     request_builder, _ = make_whisper_scheduler_adapters(
         processor=fake_processor,
         tokenizer=tokenizer if tokenizer is not None else _FakeTokenizer(),
-        generation_config=SimpleNamespace(suppress_tokens=None, max_length=None),
+        generation_config=SimpleNamespace(
+            suppress_tokens=suppress_tokens,
+            max_length=None,
+            lang_to_id=lang_to_id,
+        ),
         encoder_token_count=_ENCODER_TOKEN_COUNT,
         max_new_tokens=32,
     )
@@ -79,13 +88,22 @@ def _make_payload(
     )
 
 
-def _build(monkeypatch, params: dict | None = None):
+def _build(
+    monkeypatch,
+    params: dict | None = None,
+    *,
+    suppress_tokens: list[int] | None = None,
+    lang_to_id: dict[str, int] | None = None,
+):
     monkeypatch.setattr(
         transcription,
         "load_audio",
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
-    return _make_request_builder()(_make_payload(params))
+    builder = _make_request_builder(
+        suppress_tokens=suppress_tokens, lang_to_id=lang_to_id
+    )
+    return builder(_make_payload(params))
 
 
 def test_request_builder_rejects_audio_past_the_mel_window(monkeypatch) -> None:
@@ -419,3 +437,120 @@ def test_request_builder_pre_lm_cache_hit_skips_mel(monkeypatch) -> None:
     assert torch.equal(
         item.precomputed_embeddings, torch.full((_ENCODER_TOKEN_COUNT, 2), 7.0)
     )
+
+
+# note (Lixiang Li): a slice of Whisper's real suppress set plus a negative
+# sentinel, so both the ordering and the >= 0 filter are covered.
+_SUPPRESS_TOKENS = [1, 2, 7, 220, 50257, 50360, -1]
+_EXPECTED_SUPPRESS = (1, 2, 7, 220, 50257, 50360)
+_VOCAB_SIZE = len(_FakeTokenizer())
+
+
+def _suppressing_requests(monkeypatch, count: int, *, detect_last: bool = False):
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    builder = _make_request_builder(
+        suppress_tokens=_SUPPRESS_TOKENS,
+        lang_to_id={"<|en|>": 50259, "<|zh|>": 50260},
+    )
+    requests = []
+    for index in range(count):
+        detect = detect_last and index == count - 1
+        payload = _make_payload(
+            {"detect_language": True} if detect else None,
+            request_id=f"req-suppress-{index}",
+        )
+        requests.append(SimpleNamespace(data=builder(payload)))
+    return requests
+
+
+def test_request_builder_routes_suppression_to_the_shared_sparse_path(
+    monkeypatch,
+) -> None:
+    data = _build(monkeypatch, suppress_tokens=_SUPPRESS_TOKENS)
+
+    # The dense per-request logit bias is gone ...
+    assert data.req.sampling_params.logit_bias is None
+    # ... and the shared sparse path sees the same ids, negatives dropped.
+    assert data.req._codec_suppress_tokens == _EXPECTED_SUPPRESS
+
+
+def test_request_builder_without_a_suppress_set_stays_inert(monkeypatch) -> None:
+    data = _build(monkeypatch)
+
+    assert data.req.sampling_params.logit_bias is None
+    assert data.req._codec_suppress_tokens is None
+
+
+def test_suppress_tuple_is_shared_by_reference_across_requests(monkeypatch) -> None:
+    first, second = _suppressing_requests(monkeypatch, 2)
+
+    assert (
+        first.data.req._codec_suppress_tokens is second.data.req._codec_suppress_tokens
+    )
+
+
+def test_language_detection_keeps_its_dense_language_bias(monkeypatch) -> None:
+    data = _build(
+        monkeypatch,
+        {"detect_language": True},
+        suppress_tokens=_SUPPRESS_TOKENS,
+        lang_to_id={"<|en|>": 50259, "<|zh|>": 50260},
+    )
+
+    # Language identification biases language tokens upward instead of
+    # suppressing anything, so it must keep the logit_bias it always had.
+    assert data.req.sampling_params.logit_bias == {"50259": 100.0, "50260": 100.0}
+    assert data.req._codec_suppress_tokens is None
+
+
+def test_sparse_suppression_picks_the_same_token_as_the_dense_bias(
+    monkeypatch,
+) -> None:
+    from sglang_omni.model_runner.base import ModelRunner
+
+    requests = _suppressing_requests(monkeypatch, 3, detect_last=True)
+
+    torch.manual_seed(0)
+    logits = torch.randn(len(requests), _VOCAB_SIZE)
+    # Make a suppressed id win outright on every row: without suppression the
+    # argmax is that id, so a silent no-op cannot pass this test.
+    logits[:, _EXPECTED_SUPPRESS[0]] = 1.0e4
+    reference = logits.clone()
+    dense_bias = torch.zeros(len(requests) - 1, _VOCAB_SIZE)
+    for token_id in _EXPECTED_SUPPRESS:
+        dense_bias[:, token_id] = -1.0e9
+    expected = (reference[:-1] + dense_bias).argmax(dim=-1)
+
+    runner = ModelRunner.__new__(ModelRunner)
+    runner._apply_codec_suppress_tokens(
+        SimpleNamespace(next_token_logits=logits), requests
+    )
+
+    assert torch.equal(logits[:-1].argmax(dim=-1), expected)
+    assert torch.isneginf(logits[:-1, list(_EXPECTED_SUPPRESS)]).all()
+    # The language-detection row opts out of suppression, so it is untouched.
+    assert torch.equal(logits[-1], reference[-1])
+
+
+def test_shared_suppression_cache_serves_every_request_from_one_tensor(
+    monkeypatch,
+) -> None:
+    from sglang_omni.model_runner.base import ModelRunner
+
+    requests = _suppressing_requests(monkeypatch, 4)
+    runner = ModelRunner.__new__(ModelRunner)
+
+    runner._apply_codec_suppress_tokens(
+        SimpleNamespace(next_token_logits=torch.zeros(len(requests), _VOCAB_SIZE)),
+        requests,
+    )
+
+    # One device tensor for the whole fleet is the point of the change; a
+    # per-request key would leave four entries here.
+    assert len(runner._suppress_tensor_cache) == 1
+    (cached,) = runner._suppress_tensor_cache.values()
+    assert cached.tolist() == list(_EXPECTED_SUPPRESS)
