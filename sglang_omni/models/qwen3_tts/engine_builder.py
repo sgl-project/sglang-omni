@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from sglang_omni.models.qwen3_tts import request_builders
+from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
@@ -25,6 +25,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
     context_length = 8192
     model_arch_override = "Qwen3TTSTalker"
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(self, *, attn_implementation: str | None = None) -> None:
         self.attn_implementation = attn_implementation
