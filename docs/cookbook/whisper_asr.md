@@ -22,7 +22,7 @@ sgl-omni serve \
 
 ## Encoder CUDA Graph
 
-The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
+The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`12288 // 1500 = 8`). To use eager encoder execution, override the pipeline configuration:
 
 ```yaml
 config_cls: WhisperASRPipelineConfig
@@ -38,7 +38,7 @@ The graph is captured after SGLang's generation graphs. With pre-LM off, raise `
 
 ## Prefill Coalescing
 
-Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets two requests, while the default 6,144-token atomic budget lets the LM scheduler admit up to four 1,504-token Whisper requests together. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately.
+Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets four requests, while the default 12,288-token atomic budget lets the LM scheduler admit up to eight 1,504-token Whisper requests together. Coalescing is bypassed when decode is idle. Under active decode, a partial batch waits for at most 1 ms only when the waiting and pending work can reach four requests; otherwise it is released immediately.
 
 `request_build_max_pending` bounds submitted request-build futures, not the request backlog. When `max_queued_requests` is unset, requests beyond that pending-build limit remain queued for later construction. Setting `max_queued_requests` retains the configured finite-queue rejection behavior.
 
@@ -53,7 +53,7 @@ runtime_overrides:
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 32. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at batch size 1 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing. The default running-request limit is 32. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
 
 ```bash
 sgl-omni serve \
@@ -61,6 +61,18 @@ sgl-omni serve \
   --decode-mode sync \
   --port 8000
 ```
+
+## Decoder Fast Paths
+
+The FP16 decoder uses a fused self-attention QKV projection and FlashInfer
+LayerNorm when CUDA, FP16 states, and compatible FP16 affine weights are
+available. Other devices and dtypes retain the native PyTorch LayerNorm path.
+Whisper's static suppression-token set is installed on the model once and
+applied inside forward so decode CUDA Graphs capture it; requests no longer
+construct a dense vocabulary-sized logit-bias path.
+
+The FlashInfer LayerNorm path can increase the first uncached CUDA Graph
+capture time. This affects server startup, not steady-state request throughput.
 
 ## Transcribe Audio
 
@@ -227,7 +239,19 @@ The async-decode comparison used the 128-sample SeedTTS EN subset on the same H2
 | 16 | 55.59 | 57.90 | +4.2% | 0.396 | 0.366 | -7.6% | 0.0084 |
 | 32 | 66.47 | 69.91 | +5.2% | 0.691 | 0.639 | -7.6% | 0.0084 |
 
-All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
+All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. That historical comparison used the then-current batch-size-1 synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed the earlier benefit of raising the budget from 4,096 to 6,144: scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
+
+The final stacked `openai/whisper-large-v3` optimization used the pinned
+128-sample SeedTTS EN subset on one H200 in FP16. It compared fixed main
+`ef01ccfc` with the exact final code, using one discarded warmup and three
+measured repeats.
+
+| Concurrency | Main req/s | Optimized req/s | Throughput gain | Main P95 (s) | Optimized P95 (s) | Corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 10.867 | 13.786 | +26.86% | 0.121 | 0.094 | 0.0084 |
+| 32 | 70.240 | 92.767 | +32.07% | 0.656 | 0.482 | 0.0084 |
+
+All 768 measured optimized requests completed successfully. WER was unchanged.
 
 ## Known Limitations
 
@@ -241,7 +265,7 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
   (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
   `enable_pre_lm_encoder: false` under `runtime_overrides.asr` to run the
   encoder inside prefill again.
-- Prefill budget defaults to 6,144 tokens (`⌊6144/1500⌋=4`) under atomic
+- Prefill budget defaults to 12,288 tokens (`⌊12288/1500⌋=8`) under atomic
   admission (`chunked_prefill_size=0`). This caps LM-side prefill batching
   independently of the pre-LM encoder batch limit.
 - Chunked prefill stays disabled because the Whisper encoder prefix must be

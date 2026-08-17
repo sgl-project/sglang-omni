@@ -125,6 +125,32 @@ def test_request_builder_without_prompt_keeps_prefix_only(monkeypatch) -> None:
     assert data.prompt_token_ids == _PREFIX
 
 
+def test_request_builder_leaves_static_suppression_to_model(monkeypatch) -> None:
+    fake_processor = SimpleNamespace(
+        feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
+            SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+        ),
+    )
+    request_builder, _ = make_whisper_scheduler_adapters(
+        processor=fake_processor,
+        tokenizer=_FakeTokenizer(),
+        generation_config=SimpleNamespace(suppress_tokens=[-1, 7, 11], max_length=None),
+        encoder_token_count=_ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    data = request_builder(_make_payload())
+
+    assert data.req.sampling_params.logit_bias is None
+    assert data.suppress_tokens is None
+    assert not hasattr(data.req, "_codec_suppress_tokens")
+
+
 def test_request_builder_maps_prompt_to_prev_context(monkeypatch) -> None:
     data = _build(monkeypatch, {"prompt": "hello"})
 

@@ -45,11 +45,11 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
+    assert signature.parameters["async_decode_min_batch_size"].default == 1
     assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["prefill_coalesce_requests"].default == 2
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 6.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert signature.parameters["prefill_coalesce_requests"].default == 4
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 1.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is False
     assert (
         signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
     )
@@ -84,6 +84,26 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
+
+
+def test_whisper_configures_suppression_before_generation_graphs() -> None:
+    calls: list[list[int]] = []
+    builder = _encoder_graph_builder()
+    builder.generation_config = SimpleNamespace(suppress_tokens=[-1, 7, 11])
+    model = SimpleNamespace(
+        set_suppress_tokens=lambda token_ids: calls.append(list(token_ids))
+    )
+    model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=model))
+
+    builder.setup_model(
+        model_worker=model_worker,
+        checkpoint_dir="unused",
+        device="cuda",
+        gpu_id=0,
+        server_args=SimpleNamespace(),
+    )
+
+    assert calls == [[-1, 7, 11]]
 
 
 def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
@@ -152,7 +172,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     )
     defaults = builder.generation_defaults(dtype="float16")
 
-    assert defaults["max_prefill_tokens"] == 6144
+    assert defaults["max_prefill_tokens"] == 12288
     assert defaults["chunked_prefill_size"] == 0
 
     overrides = {"chunked_prefill_size": 0}
@@ -174,12 +194,12 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
 
     assert builder.extra_scheduler_kwargs() == {
         "enable_async_decode": True,
-        "async_decode_min_batch_size": 2,
+        "async_decode_min_batch_size": 1,
         "request_build_max_workers": 8,
         "request_build_max_pending": 16,
-        "prefill_coalesce_requests": 2,
-        "prefill_coalesce_wait_ms": 6.0,
-        "prefill_coalesce_when_idle": True,
+        "prefill_coalesce_requests": 4,
+        "prefill_coalesce_wait_ms": 1.0,
+        "prefill_coalesce_when_idle": False,
         "prefill_coalesce_requires_pending_builds": True,
         "prefill_coalesce_after_builds_during_decode": False,
     }
@@ -217,11 +237,11 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["enable_async_decode"] is True
-    assert config.stages[0].factory_args["async_decode_min_batch_size"] == 2
+    assert config.stages[0].factory_args["async_decode_min_batch_size"] == 1
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
-    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 2
-    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 6.0
-    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 4
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 1.0
+    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is False
     assert (
         config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
         is True
@@ -323,7 +343,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         return server_args
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
-        model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
+        model = SimpleNamespace(set_suppress_tokens=lambda token_ids: None)
+        model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=model))
         return False, (
             model_worker,
             object(),
@@ -357,6 +378,6 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0
-    assert build_kwargs["max_prefill_tokens"] == 6144
+    assert build_kwargs["max_prefill_tokens"] == 12288
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4

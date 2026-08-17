@@ -61,13 +61,6 @@ def _resolve_language(value: Any) -> str:
     return _LANGUAGE_ALIASES.get(language, language)
 
 
-def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
-    suppress_tokens = generation_config.suppress_tokens
-    if not suppress_tokens:
-        return None
-    return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
-
-
 def _build_prefix_tokens(tokenizer: Any, *, language: str, task: str) -> list[int]:
     tokenizer.set_prefix_tokens(
         language=language,
@@ -124,7 +117,6 @@ def make_whisper_scheduler_adapters(
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
-    logit_bias = _build_logit_bias(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
     # across request-build workers.
     tokenizer_lock = Lock()
@@ -236,7 +228,7 @@ def make_whisper_scheduler_adapters(
             temperature=temperature,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
-            logit_bias=language_token_bias if detect_language else logit_bias,
+            logit_bias=language_token_bias if detect_language else None,
         )
         sampling_params.normalize(tokenizer=None)
 
@@ -249,7 +241,6 @@ def make_whisper_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),

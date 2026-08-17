@@ -73,11 +73,11 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         encoder_graph_batch_buckets: list[int] | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
-        async_decode_min_batch_size: int = 2,
+        async_decode_min_batch_size: int = 1,
         request_build_max_pending: int | None = 16,
-        prefill_coalesce_requests: int = 2,
-        prefill_coalesce_wait_ms: float = 6.0,
-        prefill_coalesce_when_idle: bool = True,
+        prefill_coalesce_requests: int = 4,
+        prefill_coalesce_wait_ms: float = 1.0,
+        prefill_coalesce_when_idle: bool = False,
         prefill_coalesce_requires_pending_builds: bool = True,
         prefill_coalesce_after_builds_during_decode: bool = False,
         enable_pre_lm_encoder: bool = True,
@@ -221,14 +221,29 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             )
         overrides["chunked_prefill_size"] = 0
 
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        del checkpoint_dir, device, gpu_id, server_args
+        model = model_worker.model_runner.model
+        model.set_suppress_tokens(
+            getattr(self.generation_config, "suppress_tokens", None) or []
+        )
+
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
-            "disable_overlap_schedule": True,
+            "disable_overlap_schedule": False,
             "enable_torch_compile": True,
             "mem_fraction_static": self.mem_fraction_static,
-            "max_prefill_tokens": 6144,
+            "max_prefill_tokens": 12288,
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,

@@ -10,7 +10,8 @@ CUDA Graph, and torch.compile paths apply to decode.
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -27,7 +28,32 @@ from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
 
+try:
+    from flashinfer.norm import layernorm as flashinfer_layer_norm
+except (ImportError, AttributeError):
+    flashinfer_layer_norm = None
+
 logger = logging.getLogger(__name__)
+
+
+class WhisperDecoderLayerNorm(nn.LayerNorm):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if (
+            flashinfer_layer_norm is not None
+            and hidden_states.is_cuda
+            and hidden_states.dtype == torch.float16
+            and self.weight is not None
+            and self.bias is not None
+            and self.weight.dtype == hidden_states.dtype
+            and self.bias.dtype == hidden_states.dtype
+        ):
+            return flashinfer_layer_norm(
+                hidden_states,
+                self.weight,
+                self.bias,
+                self.eps,
+            )
+        return super().forward(hidden_states)
 
 
 class WhisperEncoderAttention(nn.Module):
@@ -143,9 +169,8 @@ class WhisperSGLangSelfAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        nn.init.zeros_(self.qkv_proj.bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
             self.num_heads,
@@ -160,9 +185,11 @@ class WhisperSGLangSelfAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        query = self.q_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        key = self.k_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        value = self.v_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
+        qkv = self.qkv_proj(hidden_states)
+        query, key, value = (
+            states.view(-1, self.num_heads, self.head_dim)
+            for states in qkv.chunk(3, dim=-1)
+        )
         attn_output = self.attn(query, key, value, forward_batch)
         return self.out_proj(attn_output)
 
@@ -228,16 +255,16 @@ class WhisperDecoderLayer(nn.Module):
             layer_id=layer_idx,
             quant_config=quant_config,
         )
-        self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.self_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.encoder_attn = WhisperSGLangCrossAttention(
             config,
             layer_id=num_decoder_layers + layer_idx,
             quant_config=quant_config,
         )
-        self.encoder_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.encoder_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.fc1 = nn.Linear(config.d_model, config.decoder_ffn_dim)
         self.fc2 = nn.Linear(config.decoder_ffn_dim, config.d_model)
-        self.final_layer_norm = nn.LayerNorm(config.d_model)
+        self.final_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
     def forward(
@@ -286,7 +313,7 @@ class WhisperDecoder(nn.Module):
                 for i in range(config.decoder_layers)
             ]
         )
-        self.layer_norm = nn.LayerNorm(config.d_model)
+        self.layer_norm = WhisperDecoderLayerNorm(config.d_model)
 
     def forward(
         self,
@@ -338,6 +365,23 @@ class WhisperForConditionalGeneration(nn.Module):
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
         self._encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+        self.register_buffer(
+            "_suppress_tokens", torch.empty(0, dtype=torch.long), persistent=False
+        )
+
+    def set_suppress_tokens(self, token_ids: Iterable[int]) -> None:
+        valid_token_ids = sorted(
+            {
+                int(token_id)
+                for token_id in token_ids
+                if 0 <= int(token_id) < int(self.config.vocab_size)
+            }
+        )
+        self._suppress_tokens = torch.tensor(
+            valid_token_ids,
+            dtype=torch.long,
+            device=self.proj_out.weight.device,
+        )
 
     def init_encoder_graphs(
         self,
@@ -492,15 +536,48 @@ class WhisperForConditionalGeneration(nn.Module):
             forward_batch=forward_batch,
             skip_cross_attention=skip_cross_attention,
         )
-        return self.logits_processor(
+        logits_output = self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
+        if self._suppress_tokens.numel():
+            logits_output.next_token_logits.index_fill_(
+                1, self._suppress_tokens, float("-inf")
+            )
+        return logits_output
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
+        stacked_params_mapping = (
+            (".self_attn.qkv_proj", ".self_attn.q_proj", 0, 3),
+            (".self_attn.qkv_proj", ".self_attn.k_proj", 1, 3),
+            (".self_attn.qkv_proj", ".self_attn.v_proj", 2, 3),
+        )
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in weights:
             if name == "proj_out.weight":
                 name = "model.decoder.embed_tokens.weight"
+            loaded_fused_shard = False
+            if ".decoder.layers." in name:
+                for (
+                    fused_name,
+                    checkpoint_name,
+                    shard_index,
+                    shard_count,
+                ) in stacked_params_mapping:
+                    if checkpoint_name not in name:
+                        continue
+                    fused_name = name.replace(checkpoint_name, fused_name)
+                    if fused_name not in params_dict:
+                        break
+                    param = params_dict[fused_name]
+                    shard_size = param.shape[0] // shard_count
+                    shard = param[
+                        shard_index * shard_size : (shard_index + 1) * shard_size
+                    ]
+                    default_weight_loader(shard, loaded_weight)
+                    loaded_fused_shard = True
+                    break
+            if loaded_fused_shard:
+                continue
             if name not in params_dict:
                 continue
             param = params_dict[name]
