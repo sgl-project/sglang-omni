@@ -101,6 +101,10 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
         return {"generation": "minimax_music3_ar"}
 
     @classmethod
+    def layerwise_offload_role_to_stage(cls) -> dict[str, str]:
+        return {"ar": "minimax_music3_ar", "dit": "dit_dav"}
+
+    @classmethod
     def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("minimax_music3_ar", "dit_dav")})
 

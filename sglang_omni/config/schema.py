@@ -363,6 +363,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def layerwise_offload_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for ``--layerwise-offload-components``."""
+        return {}
+
+    @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
         """Class-level public role map for encoder memory reserve overrides."""
         return {}
