@@ -11,6 +11,7 @@ from sglang.srt.platforms.rocm import RocmSRTPlatform
 import sglang_omni.platforms as platforms
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 
 
 class _VendorDeviceMixin(DeviceMixin):
@@ -51,6 +52,20 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
             "CUDA_VISIBLE_DEVICES"
         ]
         == "4"
+    )
+
+
+def test_musa_platform_uses_musa_visible_devices() -> None:
+    platform = MUSAOmniPlatform()
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    assert platform.is_musa()
+    assert platform.device_type == "musa"
+    assert (
+        platform.get_stage_process_env(spec, {"MUSA_VISIBLE_DEVICES": "2,5"})[
+            "MUSA_VISIBLE_DEVICES"
+        ]
+        == "5"
     )
 
 

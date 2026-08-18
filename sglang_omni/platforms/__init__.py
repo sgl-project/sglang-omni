@@ -1,6 +1,10 @@
 import os
 import pkgutil
 
+try:
+    import torchada  # noqa: F401
+except ImportError:
+    pass
 import torch
 from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform

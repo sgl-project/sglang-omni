@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.utils.misc import normalize_quantization
@@ -18,15 +19,37 @@ if TYPE_CHECKING:
 
 
 class MUSAOmniPlatform(OmniPlatform):
+    _enum = PlatformEnum.MUSA
     device_name = "musa"
     device_type = "musa"
 
-    def is_musa(self) -> bool:
-        try:
-            import torchada  # noqa: F401
-        except ImportError:
-            return False
-        return hasattr(torch.version, "musa") and torch.version.musa is not None
+    def get_device(self, local_rank: int) -> torch.device:
+        return torch.device("musa", local_rank)
+
+    def set_device(self, device: torch.device | int) -> None:
+        torch.musa.set_device(device)
+
+    def get_device_name(self, device_id: int = 0) -> str:
+        return torch.cuda.get_device_name(device_id)
+
+    def get_device_total_memory(self, device_id: int = 0) -> int:
+        return int(torch.cuda.get_device_properties(device_id).total_memory)
+
+    def get_current_memory_usage(self, device: torch.device | None = None) -> float:
+        torch.cuda.reset_peak_memory_stats(device)
+        return float(torch.cuda.max_memory_allocated(device))
+
+    def empty_cache(self) -> None:
+        torch.cuda.empty_cache()
+
+    def synchronize(self) -> None:
+        torch.cuda.synchronize()
+
+    def get_available_memory(self, device_id: int = 0) -> tuple[int, int]:
+        return tuple(int(v) for v in torch.cuda.mem_get_info(device_id))
+
+    def get_torch_distributed_backend_str(self) -> str:
+        return "mccl"
 
     def get_stage_process_env(
         self,
