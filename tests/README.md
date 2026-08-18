@@ -234,9 +234,10 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`.
 Apply markers for resource requirements and CI selection, and use them to
 filter runs.
 
-- `benchmark`: performance, parity, and deployment tests, primarily in
-  `test_model/`, that may require model artifacts and substantial GPU/runtime
-  resources. Per-test docstrings state their hardware requirements.
+- `benchmark`: GPU performance, parity, and deployment tests, primarily in
+  `test_model/`. They may require model artifacts, a populated Hugging Face
+  cache, and substantial GPU memory; per-test docstrings state their hardware
+  requirements.
 - `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
   Combined with `--tts-stage` (see `test_model/conftest.py`).
 - `gpu`: tests that require a CUDA device. Pair this marker with an availability
@@ -381,8 +382,8 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 
 Fast contract tests that should run without model downloads or real server
 startup. Keep these focused on the smallest component that owns the behavior.
-The default suite is CPU-compatible; tests requiring CUDA are explicitly marked
-`gpu` and guard execution when CUDA is unavailable.
+Most unit tests run on CPU. CUDA-only cases use the `gpu` marker and explicit
+availability guards.
 
 Expected command:
 
