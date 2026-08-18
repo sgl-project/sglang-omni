@@ -46,7 +46,11 @@ class ArkasrForConditionalGeneration(nn.Module):
         self.audio_token_id = int(getattr(config, "audio_token_id", 151663))
 
         # audio_encoder = whisper tower + MLP frame-merge adapter (checkpoint name)
-        self.audio_encoder = ArkAudioMLPAdapter(config)
+        self.audio_encoder = ArkAudioMLPAdapter(
+            config,
+            quant_config=quant_config,
+            prefix=add_prefix("audio_encoder", prefix),
+        )
         self.language_model = Qwen2ForCausalLM(
             config,
             quant_config,
@@ -197,8 +201,35 @@ class ArkasrForConditionalGeneration(nn.Module):
             ("gate_up_proj", "gate_proj", 0),
             ("gate_up_proj", "up_proj", 1),
         ]
+        audio_stacked_params = [
+            ("qkv_proj", "q_proj", "q"),
+            ("qkv_proj", "k_proj", "k"),
+            ("qkv_proj", "v_proj", "v"),
+        ]
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         tie = bool(getattr(self.config, "tie_word_embeddings", False))
+
+        def load_audio_weight(name: str, loaded_weight: torch.Tensor) -> None:
+            for param_name, weight_name, shard_id in audio_stacked_params:
+                if weight_name not in name:
+                    continue
+                mapped = name.replace(weight_name, param_name)
+                if mapped.endswith(".bias") and mapped not in params_dict:
+                    return
+                if mapped not in params_dict:
+                    logger.debug("arkasr: skip unmatched audio weight %s", name)
+                    return
+                param = params_dict[mapped]
+                param.weight_loader(param, loaded_weight, shard_id)
+                return
+
+            if name.endswith(".bias") and name not in params_dict:
+                return
+            if name not in params_dict:
+                logger.debug("arkasr: skip unmatched audio weight %s", name)
+                return
+            param = params_dict[name]
+            getattr(param, "weight_loader", default_weight_loader)(param, loaded_weight)
 
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
@@ -217,17 +248,16 @@ class ArkasrForConditionalGeneration(nn.Module):
                     name = "language_model." + name
 
             if is_audio:
-                # audio tower params load directly (no qkv stacking: q/k/v are separate
-                # Linear layers in WhisperRoPESdpaAttention, matching the checkpoint)
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
-                if name not in params_dict:
-                    logger.debug("arkasr: skip unmatched audio weight %s", name)
-                    continue
-                param = params_dict[name]
-                getattr(param, "weight_loader", default_weight_loader)(
-                    param, loaded_weight
-                )
+                load_audio_weight(name, loaded_weight)
+                if name.endswith(".self_attn.k_proj.weight"):
+                    load_audio_weight(
+                        name[: -len("weight")] + "bias",
+                        torch.zeros(
+                            loaded_weight.shape[0],
+                            dtype=loaded_weight.dtype,
+                            device=loaded_weight.device,
+                        ),
+                    )
                 continue
 
             for param_name, weight_name, shard_id in llm_stacked_params:
