@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.fishaudio_s2_pro import stages
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import apply_tts_result
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
@@ -21,14 +22,15 @@ from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 
 class _FakeCodec:
     sample_rate = 44100
-    frame_length = 4
     delay = 0
 
-    def __init__(self) -> None:
+    def __init__(self, *, frame_length: int = 4) -> None:
+        self.frame_length = frame_length
         self.calls: list[tuple[int, ...]] = []
 
     def from_indices(self, indices: torch.Tensor) -> torch.Tensor:
@@ -108,8 +110,13 @@ def _code(value: int = 1) -> torch.Tensor:
     return torch.full((11, 1), value, dtype=torch.long)
 
 
-def _chunk(value: int = 1) -> StreamItem:
-    return StreamItem(chunk_id=value, data=_code(value), from_stage="tts_engine")
+def _chunk(value: int = 1, *, metadata: dict | None = None) -> StreamItem:
+    return StreamItem(
+        chunk_id=value,
+        data=_code(value),
+        from_stage="tts_engine",
+        metadata=metadata,
+    )
 
 
 def _audio_tensor(payload: dict) -> torch.Tensor:
@@ -125,16 +132,24 @@ def _start_scheduler(
     *,
     stream_stride: int = 3,
     stream_followup_stride: int = 5,
+    initial_chunk_frames: int | None = None,
     stream_crossfade_samples: int = 0,
+    codec: _FakeCodec | None = None,
 ) -> tuple[S2ProVocoderScheduler, threading.Thread]:
+    initial_chunk_kwargs = (
+        {}
+        if initial_chunk_frames is None
+        else {"initial_chunk_frames": initial_chunk_frames}
+    )
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        codec or _FakeCodec(),
         device="cpu",
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
         stream_overlap_tokens=1,
         stream_crossfade_samples=stream_crossfade_samples,
         max_batch_wait_ms=1,
+        **initial_chunk_kwargs,
     )
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
@@ -167,6 +182,147 @@ def test_streaming_vocoder_chunk_cadence() -> None:
             scheduler.outbox.get(timeout=0.1)
     finally:
         _stop_scheduler(scheduler, thread)
+
+
+def test_streaming_vocoder_default_preserves_steady_then_followup_cadence() -> None:
+    scheduler, thread = _start_scheduler(stream_stride=6, stream_followup_stride=5)
+    try:
+        for value in range(1, 6):
+            scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(value)))
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(6)))
+        first = scheduler.outbox.get(timeout=2.0)
+        assert first.type == "stream"
+        assert _audio_len(first.data) == 24
+
+        for value in range(7, 11):
+            scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(value)))
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(11)))
+        followup = scheduler.outbox.get(timeout=2.0)
+        assert followup.type == "stream"
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_streaming_vocoder_consumes_initial_chunk_override_before_payload() -> None:
+    scheduler, thread = _start_scheduler(stream_stride=6, stream_followup_stride=5)
+    metadata = {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 2}
+    try:
+        scheduler.inbox.put(
+            IncomingMessage("req", "stream_chunk", _chunk(1, metadata=metadata))
+        )
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+
+        scheduler.inbox.put(
+            IncomingMessage("req", "stream_chunk", _chunk(2, metadata=metadata))
+        )
+        first = scheduler.outbox.get(timeout=2.0)
+        assert first.type == "stream"
+        assert _audio_len(first.data) == 8
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_initial_chunk_override_clamps_to_custom_steady_stride() -> None:
+    scheduler, thread = _start_scheduler(stream_stride=45)
+    metadata = {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 100}
+    first_codes = torch.ones((11, 44), dtype=torch.long)
+    try:
+        scheduler.inbox.put(
+            IncomingMessage(
+                "req",
+                "stream_chunk",
+                StreamItem(
+                    chunk_id=1,
+                    data=first_codes,
+                    from_stage="tts_engine",
+                    metadata=metadata,
+                ),
+            )
+        )
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+
+        scheduler.inbox.put(
+            IncomingMessage("req", "stream_chunk", _chunk(45, metadata=metadata))
+        )
+        first = scheduler.outbox.get(timeout=2.0)
+        assert first.type == "stream"
+        assert _audio_len(first.data) == 45 * 4
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_zero_initial_chunk_override_uses_steady_stride() -> None:
+    scheduler, thread = _start_scheduler(stream_stride=6, stream_followup_stride=5)
+    metadata = {INITIAL_CODEC_CHUNK_FRAMES_PARAM: 0}
+    try:
+        for value in range(1, 6):
+            scheduler.inbox.put(
+                IncomingMessage(
+                    "req",
+                    "stream_chunk",
+                    _chunk(value, metadata=metadata),
+                )
+            )
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+
+        scheduler.inbox.put(
+            IncomingMessage("req", "stream_chunk", _chunk(6, metadata=metadata))
+        )
+        first = scheduler.outbox.get(timeout=2.0)
+        assert first.type == "stream"
+        assert _audio_len(first.data) == 24
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_four_frame_initial_chunk_crossfade_preserves_final_length() -> None:
+    scheduler, thread = _start_scheduler(
+        stream_stride=6,
+        stream_followup_stride=5,
+        initial_chunk_frames=4,
+        stream_crossfade_samples=512,
+        codec=_FakeCodec(frame_length=512),
+    )
+    try:
+        for value in range(1, 5):
+            scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(value)))
+        first = scheduler.outbox.get(timeout=2.0)
+
+        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
+        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
+        flush = scheduler.outbox.get(timeout=2.0)
+        final = scheduler.outbox.get(timeout=2.0)
+
+        assert first.type == flush.type == "stream"
+        assert _audio_len(first.data) + _audio_len(flush.data) == 4 * 512
+        assert final.type == "result"
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
+def test_vocoder_factory_forwards_initial_chunk_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec = _FakeCodec()
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages, "_load_codec", lambda checkpoint, device: codec)
+
+    scheduler = stages.create_vocoder_executor(
+        "unused",
+        device="cpu",
+        initial_chunk_frames=2,
+    )
+
+    assert scheduler._default_initial_chunk_frames == 2
 
 
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:

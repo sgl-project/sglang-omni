@@ -14,6 +14,7 @@ from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 _S2PRO_GRAPH_TOP_K = 30
 
@@ -41,6 +42,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     semantic_history_count: int = 0
     last_codebook_values: Any = None
     latest_stream_code_chunk: torch.Tensor | None = None
+    stream_metadata: dict[str, Any] | None = None
     finish_reason: str | None = None
     engine_start_s: float = 0.0
 
@@ -55,6 +57,24 @@ def validate_s2pro_top_k(top_k: int) -> None:
         raise ValueError(
             f"S2-Pro top_k must be -1 or between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
         )
+
+
+def _build_s2pro_stream_metadata(params: Any) -> dict[str, Any] | None:
+    if not isinstance(params, dict) or not params.get("stream"):
+        return None
+    metadata: dict[str, Any] = {"modality": "audio_codes"}
+    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
+    if value is not None:
+        try:
+            frames = int(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"{INITIAL_CODEC_CHUNK_FRAMES_PARAM} must be an integer"
+            ) from exc
+        if frames < 0:
+            raise ValueError(f"{INITIAL_CODEC_CHUNK_FRAMES_PARAM} must be >= 0")
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = frames
+    return metadata
 
 
 def _ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
@@ -191,6 +211,7 @@ def make_tts_scheduler_adapters(
         )
         req_data.engine_start_s = time.perf_counter()
         req_data.stage_payload = payload
+        req_data.stream_metadata = _build_s2pro_stream_metadata(payload.request.params)
         return req_data
 
     def result_adapter(data: S2ProSGLangRequestData) -> StagePayload:
@@ -209,7 +230,12 @@ def make_tts_scheduler_adapters(
         request_id: str, data: S2ProSGLangRequestData, req_output: Any
     ) -> list[OutgoingMessage]:
         del req_output
-        if not data.stage_payload.request.params.get("stream"):
+        stream_metadata = getattr(data, "stream_metadata", None)
+        if stream_metadata is None:
+            stream_metadata = _build_s2pro_stream_metadata(
+                data.stage_payload.request.params
+            )
+        if stream_metadata is None:
             return []
         codes = data.latest_stream_code_chunk
         if codes is None:
@@ -221,7 +247,7 @@ def make_tts_scheduler_adapters(
                 type="stream",
                 data=codes,
                 target="vocoder",
-                metadata={"modality": "audio_codes"},
+                metadata=stream_metadata,
             )
         ]
 

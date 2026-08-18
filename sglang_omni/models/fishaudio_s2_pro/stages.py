@@ -14,6 +14,12 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
+    DEFAULT_S2PRO_INITIAL_CHUNK_FRAMES,
+    DEFAULT_S2PRO_STREAM_FOLLOWUP_STRIDE,
+    DEFAULT_S2PRO_STREAM_STRIDE,
+    S2ProVocoderScheduler,
+)
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -334,15 +340,12 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    stream_stride: int = 40,
-    stream_followup_stride: int = 45,
+    stream_stride: int = DEFAULT_S2PRO_STREAM_STRIDE,
+    stream_followup_stride: int = DEFAULT_S2PRO_STREAM_FOLLOWUP_STRIDE,
+    initial_chunk_frames: int = DEFAULT_S2PRO_INITIAL_CHUNK_FRAMES,
     stream_overlap_tokens: int | None = 20,
     stream_crossfade_samples: int = 512,
 ):
-    from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
-        S2ProVocoderScheduler,
-    )
-
     if device is None:
         device = f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -353,6 +356,7 @@ def create_vocoder_executor(
         device=device,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
+        initial_chunk_frames=initial_chunk_frames,
         stream_overlap_tokens=stream_overlap_tokens,
         stream_crossfade_samples=stream_crossfade_samples,
         max_batch_size=max_batch_size,
