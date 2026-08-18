@@ -78,7 +78,7 @@ class StageOutputCache:
             return entry.data
 
     def put(self, key: str | None, data: Any) -> None:
-        if key is None:
+        if key is None or self.max_size == 0 or self.max_bytes == 0:
             return
         key = str(key)
         size_bytes = self._size_fn(data)

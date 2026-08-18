@@ -37,11 +37,19 @@ def test_stage_output_cache_rejects_negative_capacity(capacity: str) -> None:
 
 @pytest.mark.parametrize("capacity", ["max_size", "max_bytes"])
 def test_stage_output_cache_allows_zero_capacity(capacity: str) -> None:
-    cache = StageOutputCache(**{capacity: 0})
+    size_calls = 0
+
+    def size_fn(_value: object) -> int:
+        nonlocal size_calls
+        size_calls += 1
+        return 1
+
+    cache = StageOutputCache(**{capacity: 0}, size_fn=size_fn)
 
     cache.put("key", b"value")
 
     assert cache.get("key") is None
+    assert size_calls == 0
 
 
 def test_remove_if_same_preserves_a_replacement() -> None:

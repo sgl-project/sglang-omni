@@ -58,6 +58,8 @@ def test_whisper_stage_defaults() -> None:
         is False
     )
     assert signature.parameters["enable_pre_lm_encoder"].default is True
+    assert signature.parameters["pre_lm_cache_max_entries"].default == 0
+    assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
@@ -231,7 +233,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
         is False
     )
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
+    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 0
     assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
     assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
     assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 0

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
+import time
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -38,9 +40,11 @@ class _StubEncoder(torch.nn.Module):
         self.fail = False
         self.fail_multi_item = False
         self.encode_gate: threading.Event | None = None
+        self.encode_started = threading.Event()
 
     def forward(self, audio_features: torch.Tensor) -> torch.Tensor:
         self.encode_calls += 1
+        self.encode_started.set()
         gate = self.encode_gate
         if gate is not None:
             self.encode_gate = None
@@ -196,6 +200,31 @@ def test_no_fingerprint_does_not_cache() -> None:
     assert len(service._cache) == 0
 
 
+def test_zero_capacity_cache_preserves_single_flight() -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    model._encoder.encode_gate = encode_gate
+    service = _make_service(model, cache_max_entries=0)
+    first = _make_item(fingerprint="same", fill=2.0)
+    second = _make_item(fingerprint="same", fill=9.0)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        first_result = pool.submit(service.encode_item, first)
+        assert model._encoder.encode_started.wait(timeout=5)
+        second_result = pool.submit(service.encode_item, second)
+        deadline = time.monotonic() + 5
+        while service.stats()["merged"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        encode_gate.set()
+        first_result.result(timeout=5)
+        second_result.result(timeout=5)
+
+    assert model.encode_calls == 1
+    assert service.stats()["merged"] == 1
+    assert len(service._cache) == 0
+    assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
+
+
 def test_close_rejects_new_encodes() -> None:
     service = _make_service()
     service.close()
@@ -208,8 +237,6 @@ def test_batched_encode_retries_per_item_on_multi_failure() -> None:
     model._encoder.fail_multi_item = True
     service = _make_service(model, max_batch_size=4)
     items = [_make_item(fingerprint=f"b{i}", fill=float(i + 1)) for i in range(3)]
-    import concurrent.futures
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(service.encode_item, items))
     assert all(item.precomputed_embeddings is not None for item in items)

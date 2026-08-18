@@ -22,7 +22,7 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
-_CACHE_MAX_ENTRIES = 4096
+_CACHE_MAX_ENTRIES = 0
 _CACHE_MAX_BYTES = 2 * 1024**3
 _SHUTDOWN = object()
 

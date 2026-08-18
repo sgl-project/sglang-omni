@@ -81,7 +81,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_requires_pending_builds: bool = True,
         prefill_coalesce_after_builds_during_decode: bool = False,
         enable_pre_lm_encoder: bool = True,
-        pre_lm_cache_max_entries: int = 4096,
+        pre_lm_cache_max_entries: int = 0,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
