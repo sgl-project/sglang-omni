@@ -383,6 +383,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def generation_admission_defaults(cls) -> dict[str, Any]:
+        """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
+        return {}
+
+    @classmethod
     def code2wav_stage(cls) -> str | None:
         """Return the code2wav stage name when the pipeline supports it."""
         return None

@@ -413,7 +413,7 @@ def assert_ming_tts_weight_coverage(report: MingTTSWeightReport) -> None:
 
     errors = []
     if report.leftovers:
-        errors.append("leftover weights: " f"{format_key_count(report.leftovers)}")
+        errors.append(f"leftover weights: {format_key_count(report.leftovers)}")
     for owner, keys in sorted(report.missing.items()):
         if keys:
             errors.append(f"missing {owner} weights: {format_key_count(keys)}")

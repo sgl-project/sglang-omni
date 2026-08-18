@@ -40,7 +40,7 @@ def _encoder_graph_builder(**kwargs):
 def test_whisper_stage_defaults() -> None:
     signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
 
-    assert signature.parameters["max_running_requests"].default == 32
+    assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
@@ -213,7 +213,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.gpu_placement == {"asr": 0}
     assert config.stages[0].factory.endswith("create_sglang_whisper_asr_executor")
     assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 32
+    assert config.stages[0].factory_args["max_running_requests"] == 64
     assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["enable_async_decode"] is True
@@ -231,8 +231,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
         is False
     )
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
-    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
+    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 1024
+    # None: the byte budget is derived from the entry count.
+    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] is None
     assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
     assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 0
     assert "max_prefill_tokens" not in config.stages[0].factory_args
@@ -352,8 +353,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         async_decode_min_batch_size=4,
     )
 
-    assert build_kwargs["cuda_graph_max_bs"] == 32
-    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert build_kwargs["cuda_graph_max_bs"] == 64
+    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0

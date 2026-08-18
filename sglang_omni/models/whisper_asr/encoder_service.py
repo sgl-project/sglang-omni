@@ -22,8 +22,11 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
-_CACHE_MAX_ENTRIES = 4096
-_CACHE_MAX_BYTES = 2 * 1024**3
+# Note(Jeffro): Whisper encoder states are fixed-size ([encoder_token_count, d_model] in the
+# encoder dtype), so the cache is sized in entries and the byte budget is
+# derived from that: 1024 entries is ~3.9 GB of host memory for large-v3
+# (3.84 MB per entry) and ~1.5 GB for base.
+_CACHE_MAX_ENTRIES = 1024
 _SHUTDOWN = object()
 
 
@@ -74,11 +77,20 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         model: Any,
         *,
         cache_namespace: str,
+        encoder_token_count: int,
         cache_max_entries: int = _CACHE_MAX_ENTRIES,
-        cache_max_bytes: int = _CACHE_MAX_BYTES,
+        cache_max_bytes: int | None = None,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 0,
     ) -> None:
+        if encoder_token_count < 1:
+            raise ValueError(
+                f"encoder_token_count must be >= 1, got {encoder_token_count}"
+            )
+        if cache_max_entries < 0:
+            raise ValueError(f"cache_max_entries must be >= 0, got {cache_max_entries}")
+        if cache_max_bytes is not None and cache_max_bytes < 0:
+            raise ValueError(f"cache_max_bytes must be >= 0, got {cache_max_bytes}")
         self._model = model
         reference = next(model.model.encoder.parameters())
         self._device = reference.device
@@ -89,9 +101,22 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             if self._device.type == "cuda"
             else None
         )
+
+        self._entry_bytes = (
+            int(encoder_token_count) * self._hidden_size * self._dtype.itemsize
+        )
+        derived_bytes = int(cache_max_entries) * self._entry_bytes
+        self._cache_max_bytes = (
+            derived_bytes
+            if cache_max_bytes is None
+            else min(derived_bytes, int(cache_max_bytes))
+        )
+        self._cache_capacity_entries = min(
+            int(cache_max_entries), self._cache_max_bytes // self._entry_bytes
+        )
         self._cache = StageOutputCache(
             max_size=cache_max_entries,
-            max_bytes=cache_max_bytes,
+            max_bytes=self._cache_max_bytes,
             cache_device="cpu",
         )
         self._namespace = cache_namespace
@@ -112,6 +137,21 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self._queue_wait_max_s = 0.0
         self._encoder_time_s = 0.0
         super().__init__(worker_name="whisper-asr-audio-encode")
+
+    @property
+    def entry_bytes(self) -> int:
+        """Bytes of one cached encoder state."""
+        return self._entry_bytes
+
+    @property
+    def cache_max_bytes(self) -> int:
+        """Effective byte budget after applying the optional cap."""
+        return self._cache_max_bytes
+
+    @property
+    def cache_capacity_entries(self) -> int:
+        """How many encoder states the cache can hold at once."""
+        return self._cache_capacity_entries
 
     def close(self) -> None:
         with self._lifecycle_lock:
@@ -245,6 +285,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 "queue_wait_max_s": self._queue_wait_max_s,
                 "encoder_time_s": self._encoder_time_s,
                 "cache_entries": len(self._cache),
+                "cache_capacity_entries": self._cache_capacity_entries,
                 "cache_bytes": self._cache.current_bytes,
                 "cache_evictions": self._cache.eviction_count,
             }

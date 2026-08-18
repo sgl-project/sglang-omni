@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
@@ -166,6 +168,22 @@ class EmptyStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
+
+
+class FailingSpeechGenerateClient:
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request, request_id
+        raise RuntimeError(self.error)
+        yield
+
+    async def abort(self, request_id: str) -> None:
+        del request_id
 
 
 class EmptyDeltaStreamingSpeechClient:
@@ -581,6 +599,37 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert speech_resp.status_code == 500
     assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
+
+
+def test_speech_stream_admission_reject_returns_503_without_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = TestClient(
+        create_app(
+            FailingSpeechGenerateClient(QueueFullError.MESSAGE),
+            model_name="s2-pro",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.openai_api"):
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "s2-pro",
+                "input": "hello",
+                "voice": "default",
+                "stream": True,
+                "response_format": "pcm",
+            },
+        )
+
+    assert response.status_code == 503
+    assert QueueFullError.MESSAGE in response.json()["error"]["message"]
+    assert any(
+        rec.levelno == logging.WARNING and "Rejecting speech request" in rec.message
+        for rec in caplog.records
+    )
+    assert not any(rec.exc_info for rec in caplog.records)
 
 
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:

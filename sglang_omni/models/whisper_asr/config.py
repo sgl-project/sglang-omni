@@ -44,7 +44,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
             factory_args={
                 "device": "cuda:0",
-                "max_running_requests": 32,
+                "max_running_requests": 64,
                 "enable_encoder_cuda_graph": True,
                 "request_build_max_workers": 8,
                 "enable_async_decode": True,
@@ -56,8 +56,12 @@ class WhisperASRPipelineConfig(PipelineConfig):
                 "prefill_coalesce_requires_pending_builds": True,
                 "prefill_coalesce_after_builds_during_decode": False,
                 "enable_pre_lm_encoder": True,
-                "pre_lm_cache_max_entries": 4096,
-                "pre_lm_cache_size_bytes": 2 * 1024**3,
+                # Note(Jeffro): Whisper is special: its input is always one 30-second chunk,
+                # so the encoder output is fixed-size ([1500, d_model], 3.84 MB
+                # for large-v3). That means the cache size can be derived from
+                # max_entries alone; So we set size_bytes to None here.
+                "pre_lm_cache_max_entries": 1024,
+                "pre_lm_cache_size_bytes": None,
                 "pre_lm_max_batch_size": 8,
                 "pre_lm_max_batch_wait_ms": 0,
             },

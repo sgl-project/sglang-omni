@@ -208,11 +208,17 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
         return audio.astype(np.float32, copy=False)
     if audio.size == 0:
         return audio.astype(np.float32, copy=False)
-    duration = audio.shape[0] / float(orig_sr)
+    sample_count = audio.shape[-1]
+    duration = sample_count / float(orig_sr)
     new_len = max(int(round(duration * target_sr)), 1)
-    old_idx = np.arange(audio.shape[0], dtype=np.float64)
-    new_idx = np.linspace(0.0, audio.shape[0] - 1, num=new_len, dtype=np.float64)
-    return np.interp(new_idx, old_idx, audio).astype(np.float32)
+    old_idx = np.arange(sample_count, dtype=np.float64)
+    new_idx = np.linspace(0.0, sample_count - 1, num=new_len, dtype=np.float64)
+    if audio.ndim == 1:
+        return np.interp(new_idx, old_idx, audio).astype(np.float32)
+
+    channels = audio.reshape(-1, sample_count)
+    resampled = np.stack([np.interp(new_idx, old_idx, channel) for channel in channels])
+    return resampled.reshape(audio.shape[:-1] + (new_len,)).astype(np.float32)
 
 
 def _encode_with_pyav(
@@ -249,12 +255,24 @@ def _encode_with_pyav(
             f"None of the codecs ('{codecs_str}') are supported by PyAV."
         )
 
-    stream.layout = "mono"
+    if audio.ndim == 1:
+        layout = "mono"
+        planar_audio = audio.reshape(1, -1)
+    elif audio.ndim == 2 and audio.shape[0] in (1, 2):
+        channels = int(audio.shape[0])
+        layout = "mono" if channels == 1 else "stereo"
+        planar_audio = audio
+    else:
+        raise ValueError(
+            "PyAV encoding supports mono or stereo channel-first audio, "
+            f"got shape {audio.shape}"
+        )
+
+    planar_audio = np.ascontiguousarray(planar_audio, dtype=np.float32)
+    stream.layout = layout
 
     # FFmpeg expects float-planar (fltp) format for these codecs
-    frame = av.AudioFrame.from_ndarray(
-        audio.reshape(1, -1), format="fltp", layout="mono"
-    )
+    frame = av.AudioFrame.from_ndarray(planar_audio, format="fltp", layout=layout)
     frame.sample_rate = sample_rate
 
     for packet in stream.encode(frame):
@@ -323,6 +341,7 @@ def encode_audio(
     Returns:
         (encoded_bytes, mime_type)
     """
+    fmt = response_format.lower().strip()
     arr = to_numpy(audio)
 
     if arr.ndim > 1:
@@ -330,7 +349,12 @@ def encode_audio(
     if arr.ndim > 1:
         if arr.shape[0] > arr.shape[-1]:
             arr = arr.T
-        if response_format.lower().strip() != "wav":
+        # note(chenye): Preserve native stereo for supported non-WAV formats;
+        # keep the historical mono behavior for raw PCM and unsupported
+        # channel layouts.
+        if fmt != "wav" and (
+            fmt not in ("mp3", "flac", "opus", "aac") or arr.shape[0] != 2
+        ):
             arr = arr.mean(axis=0).astype(np.float32)
 
     if speed != 1.0:
@@ -341,7 +365,6 @@ def encode_audio(
         else:
             arr, sample_rate = apply_speed(arr, speed, sample_rate)
 
-    fmt = response_format.lower().strip()
     mime = FORMAT_MIME_TYPES.get(fmt, "application/octet-stream")
 
     if fmt == "wav":
@@ -399,7 +422,13 @@ def encode_audio(
             import soundfile as sf
 
             buf = io.BytesIO()
-            sf.write(buf, arr, sample_rate, format="FLAC")
+            soundfile_audio = arr.T if arr.ndim == 2 else arr
+            sf.write(
+                buf,
+                np.ascontiguousarray(soundfile_audio),
+                sample_rate,
+                format="FLAC",
+            )
             return buf.getvalue(), mime
         except ImportError:
             if not allow_format_fallback:

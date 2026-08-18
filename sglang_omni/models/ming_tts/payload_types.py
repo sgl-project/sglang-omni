@@ -26,7 +26,6 @@ class MingTTSState(DeclarativeStateBase):
 
     sample_rate: int = MING_TTS_SAMPLE_RATE
 
-    # -- From preprocessing ------------------------------------------------
     text: str = ""
     prompt: str | None = None
     instructions: str | None = None
@@ -40,25 +39,17 @@ class MingTTSState(DeclarativeStateBase):
     sigma: float = wire(0.25, codec="float")
     temperature: float = wire(0.0, codec="float")
 
-    # -- From reference encode ---------------------------------------------
-    prompt_text: str | None = None
-    spk_token_positions: list[int] | None = wire(None, codec="list")
     spk_injection_positions: list[int] | None = wire(None, codec="list")
-    audio_token_position: int | None = wire(None, codec="opt_int")
     prompt_latent_start_position: int | None = wire(None, codec="opt_int")
     prompt_latent_token_count: int = wire(0, emit="truthy", codec="int")
     spk_emb: Any | None = wire(None, codec="typed_tensor")
     prompt_latent: Any | None = wire(None, codec="typed_tensor")
 
-    # -- From TTS engine ---------------------------------------------------
     generated_latents: Any | None = wire(None, codec="typed_tensor")
-    generated_last_chunk: list[bool] | None = wire(None, codec="list")
     stop_step: int | None = wire(None, codec="opt_int")
     finish_reason: str | None = None
 
-    # -- From audio decode -------------------------------------------------
     duration_s: float | None = None
-    audio_decode_time_s: float = wire(0.0, emit="truthy", codec="float")
 
 
 def load_ming_tts_state(payload: StagePayload) -> MingTTSState:

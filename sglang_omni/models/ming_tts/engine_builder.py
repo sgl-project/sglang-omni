@@ -6,29 +6,26 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 logger = logging.getLogger(__name__)
 
 
-def _coerce_bool(value: Any, *, name: str) -> bool:
+def _is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return value != 0
     if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    raise ValueError(f"{name} must be a boolean value, got {value!r}")
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
 
 
 class MingTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Ming-Omni-TTS"
-    context_length = 0  # resolved from the checkpoint config in pre_infra_setup
+    context_length = 0
 
     def __init__(
         self,
@@ -69,7 +66,35 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         from sglang_omni.models.ming_tts import stages as ming_stages
 
         self.config = ming_stages._load_ming_tts_config(checkpoint_dir)
-        ming_stages._check_ming_tts_tp_backbone_config(self.config, self.tp_size)
+        if self.tp_size > 1:
+            llm_config = self.config.llm_config
+            hidden_size = int(llm_config.hidden_size)
+            head_dim = int(llm_config.head_dim)
+            num_heads = int(llm_config.num_attention_heads)
+            num_kv_heads = int(llm_config.num_key_value_heads)
+            if min(hidden_size, head_dim, num_heads, num_kv_heads) <= 0:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires positive hidden/head dimensions: "
+                    f"hidden_size={hidden_size}, head_dim={head_dim}, "
+                    f"num_attention_heads={num_heads}, "
+                    f"num_key_value_heads={num_kv_heads}"
+                )
+            if head_dim * num_heads != hidden_size:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires head_dim * num_attention_heads "
+                    f"to equal hidden_size ({head_dim} * {num_heads} != {hidden_size})"
+                )
+            if hidden_size % self.tp_size != 0:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires hidden_size divisible by tp_size: "
+                    f"hidden_size={hidden_size}, tp_size={self.tp_size}"
+                )
+            validate_attention_tp_config(
+                num_attention_heads=num_heads,
+                num_key_value_heads=num_kv_heads,
+                tp_size=self.tp_size,
+                context="Ming-Omni-TTS tts_engine",
+            )
         context_length = int(self.requested_context_length or 0)
         if context_length <= 0:
             context_length = ming_stages._resolve_context_length(self.config)
@@ -89,16 +114,21 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        # context_length is supplied by build_sglang_server_args directly.
         overrides.pop("context_length", None)
         overrides["tp_size"] = self.tp_size
 
-        if "disable_radix_cache" in overrides and not _coerce_bool(
-            overrides["disable_radix_cache"],
-            name="server_args_overrides.disable_radix_cache",
-        ):
+        if not _is_truthy(overrides["disable_overlap_schedule"]):
             raise ValueError(
-                "Ming-Omni-TTS prefix/radix cache is not currently supported"
+                "Ming-Omni-TTS does not currently support SGLang overlap "
+                "scheduling; set disable_overlap_schedule=true because the "
+                "continuous acoustic feedback state has no overlap-safe lifecycle"
+            )
+        overrides["disable_overlap_schedule"] = True
+
+        if not _is_truthy(overrides["disable_radix_cache"]):
+            raise ValueError(
+                "Ming-Omni-TTS requires disable_radix_cache=true because "
+                "prefix/radix cache is not currently supported"
             )
         overrides["disable_radix_cache"] = True
 
@@ -111,7 +141,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
                 "continuous state does not have chunk rollback semantics"
             )
         overrides["chunked_prefill_size"] = 0
-        if bool(overrides.get("enable_torch_compile", False)):
+        if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Ming-Omni-TTS torch.compile is not currently supported")
 
     def infra_kwargs(self) -> dict[str, Any]:
@@ -157,8 +187,8 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del server_args
-        # The acoustic tail graph replays only on the owning rank; other TP
-        # ranks run the backbone graph and skip latent sampling.
+        # Note (yzxiao): Only the acoustic owner captures tail graphs because
+        # follower ranks run the backbone graph without latent sampling.
         if self.tp_rank != 0:
             return
         model.init_tail_graphs(
@@ -182,6 +212,13 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             reset_request=self._model_runner.reset_request,
             owns_acoustic_result=self.tp_rank == 0,
         )
+
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        if self.tp_rank != 0:
+            return {}
+        from sglang_omni.models.ming_tts.engine_io import build_ming_tts_stream_output
+
+        return {"stream_output_builder": build_ming_tts_stream_output}
 
     def make_abort_callback(self) -> Any | None:
         return self._model_runner.reset_request
