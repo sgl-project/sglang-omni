@@ -37,6 +37,7 @@ from .constants import (
 from .dav import MiniMaxMusic3DAV, remove_weight_norm, select_decoder_state
 from .dit import MiniMaxMusic3DIT
 from .payload_types import MiniMaxMusic3State
+from .serial_offload import get_coordinator, move_module_to_device
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_max_warmup_steps: int = 4,
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
+        serial_offload: bool = False,
     ) -> None:
         if not torch.cuda.is_available():
             raise RuntimeError("MiniMax Music 3 acoustic inference requires CUDA")
@@ -159,6 +161,25 @@ class MiniMaxMusic3AcousticDecoder:
             "breakable_cuda_graph", breakable_cuda_graph
         )
         self.breakable_cuda_graph = False
+        self._serial_offload = _boolean("serial_offload", serial_offload)
+        if self._serial_offload:
+            # Moving the module between CPU and GPU each request invalidates
+            # both torch.compile's device-bound guards and any CUDA graph's
+            # captured (now stale) memory addresses, so neither is safe here.
+            if self.compile_acoustic:
+                logger.warning(
+                    "MiniMax Music 3 serial offload disables compile_acoustic "
+                    "(torch.compile does not tolerate the repeated CPU/GPU "
+                    "moves that --layerwise-offload-components ar,dit performs)"
+                )
+                self.compile_acoustic = False
+            if self.breakable_cuda_graph_requested:
+                logger.warning(
+                    "MiniMax Music 3 serial offload disables breakable_cuda_graph "
+                    "(a captured CUDA graph would reference memory freed or "
+                    "relocated once the module moves off the GPU)"
+                )
+                self.breakable_cuda_graph_requested = False
         if self.cache_dit and self.breakable_cuda_graph_requested:
             raise ValueError(
                 "MiniMax Music 3 cache_dit and breakable_cuda_graph cannot be enabled together"
@@ -195,6 +216,29 @@ class MiniMaxMusic3AcousticDecoder:
         logger.info(
             f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
+        self._resident_on_gpu = True
+        if self._serial_offload:s
+            self.offload_to_cpu()
+
+    @property
+    def serial_offload(self) -> bool:
+        return self._serial_offload
+
+    def ensure_gpu_resident(self) -> None:
+        """Restore DIT/DAV to the GPU; a cheap no-op once already resident."""
+        if self._resident_on_gpu:
+            return
+        move_module_to_device(self.dit, self.device)
+        move_module_to_device(self.dav, self.device)
+        self._resident_on_gpu = True
+
+    def offload_to_cpu(self) -> None:
+        """Move DIT/DAV off the GPU; a cheap no-op once already offloaded."""
+        if not self._resident_on_gpu:
+            return
+        move_module_to_device(self.dit, torch.device("cpu"))
+        move_module_to_device(self.dav, torch.device("cpu"))
+        self._resident_on_gpu = False
 
     def _build_dit(
         self,
@@ -275,6 +319,7 @@ class MiniMaxMusic3AcousticDecoder:
     ) -> tuple[Tensor, Tensor, Tensor]:
         if should_abort is not None and should_abort():
             raise InterruptedError("MiniMax Music 3 acoustic generation aborted")
+        self.ensure_gpu_resident()
         hidden = hidden.unsqueeze(0).to(
             device=self.device, dtype=self.dtype, non_blocking=True
         )
@@ -462,6 +507,9 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             state.final_state = None
             state.last_latent = None
             state.last_condition = None
+        if self._decoder.serial_offload:
+            self._decoder.offload_to_cpu()
+            get_coordinator().end_dit_handoff()
 
 
 __all__ = [

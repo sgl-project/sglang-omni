@@ -42,6 +42,7 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_serial_offload: bool = False,
     **_: Any,
 ):
     if device is None:
@@ -57,8 +58,23 @@ def create_ar_executor(
     requested = overrides.get("max_running_requests")
     if requested is not None:
         max_concurrency = int(requested)
+    if enable_serial_offload:
+        if max_concurrency != 1:
+            logger.warning(
+                f"MiniMax Music 3 serial offload forces max_concurrency=1 "
+                f"(requested {max_concurrency}); AR and DIT/DAV must never "
+                "both hold GPU memory at once"
+            )
+        max_concurrency = 1
+        overrides["max_running_requests"] = 1
+        if not overrides.get("disable_cuda_graph"):
+            logger.info(
+                "MiniMax Music 3 serial offload forces disable_cuda_graph=True"
+            )
+        overrides["disable_cuda_graph"] = True
     builder = MiniMaxMusic3EngineBuilder(
-        max_running_requests=max(int(max_concurrency), 1)
+        max_running_requests=max(int(max_concurrency), 1),
+        enable_serial_offload=enable_serial_offload,
     )
     scheduler = builder.build(
         model_path,
@@ -67,8 +83,15 @@ def create_ar_executor(
         dtype="bfloat16",
         server_args_overrides=overrides or None,
     )
+    if enable_serial_offload:
+        from .serial_offload import get_coordinator
+
+        assert builder._model_runner is not None
+        get_coordinator().register_ar(
+            builder._model_runner.model, builder._model_runner.device
+        )
     logger.info(
-        f"MiniMax Music 3 AR executor ready (OmniScheduler) device={device} max_running_requests={builder.max_running_requests}"
+        f"MiniMax Music 3 AR executor ready (OmniScheduler) device={device} max_running_requests={builder.max_running_requests} serial_offload={enable_serial_offload}"
     )
     return scheduler
 
@@ -91,6 +114,7 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
+    enable_serial_offload: bool = False,
     **_: Any,
 ) -> MiniMaxMusic3AcousticScheduler:
     if device is None:
@@ -113,9 +137,10 @@ def create_dit_dav_executor(
         cache_dit_max_warmup_steps=cache_dit_max_warmup_steps,
         cache_dit_residual_diff_threshold=cache_dit_residual_diff_threshold,
         cache_dit_max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
+        serial_offload=enable_serial_offload,
     )
     logger.info(
-        f"MiniMax Music 3 acoustic executor ready device={decoder.device} dtype={decoder.dtype} dit_steps={decoder.dit_steps} dit_cfg_scale={decoder.dit_cfg_scale:.3f} attention_backend={decoder.attention_backend} compile_acoustic={decoder.compile_acoustic} sample_rate={OUTPUT_SAMPLE_RATE}"
+        f"MiniMax Music 3 acoustic executor ready device={decoder.device} dtype={decoder.dtype} dit_steps={decoder.dit_steps} dit_cfg_scale={decoder.dit_cfg_scale:.3f} attention_backend={decoder.attention_backend} compile_acoustic={decoder.compile_acoustic} serial_offload={enable_serial_offload} sample_rate={OUTPUT_SAMPLE_RATE}"
     )
     return MiniMaxMusic3AcousticScheduler(decoder)
 

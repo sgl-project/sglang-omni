@@ -643,6 +643,87 @@ def apply_backbone_server_args_cli_overrides(
     return pipeline_config
 
 
+def _parse_layerwise_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--layerwise-offload-components must not be empty")
+    return components
+
+
+def apply_layerwise_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    layerwise_offload_components: str | None,
+) -> PipelineConfig:
+    components = _parse_layerwise_offload_components(layerwise_offload_components)
+    if not components:
+        return pipeline_config
+
+    role_to_stage = type(pipeline_config).layerwise_offload_role_to_stage()
+    if not role_to_stage:
+        _raise_unsupported_flag(pipeline_config, "--layerwise-offload-components")
+
+    unknown = components - role_to_stage.keys()
+    if unknown:
+        raise typer.BadParameter(
+            "--layerwise-offload-components does not support: "
+            f"{', '.join(sorted(unknown))}; supported: "
+            f"{', '.join(sorted(role_to_stage))}"
+        )
+    missing = role_to_stage.keys() - components
+    if missing:
+        raise typer.BadParameter(
+            "--layerwise-offload-components currently requires all of: "
+            f"{', '.join(sorted(role_to_stage))} (missing "
+            f"{', '.join(sorted(missing))})"
+        )
+
+    ar_stage_name = role_to_stage["ar"]
+    dit_stage_name = role_to_stage["dit"]
+    ar_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=ar_stage_name,
+        reason="--layerwise-offload-components",
+    )
+    dit_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=dit_stage_name,
+        reason="--layerwise-offload-components",
+    )
+    for ar_stage, dit_stage in zip(ar_stages, dit_stages, strict=True):
+        if ar_stage.gpu != dit_stage.gpu:
+            raise typer.BadParameter(
+                "--layerwise-offload-components ar,dit requires the "
+                f"{ar_stage_name!r} and {dit_stage_name!r} stages on the "
+                f"same GPU (currently {ar_stage.gpu!r} and "
+                f"{dit_stage.gpu!r}); use the 'single-gpu' config variant"
+            )
+
+    pipeline_config = apply_stage_process_overrides(
+        pipeline_config,
+        stage_processes=[f"{dit_stage_name}={ar_stage_name}"],
+    )
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=ar_stage_name,
+        reason="--layerwise-offload-components",
+    ) + _find_matching_stages(
+        pipeline_config,
+        stage_name=dit_stage_name,
+        reason="--layerwise-offload-components",
+    )
+    _apply_factory_args_updates(
+        pipeline_config,
+        matching_stages,
+        {"enable_serial_offload": True},
+    )
+    return pipeline_config
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -1177,6 +1258,18 @@ def serve(
             ),
         ),
     ] = None,
+    layerwise_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--layerwise-offload-components",
+            "--layerwise_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs, so "
+                "a multi-stage pipeline can fit on one small GPU."
+            ),
+        ),
+    ] = None,
     log_level: Annotated[
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
@@ -1488,6 +1581,10 @@ def serve(
         cpu_offload_gb=cpu_offload_gb,
         quantization=quantization,
         thinker_max_running_requests=thinker_max_running_requests,
+    )
+    merged_config = apply_layerwise_offload_cli_overrides(
+        merged_config,
+        layerwise_offload_components=layerwise_offload_components,
     )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
