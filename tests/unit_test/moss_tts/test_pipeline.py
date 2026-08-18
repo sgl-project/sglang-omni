@@ -1348,6 +1348,7 @@ def _build_moss_sglang_request(*, request_id: str = "req-moss"):
 
 
 def test_moss_request_lifetime_extra_key_is_unique_and_survives_retract() -> None:
+    # note (Richard Wang): same rid can recur so extra_key must differ
     first = _build_moss_sglang_request(request_id="shared-moss-id")
     second = _build_moss_sglang_request(request_id="shared-moss-id")
 
@@ -1365,10 +1366,7 @@ def test_moss_request_lifetime_extra_key_is_unique_and_survives_retract() -> Non
 
 
 def test_moss_lifetime_extra_key_isolates_delay_slot_generated_prefix() -> None:
-    """Generated radix keys are text-channel IDs (rows[:, 0]). Continuing audio
-    frames share delay_slot while RVQ (actual KV) differs, so two same-prompt
-    lifetimes would collide without a per-request extra_key fence.
-    """
+    # note (Richard Wang): text channel keys can match while RVQ differs
     from array import array
 
     from sglang.srt.mem_cache.radix_cache import RadixKey
@@ -1685,6 +1683,7 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
 
 
 def _retract_runner(hidden_size: int = 2, decode_embedding=None):
+    # note (Richard Wang): skips __init__ to test _build_prefill_input_embeds
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
     model = SimpleNamespace(
@@ -1781,7 +1780,7 @@ def test_moss_reprefill_mismatch_does_not_clear_feedback_queue() -> None:
 
 
 def test_moss_reprefill_discards_stranded_feedback() -> None:
-    """Retraction resume must consume the newly sampled frame, not the old queue row."""
+    # note (Richard Wang): resume must consume the new frame, not the stale row
     embedding = torch.nn.Embedding(4, 3)
     runner = _retract_runner(hidden_size=3, decode_embedding=embedding)
     old_feedback = torch.full((3,), 1.0)

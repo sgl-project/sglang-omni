@@ -84,12 +84,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
 
 
 def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
-    """Production cadence: G generated tokens, history G-1, one queued row.
-
-    Issue #1555's 594 vs 460 mismatch is G=134 generated tokens on a prompt of
-    460. After initial prefill plus 133 decodes the invariant is G=134, H=133,
-    Q=1; re-prefill drains the leftover queue row.
-    """
+    # note (Richard Wang): 460 plus 134 is the #1555 594 vs 460 mismatch
     prompt_len, generated_len, hidden = 460, 134, 4
     prompt = torch.arange(prompt_len * hidden, dtype=torch.float32).reshape(
         prompt_len, hidden
