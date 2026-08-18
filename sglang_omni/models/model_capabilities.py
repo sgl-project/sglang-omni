@@ -29,9 +29,9 @@ class ModelCapabilities:
       path, including codec, codebook, or frame-sampler compiles. This is not
       limited to the generic SGLang ``enable_torch_compile`` server arg.
     - supports_breakable_prefill_cuda_graph: the architecture satisfies the
-      breakable prefill CUDA graph contract (discoverable decoder, private
-      prefill-input sidecar, eager-tail-safe head); enabling it per deployment
-      stays with the engine builder policy.
+      breakable prefill CUDA graph contract through upstream-compatible inputs
+      or model-specific adaptation; enabling it per deployment stays with the
+      engine builder policy.
     """
 
     supports_reference_audio: bool

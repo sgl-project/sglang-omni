@@ -103,6 +103,8 @@ A model is either **supported** or **not supported**; there is no intermediate t
 | Qwen3-ASR (`Qwen3ASRForConditionalGeneration`) | Supported | `qwen3_asr_h100_dp2.yaml` | none identified | all registered tensors (3.83 GiB) |
 | FunASR Nano (`FunAsrNanoForConditionalGeneration`) | Supported | `fun_asr_h100_dp2.yaml` | none identified | all registered tensors (1.57 GiB) |
 
+Validation update for #1401 Part 1: at code revision [`5e7a8c7`](https://github.com/sgl-project/sglang-omni/pull/1557/commits/5e7a8c717b9ec85b1f72aa7d3444f9f5ff7ec72e), MOSS TTS local and MOSS TTS delay passed `N=2`, `WEIGHT_SHARE=1` health, MPS attachment, leader/follower byte-identity, request completion, and clean teardown on H200. Other Supported rows were not revalidated.
+
 Each supported model launches with its config from `examples/mps_dp/configs/` and the same command shape, for example:
 
 ```bash

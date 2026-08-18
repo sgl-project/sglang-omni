@@ -40,6 +40,15 @@ Metric semantics:
     request. Streaming smoothness metric.
 ``inter_chunk_p95_s`` / ``inter_chunk_p99_s``
     Tail percentiles of inter-chunk latency (streaming jitter).
+``max_playback_underrun_mean_s`` / ``max_playback_underrun_p95_s`` /
+``max_playback_underrun_p99_s``
+    Maximum client-side playback starvation for streaming audio requests.
+``c50`` / ``c100`` / ``c200``
+    Percent of multi-chunk streams whose maximum playback underrun is at most
+    50 / 100 / 200 ms. Single-chunk streams are reported as N/A.
+``playback_continuity_requests`` / ``playback_continuity_na_requests``
+    Scored versus N/A requests behind the ``c*`` gates. All the fields above are
+    emitted only for workloads that stream audio chunks.
 ``audio_chunks_mean``
     Mean number of audio chunks observed per successful streaming request.
     For raw PCM streaming, HTTP chunk boundaries are preserved when available
@@ -65,6 +74,7 @@ from benchmarks.metrics._format import (
     print_benchmark_dataset_line,
     print_speed_metric_line,
 )
+from benchmarks.metrics.playback_continuity import summarize_playback_continuity
 
 
 def _compute_token_metrics(
@@ -134,6 +144,11 @@ def compute_speed_metrics(
         o.first_audio_payload_bytes
         for o in successes
         if getattr(o, "first_audio_payload_bytes", 0) > 0
+    ]
+    streaming_audio_underruns = [
+        getattr(o, "max_playback_underrun_s", None)
+        for o in successes
+        if getattr(o, "chunk_audio_duration_s", None)
     ]
 
     if wall_clock_s is not None and wall_clock_s > 0:
@@ -205,6 +220,8 @@ def compute_speed_metrics(
         metrics_summary["first_audio_payload_bytes_p95"] = round(
             float(np.percentile(first_payload_bytes, 95)), 1
         )
+    if streaming_audio_underruns:
+        metrics_summary.update(summarize_playback_continuity(streaming_audio_underruns))
     return metrics_summary
 
 
@@ -252,6 +269,27 @@ def print_speed_summary(
     print_speed_metric_line(lw, "ITL mean (s):", metrics, "inter_chunk_mean_s")
     print_speed_metric_line(lw, "ITL p95 (s):", metrics, "inter_chunk_p95_s")
     print_speed_metric_line(lw, "ITL p99 (s):", metrics, "inter_chunk_p99_s")
+    print_speed_metric_line(
+        lw, "Max underrun mean (s):", metrics, "max_playback_underrun_mean_s"
+    )
+    print_speed_metric_line(
+        lw, "Max underrun p95 (s):", metrics, "max_playback_underrun_p95_s"
+    )
+    print_speed_metric_line(
+        lw, "Max underrun p99 (s):", metrics, "max_playback_underrun_p99_s"
+    )
+    print_speed_metric_line(lw, "C50 (%):", metrics, "c50")
+    print_speed_metric_line(lw, "C100 (%):", metrics, "c100")
+    print_speed_metric_line(lw, "C200 (%):", metrics, "c200")
+    print_speed_metric_line(
+        lw, "Continuity requests:", metrics, "playback_continuity_requests"
+    )
+    print_speed_metric_line(
+        lw,
+        "Continuity N/A (1 chunk):",
+        metrics,
+        "playback_continuity_na_requests",
+    )
     print_speed_metric_line(lw, "Audio chunks mean:", metrics, "audio_chunks_mean")
     print_speed_metric_line(
         lw, "First audio payload bytes:", metrics, "first_audio_payload_bytes_mean"
@@ -352,8 +390,10 @@ def build_speed_results(
 
 def _request_result_to_dict(output: RequestResult) -> dict:
     inter = getattr(output, "inter_chunk_s", None) or None
+    chunk_durs = getattr(output, "chunk_audio_duration_s", None) or None
     ttfp = getattr(output, "audio_ttfp_s", None)
     ttft = getattr(output, "text_ttft_s", None)
+    underrun = getattr(output, "max_playback_underrun_s", None)
     return {
         "id": output.request_id,
         "text": output.text,
@@ -371,6 +411,12 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "audio_ttfp_s": round(ttfp, 4) if ttfp is not None else None,
         "text_ttft_s": round(ttft, 4) if ttft is not None else None,
         "inter_chunk_s": [round(d, 4) for d in inter] if inter else None,
+        "chunk_audio_duration_s": (
+            [round(d, 4) for d in chunk_durs] if chunk_durs else None
+        ),
+        "max_playback_underrun_s": (
+            round(underrun, 4) if underrun is not None else None
+        ),
         "audio_chunk_count": output.audio_chunk_count or None,
         "first_audio_payload_bytes": output.first_audio_payload_bytes or None,
     }

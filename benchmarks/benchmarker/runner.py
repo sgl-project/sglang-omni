@@ -47,7 +47,15 @@ class BenchmarkRunner:
 
     async def run(self, samples: list, send_fn: SendFn) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # note (guozhihao): Closed-loop runs are bounded by max_concurrency.
+        # Open-loop (max_concurrency=0) must not inherit aiohttp's default
+        # 100-conn cap, or sustained overshoot silently queues on the client.
+        connector = (
+            aiohttp.TCPConnector(limit=0) if not self.config.max_concurrency else None
+        )
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector
+        ) as session:
             if self.config.warmup > 0:
                 await self._warmup(session, samples, send_fn)
 

@@ -9,9 +9,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-import sglang_omni.models.moss_tts.vocoder_decoder as vocoder_decoder
+import sglang_omni.models.moss_tts.audio_tokenizer as audio_tokenizer
 import sglang_omni.models.moss_tts.vocoder_kernels as vocoder_kernels
-from sglang_omni.models.moss_tts.vocoder_decoder import (
+from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerAttention,
     MossAudioTokenizerProjectedTransformer,
     MossAudioTokenizerTransformerLayer,
@@ -201,7 +201,7 @@ class _CountingLayer(_FakeLayer):
         self.layer_scale_2 = _CountingLayerScale(hidden_size)
 
 
-class _LegacyAttention(nn.Module):
+class _V1WeightsAttention(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.embed_dim = hidden_size
@@ -226,11 +226,11 @@ class _LegacyAttention(nn.Module):
         return query
 
 
-class _LegacyLayer(nn.Module):
+class _V1WeightsLayer(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size)
-        self.self_attn = _LegacyAttention(hidden_size)
+        self.self_attn = _V1WeightsAttention(hidden_size)
         self.layer_scale_1 = _FakeLayerScale(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
         self.linear1 = nn.Linear(hidden_size, hidden_size * 2)
@@ -239,20 +239,20 @@ class _LegacyLayer(nn.Module):
         self.layer_scale_2 = _FakeLayerScale(hidden_size)
 
 
-class _LegacyTransformer(_FallbackTransformer):
+class _V1WeightsTransformer(_FallbackTransformer):
     def __init__(self, hidden_size: int) -> None:
         nn.Module.__init__(self)
-        self.layers = nn.ModuleList([_LegacyLayer(hidden_size)])
+        self.layers = nn.ModuleList([_V1WeightsLayer(hidden_size)])
         self.positional_embedding = "rope"
         self.positional_scale = 1.0
         self.max_period = 10000.0
 
 
-class _LegacyProjectedStage(_FallbackProjectedStage):
+class _V1WeightsProjectedStage(_FallbackProjectedStage):
     def __init__(self) -> None:
         nn.Module.__init__(self)
         self.input_proj = nn.Linear(3, 6)
-        self.transformer = _LegacyTransformer(6)
+        self.transformer = _V1WeightsTransformer(6)
         self.output_proj = nn.Linear(6, 7)
         self.is_streaming = False
         self.module_type = "Transformer"
@@ -356,7 +356,7 @@ def test_projected_transformer_uses_host_lengths_without_tensor_max(
 
 
 def test_packed_flash_unavailable_uses_source_attention(monkeypatch) -> None:
-    monkeypatch.setattr(vocoder_decoder, "flash_attn_varlen_func", None)
+    monkeypatch.setattr(audio_tokenizer, "flash_attn_varlen_func", None)
     source = _FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
@@ -377,7 +377,7 @@ def test_packed_flash_unavailable_uses_source_attention(monkeypatch) -> None:
 def test_local_causal_flash_plan_chunks_queries_and_overlaps_keys() -> None:
     cu_seqlens = torch.tensor([0, 320, 577], dtype=torch.int32)
 
-    plan = vocoder_decoder._build_local_causal_flash_plan(
+    plan = audio_tokenizer._build_local_causal_flash_plan(
         cu_seqlens,
         context=125,
     )
@@ -403,7 +403,7 @@ def test_local_causal_flash_plan_chunks_queries_and_overlaps_keys() -> None:
 def test_local_causal_flash_plan_skips_identity_kv_gather() -> None:
     cu_seqlens = torch.tensor([0, 80, 180], dtype=torch.int32)
 
-    plan = vocoder_decoder._build_local_causal_flash_plan(
+    plan = audio_tokenizer._build_local_causal_flash_plan(
         cu_seqlens,
         context=125,
     )
@@ -443,7 +443,7 @@ def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) ->
         raise AssertionError("zero-length input must not pack padded frames")
 
     attn._flash_attn_varlen = fail_flash
-    monkeypatch.setattr(vocoder_decoder, "_pack_padded_sequence", fail_pack)
+    monkeypatch.setattr(audio_tokenizer, "_pack_padded_sequence", fail_pack)
     x = torch.randn(2, 3, 4)
     lengths = torch.tensor([0, 0])
 
@@ -525,7 +525,7 @@ def test_projected_transformer_uses_single_unpadded_pack_fast_path(
         calls.append((q.shape, cu_q.clone(), cu_k.clone(), max_q, max_k))
         return q
 
-    monkeypatch.setattr(vocoder_decoder, "_pack_padded_sequence", fail_masked_pack)
+    monkeypatch.setattr(audio_tokenizer, "_pack_padded_sequence", fail_masked_pack)
     attn._flash_attn_varlen = fake_flash_attn
     x = torch.randn(1, 3, 4)
     lengths = torch.tensor([4])
@@ -547,13 +547,13 @@ def test_projected_transformer_uses_single_unpadded_pack_fast_path(
 
 
 def test_single_unpadded_pack_position_cache_grows_and_slices() -> None:
-    cache = vocoder_decoder._PositionIdsCache()
+    cache = audio_tokenizer._PositionIdsCache()
     x_short = torch.randn(1, 4, 6)
     x_long = torch.randn(1, 6, 6)
 
-    _, cu_short_1, pos_short_1 = vocoder_decoder._pack_unpadded_sequence(x_short, cache)
-    _, cu_long, pos_long = vocoder_decoder._pack_unpadded_sequence(x_long, cache)
-    _, cu_short_2, pos_short_2 = vocoder_decoder._pack_unpadded_sequence(x_short, cache)
+    _, cu_short_1, pos_short_1 = audio_tokenizer._pack_unpadded_sequence(x_short, cache)
+    _, cu_long, pos_long = audio_tokenizer._pack_unpadded_sequence(x_long, cache)
+    _, cu_short_2, pos_short_2 = audio_tokenizer._pack_unpadded_sequence(x_short, cache)
 
     assert cu_short_1.tolist() == [0, 4]
     assert cu_long.tolist() == [0, 6]
@@ -568,23 +568,23 @@ def test_host_length_pack_and_unpack_matches_masked_path() -> None:
     x = torch.randn(3, 5, 7)
     lengths = torch.tensor([5, 2, 4], dtype=torch.int32)
     expected_packed, valid_mask, expected_cu, expected_positions = (
-        vocoder_decoder._pack_padded_sequence(x, lengths)
+        audio_tokenizer._pack_padded_sequence(x, lengths)
     )
 
     packed, flat_indices, cu_seqlens, position_ids = (
-        vocoder_decoder._pack_padded_sequence_from_host_lengths(
+        audio_tokenizer._pack_padded_sequence_from_host_lengths(
             x,
             lengths,
             [5, 2, 4],
         )
     )
-    expected_unpacked = vocoder_decoder._unpack_packed_sequence(
+    expected_unpacked = audio_tokenizer._unpack_packed_sequence(
         expected_packed,
         valid_mask,
         batch_size=3,
         max_seqlen=5,
     )
-    unpacked = vocoder_decoder._unpack_packed_sequence_from_indices(
+    unpacked = audio_tokenizer._unpack_packed_sequence_from_indices(
         packed,
         flat_indices,
         batch_size=3,
@@ -643,7 +643,7 @@ def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
 def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
-    if vocoder_decoder.flash_attn_varlen_func is None:
+    if audio_tokenizer.flash_attn_varlen_func is None:
         pytest.skip("requires SGLang flash_attn_varlen_func")
 
     torch.manual_seed(0)
@@ -658,7 +658,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     input_lengths = torch.tensor([6, 4], device=device)
 
     packed_x, valid_mask, cu_seqlens, position_ids = (
-        vocoder_decoder._pack_padded_sequence(x, input_lengths)
+        audio_tokenizer._pack_padded_sequence(x, input_lengths)
     )
     packed_out = wrapper(
         packed_x,
@@ -666,7 +666,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
         max_seqlen=6,
         position_ids=position_ids,
     )
-    flash_out = vocoder_decoder._unpack_packed_sequence(
+    flash_out = audio_tokenizer._unpack_packed_sequence(
         packed_out, valid_mask, batch_size=2, max_seqlen=6
     )
     sdpa_out = source(x, input_lengths=input_lengths)
@@ -677,7 +677,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
 def test_sglang_chunked_local_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
-    if vocoder_decoder.flash_attn_varlen_func is None:
+    if audio_tokenizer.flash_attn_varlen_func is None:
         pytest.skip("requires SGLang flash_attn_varlen_func")
 
     torch.manual_seed(0)
@@ -692,9 +692,9 @@ def test_sglang_chunked_local_flash_matches_sdpa_reference_cuda() -> None:
     input_lengths = torch.tensor([1024, 701], device=device)
 
     packed_x, valid_mask, cu_seqlens, position_ids = (
-        vocoder_decoder._pack_padded_sequence(x, input_lengths)
+        audio_tokenizer._pack_padded_sequence(x, input_lengths)
     )
-    local_flash_plan = vocoder_decoder._build_local_causal_flash_plan(
+    local_flash_plan = audio_tokenizer._build_local_causal_flash_plan(
         cu_seqlens,
         context=400,
     )
@@ -705,7 +705,7 @@ def test_sglang_chunked_local_flash_matches_sdpa_reference_cuda() -> None:
         position_ids=position_ids,
         local_flash_plan=local_flash_plan,
     )
-    flash_out = vocoder_decoder._unpack_packed_sequence(
+    flash_out = audio_tokenizer._unpack_packed_sequence(
         packed_out, valid_mask, batch_size=2, max_seqlen=1024
     )
     sdpa_out = source(x, input_lengths=input_lengths)
@@ -718,9 +718,9 @@ def test_cached_packed_rope_matches_moss_interleaved_reference() -> None:
     k = torch.randn(5, 2, 6)
     position_ids = torch.tensor([0, 1, 2, 3, 4])
     max_period = 10000.0
-    cache = vocoder_decoder._MossPackedRopeCache(max_period=max_period)
+    cache = audio_tokenizer._MossPackedRopeCache(max_period=max_period)
 
-    out_q, out_k = vocoder_decoder._apply_cached_packed_rope(
+    out_q, out_k = audio_tokenizer._apply_cached_packed_rope(
         q,
         k,
         position_ids,
@@ -776,18 +776,18 @@ def test_exact_packed_rope_matches_reference_cuda(dtype: torch.dtype) -> None:
         [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 5],
         device="cuda",
     )
-    cache = vocoder_decoder._MossPackedRopeCache(max_period=10000.0)
-    reference_q, reference_k = vocoder_decoder._apply_cached_packed_rope(
+    cache = audio_tokenizer._MossPackedRopeCache(max_period=10000.0)
+    reference_q, reference_k = audio_tokenizer._apply_cached_packed_rope(
         q.cpu(),
         k.cpu(),
         position_ids.cpu(),
         max_positions=6,
-        cache=vocoder_decoder._MossPackedRopeCache(max_period=10000.0),
+        cache=audio_tokenizer._MossPackedRopeCache(max_period=10000.0),
     )
     assert not q.is_contiguous()
     assert not k.is_contiguous()
 
-    actual_q, actual_k = vocoder_decoder._apply_cached_packed_rope(
+    actual_q, actual_k = audio_tokenizer._apply_cached_packed_rope(
         q,
         k,
         position_ids,
@@ -839,18 +839,20 @@ def test_vocoder_decoder_computes_output_lengths_on_host() -> None:
 
 
 def test_vocoder_decoder_requires_packed_flash_for_every_transformer() -> None:
-    legacy_source = _LegacyProjectedStage()
-    legacy = MossAudioTokenizerVocoderDecoder(nn.ModuleList([legacy_source]))
-    legacy_attention = legacy[0].transformer.layers[0].self_attn
-    legacy_attention._flash_attn_varlen = lambda *args, **kwargs: None
+    v1_weights_source = _V1WeightsProjectedStage()
+    v1_weights_decoder = MossAudioTokenizerVocoderDecoder(
+        nn.ModuleList([v1_weights_source])
+    )
+    v1_weights_attention = v1_weights_decoder[0].transformer.layers[0].self_attn
+    v1_weights_attention._flash_attn_varlen = lambda *args, **kwargs: None
 
-    assert legacy.supports_packed_flash("cuda", torch.bfloat16)
-    assert legacy.supports_packed_flash("cuda", torch.float16)
-    assert not legacy.supports_packed_flash("cpu", torch.bfloat16)
-    assert not legacy.supports_packed_flash("cuda", None)
+    assert v1_weights_decoder.supports_packed_flash("cuda", torch.bfloat16)
+    assert v1_weights_decoder.supports_packed_flash("cuda", torch.float16)
+    assert not v1_weights_decoder.supports_packed_flash("cpu", torch.bfloat16)
+    assert not v1_weights_decoder.supports_packed_flash("cuda", None)
 
-    legacy_attention._flash_attn_varlen = None
-    assert not legacy.supports_packed_flash("cuda", torch.bfloat16)
+    v1_weights_attention._flash_attn_varlen = None
+    assert not v1_weights_decoder.supports_packed_flash("cuda", torch.bfloat16)
 
     local_source = _FallbackProjectedStage()
     local_source.transformer.layers[0].self_attn.attention_implementation = (
@@ -864,8 +866,8 @@ def test_vocoder_decoder_requires_packed_flash_for_every_transformer() -> None:
     assert not local.supports_packed_flash("cuda", torch.float16)
 
 
-def test_vocoder_decoder_wraps_legacy_moss_audio_tokenizer_fields() -> None:
-    source = _LegacyProjectedStage()
+def test_vocoder_decoder_wraps_v1_weights_moss_audio_tokenizer_fields() -> None:
+    source = _V1WeightsProjectedStage()
     wrapped = MossAudioTokenizerVocoderDecoder(nn.ModuleList([source]))
     source_layer = source.transformer.layers[0]
     wrapped_layer = wrapped[0].transformer.layers[0]
@@ -879,7 +881,7 @@ def test_vocoder_decoder_wraps_legacy_moss_audio_tokenizer_fields() -> None:
 
     attention._can_run_packed_flash = lambda _: True
     assert attention.resolve_attention_implementation(torch.randn(2, 6)) == (
-        "flash_attention_2"
+        "packed_flash_attention"
     )
 
     attention._can_run_packed_flash = lambda _: False

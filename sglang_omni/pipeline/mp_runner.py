@@ -41,6 +41,32 @@ from sglang_omni.utils.imports import import_string
 logger = logging.getLogger(__name__)
 
 
+def resolve_coordinator_max_in_flight(config: PipelineConfig) -> int | None:
+    """Return generation running+queued capacity, if both bounds are known."""
+    stage_name = type(config).generation_sglang_role_to_stage().get("generation")
+    stage = next((item for item in config.stages if item.name == stage_name), None)
+    if stage is None:
+        return None
+    values = {
+        **type(config).generation_admission_defaults(),
+        **dict((stage.factory_args or {}).get("server_args_overrides") or {}),
+        **dict(
+            (config.runtime_overrides.get(stage.name) or {}).get(
+                "server_args_overrides"
+            )
+            or {}
+        ),
+    }
+    try:
+        running = int(values["max_running_requests"])
+        queued = int(values["max_queued_requests"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if running < 1 or queued < 0:
+        return None
+    return running + queued
+
+
 def _build_stage_groups(
     config: PipelineConfig,
     ctx: multiprocessing.context.BaseContext | None = None,
@@ -452,13 +478,20 @@ class MultiProcessPipelineRunner:
                 if self._config.terminal_stages_fn
                 else None
             )
+            max_in_flight = resolve_coordinator_max_in_flight(self._config)
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                max_in_flight=max_in_flight,
             )
+            if max_in_flight is not None:
+                logger.info(
+                    "Coordinator in-flight cap=%s (generation running+queued)",
+                    max_in_flight,
+                )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(
                 self._coordinator.run_completion_loop()

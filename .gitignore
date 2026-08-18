@@ -26,6 +26,7 @@ seedtts_testset/
 .pytest_cache/
 .coverage
 htmlcov/
+*.wav
 
 # Logs
 *.log
@@ -47,3 +48,12 @@ benchmarks/eval/*.edit.lock
 asr_seedtts_results.json
 .claude/*
 !.claude/skills/
+/core
+
+/task.md
+/test_minimax_music3.py
+/test_minimax_music3_acoustic.py
+
+# XPU installer lock/backup
+.pyproject.xpu.lock
+.pyproject.cuda.bak

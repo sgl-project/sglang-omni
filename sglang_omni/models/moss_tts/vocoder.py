@@ -13,7 +13,10 @@ from typing import Any, cast
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.moss_tts.audio_tokenizer import MossTTSAudioTokenizer
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    MossAudioTokenizerVocoderDecoder,
+    MossTTSAudioTokenizer,
+)
 from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 from sglang_omni.models.moss_tts.payload_types import (
     MossTTSState,
@@ -21,7 +24,6 @@ from sglang_omni.models.moss_tts.payload_types import (
     resolve_moss_audio_pad_code,
     store_moss_tts_state,
 )
-from sglang_omni.models.moss_tts.vocoder_decoder import MossAudioTokenizerVocoderDecoder
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
 )

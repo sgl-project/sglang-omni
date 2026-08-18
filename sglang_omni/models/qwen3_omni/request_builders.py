@@ -423,6 +423,28 @@ def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     return next(iter(state.encoder_outs))
 
 
+def _extract_thinker_model_inputs(thinker_inputs: dict[str, Any]) -> dict[str, Any]:
+    """Return the model input payload without confusing an empty payload for absence.
+
+    ``merge_for_thinker`` always emits ``model_inputs``.  In particular, a
+    genuine text only request carries ``{"model_inputs": {}}``.  Only legacy
+    payloads that omit that key should fall back to the historical flat shape.
+    """
+    if "model_inputs" in thinker_inputs:
+        model_inputs = thinker_inputs["model_inputs"]
+        if not isinstance(model_inputs, dict):
+            raise TypeError(
+                "Qwen3-Omni thinker model_inputs must be a dict when provided"
+            )
+        return dict(model_inputs)
+
+    return {
+        key: value
+        for key, value in thinker_inputs.items()
+        if key not in ("capture_model_output_keys", "media_cache_keys")
+    }
+
+
 def build_thinker_request(
     state: Qwen3OmniPipelineState,
     *,
@@ -433,11 +455,7 @@ def build_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
-    if not model_inputs:
-        model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
-        }
+    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     if "attention_mask" in model_inputs:
@@ -542,13 +560,7 @@ def build_sglang_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
-    if not model_inputs:
-        model_inputs = {
-            k: v
-            for k, v in thinker_inputs.items()
-            if k not in ("capture_model_output_keys", "media_cache_keys")
-        }
+    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}

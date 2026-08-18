@@ -448,7 +448,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
         )
 
         # Decoder layers
-        alt_stream = torch.get_device_module().Stream()
+        alt_stream = torch.cuda.Stream() if current_platform.is_cuda() else None
         self.layers = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeTalkerDecoderLayer(
@@ -579,7 +579,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         )
 
         # 5 dense decoder layers
-        alt_stream = torch.get_device_module().Stream()
+        alt_stream = torch.cuda.Stream() if current_platform.is_cuda() else None
         self.model.layers = nn.ModuleList()
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP

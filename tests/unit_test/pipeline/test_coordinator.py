@@ -7,6 +7,7 @@ import gc
 
 import pytest
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
@@ -767,5 +768,36 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         assert error_sink == ["boom"]
         assert future.cancelled() is True
         assert "req-1" not in coordinator._completion_futures
+
+    asyncio.run(_run())
+
+
+def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            max_in_flight=1,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        await coordinator._submit_request("req-1", "hello")
+        with pytest.raises(QueueFullError, match="The request queue is full"):
+            await coordinator._submit_request("req-2", "hello")
+
+        assert [msg.request_id for _, _, msg in control_plane.submitted] == ["req-1"]
+        assert list(coordinator._requests) == ["req-1"]
+
+        await coordinator._handle_completion(
+            CompleteMessage("req-1", "preprocess", True, result={"ok": True})
+        )
+        await coordinator._submit_request("req-2", "hello")
+        assert [msg.request_id for _, _, msg in control_plane.submitted] == [
+            "req-1",
+            "req-2",
+        ]
 
     asyncio.run(_run())

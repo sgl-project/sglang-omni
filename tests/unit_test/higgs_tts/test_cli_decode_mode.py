@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import typer
 
+from sglang_omni.cli import app
 from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
@@ -95,12 +96,22 @@ def test_decode_mode_cli_rejects_unsupported_config():
         typer.BadParameter,
         match=(
             "Higgs TTS, MOSS-TTS-Local, MOSS-Transcribe-Diarize, Fun-ASR, "
-            "Qwen3-ASR, ARK-ASR, and the Qwen3-Omni thinker"
+            "Qwen3-ASR, ARK-ASR, Whisper ASR, and the Qwen3-Omni thinker"
         ),
     ):
         apply_decode_mode_cli_overrides(
             config, decode_mode="sync", async_lookahead_min_batch_size=None
         )
+
+
+def test_decode_mode_help_lists_whisper_asr():
+    serve_command = typer.main.get_command(app).commands["serve"]
+    decode_mode_option = next(
+        param for param in serve_command.params if param.name == "decode_mode"
+    )
+
+    assert decode_mode_option.help is not None
+    assert "Whisper ASR" in decode_mode_option.help
 
 
 def test_decode_mode_cli_applies_to_moss_transcribe_diarize_asr_stage():

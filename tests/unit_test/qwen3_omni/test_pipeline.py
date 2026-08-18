@@ -800,15 +800,24 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
 
     from sglang_omni.model_runner import thinker_model_runner
     from sglang_omni.models.qwen3_omni import bootstrap, request_builders
+    from sglang_omni.models.qwen3_omni import (
+        thinker_model_runner as qwen_thinker_runner,
+    )
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
     server_args = FakeServerArgs(
-        disable_cuda_graph=False, enable_return_hidden_states=False
+        disable_cuda_graph=False,
+        enable_return_hidden_states=False,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+        ),
     )
     infrastructure_saw_graph_disabled: list[bool] = []
     infrastructure_saw_return_hidden: list[bool] = []
     capture_hidden_layers_seen: list[list[int] | None] = []
+    runner_kinds: list[str] = []
     init_graph_calls = 0
 
     class FakeModelRunner:
@@ -869,7 +878,12 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch.setattr(
         thinker_model_runner,
         "ThinkerModelRunner",
-        lambda *args, **kwargs: object(),
+        lambda model_worker, output_proc: runner_kinds.append("speech") or object(),
+    )
+    monkeypatch.setattr(
+        qwen_thinker_runner,
+        "Qwen3OmniThinkerModelRunner",
+        lambda model_worker, output_proc: runner_kinds.append("text") or object(),
     )
     monkeypatch.setattr(
         omni_scheduler,
@@ -887,7 +901,156 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert infrastructure_saw_return_hidden == [expected_infrastructure_return_hidden]
     assert server_args.enable_return_hidden_states is False
     assert server_args.disable_cuda_graph is False
+    assert runner_kinds == ["speech" if speech_enabled else "text"]
     assert scheduler.server_args is server_args
+
+
+@pytest.mark.parametrize(
+    "original_return_hidden_states",
+    [False, True],
+)
+def test_qwen_thinker_cuda_graph_capture_restores_args_when_infrastructure_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    original_return_hidden_states: bool,
+) -> None:
+    from sglang_omni.models.qwen3_omni import bootstrap
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+    server_args = FakeServerArgs(
+        disable_cuda_graph=False,
+        enable_return_hidden_states=original_return_hidden_states,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+        ),
+    )
+    infrastructure_state: list[tuple[bool, bool]] = []
+    error = RuntimeError("infrastructure initialization failed")
+
+    def fake_create_infrastructure(*args, **kwargs):
+        del kwargs
+        infrastructure_state.append(
+            (
+                args[0].disable_cuda_graph,
+                args[0].enable_return_hidden_states,
+            )
+        )
+        raise error
+
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_infrastructure,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
+
+    assert exc_info.value is error
+    assert infrastructure_state == [(True, True)]
+    assert server_args.disable_cuda_graph is False
+    assert server_args.enable_return_hidden_states is original_return_hidden_states
+
+
+def test_qwen_text_thinker_enables_and_attests_breakable_prefill_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.utils import hf_transformers_utils
+
+    from sglang_omni.models.qwen3_omni import bootstrap, request_builders
+    from sglang_omni.models.qwen3_omni import (
+        thinker_model_runner as qwen_thinker_runner,
+    )
+    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
+    from sglang_omni.scheduling import omni_scheduler, sglang_backend
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+    from sglang_omni.utils import cuda_graph_batch_validator
+
+    server_args = FakeServerArgs(
+        disable_cuda_graph=False,
+        enable_return_hidden_states=False,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.BREAKABLE)
+        ),
+    )
+    captured: dict[str, object] = {}
+    attest_calls: list[tuple[object, object]] = []
+    model_config = SimpleNamespace(
+        model_path="model",
+        vocab_size=10,
+        hf_config=SimpleNamespace(thinker_config=object()),
+    )
+    model_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(model=object()),
+        model_config=model_config,
+    )
+
+    def fake_create_infrastructure(*args, **kwargs):
+        captured.update(kwargs)
+        return (
+            model_worker,
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            model_config,
+        )
+
+    monkeypatch.setattr(
+        scheduling_bootstrap,
+        "create_sglang_infrastructure",
+        fake_create_infrastructure,
+    )
+    monkeypatch.setattr(
+        cuda_graph_batch_validator,
+        "attest_prefill_cuda_graphs",
+        lambda runner, args: attest_calls.append((runner, args)),
+    )
+    monkeypatch.setattr(
+        hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_thinker_scheduler_adapters",
+        lambda **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(request_builders, "make_thinker_stream_output_builder", object)
+    monkeypatch.setattr(
+        request_builders,
+        "should_generate_audio_output",
+        lambda payload: False,
+    )
+    monkeypatch.setattr(
+        sglang_backend, "SGLangOutputProcessor", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        qwen_thinker_runner,
+        "Qwen3OmniThinkerModelRunner",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
+
+    scheduler = bootstrap.create_thinker_scheduler(server_args, speech_enabled=False)
+
+    assert captured["enable_prefill_input_embeds"] is True
+    assert attest_calls == [(model_worker.model_runner, server_args)]
+    assert scheduler.server_args is server_args
+
+
+def test_qwen_speech_thinker_rejects_non_disabled_prefill_backend():
+    from sglang_omni.models.qwen3_omni import bootstrap
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+
+    server_args = FakeServerArgs(
+        disable_cuda_graph=False,
+        cuda_graph_config=SimpleNamespace(
+            prefill=SimpleNamespace(backend=CudaGraphBackend.BREAKABLE)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="speech output"):
+        bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
 
 
 def test_qwen_cli_mem_fraction_static_rejects_runtime_override_duplicate() -> None:

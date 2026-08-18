@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
@@ -58,6 +59,7 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        max_in_flight: int | None = None,
     ):
         """Initialize coordinator.
 
@@ -67,6 +69,9 @@ class Coordinator:
             entry_stage: Name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+            max_in_flight: If set, reject new submits once this many requests
+                are already tracked. Intended as generation capacity
+                (max_running_requests + max_queued_requests).
         """
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
@@ -74,6 +79,13 @@ class Coordinator:
         )
         self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
+        if max_in_flight is None:
+            self.max_in_flight = None
+        else:
+            value = int(max_in_flight)
+            if value < 0:
+                raise ValueError("max_in_flight must be >= 0")
+            self.max_in_flight = value
 
         # Control plane
         self.control_plane = CoordinatorControlPlane(
@@ -342,7 +354,7 @@ class Coordinator:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
                     if not msg.success:
-                        raise RuntimeError(msg.error or "Unknown error")
+                        raise QueueFullError.from_message(msg.error)
                     yield msg
                     completed_stages.add(msg.from_stage)
                     if (
@@ -382,6 +394,15 @@ class Coordinator:
 
         if self.entry_stage not in self._stages:
             raise ValueError(f"Entry stage {self.entry_stage} not registered")
+
+        if self.max_in_flight is not None and len(self._requests) >= self.max_in_flight:
+            logger.warning(
+                "Rejecting request %s before pipeline submit: in-flight cap "
+                "(max_in_flight=%s)",
+                request_id,
+                self.max_in_flight,
+            )
+            raise QueueFullError()
 
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
@@ -599,7 +620,7 @@ class Coordinator:
             )
             self._partial_results.pop(request_id, None)
             self._reject_completion_future(
-                request_id, RuntimeError(msg.error or "Unknown error")
+                request_id, QueueFullError.from_message(msg.error)
             )
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
@@ -802,6 +823,7 @@ async def run_coordinator(
     stages: dict[str, str],  # name -> endpoint
     terminal_stages: list[str] | None = None,
     terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
+    max_in_flight: int | None = None,
 ) -> Coordinator:
     """Create and start a coordinator.
 
@@ -821,6 +843,7 @@ async def run_coordinator(
         entry_stage=entry_stage,
         terminal_stages=terminal_stages,
         terminal_stages_resolver=terminal_stages_resolver,
+        max_in_flight=max_in_flight,
     )
 
     # Register stages

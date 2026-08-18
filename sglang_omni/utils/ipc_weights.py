@@ -114,6 +114,16 @@ def get_weight_share_config(environ=None) -> WeightShareConfig | None:
     )
 
 
+def prepare_weight_share_process_compat() -> None:
+    """Install UUID-safe CUDA reductions in every weight-sharing stage process."""
+    if get_weight_share_config() is None:
+        return
+
+    from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+
+    monkey_patch_torch_reductions()
+
+
 def handle_file_for_model(dir_path: str, model: torch.nn.Module) -> str:
     """Path <dir>/<ModelClass>.weights-ipc: one handle file per engine."""
     return os.path.join(dir_path, type(model).__name__ + _FILE_SUFFIX)

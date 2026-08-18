@@ -1,8 +1,10 @@
 # 🚀 Installation
 
-Current stable release: **v0.1.1** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.1.2** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA are prebuilt.
+
+> **Intel GPU (XPU)?** This page targets **NVIDIA CUDA**. For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
 
 ## 🐳 Option A: Docker (recommended)
 
@@ -37,7 +39,7 @@ docker run -it \
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install "sglang-omni==0.1.1"
+uv pip install "sglang-omni==0.1.2"
 ```
 
 ## 🛠️ Option B: Manual install
@@ -53,7 +55,7 @@ Then:
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install "sglang-omni==0.1.1"
+uv pip install "sglang-omni==0.1.2"
 ```
 
 Latest on the index without a pin: `uv pip install sglang-omni`.
