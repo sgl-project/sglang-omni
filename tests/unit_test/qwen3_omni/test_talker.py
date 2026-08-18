@@ -1144,6 +1144,9 @@ def _build_state_machine_scheduler(
     scheduler._backlogged_request_build_payloads = deque()
     scheduler._request_build_max_pending_observed = 0
     scheduler.max_req_len = 8192
+    scheduler.enable_priority_scheduling = False
+    scheduler.abort_on_priority_when_disabled = False
+    scheduler.max_queued_requests = None
     return scheduler
 
 
@@ -1162,6 +1165,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
                 origin_input_ids=origin_input_ids,
                 origin_input_ids_unpadded=origin_input_ids,
                 sampling_params=SimpleNamespace(max_new_tokens=0),
+                priority=None,
             ),
             thinker_chunks_done=captured_done,
             pending_text_queue=deque(),

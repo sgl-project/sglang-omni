@@ -25,8 +25,6 @@ class MingTTSPromptPlan:
     input_ids: list[int]
     effective_prompt: str
     prompt_tokens: int
-    audio_token_position: int
-    spk_token_positions: list[int]
     spk_injection_positions: list[int]
     prompt_latent_start_position: int | None
     prompt_latent_token_count: int
@@ -66,7 +64,7 @@ def build_ming_tts_prompt(
         )
 
     input_ids: list[int] = []
-    spk_token_positions: list[int] = []
+    spk_injection_positions: list[int] = []
 
     input_ids.extend(tokenizer.encode_no_special(HUMAN_ROLE_PROMPT))
     input_ids.extend(tokenizer.encode_no_special(effective_prompt))
@@ -78,11 +76,11 @@ def build_ming_tts_prompt(
             else f"speaker_{speaker_index + 1}"
         )
         input_ids.extend(tokenizer.encode_no_special(f"  {label}:"))
-        spk_token_position = len(input_ids)
         input_ids.extend(tokenizer.encode_no_special(SPK_START_TOKEN))
+        spk_injection_position = len(input_ids)
         input_ids.extend(tokenizer.encode_no_special(AUDIO_PATCH_TOKEN))
         input_ids.extend(tokenizer.encode_no_special("</spk>\n"))
-        spk_token_positions.append(spk_token_position)
+        spk_injection_positions.append(spk_injection_position)
 
     text_input_prefix_included = not all(marker in text for marker in BGM_TTA_MARKERS)
     if text_input_prefix_included:
@@ -117,9 +115,7 @@ def build_ming_tts_prompt(
         input_ids=input_ids,
         effective_prompt=effective_prompt,
         prompt_tokens=len(input_ids),
-        audio_token_position=audio_token_position,
-        spk_token_positions=spk_token_positions,
-        spk_injection_positions=[position + 1 for position in spk_token_positions],
+        spk_injection_positions=spk_injection_positions,
         prompt_latent_start_position=prompt_latent_start_position,
         prompt_latent_token_count=prompt_latent_token_count,
     )

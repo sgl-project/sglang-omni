@@ -98,8 +98,8 @@ def preprocess_ming_tts_payload(
             result = float(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Ming-Omni-TTS {name} must be a number") from exc
-        # NaN slips through the range checks below (every comparison is
-        # False) and non-finite values reach CFM as invalid latent scales.
+        # Note (yzxiao): Range comparisons do not reject NaN, which would
+        # otherwise reach CFM as an invalid latent scale.
         if not math.isfinite(result):
             raise ValueError(f"Ming-Omni-TTS {name} must be a finite number")
         return result
@@ -209,7 +209,7 @@ def preprocess_ming_tts_payload(
     voice = tts_params.get("voice", params.get("voice"))
     if voice is not None and str(voice).strip().lower() not in ("", "default"):
         raise ValueError(
-            "Ming-Omni-TTS currently supports only the default voice; " f"got {voice!r}"
+            f"Ming-Omni-TTS currently supports only the default voice; got {voice!r}"
         )
 
     language = tts_params.get("language", params.get("language"))
@@ -241,13 +241,20 @@ def preprocess_ming_tts_payload(
     speed = tts_params.get("speed", params.get("speed"))
     if speed is not None and float(speed) != 1.0:
         raise ValueError(
-            "Ming-Omni-TTS speed control is currently unsupported; " f"got {speed!r}"
+            f"Ming-Omni-TTS speed control is currently unsupported; got {speed!r}"
         )
 
-    if params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+    initial_codec_chunk_frames = first_present(
+        tts_params,
+        params,
+        names=(INITIAL_CODEC_CHUNK_FRAMES_PARAM,),
+    )
+    if initial_codec_chunk_frames is not None:
         raise ValueError(
-            "Ming-Omni-TTS currently generates final waveform only; "
-            f"{INITIAL_CODEC_CHUNK_FRAMES_PARAM!r} is currently unsupported"
+            "Ming-Omni-TTS does not support initial_codec_chunk_frames because "
+            "initial and steady AudioVAE cadence are configured by "
+            "audio_decode.factory_args.initial_chunk_patches and "
+            "audio_decode.factory_args.steady_chunk_patches"
         )
 
     explicit_fields = explicit_generation_fields(tts_params)
@@ -287,7 +294,7 @@ def preprocess_ming_tts_payload(
     )
     if max_decode_steps <= 0:
         raise ValueError(
-            "Ming-Omni-TTS max_decode_steps must be > 0, " f"got {max_decode_steps}"
+            f"Ming-Omni-TTS max_decode_steps must be > 0, got {max_decode_steps}"
         )
     if max_decode_steps_cap is not None and max_decode_steps > int(
         max_decode_steps_cap
@@ -365,9 +372,7 @@ def preprocess_ming_tts_payload(
         state.prompt = plan.effective_prompt
         state.input_ids = plan.input_ids
         state.prompt_tokens = plan.prompt_tokens
-        state.spk_token_positions = plan.spk_token_positions
         state.spk_injection_positions = plan.spk_injection_positions
-        state.audio_token_position = plan.audio_token_position
         state.prompt_latent_start_position = plan.prompt_latent_start_position
         state.prompt_latent_token_count = plan.prompt_latent_token_count
     return store_ming_tts_state(payload, state)

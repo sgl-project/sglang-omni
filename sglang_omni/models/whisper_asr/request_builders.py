@@ -62,7 +62,7 @@ def _resolve_language(value: Any) -> str:
 
 
 def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
-    suppress_tokens = getattr(generation_config, "suppress_tokens", None)
+    suppress_tokens = generation_config.suppress_tokens
     if not suppress_tokens:
         return None
     return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
@@ -120,6 +120,7 @@ def make_whisper_scheduler_adapters(
     encoder_token_count: int,
     max_new_tokens: int,
     decoder_context_len: int | None = None,
+    audio_encoder_service: Any | None = None,
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
@@ -146,7 +147,7 @@ def make_whisper_scheduler_adapters(
     # to generation_config.max_length, then to Whisper's default 448 positions.
     decoder_context_len = int(
         decoder_context_len
-        or getattr(generation_config, "max_length", None)
+        or generation_config.max_length
         or _DEFAULT_DECODER_CONTEXT_LEN
     )
 
@@ -197,21 +198,37 @@ def make_whisper_scheduler_adapters(
             )
         input_ids = [pad_token_id] * encoder_token_count + prompt_token_ids
 
-        features = processor.feature_extractor(
-            audio,
-            sampling_rate=_WHISPER_SAMPLE_RATE,
-            return_tensors="pt",
-        ).input_features
+        features = None
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint, encoder_token_count
+            )
+        if cached_embedding is None:
+            features = processor.feature_extractor(
+                audio,
+                sampling_rate=_WHISPER_SAMPLE_RATE,
+                return_tensors="pt",
+            ).input_features
+
+        audio_item = MultimodalDataItem(
+            modality=Modality.AUDIO,
+            hash=prepared.fingerprint_int,
+            feature=features,
+            model_specific_data={
+                "audio_fingerprint": fingerprint,
+                "num_audio_tokens": encoder_token_count,
+            },
+        )
         mm_inputs = MultimodalInputs(
-            mm_items=[
-                MultimodalDataItem(
-                    modality=Modality.AUDIO,
-                    hash=prepared.fingerprint_int,
-                    feature=features,
-                )
-            ],
+            mm_items=[audio_item],
             num_image_tokens=encoder_token_count,
         )
+        if audio_encoder_service is not None:
+            if cached_embedding is None:
+                audio_encoder_service.encode_item(audio_item)
+            else:
+                audio_encoder_service.attach_embedding(audio_item, cached_embedding)
 
         temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(

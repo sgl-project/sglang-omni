@@ -173,6 +173,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_max_batch_size: int = 8,
         followup_batch_wait_ms: int = 1,
         initial_cuda_graph: bool = True,
+        enable_deterministic_inference: bool = False,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -195,11 +196,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         tokenizer_config = getattr(tokenizer.model, "config", None)
         decoder_config = getattr(tokenizer_config, "decoder_config", tokenizer_config)
         num_quantizers = int(getattr(decoder_config, "num_quantizers", 0) or 0)
+        self._deterministic_inference = bool(enable_deterministic_inference)
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
             num_quantizers=num_quantizers,
             input_frames=int(stream_left_context_frames) + int(initial_chunk_frames),
+            batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
             enabled=bool(initial_cuda_graph and num_quantizers > 0),
         )
         self._samples_per_frame = int(self._decoder.total_upsample)
@@ -536,6 +539,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         *,
         stream: torch.cuda.Stream | None,
     ) -> list[torch.Tensor]:
+        if self._deterministic_inference and len(plans) > 1:
+            decoder_input = torch.cat([plan.decoder_input for plan in plans], dim=0)
+            bad_rows = self._screen_out_of_range_codes(decoder_input)
+            self._raise_for_bad_rows(bad_rows, len(plans))
+            waveforms = []
+            for plan in plans:
+                waveforms.extend(self._run_decode_plans([plan], stream=stream))
+            return waveforms
+
         decoder_input = torch.cat([plan.decoder_input for plan in plans], dim=0)
         bad_rows = self._screen_out_of_range_codes(decoder_input)
         with torch.inference_mode():
@@ -1004,9 +1016,16 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             codes.append(torch.as_tensor(state.audio_codes, dtype=torch.long))
 
-        wavs, sample_rate = self._tokenizer.decode(
-            [{"audio_codes": item} for item in codes]
-        )
+        if self._deterministic_inference:
+            wavs = []
+            for item in codes:
+                decoded, sample_rate = self._tokenizer.decode([{"audio_codes": item}])
+                (wav,) = decoded
+                wavs.append(wav)
+        else:
+            wavs, sample_rate = self._tokenizer.decode(
+                [{"audio_codes": item} for item in codes]
+            )
         if len(wavs) != len(payloads):
             raise RuntimeError(
                 f"Qwen3-TTS speech tokenizer returned {len(wavs)} audios for "
