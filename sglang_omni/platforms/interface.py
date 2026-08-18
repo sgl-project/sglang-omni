@@ -31,6 +31,12 @@ class OmniPlatform(DeviceMixin):
 
         return TransportKind.SHM
 
+    def get_remote_transport(self) -> TransportKind | None:
+        """Return the cross-node transport, or None when it is unsupported."""
+        from sglang_omni.comm.data_ref import TransportKind
+
+        return TransportKind.MOONCAKE
+
     def get_fused_qk_norm_rope(self):
         """Get the fused QK norm RoPE kernel if available, else return None."""
         return None

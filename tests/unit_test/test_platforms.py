@@ -48,12 +48,56 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
     spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
 
     assert platform.is_rocm()
-    assert (
-        platform.get_stage_process_env(spec, {"CUDA_VISIBLE_DEVICES": "3,4"})[
-            "CUDA_VISIBLE_DEVICES"
-        ]
-        == "4"
+    updates = platform.get_stage_process_env(spec, {"CUDA_VISIBLE_DEVICES": "3,4"})
+
+    assert updates == {
+        "ROCR_VISIBLE_DEVICES": "4",
+        "HIP_VISIBLE_DEVICES": "0",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+    }
+
+
+def test_rocm_platform_prefers_rocr_physical_mapping() -> None:
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    updates = platform.get_stage_process_env(
+        spec,
+        {
+            "ROCR_VISIBLE_DEVICES": "3,4",
+            "HIP_VISIBLE_DEVICES": "0,1",
+            "CUDA_VISIBLE_DEVICES": "0,1",
+        },
     )
+
+    assert updates["ROCR_VISIBLE_DEVICES"] == "4"
+    assert updates["HIP_VISIBLE_DEVICES"] == "0"
+    assert updates["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_rocm_platform_rejects_conflicting_visibility_namespaces() -> None:
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    with pytest.raises(ValueError, match="conflicting ROCm visibility"):
+        platform.get_stage_process_env(
+            spec,
+            {
+                "ROCR_VISIBLE_DEVICES": "3,4",
+                "HIP_VISIBLE_DEVICES": "5,6",
+            },
+        )
+
+
+def test_rocm_platform_uses_host_staged_transport() -> None:
+    from sglang_omni.comm.data_ref import TransportKind
+
+    platform = platforms._as_omni_platform(RocmSRTPlatform())
+
+    assert platform.get_intra_node_transport() is TransportKind.SHM
+    assert platform.get_remote_transport() is None
 
 
 def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:

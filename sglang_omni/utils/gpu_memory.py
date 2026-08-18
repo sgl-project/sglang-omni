@@ -274,10 +274,16 @@ def get_gpu_startup_lock_path(
     env: dict[str, str] | None = None,
     base_dir: str | Path | None = None,
 ) -> Path:
-    """Return the launch-time lock path for a CUDA logical GPU id."""
+    """Return the launch-time lock path for a logical accelerator id."""
 
     source_env = env if env is not None else os.environ
-    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    # ROCm TP workers expose one physical GPU through ROCr and then present that
+    # device as logical zero through HIP/CUDA aliases. Prefer the physical ROCr
+    # selector so different ranks do not contend on the same startup lock.
+    visible_value = source_env.get("ROCR_VISIBLE_DEVICES") or source_env.get(
+        "CUDA_VISIBLE_DEVICES"
+    )
+    visible_devices = parse_cuda_visible_devices(visible_value)
     visible_device = resolve_visible_device_id(logical_gpu_id, visible_devices)
     safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(visible_device)).strip("_")
     if not safe_device:
