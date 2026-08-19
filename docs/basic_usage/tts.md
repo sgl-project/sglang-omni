@@ -397,12 +397,13 @@ async def main():
 asyncio.run(main())
 ```
 
-Each `input.commit` flushes text that does not end at the configured sentence
-or clause boundary. After all audio for that segment, the server emits
+Each `input.commit` forces a flush of any remaining buffered text (including text that does not end at the configured sentence
+or clause boundary). After all audio for that segment, the server emits
 `input.committed` with `segment_index`, `segment_sentences`, and cumulative
 `total_sentences`, then accepts more input on the same connection. An empty
-commit is valid and reports `segment_sentences: 0`. `input.done` performs the
-same final buffer flush, emits `session.done`, and closes the WebSocket.
+commit is valid: it flushes nothing and reports `segment_sentences: 0`.
+`input.done` performs the same final buffer flush, emits `session.done`, and
+closes the WebSocket.
 
 `split_granularity` can be `sentence` or `clause`. Unknown message types and
 malformed JSON return a WebSocket `error` event. Missing or invalid initial
