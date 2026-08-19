@@ -116,3 +116,53 @@ def test_varlen_install_does_not_mutate_the_shared_config() -> None:
             layer.self_attn._omni_varlen_config._attn_implementation
             == "flash_attention_2"
         )
+
+
+def test_capture_segments_fit_the_declared_window() -> None:
+    runner = _runner(max_batch_rows=32)
+    for bucket in DEFAULT_TOKEN_BUCKETS:
+        segments = runner._capture_segments(bucket)
+        assert len(segments) == runner._segment_slots(bucket)
+        assert sum(segments) == bucket
+        assert max(segments) <= WINDOW
+
+
+class _RealAttention(nn.Module):
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.config = _Config(dim)
+        self.num_heads = 1
+        self.scaling = dim**-0.5
+        self.attention_dropout = 0.0
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+
+
+class _RealLayer(nn.Module):
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.self_attn = _RealAttention(dim)
+        self.self_attn_layer_norm = nn.LayerNorm(dim)
+        self.final_layer_norm = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, dim, bias=False)
+        self.fc2 = nn.Linear(dim, dim, bias=False)
+        self.activation_fn = nn.GELU()
+
+
+class _RealTower(nn.Module):
+    def __init__(self, dim: int = 64, n: int = 2) -> None:
+        super().__init__()
+        self.config = _Config(dim)
+        self.layers = nn.ModuleList(_RealLayer(dim) for _ in range(n))
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_capture_all_records_a_graph_for_every_bucket() -> None:
+    tower = _RealTower().to(torch.device("cuda", 0), torch.bfloat16)
+    runner = AudioLayerGraphRunner(tower, device=torch.device("cuda", 0), window=WINDOW)
+    runner.capture_all()
+    assert runner.has_graphs, runner._disabled_reason
+    assert sorted(runner._graphs) == sorted(DEFAULT_TOKEN_BUCKETS)

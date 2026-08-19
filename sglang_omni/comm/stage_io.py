@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -42,18 +43,11 @@ _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE = "TorchCudaIpcStreamChunk"
 _DIRECT_CUDA_IPC_PAYLOAD_TYPE = "TorchCudaIpcPayload"
 _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT = 64 * 1024
 
-# Note (wenyao): direct CUDA IPC costs a receive-side cudaIpcOpenMemHandle whose
-# price is per-handle and independent of payload size, and that handle open
-# contends with the thinker's ~54 ms prefill on the same card. Measured on the
-# audio_encoder -> mm_aggregate hop (63 x 2048 bf16 = 258 KB), same run, same
-# box, steady state: shm pack+transport 1.26 ms (max 0.59 ms transport) versus
-# torch_cuda_ipc 13.4 ms mean / 69 ms p95 / 80 ms max, with ~1/3 of hops
-# stalling 10-80 ms. Sender-side pack is equal in both arms, so the tail is the
-# handle open, not a D2H copy. shm cost instead scales with bytes, so IPC only
-# pays for itself on payloads large enough to amortise the handle: this floor
-# keeps image/video encoder outputs (>= 1024 tokens of 2048-wide bf16) on IPC
-# while routing the small audio hop over shm.
-# See /data/omni-encresidual-20260818/LEDGER.md.
+# Note (wenyao): direct CUDA IPC pays a per-request receive-side
+# cudaIpcOpenMemHandle that contends with prefill on the driver lock:
+# 13.4 ms mean / 69 ms p95 on a 258 KB hop vs 1.26 ms over the pooled
+# relay (pool opened once at startup). The floor keeps large image/video
+# payloads direct, where the handle cost amortises.
 _DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES = 4 * 1024 * 1024
 
 

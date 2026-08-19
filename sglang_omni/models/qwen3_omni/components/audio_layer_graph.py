@@ -112,6 +112,17 @@ class AudioLayerGraphRunner:
         # the bucket's own window count.
         return bucket // self._window + self._max_batch_rows + 2
 
+    def _capture_segments(self, bucket: int) -> list[int]:
+        # Note (wenyao): every dummy segment must fit the window declared as
+        # max_seqlen, or capture records attention kernels sized for a shorter
+        # sequence than the tail segment actually is.
+        full, remainder = divmod(bucket, self._window)
+        segments = [self._window] * full
+        if remainder:
+            segments.append(remainder)
+        segments.extend([0] * (self._segment_slots(bucket) - len(segments)))
+        return segments
+
     def _install_varlen(self) -> None:
         if self._patched:
             return
@@ -150,10 +161,12 @@ class AudioLayerGraphRunner:
         hidden_states = torch.zeros(
             bucket, self._hidden, device=self._device, dtype=self._dtype
         )
-        cu_seqlens = torch.arange(
-            slots + 1, device=self._device, dtype=torch.int32
-        ).clamp(max=bucket)
-        cu_seqlens[-1] = bucket
+        cu_seqlens = (
+            torch.tensor([0, *self._capture_segments(bucket)], dtype=torch.int32)
+            .cumsum(0)
+            .to(torch.int32)
+            .to(self._device)
+        )
         try:
             with torch.no_grad():
                 for _ in range(WARMUP_ITERATIONS):
