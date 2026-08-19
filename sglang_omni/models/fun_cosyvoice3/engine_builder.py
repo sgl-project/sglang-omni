@@ -73,18 +73,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         model = model_worker.model_runner.model
         root = self._checkpoint_root
         assert root is not None, "checkpoint_root not set"
-
-        # SGLang's model_config reads vocab_size from HF config (151936 for
-        # Qwen2 text). CosyVoice3 outputs speech tokens (vocab=6761). Patch
-        # the model config so sampling penalty tensors match our logit dim.
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 
         model_worker.model_runner.model_config.vocab_size = TOTAL_VOCAB_SIZE
-
-        # Load fine-tuned CosyVoice3 LLM weights from llm.pt (backbone +
-        # speech_embedding + llm_decoder). SGLang already loaded the Qwen2
-        # backbone from HF safetensors; this overwrites with the fine-tuned
-        # speech-adapted weights.
+        
         llm_pt_path = os.path.join(root, "llm.pt")
         logger.info("Loading CosyVoice3 fine-tuned weights from %s", llm_pt_path)
         state_dict = torch.load(llm_pt_path, map_location="cpu", weights_only=True)

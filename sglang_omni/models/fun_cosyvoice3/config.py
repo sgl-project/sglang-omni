@@ -14,7 +14,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
     architecture: ClassVar[str] = "FunCosyVoice3SGLangModel"
-    # This checkpoint has no built-in speaker presets, so public requests need
+    # note (PoTaTo): This checkpoint has no built-in speaker presets, so public requests need
     # one reference clip for speaker conditioning.
     required_speech_reference_count: ClassVar[int | None] = 1
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
@@ -29,10 +29,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
 
     @classmethod
     def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # note: preprocessing -> tts_engine is excluded because preprocessing
-        # stores prepared requests in module-level registries that the AR
-        # engine builder reads in-process. The vocoder loads its own flow+hift
-        # models and reads audio_codes from the payload.
         return frozenset({("tts_engine", "vocoder")})
 
     @classmethod

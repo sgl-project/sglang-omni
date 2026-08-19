@@ -183,12 +183,6 @@ class _CosyVoice3ReferenceEncodeHook(
         dict[str, Any],
     ]
 ):
-    """Encode and cache the reference tensors used by LLM and Flow stages.
-
-    The cache key is based on local-file content, data-URI content, or raw byte
-    content. Mutable remote URLs deliberately bypass the cache because a URL is
-    not a stable identity for the bytes that the model consumes.
-    """
 
     model_id = "fun_cosyvoice3"
     encoder_id = "speech_tokenizer_v3+campplus+matcha_mel"
@@ -514,7 +508,7 @@ def _build_cosyvoice3_prompt_text(state: FunCosyVoice3State) -> str | None:
         if _COSYVOICE3_END_OF_PROMPT in state.ref_text:
             return state.ref_text
         return _COSYVOICE3_PROMPT_PREFIX + state.ref_text
-    # CosyVoice3 requires the end-of-prompt marker even when cross-lingual
+    # note (PoTaTo): CosyVoice3 requires the end-of-prompt marker even when cross-lingual
     # mode removes reference text and reference speech tokens from the LLM.
     return _COSYVOICE3_PROMPT_PREFIX
 
@@ -595,8 +589,6 @@ def _prepare_cosyvoice3_request(
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
 
-    # Tokenize the optional reference/instruction prompt separately, then put
-    # it before the target text as required by the CosyVoice3 LLM contract.
     text_token = tokenizer(state.text)
     text_token = text_token.to(device=device)
     prompt_text = _build_cosyvoice3_prompt_text(state)
@@ -606,7 +598,6 @@ def _prepare_cosyvoice3_request(
     with torch.no_grad():
         text_embed = model.text_embed_tokens(text_token)
 
-    # Reuse audio-derived conditioning when the same content is requested again.
     if state.ref_audio is not None:
         reference_artifact = reference_service.get_or_encode(
             state.ref_audio,
@@ -621,9 +612,7 @@ def _prepare_cosyvoice3_request(
         prompt_speech_token = torch.zeros(1, 0, dtype=torch.int32)
         flow_prompt_speech_token = torch.zeros(1, 0, dtype=torch.int32)
         flow_prompt_speech_feat = torch.zeros(1, 0, 80)
-    # Upstream removes reference speech tokens from the LLM input for both
-    # cross-lingual and instruct2 modes. Flow still receives the aligned
-    # reference prefix for speaker and acoustic conditioning.
+
     llm_prompt_speech_token = (
         prompt_speech_token
         if state.ref_text is not None
@@ -682,7 +671,6 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
     with _PREPARED_REQUESTS_LOCK:
         _PREPARED_REQUESTS[payload.request_id] = prepared
 
-    # Store only Flow-aligned conditioning in state for the vocoder.
     prepared.state.flow_embedding = prepared.flow_embedding
     prepared.state.flow_prompt_speech_token = prepared.flow_prompt_speech_token
     prepared.state.flow_prompt_speech_feat = prepared.flow_prompt_speech_feat
@@ -768,8 +756,6 @@ def apply_sglang_cosyvoice3_result(
     else:
         codes = torch.empty((0,), dtype=torch.long)
 
-    # Preserve the reference conditioning prepared by preprocessing.
-    # The vocoder needs these fields together with the generated speech codes.
     state = FunCosyVoice3State.from_dict(payload.data)
     state.audio_codes = codes
     state.prompt_tokens = (

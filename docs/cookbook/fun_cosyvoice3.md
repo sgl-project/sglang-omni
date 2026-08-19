@@ -36,7 +36,7 @@ If CosyVoice was cloned without submodules, initialize Matcha-TTS with
 The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, so
 `onnxruntime` is required.
 
-Download the checkpoint (public repository, no token required):
+Download the checkpoint:
 
 ```bash
 hf download FunAudioLLM/Fun-CosyVoice3-0.5B-2512

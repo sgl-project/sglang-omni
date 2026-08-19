@@ -116,7 +116,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
                     loader(param, loaded_weight)
                 continue
 
-            # note: pass through HF safetensors keys (model.*) to Qwen2 backbone
+            # note (PoTaTo): pass through HF safetensors keys (model.*) to Qwen2 backbone
             backbone_weights.append((name, loaded_weight))
 
         if backbone_weights:
