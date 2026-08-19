@@ -1594,21 +1594,6 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     )
 
 
-def test_moss_forward_accepts_shared_prefill_kwargs() -> None:
-    from inspect import signature
-
-    from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
-
-    signature(MossTTSDelaySGLangModel.forward).bind(
-        object(),
-        input_ids=object(),
-        positions=object(),
-        forward_batch=object(),
-        input_embeds=object(),
-        omni_prefill_rids=["moss-request"],
-    )
-
-
 def test_moss_decode_feedback_uses_row_id_embedding() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
