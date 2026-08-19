@@ -303,11 +303,20 @@ def test_ming_tts_streaming_retraction_preserves_latent_and_decoder_state() -> N
     )
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
     runner._request_states = {request_id: request_state}
+    embedding = torch.nn.Embedding(8, 3)
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(weight=embedding.weight),
+        get_input_embeddings=lambda: embedding,
+    )
     data.generation_steps = 1
     data.req.output_ids.append(data.audio_patch_token_id)
     data.req.reset_for_retract()
+    data.req.extend_range = SimpleNamespace(length=4)
     runner.before_prefill(
-        None,
+        SimpleNamespace(
+            input_ids=torch.tensor([1, 2, 3, data.audio_patch_token_id]),
+            replace_embeds=None,
+        ),
         None,
         [SimpleNamespace(request_id=request_id, data=data)],
     )

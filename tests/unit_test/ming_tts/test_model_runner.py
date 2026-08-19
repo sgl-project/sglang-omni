@@ -6,11 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.model_executor.forward_context import (
-    get_forward_context,
-    has_forward_context,
-)
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.ming_tts.model_runner import (
     MingTTSModelRunner,
     MingTTSTPStepUpdate,
@@ -194,34 +191,157 @@ def test_ming_tts_non_streaming_step_buffers_latents_without_stream_patch() -> N
     )
 
 
-def test_prefill_forward_publishes_sglang_forward_context() -> None:
+def test_ming_tts_text_prefill_stages_embeddings_without_mutating_admission_fields() -> (
+    None
+):
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
-    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
+    runner._tp_rank = 1
+    runner._request_states = {}
+    embedding = torch.nn.Embedding.from_pretrained(
+        torch.tensor(
+            [
+                [0.0, 0.0],
+                [10.0, 11.0],
+                [20.0, 21.0],
+            ]
+        )
     )
-
-    seen = []
-
-    def model(**kwargs):
-        seen.append(get_forward_context().attn_backend)
-        return "logits"
-
-    model._decode_input_embedding = SimpleNamespace(
-        weight=torch.zeros(1, dtype=torch.float32)
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(weight=embedding.weight),
+        get_input_embeddings=lambda: embedding,
     )
-    runner.model = model
+    request = SimpleNamespace(
+        request_id="request-text",
+        data=SimpleNamespace(
+            input_ids=torch.tensor([1, 2]),
+            state=SimpleNamespace(spk_emb=None, prompt_latent=None),
+            req=SimpleNamespace(
+                prefix_indices=torch.empty(0, dtype=torch.long),
+                extend_range=SimpleNamespace(length=2),
+            ),
+        ),
+    )
+    mm_inputs = [object()]
     forward_batch = SimpleNamespace(
-        positions=torch.tensor([0]),
-        mrope_positions=None,
-        input_ids=torch.tensor([1]),
+        input_ids=torch.tensor([1, 2]),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=mm_inputs,
     )
 
-    assert not has_forward_context()
-    result = runner._forward_with_input_embeds(forward_batch, torch.ones(1, 2))
+    runner.before_prefill(forward_batch, SimpleNamespace(), [request])
 
-    assert seen == [attn_backend]
-    assert result.logits_output == "logits"
+    staged = get_omni_prefill_inputs(forward_batch)
+    assert staged is not None
+    assert torch.equal(
+        staged.input_embeds,
+        torch.tensor([[10.0, 11.0], [20.0, 21.0]]),
+    )
+    assert forward_batch.input_embeds is None
+    assert forward_batch.replace_embeds is None
+    assert forward_batch.mm_inputs is mm_inputs
+
+
+def test_ming_tts_reference_prefill_delegates_staged_embeddings_to_standard_worker() -> (
+    None
+):
+    runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
+    runner._tp_rank = 0
+    runner._request_states = {}
+    standard_observations = []
+
+    def standard_forward(forward_batch):
+        staged = get_omni_prefill_inputs(forward_batch)
+        standard_observations.append(
+            (
+                staged.input_embeds.clone(),
+                forward_batch.input_embeds,
+                forward_batch.replace_embeds,
+                forward_batch.mm_inputs,
+            )
+        )
+        return SimpleNamespace(
+            logits_output="standard-logits",
+            next_token_ids=None,
+            can_run_cuda_graph=True,
+        )
+
+    runner.tp_worker = SimpleNamespace(forward_batch_generation=standard_forward)
+    embedding = torch.nn.Embedding.from_pretrained(
+        torch.tensor(
+            [
+                [0.0, 0.0],
+                [10.0, 11.0],
+                [20.0, 21.0],
+                [30.0, 31.0],
+                [40.0, 41.0],
+                [50.0, 51.0],
+            ]
+        )
+    )
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(weight=embedding.weight),
+        get_input_embeddings=lambda: embedding,
+        spk_head=lambda _speaker: torch.tensor([[90.0, 91.0]]),
+        linear_proj_audio=lambda _latent: torch.tensor(
+            [[[70.0, 71.0]], [[80.0, 81.0]]]
+        ),
+        patch_size=1,
+        latent_dim=1,
+        history_patch_size=2,
+    )
+    request = SimpleNamespace(
+        request_id="request-reference",
+        data=SimpleNamespace(
+            input_ids=torch.tensor([1, 2, 3, 4, 5]),
+            state=SimpleNamespace(
+                spk_emb=torch.tensor([[1.0, 2.0]]),
+                prompt_latent=torch.tensor([[3.0], [4.0]]),
+                spk_injection_positions=[1],
+                prompt_latent_start_position=2,
+                prompt_latent_token_count=2,
+            ),
+            req=SimpleNamespace(
+                prefix_indices=torch.empty(0, dtype=torch.long),
+                extend_range=SimpleNamespace(length=5),
+            ),
+        ),
+    )
+    mm_inputs = [object()]
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([1, 2, 3, 4, 5]),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=mm_inputs,
+    )
+
+    result = runner._prepare_and_forward(
+        forward_batch,
+        SimpleNamespace(is_prefill_only=True),
+        [request],
+        True,
+    )
+
+    assert result.logits_output == "standard-logits"
+    assert result.can_run_cuda_graph is True
+    assert len(standard_observations) == 1
+    staged, input_embeds, replace_embeds, observed_mm_inputs = standard_observations[0]
+    assert torch.equal(
+        staged,
+        torch.tensor(
+            [
+                [10.0, 11.0],
+                [90.0, 91.0],
+                [70.0, 71.0],
+                [80.0, 81.0],
+                [50.0, 51.0],
+            ]
+        ),
+    )
+    assert input_embeds is None
+    assert replace_embeds is None
+    assert observed_mm_inputs is mm_inputs
+    assert get_omni_prefill_inputs(forward_batch) is None
 
 
 def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:

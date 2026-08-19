@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.ming_tts.engine_io import MingTTSLatentPatch
 from sglang_omni.models.ming_tts.sglang_model import MingTTSTailInputs
 
@@ -92,9 +94,18 @@ class MingTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        del forward_batch, schedule_batch
+        del schedule_batch
         for sched_req in requests:
             self._materialize_request_state(sched_req)
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(
+                    forward_batch,
+                    requests,
+                ),
+            ),
+        )
 
     def _materialize_request_state(self, sched_req: Any) -> None:
         request_id = sched_req.request_id
@@ -171,16 +182,6 @@ class MingTTSModelRunner(ModelRunner):
             latent_history=latent_history,
         )
 
-    def custom_prefill_forward(
-        self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> GenerationBatchResult:
-        del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(forward_batch, input_embeds)
-
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
@@ -228,28 +229,6 @@ class MingTTSModelRunner(ModelRunner):
             request_embeds = torch.cat(request_parts, dim=0)
             batch_parts.append(request_embeds)
         return torch.cat(batch_parts, dim=0)
-
-    def _forward_with_input_embeds(
-        self,
-        forward_batch: Any,
-        input_embeds: torch.Tensor,
-    ) -> GenerationBatchResult:
-        model_runner = self.tp_worker.model_runner
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-        with attn_forward_context(model_runner.attn_backend):
-            logits_output = self.model(
-                input_ids=forward_batch.input_ids,
-                positions=positions,
-                forward_batch=forward_batch,
-                input_embeds=input_embeds,
-            )
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            can_run_cuda_graph=False,
-        )
 
     def before_decode(
         self,

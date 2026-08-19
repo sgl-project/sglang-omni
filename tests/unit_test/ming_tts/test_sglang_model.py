@@ -8,6 +8,42 @@ import pytest
 import torch
 
 
+def test_ming_tts_forward_accepts_sidecar_request_identity() -> None:
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSSGLangModel
+
+    seen: dict[str, object] = {}
+
+    def fake_model(**kwargs):
+        seen.update(kwargs)
+        return torch.ones((2, 3))
+
+    wrapper = object.__new__(MingTTSSGLangModel)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.model = fake_model
+    input_ids = torch.tensor([1, 2], dtype=torch.long)
+    positions = torch.tensor([0, 1], dtype=torch.long)
+    input_embeds = torch.ones((2, 3))
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(
+            is_decode=lambda: False,
+            is_extend=lambda: False,
+        ),
+        mrope_positions=None,
+    )
+
+    result = wrapper.forward(
+        input_ids=input_ids,
+        positions=positions,
+        forward_batch=forward_batch,
+        input_embeds=input_embeds,
+        omni_prefill_rids=("request-1",),
+    )
+
+    assert torch.equal(result.hidden_states, torch.ones((2, 3)))
+    assert seen["input_embeds"] is input_embeds
+    assert seen["positions"] is positions
+
+
 def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
     from sglang.srt.runtime_context import get_forward
 

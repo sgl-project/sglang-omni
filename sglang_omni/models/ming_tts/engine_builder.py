@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
+from sglang_omni.models.ming_tts import CAPABILITIES
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
@@ -26,6 +27,9 @@ def _is_truthy(value: Any) -> bool:
 class MingTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Ming-Omni-TTS"
     context_length = 0
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
