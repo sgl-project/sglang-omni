@@ -15,6 +15,13 @@ import torch
 
 from .base import MediaIO, _is_url
 
+# KSDATAFORMAT_SUBTYPE_* GUIDs (16 bytes, WAV on-disk byte order). A
+# WAVE_FORMAT_EXTENSIBLE fmt chunk only maps to plain PCM / IEEE-float when its
+# SubFormat matches one of these in full; the leading 16 bits alone are not
+# enough, since vendor-defined GUIDs may reuse those bytes.
+_WAVE_SUBFORMAT_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
+_WAVE_SUBFORMAT_IEEE_FLOAT = bytes.fromhex("0300000000001000800000aa00389b71")
+
 
 def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
     """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
@@ -88,11 +95,16 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
                 fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
                     "<HHIIHH", chunk_data[:16]
                 )
-                # WAVE_FORMAT_EXTENSIBLE stores the real codec in the first two
-                # bytes of the SubFormat GUID; unwrap it so the dispatch below
-                # sees PCM/IEEE-float instead of the 0xFFFE wrapper tag.
-                if fmt_tag == 0xFFFE and len(chunk_data) >= 26:
-                    (fmt_tag,) = struct.unpack("<H", chunk_data[24:26])
+                # WAVE_FORMAT_EXTENSIBLE carries the real codec in a full 16-byte
+                # SubFormat GUID. Only unwrap it when the complete GUID matches a
+                # known PCM/IEEE-float subtype; otherwise leave fmt_tag as 0xFFFE
+                # so the dispatch below raises and the PyAV fallback takes over.
+                if fmt_tag == 0xFFFE and len(chunk_data) >= 40:
+                    subformat = chunk_data[24:40]
+                    if subformat == _WAVE_SUBFORMAT_PCM:
+                        fmt_tag = 1
+                    elif subformat == _WAVE_SUBFORMAT_IEEE_FLOAT:
+                        fmt_tag = 3
         elif chunk_id == b"data":
             data_bytes = chunk_data
 

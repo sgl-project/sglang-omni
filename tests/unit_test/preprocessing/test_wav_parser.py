@@ -96,3 +96,25 @@ def test_pcm16_still_parses():
 def test_unsupported_bit_depth_still_raises():
     with pytest.raises(ValueError):
         _parse_wav_bytes(_build_wav(PCM, 12, b"\x00\x00\x00"))
+
+
+def _build_extensible_wav_raw_guid(guid16, bits, data_bytes, *, sample_rate=16000):
+    assert len(guid16) == 16
+    block_align = bits // 8
+    byte_rate = sample_rate * block_align
+    fmt = struct.pack(
+        "<HHIIHH", EXTENSIBLE, 1, sample_rate, byte_rate, block_align, bits
+    )
+    fmt += struct.pack("<HHI", 22, bits, 0) + guid16
+    chunks = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack("<I", len(data_bytes)) + data_bytes
+    return b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks
+
+
+def test_extensible_custom_guid_is_not_decoded_as_pcm():
+    # A vendor GUID whose first two bytes look like PCM (0x0001) but whose tail
+    # differs must NOT be unwrapped; it should raise so PyAV can handle it.
+    bogus = b"\x01\x00" + b"\xde\xad\xbe\xef" + b"\x00" * 10
+    data = np.array([0, 16384, -16384], dtype="<i2").tobytes()
+    with pytest.raises(ValueError):
+        _parse_wav_bytes(_build_extensible_wav_raw_guid(bogus, 16, data))
