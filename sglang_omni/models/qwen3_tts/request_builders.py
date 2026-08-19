@@ -150,6 +150,10 @@ _ADHOC_REFERENCE_SERVICE_ENTRY: (
     tuple[tuple[int, int], ReferenceEncodeService] | None
 ) = None
 _PREPARED_REQUESTS_LOCK = threading.Lock()
+_UPLOADED_VOICE_PROMPT_INFLIGHT: dict[
+    SpeakerCacheKey, concurrent.futures.Future[None]
+] = {}
+_UPLOADED_VOICE_PROMPT_INFLIGHT_LOCK = threading.Lock()
 
 
 def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
@@ -573,6 +577,77 @@ def _qwen3_tts_voice_prompt_from_cache(
     return prompt, str(ref_text) if ref_text is not None else None
 
 
+def _get_or_create_qwen3_tts_uploaded_voice_prompt(
+    state: Qwen3TTSState,
+    wrapper: Any,
+    cache_key: SpeakerCacheKey,
+) -> tuple[dict[str, Any], str | None]:
+    speaker_cache = get_speaker_artifact_cache()
+
+    while True:
+        leader_fut: concurrent.futures.Future[None] | None = None
+        follower_fut: concurrent.futures.Future[None] | None = None
+        cached_artifact: dict[str, Any] | None = None
+        with _UPLOADED_VOICE_PROMPT_INFLIGHT_LOCK:
+            follower_fut = _UPLOADED_VOICE_PROMPT_INFLIGHT.get(cache_key)
+            if follower_fut is None:
+                candidate = speaker_cache.get(cache_key)
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("artifact_type") == "qwen3_tts_voice_clone_prompt"
+                ):
+                    cached_artifact = candidate
+                else:
+                    leader_fut = concurrent.futures.Future()
+                    _UPLOADED_VOICE_PROMPT_INFLIGHT[cache_key] = leader_fut
+
+        if cached_artifact is not None:
+            cached_prompt = _qwen3_tts_voice_prompt_from_cache(cached_artifact)
+            if cached_prompt is not None:
+                return cached_prompt
+
+        if follower_fut is not None:
+            follower_fut.result()
+            candidate = speaker_cache.get(cache_key)
+            if isinstance(candidate, dict):
+                cached_prompt = _qwen3_tts_voice_prompt_from_cache(candidate)
+                if cached_prompt is not None:
+                    return cached_prompt
+            continue
+
+        assert leader_fut is not None
+        break
+
+    try:
+        with torch.no_grad():
+            prompt_items = wrapper.create_voice_clone_prompt(
+                ref_audio=state.ref_audio,
+                ref_text=state.ref_text,
+                x_vector_only_mode=state.x_vector_only_mode,
+            )
+        if len(prompt_items) != 1:
+            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
+        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
+        ref_text = prompt_items[0].ref_text
+        speaker_cache.put(
+            cache_key,
+            _cacheable_qwen3_tts_voice_prompt(
+                voice_clone_prompt,
+                ref_text=ref_text,
+            ),
+        )
+    except BaseException as exc:
+        with _UPLOADED_VOICE_PROMPT_INFLIGHT_LOCK:
+            _UPLOADED_VOICE_PROMPT_INFLIGHT.pop(cache_key, None)
+        leader_fut.set_exception(exc)
+        raise
+
+    with _UPLOADED_VOICE_PROMPT_INFLIGHT_LOCK:
+        _UPLOADED_VOICE_PROMPT_INFLIGHT.pop(cache_key, None)
+    leader_fut.set_result(None)
+    return voice_clone_prompt, ref_text
+
+
 @dataclass(frozen=True)
 class _Qwen3TTSAdhocReferenceInput:
     ref_audio: Any
@@ -970,22 +1045,10 @@ def _prepare_qwen3_tts_base_request(
             desc="Qwen3-TTS ad-hoc reference",
         )
     else:
-        with torch.no_grad():
-            prompt_items = wrapper.create_voice_clone_prompt(
-                ref_audio=state.ref_audio,
-                ref_text=state.ref_text,
-                x_vector_only_mode=state.x_vector_only_mode,
-            )
-        if len(prompt_items) != 1:
-            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
-        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
-        ref_text = prompt_items[0].ref_text
-        speaker_cache.put(
+        voice_clone_prompt, ref_text = _get_or_create_qwen3_tts_uploaded_voice_prompt(
+            state,
+            wrapper,
             cache_key,
-            _cacheable_qwen3_tts_voice_prompt(
-                voice_clone_prompt,
-                ref_text=ref_text,
-            ),
         )
 
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
