@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -304,16 +305,8 @@ class ModelWorker:
         *,
         can_run_graph: bool,
     ) -> None:
-        forward_mode = getattr(forward_batch, "forward_mode", None)
-        is_extend = getattr(forward_mode, "is_extend", None)
-        is_cuda_graph = getattr(forward_mode, "is_cuda_graph", None)
-        is_split_prefill = getattr(forward_mode, "is_split_prefill", None)
-        if (
-            not callable(is_extend)
-            or not bool(is_extend(include_draft_extend_v2=True))
-            or (callable(is_cuda_graph) and bool(is_cuda_graph()))
-            or (callable(is_split_prefill) and bool(is_split_prefill()))
-        ):
+        mode = forward_batch.forward_mode
+        if not mode.is_extend() or mode.is_cuda_graph():
             return
 
         if not can_run_graph:
@@ -322,15 +315,9 @@ class ModelWorker:
             self._prefill_cuda_graph_usage.standard_eager_count += 1
             return
 
-        runner = getattr(self.model_runner, "prefill_cuda_graph_runner", None)
-        actual_bucket = getattr(runner, "_static_num_tokens", None)
-        if actual_bucket is None:
-            logger.warning(
-                "Prefill CUDA graph replay completed without an observable "
-                "static bucket on %s",
-                type(runner).__name__,
-            )
-            return
+        runner = self.model_runner.prefill_cuda_graph_runner
+        buckets = runner.capture_num_tokens
+        actual_bucket = buckets[bisect_left(buckets, len(forward_batch.input_ids))]
         self._prefill_cuda_graph_usage.replay_count += 1
         self._prefill_cuda_graph_usage.replay_buckets[int(actual_bucket)] += 1
 
@@ -339,29 +326,23 @@ class ModelWorker:
         self._prefill_cuda_graph_usage.custom_eager_count += 1
 
     def _prefill_cuda_graph_info(self) -> dict[str, Any]:
-        runner = getattr(self.model_runner, "prefill_cuda_graph_runner", None)
-        backend_runner = getattr(runner, "backend", None)
-        capture_num_tokens = getattr(runner, "capture_num_tokens", None)
-        if capture_num_tokens is not None:
-            capture_num_tokens = [int(value) for value in capture_num_tokens]
-
-        registry = getattr(runner, "buffer_registry", None)
-        has_slot = getattr(registry, "has_slot", None)
-        input_embeds_slot = bool(callable(has_slot) and has_slot("input_embeds"))
-
-        prefill_config = getattr(
-            getattr(self.server_args, "cuda_graph_config", None),
-            "prefill",
-            None,
+        from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+            PrefillCudaGraphRunner,
         )
-        backend = getattr(prefill_config, "backend", None)
+
+        runner = self.model_runner.prefill_cuda_graph_runner
+        if isinstance(runner, PrefillCudaGraphRunner):
+            capture_num_tokens = [int(value) for value in runner.capture_num_tokens]
+            backend_runner = type(runner.backend).__name__
+            input_embeds_slot = runner.buffer_registry.has_slot("input_embeds")
+        else:
+            capture_num_tokens, backend_runner, input_embeds_slot = None, None, False
+        backend = self.server_args.cuda_graph_config.prefill.backend
         usage = self._prefill_cuda_graph_usage
         return {
             "backend": backend,
             "runner": type(runner).__name__ if runner is not None else None,
-            "backend_runner": (
-                type(backend_runner).__name__ if backend_runner is not None else None
-            ),
+            "backend_runner": backend_runner,
             "capture_num_tokens": capture_num_tokens,
             "input_embeds_slot": input_embeds_slot,
             "replay_count": int(usage.replay_count),
