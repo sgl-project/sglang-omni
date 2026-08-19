@@ -491,6 +491,66 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     assert prepared.state.seed is None
 
 
+class _UploadedVoicePromptTestWrapper:
+    def __init__(self, on_create) -> None:
+        self._on_create = on_create
+
+    def create_voice_clone_prompt(self, **kwargs):
+        value = self._on_create(**kwargs)
+        return [SimpleNamespace(ref_text=kwargs["ref_text"], value=value)]
+
+    def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+        value = prompt_items[0].value
+        return {
+            "ref_code": [torch.tensor([[value]], dtype=torch.long)],
+            "ref_spk_embedding": [torch.tensor([float(value)])],
+            "icl_mode": [True],
+        }
+
+
+def _uploaded_voice_prompt_test_input(
+    voice_name: str,
+    voice_version: int = 1,
+) -> tuple[SimpleNamespace, SpeakerCacheKey]:
+    state = SimpleNamespace(
+        ref_audio=f"{voice_name}.wav",
+        ref_text=f"{voice_name} reference",
+        x_vector_only_mode=False,
+    )
+    key = SpeakerCacheKey(
+        "qwen3_tts_icl",
+        voice_name,
+        voice_version,
+        "voice_clone_prompt",
+    )
+    return state, key
+
+
+def _track_uploaded_voice_prompt_followers(
+    monkeypatch: pytest.MonkeyPatch,
+    expected_followers: int,
+) -> threading.Event:
+    all_following = threading.Event()
+    follower_lock = threading.Lock()
+    follower_count = 0
+    original_result = qwen3_request_builders.concurrent.futures.Future.result
+
+    def tracked_result(future, timeout=None):
+        nonlocal follower_count
+        with follower_lock:
+            follower_count += 1
+            if follower_count == expected_followers:
+                all_following.set()
+        return original_result(future, timeout=timeout)
+
+    monkeypatch.setattr(
+        qwen3_request_builders.concurrent.futures.Future,
+        "result",
+        tracked_result,
+    )
+    return all_following
+
+
 def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -595,6 +655,230 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     )
 
     assert calls == 3
+
+
+def test_qwen3_tts_uploaded_voice_cold_miss_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    worker_count = 8
+    start = threading.Barrier(worker_count)
+    entered = threading.Event()
+    release = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+    state, cache_key = _uploaded_voice_prompt_test_input("single-flight")
+    all_following = _track_uploaded_voice_prompt_followers(
+        monkeypatch,
+        worker_count - 1,
+    )
+
+    def on_create(**kwargs):
+        nonlocal calls
+        assert kwargs["ref_audio"] == "single-flight.wav"
+        with calls_lock:
+            calls += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        return 7
+
+    wrapper = _UploadedVoicePromptTestWrapper(on_create)
+    results = [None] * worker_count
+    errors: list[Exception] = []
+
+    def worker(index: int) -> None:
+        try:
+            start.wait(timeout=5)
+            results[index] = (
+                qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+                    state,
+                    wrapper,
+                    cache_key,
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    try:
+        assert entered.wait(timeout=5)
+        assert all_following.wait(timeout=5)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert calls == 1
+    assert all(result is not None for result in results)
+    prompts = [result[0] for result in results if result is not None]
+    prompt_pointers = {prompt["ref_spk_embedding"][0].data_ptr() for prompt in prompts}
+    assert len(prompt_pointers) == worker_count
+
+    cached = cache.get(cache_key)
+    assert isinstance(cached, dict)
+    assert cached["ref_spk_embedding"][0].device.type == "cpu"
+    assert cached["ref_spk_embedding"][0].data_ptr() not in prompt_pointers
+
+    prompts[0]["ref_spk_embedding"][0].fill_(99)
+    hit_prompt, hit_ref_text = (
+        qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+            state,
+            wrapper,
+            cache_key,
+        )
+    )
+    assert calls == 1
+    assert hit_ref_text == "single-flight reference"
+    assert torch.equal(hit_prompt["ref_spk_embedding"][0], torch.tensor([7.0]))
+    assert hit_prompt["ref_spk_embedding"][0].data_ptr() not in prompt_pointers
+
+
+def test_qwen3_tts_uploaded_voice_different_keys_build_in_parallel() -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    start = threading.Barrier(2)
+    both_entered = threading.Event()
+    release = threading.Event()
+    active_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    calls: list[str] = []
+
+    def on_create(**kwargs):
+        nonlocal active, max_active
+        ref_audio = kwargs["ref_audio"]
+        with active_lock:
+            calls.append(ref_audio)
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                both_entered.set()
+        try:
+            assert release.wait(timeout=5)
+        finally:
+            with active_lock:
+                active -= 1
+        return 1 if ref_audio == "voice-a.wav" else 2
+
+    wrapper = _UploadedVoicePromptTestWrapper(on_create)
+    inputs = [
+        _uploaded_voice_prompt_test_input("voice-a"),
+        _uploaded_voice_prompt_test_input("voice-b"),
+    ]
+    results = [None, None]
+    errors: list[Exception] = []
+
+    def worker(index: int) -> None:
+        state, cache_key = inputs[index]
+        try:
+            start.wait(timeout=5)
+            results[index] = (
+                qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+                    state,
+                    wrapper,
+                    cache_key,
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    try:
+        assert both_entered.wait(timeout=5)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert max_active == 2
+    assert set(calls) == {"voice-a.wav", "voice-b.wav"}
+    assert {
+        int(result[0]["ref_code"][0].item()) for result in results if result is not None
+    } == {1, 2}
+
+
+def test_qwen3_tts_uploaded_voice_failure_fans_out_and_is_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    worker_count = 6
+    start = threading.Barrier(worker_count)
+    entered = threading.Event()
+    release = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+    state, cache_key = _uploaded_voice_prompt_test_input("flaky")
+    all_following = _track_uploaded_voice_prompt_followers(
+        monkeypatch,
+        worker_count - 1,
+    )
+
+    def on_create(**kwargs):
+        nonlocal calls
+        del kwargs
+        with calls_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+            raise ValueError("uploaded voice boom")
+        return 9
+
+    wrapper = _UploadedVoicePromptTestWrapper(on_create)
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            start.wait(timeout=5)
+            qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+                state,
+                wrapper,
+                cache_key,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(worker_count)]
+    for thread in threads:
+        thread.start()
+    try:
+        assert entered.wait(timeout=5)
+        assert all_following.wait(timeout=5)
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert calls == 1
+    assert len(errors) == worker_count
+    assert all(isinstance(error, ValueError) for error in errors)
+    assert all(str(error) == "uploaded voice boom" for error in errors)
+    assert cache.get(cache_key) is None
+    assert cache_key not in qwen3_request_builders._UPLOADED_VOICE_PROMPT_INFLIGHT
+
+    prompt, ref_text = (
+        qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+            state,
+            wrapper,
+            cache_key,
+        )
+    )
+    assert calls == 2
+    assert ref_text == "flaky reference"
+    assert int(prompt["ref_code"][0].item()) == 9
+    assert isinstance(cache.get(cache_key), dict)
 
 
 def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
