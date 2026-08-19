@@ -154,11 +154,10 @@ def cuda_tensor_payload_nbytes(obj: Any, seen: set[int] | None = None) -> int:
         return sum(cuda_tensor_payload_nbytes(value, seen) for value in obj.values())
     if isinstance(obj, (list, tuple, set, frozenset)):
         return sum(cuda_tensor_payload_nbytes(value, seen) for value in obj)
-    if is_dataclass(obj) and not isinstance(obj, type):
-        return sum(
-            cuda_tensor_payload_nbytes(getattr(obj, field.name), seen)
-            for field in fields(obj)
-        )
+    if isinstance(obj, StagePayload):
+        return cuda_tensor_payload_nbytes(
+            obj.request, seen
+        ) + cuda_tensor_payload_nbytes(obj.data, seen)
     return 0
 
 
