@@ -88,6 +88,11 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
                 fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
                     "<HHIIHH", chunk_data[:16]
                 )
+                # WAVE_FORMAT_EXTENSIBLE stores the real codec in the first two
+                # bytes of the SubFormat GUID; unwrap it so the dispatch below
+                # sees PCM/IEEE-float instead of the 0xFFFE wrapper tag.
+                if fmt_tag == 0xFFFE and len(chunk_data) >= 26:
+                    (fmt_tag,) = struct.unpack("<H", chunk_data[24:26])
         elif chunk_id == b"data":
             data_bytes = chunk_data
 
@@ -107,6 +112,17 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
         if bits_per_sample == 16:
             audio_i16 = np.frombuffer(data_bytes, dtype="<i2")
             audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
+        elif bits_per_sample == 24:
+            usable = (len(data_bytes) // 3) * 3
+            raw = np.frombuffer(data_bytes[:usable], dtype="u1").reshape(-1, 3)
+            audio_i32 = (
+                raw[:, 0].astype(np.int32)
+                | (raw[:, 1].astype(np.int32) << 8)
+                | (raw[:, 2].astype(np.int32) << 16)
+            )
+            # Sign-extend the 24-bit value into the int32 range.
+            audio_i32 = np.where(audio_i32 & 0x800000, audio_i32 - 0x1000000, audio_i32)
+            audio = (audio_i32.astype(np.float32) / 8388608.0).astype(np.float32)
         elif bits_per_sample == 32:
             audio_i32 = np.frombuffer(data_bytes, dtype="<i4")
             audio = (audio_i32.astype(np.float32) / 2147483648.0).astype(np.float32)
