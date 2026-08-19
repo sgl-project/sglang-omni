@@ -76,6 +76,7 @@ class SGLangGenerationEngineBuilder(ABC):
             server_args_overrides
         )
         overrides = build_generation_batch_overrides(
+            context_length=self.context_length,
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
         )

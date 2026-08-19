@@ -58,7 +58,8 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     if max_num_tokens < 1:
         raise ValueError("max_num_tokens must be >= 1")
 
-    values = list(range(4, 33, 4))
+    values = [1, 2]
+    values.extend(range(4, 33, 4))
     values.extend(range(48, 257, 16))
     values.extend(range(288, 513, 32))
     values.extend(range(576, 1025, 64))
@@ -68,6 +69,76 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     if not values or values[-1] != max_num_tokens:
         values.append(max_num_tokens)
     return values
+
+
+def resolve_prefill_cuda_graph_capture_cap(
+    *,
+    default_capture_budget: int,
+    overrides: Mapping[str, Any],
+    context_length: int | None = None,
+) -> int:
+    caps = [
+        _normalize_positive_int(
+            "prefill_cuda_graph_capture_budget", default_capture_budget
+        )
+    ]
+    for field in (
+        "cuda_graph_max_bs_prefill",
+        "max_prefill_tokens",
+        "max_total_tokens",
+    ):
+        value = overrides.get(field)
+        if value is not None:
+            caps.append(_normalize_positive_int(field, value))
+
+    chunked_prefill_size = overrides.get("chunked_prefill_size")
+    if chunked_prefill_size is not None and int(chunked_prefill_size) > 0:
+        caps.append(
+            _normalize_positive_int("chunked_prefill_size", chunked_prefill_size)
+        )
+
+    resolved_context_length = overrides.get("context_length", context_length)
+    if resolved_context_length is not None:
+        caps.append(_normalize_positive_int("context_length", resolved_context_length))
+    return min(caps)
+
+
+def resolve_prefill_cuda_graph_buckets(
+    *,
+    default_capture_budget: int | None,
+    overrides: dict[str, Any],
+    context_length: int | None = None,
+    operator_supplied_buckets: bool = False,
+) -> None:
+    if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
+        overrides.pop("cuda_graph_bs_prefill", None)
+        overrides.pop("cuda_graph_max_bs_prefill", None)
+        return
+
+    buckets = overrides.get("cuda_graph_bs_prefill")
+    if operator_supplied_buckets:
+        normalized = _require_valid_cuda_graph_bs(
+            buckets, field="cuda_graph_bs_prefill"
+        )
+        overrides["cuda_graph_max_bs_prefill"] = max(normalized)
+        return
+
+    if default_capture_budget is None:
+        if buckets is None:
+            return
+        normalized = _require_valid_cuda_graph_bs(
+            buckets, field="cuda_graph_bs_prefill"
+        )
+        default_capture_budget = max(normalized)
+
+    capture_cap = resolve_prefill_cuda_graph_capture_cap(
+        default_capture_budget=default_capture_budget,
+        overrides=overrides,
+        context_length=context_length,
+    )
+    resolved_buckets = build_default_prefill_cuda_graph_bs(capture_cap)
+    overrides["cuda_graph_bs_prefill"] = resolved_buckets
+    overrides["cuda_graph_max_bs_prefill"] = max(resolved_buckets)
 
 
 def nested_prefill_overrides(overrides: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -86,13 +157,26 @@ def build_generation_batch_overrides(
     max_running_requests: int,
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
+    prefill_cuda_graph_capture_budget: int | None = None,
+    context_length: int | None = None,
     server_args_overrides: Mapping[str, Any] | None = None,
     **stage_defaults: Any,
 ) -> dict[str, Any]:
     incoming = dict(server_args_overrides or {})
+    cuda_graph_config = incoming.get("cuda_graph_config")
+    if isinstance(cuda_graph_config, CudaGraphConfig):
+        cuda_graph_config = cuda_graph_config.to_dict()
+    if isinstance(cuda_graph_config, Mapping):
+        cuda_graph_config = dict(cuda_graph_config)
+        prefill_config = cuda_graph_config.get("prefill")
+        if isinstance(prefill_config, Mapping):
+            cuda_graph_config["prefill"] = dict(prefill_config)
+        incoming["cuda_graph_config"] = cuda_graph_config
+
     # note(ratish): the nested form wins in sglang; mirror its prefill
     # fields into the flat keys.
     nested_prefill = nested_prefill_overrides(incoming)
+    nested_prefill_keys = frozenset(nested_prefill)
     for nested_key, flat_key in (
         ("backend", "cuda_graph_backend_prefill"),
         ("bs", "cuda_graph_bs_prefill"),
@@ -150,23 +234,27 @@ def build_generation_batch_overrides(
         overrides.pop("cuda_graph_bs_prefill", None)
         overrides.pop("cuda_graph_max_bs_prefill", None)
 
-    # Reconcile the merged buckets with the cap: derive a missing cap from
-    # the buckets, and trim stage-default buckets to an operator cap. An
-    # operator-stated list is never trimmed; contradictions fail validation.
-    prefill_bs = overrides.get("cuda_graph_bs_prefill")
-    prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
-    if prefill_bs and prefill_max_bs is None:
-        overrides["cuda_graph_max_bs_prefill"] = max(int(b) for b in prefill_bs)
-    elif (
-        prefill_bs
-        and "cuda_graph_bs_prefill" not in incoming
-        and int(prefill_max_bs) < max(int(b) for b in prefill_bs)
-    ):
-        cap = int(prefill_max_bs)
-        trimmed = [int(b) for b in prefill_bs if int(b) <= cap]
-        if not trimmed or trimmed[-1] != cap:
-            trimmed.append(cap)
-        overrides["cuda_graph_bs_prefill"] = trimmed
+    resolve_prefill_cuda_graph_buckets(
+        default_capture_budget=prefill_cuda_graph_capture_budget,
+        overrides=overrides,
+        context_length=context_length,
+        operator_supplied_buckets="cuda_graph_bs_prefill" in incoming,
+    )
+
+    # Keep fields supplied through the authoritative nested config aligned
+    # with the resolved flat aliases that SGLang would otherwise overwrite.
+    if isinstance(nested_prefill, dict):
+        for nested_key, flat_key in (
+            ("backend", "cuda_graph_backend_prefill"),
+            ("bs", "cuda_graph_bs_prefill"),
+            ("max_bs", "cuda_graph_max_bs_prefill"),
+        ):
+            if nested_key not in nested_prefill_keys:
+                continue
+            if flat_key in overrides:
+                nested_prefill[nested_key] = overrides[flat_key]
+            else:
+                nested_prefill.pop(nested_key, None)
 
     return overrides
 
@@ -254,8 +342,7 @@ def _validate_prefill_graph_policy(
     cuda_graph_enabled: bool,
     errors: list[str],
 ) -> None:
-    """Validate the declared prefill CUDA graph policy: breakable backend
-    only, with explicitly declared buckets."""
+    """Validate the resolved prefill CUDA graph policy."""
     backend = get_prefill_cuda_graph_backend(server_args)
     if backend == CudaGraphBackend.DISABLED:
         return
@@ -286,14 +373,6 @@ def _validate_prefill_graph_policy(
                 "set cuda_graph_backend_prefill='disabled'"
             )
 
-    if ("prefill", "bs") not in server_args._cuda_graph_config_locked:
-        errors.append(
-            "breakable prefill CUDA graphs require explicit "
-            "cuda_graph_bs_prefill buckets (sglang's generated ladder is "
-            "not an accepted shape policy)"
-        )
-        return
-
     prefill_cfg = server_args.cuda_graph_config.prefill
     buckets = _normalize_cuda_graph_bs(
         prefill_cfg.bs, errors, field="cuda_graph_bs_prefill"
@@ -303,9 +382,11 @@ def _validate_prefill_graph_policy(
 
     max_bs = prefill_cfg.max_bs
     if max_bs is not None and max(buckets) != int(max_bs):
-        errors.append(
+        logger.warning(
             "max(cuda_graph_bs_prefill) must match cuda_graph_max_bs_prefill "
-            f"({max(buckets)} != {max_bs})"
+            "(%d != %s); the resolved bucket list determines replay coverage",
+            max(buckets),
+            max_bs,
         )
 
     # Buckets above either per-forward token cap can never replay.
@@ -318,19 +399,18 @@ def _validate_prefill_graph_policy(
             and int(cap_value) > 0
             and max(buckets) > int(cap_value)
         ):
-            errors.append(
-                f"cuda_graph_bs_prefill buckets above {cap_name} are "
-                f"unreachable ({max(buckets)} > {cap_value})"
+            logger.warning(
+                "cuda_graph_bs_prefill buckets above %s are unreachable " "(%d > %s)",
+                cap_name,
+                max(buckets),
+                cap_value,
             )
 
-    # The largest eager-falling length under bucket nxt is
-    # (nxt - 1) // factor; a valley exists only when that reaches past the
-    # previous bucket.
     valleys = []
-    for prev, nxt in zip(buckets, buckets[1:]):
-        eager_end = (nxt - 1) // _PREFILL_PADDING_FACTOR
-        if eager_end > prev:
-            valleys.append((prev + 1, eager_end))
+    for previous, next_bucket in zip(buckets, buckets[1:]):
+        eager_end = (next_bucket - 1) // _PREFILL_PADDING_FACTOR
+        if eager_end > previous:
+            valleys.append((previous + 1, eager_end))
     if valleys:
         logger.warning(
             "prefill CUDA graph bucket gaps exceed the %dx padding factor; "
@@ -401,4 +481,14 @@ def _normalize_cuda_graph_bs(
     if tuple(sorted(set(normalized))) != normalized:
         errors.append(f"{field} must be strictly increasing")
         return None
+    return normalized
+
+
+def _require_valid_cuda_graph_bs(
+    value: Iterable[Any], *, field: str
+) -> tuple[int, ...]:
+    errors: list[str] = []
+    normalized = _normalize_cuda_graph_bs(value, errors, field=field)
+    if normalized is None:
+        raise ValueError("; ".join(errors))
     return normalized

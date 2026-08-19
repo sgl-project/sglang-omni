@@ -105,13 +105,15 @@ def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
     assert defaults["enable_torch_compile"] is False
     assert defaults["torch_compile_max_bs"] == 4
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
-    assert defaults["cuda_graph_bs_prefill"] == [
-        1,
-        2,
-        *build_default_prefill_cuda_graph_bs(4096),
-    ]
+    assert defaults["prefill_cuda_graph_capture_budget"] == 4096
+    assert "cuda_graph_bs_prefill" not in defaults
+
+    overrides = build_generation_batch_overrides(**defaults)
+    assert overrides["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        4096
+    )
     assert (
-        max(defaults["cuda_graph_bs_prefill"])
+        max(overrides["cuda_graph_bs_prefill"])
         == defaults["max_prefill_tokens"]
         == defaults["chunked_prefill_size"]
         == 4096

@@ -508,9 +508,6 @@ def _make_higgs_builder(**kwargs):
 
 def test_higgs_tts_engine_prefill_backend_policy() -> None:
     from sglang_omni.models.higgs_tts import CAPABILITIES
-    from sglang_omni.scheduling.generation_batch_policy import (
-        build_default_prefill_cuda_graph_bs,
-    )
 
     builder = _make_higgs_builder()
 
@@ -521,7 +518,8 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
 
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
-    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
+    assert defaults["prefill_cuda_graph_capture_budget"] == 512
+    assert "cuda_graph_bs_prefill" not in defaults
 
     server_args = FakeServerArgs(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))

@@ -99,15 +99,14 @@ def test_non_breakable_prefill_backend_is_rejected() -> None:
             )
 
 
-def test_breakable_requires_explicit_buckets() -> None:
-    with pytest.raises(ValueError, match="explicit"):
-        _validate(
-            _server_args(
-                prefill_backend="breakable",
-                prefill_bs=(4, 8, 16),
-                locked=frozenset(),
-            )
+def test_breakable_accepts_resolved_buckets_without_explicit_provenance() -> None:
+    _validate(
+        _server_args(
+            prefill_backend="breakable",
+            prefill_bs=(1, 2, 4, 8, 16),
+            locked=frozenset(),
         )
+    )
 
 
 def test_breakable_rejects_non_increasing_buckets() -> None:
@@ -135,8 +134,8 @@ def test_breakable_rejects_non_integral_bucket_types(
         )
 
 
-def test_breakable_rejects_max_bs_mismatch() -> None:
-    with pytest.raises(ValueError, match="cuda_graph_max_bs_prefill"):
+def test_breakable_warns_on_max_bs_mismatch(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
         _validate(
             _server_args(
                 prefill_backend="breakable",
@@ -145,10 +144,11 @@ def test_breakable_rejects_max_bs_mismatch() -> None:
                 locked=_PREFILL_BS_LOCKED,
             )
         )
+    assert any("must match" in record.message for record in caplog.records)
 
 
-def test_breakable_rejects_buckets_above_chunked_prefill() -> None:
-    with pytest.raises(ValueError, match="chunked_prefill_size are unreachable"):
+def test_breakable_warns_on_buckets_above_chunked_prefill(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
         _validate(
             _server_args(
                 prefill_backend="breakable",
@@ -157,10 +157,11 @@ def test_breakable_rejects_buckets_above_chunked_prefill() -> None:
                 chunked_prefill_size=8192,
             )
         )
+    assert any("chunked_prefill_size" in record.message for record in caplog.records)
 
 
-def test_breakable_rejects_buckets_above_max_prefill_tokens() -> None:
-    with pytest.raises(ValueError, match="max_prefill_tokens are unreachable"):
+def test_breakable_warns_on_buckets_above_max_prefill_tokens(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
         _validate(
             _server_args(
                 prefill_backend="breakable",
@@ -170,6 +171,7 @@ def test_breakable_rejects_buckets_above_max_prefill_tokens() -> None:
                 max_prefill_tokens=16384,
             )
         )
+    assert any("max_prefill_tokens" in record.message for record in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -232,16 +234,28 @@ def test_nested_prefill_max_bs_trims_a_stage_default_ladder() -> None:
 
 
 def test_operator_prefill_buckets_are_never_trimmed_by_a_nested_cap() -> None:
+    cuda_graph_config = {"prefill": {"max_bs": 128}}
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         server_args_overrides={
             "cuda_graph_bs_prefill": [128, 256],
-            "cuda_graph_config": {"prefill": {"max_bs": 128}},
+            "cuda_graph_config": cuda_graph_config,
         },
     )
 
     assert overrides["cuda_graph_bs_prefill"] == [128, 256]
-    assert overrides["cuda_graph_max_bs_prefill"] == 128
+    assert overrides["cuda_graph_max_bs_prefill"] == 256
+    assert overrides["cuda_graph_config"]["prefill"]["max_bs"] == 256
+    assert cuda_graph_config["prefill"]["max_bs"] == 128
+
+
+def test_malformed_operator_prefill_buckets_are_rejected() -> None:
+    with pytest.raises(ValueError, match="strictly increasing"):
+        build_generation_batch_overrides(
+            max_running_requests=4,
+            prefill_cuda_graph_capture_budget=512,
+            server_args_overrides={"cuda_graph_bs_prefill": [256, 128]},
+        )
 
 
 def test_nested_disabled_backend_overrides_a_stage_default() -> None:
@@ -316,15 +330,20 @@ def test_padding_gap_warning_requires_a_non_empty_eager_range(caplog) -> None:
 def test_default_prefill_ladder_matches_sglang_generated_ladder() -> None:
     ladder = build_default_prefill_cuda_graph_bs(512)
     assert ladder == (
-        list(range(4, 33, 4)) + list(range(48, 257, 16)) + list(range(288, 513, 32))
+        [1, 2]
+        + list(range(4, 33, 4))
+        + list(range(48, 257, 16))
+        + list(range(288, 513, 32))
     )
-    assert len(ladder) == 30
+    assert len(ladder) == 32
 
     off_grid = build_default_prefill_cuda_graph_bs(100)
     assert off_grid[-1] == 100
-    assert off_grid[:-1] == [4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96]
+    assert off_grid[:-1] == [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96]
 
-    assert build_default_prefill_cuda_graph_bs(2) == [2]
+    assert build_default_prefill_cuda_graph_bs(1) == [1]
+    assert build_default_prefill_cuda_graph_bs(2) == [1, 2]
+    assert build_default_prefill_cuda_graph_bs(3) == [1, 2, 3]
 
     _validate(
         _server_args(
@@ -359,10 +378,38 @@ def test_overrides_derive_prefill_max_bs_from_buckets() -> None:
     assert explicit["cuda_graph_max_bs_prefill"] == 256
 
 
+@pytest.mark.parametrize(
+    ("server_args_overrides", "context_length", "expected_cap"),
+    [
+        ({"max_prefill_tokens": 768}, None, 768),
+        ({"chunked_prefill_size": 640}, None, 640),
+        ({"max_total_tokens": 512}, None, 512),
+        ({"cuda_graph_max_bs_prefill": 384}, None, 384),
+        ({}, 256, 256),
+    ],
+)
+def test_generated_prefill_buckets_respect_effective_caps(
+    server_args_overrides: dict[str, int],
+    context_length: int | None,
+    expected_cap: int,
+) -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        prefill_cuda_graph_capture_budget=1024,
+        context_length=context_length,
+        max_prefill_tokens=2048,
+        chunked_prefill_size=-1,
+        server_args_overrides=server_args_overrides,
+    )
+
+    assert max(overrides["cuda_graph_bs_prefill"]) == expected_cap
+    assert overrides["cuda_graph_max_bs_prefill"] == expected_cap
+
+
 def test_disable_overrides_win_over_default_prefill_backend() -> None:
     stage_defaults = {
         "cuda_graph_backend_prefill": "breakable",
-        "cuda_graph_bs_prefill": [128, 256],
+        "prefill_cuda_graph_capture_budget": 256,
     }
 
     for disable_key in ("disable_cuda_graph", "disable_prefill_cuda_graph"):

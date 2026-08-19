@@ -441,7 +441,8 @@ def test_prefill_ladder_never_exceeds_the_context_length(
         mm_attention_backend="fa3", context_length=context_length
     )
     overrides = build_generation_batch_overrides(
-        **builder.generation_defaults(dtype="bfloat16")
+        context_length=builder.context_length,
+        **builder.generation_defaults(dtype="bfloat16"),
     )
 
     builder.adjust_overrides(overrides)
@@ -452,7 +453,8 @@ def test_prefill_ladder_never_exceeds_the_context_length(
 def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> None:
     builder = _make_engine_builder(mm_attention_backend="fa3")
     overrides = build_generation_batch_overrides(
-        **builder.generation_defaults(dtype="bfloat16")
+        context_length=builder.context_length,
+        **builder.generation_defaults(dtype="bfloat16"),
     )
     builder.adjust_overrides(overrides)
     server_args = _fake_server_args_builder({})("dummy", 1636, **overrides)

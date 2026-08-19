@@ -18,10 +18,7 @@ from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import (
-    CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
-)
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 logger = logging.getLogger(__name__)
@@ -109,7 +106,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 4096,
             # Qualified capture budget; longer prefills run eager.
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
-            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(256),
+            "prefill_cuda_graph_capture_budget": 256,
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
