@@ -107,11 +107,15 @@ class SimpleScheduler:
             return batch
 
         batch_cost = self._message_cost(first_msg)
-        deadline = time.monotonic() + self._max_batch_wait_s
+        # Note (wenyao): an idle stage has nothing to coalesce with, so arming
+        # the window up front would spend all of it on this request's own TTFT.
+        deadline: float | None = None
         while len(batch) < self._max_batch_size:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
+                if deadline is None:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -128,6 +132,8 @@ class SimpleScheduler:
                         break
                     batch_cost += msg_cost
                 batch.append(msg)
+                if deadline is None:
+                    deadline = time.monotonic() + self._max_batch_wait_s
             else:
                 self._pending_messages.append(msg)
         return batch

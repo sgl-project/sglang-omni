@@ -34,6 +34,32 @@ def _build_audio_tower(
     )
 
 
+def pack_padded_audio_features(
+    input_features: torch.Tensor,
+    feature_attention_mask: torch.Tensor,
+    audio_feature_lengths: torch.Tensor,
+) -> torch.Tensor:
+    """Concatenate each row's valid frames along time, giving ``[mel, sum(len)]``.
+
+    Note (wenyao): both mask sources here are prefix masks, which is what makes
+    the slice path valid; an interior hole would need the gather instead.
+    """
+    mask = feature_attention_mask.bool()
+    lengths = audio_feature_lengths.to(torch.long).view(-1)
+    steps = torch.arange(mask.shape[-1], device=mask.device)
+    if not torch.equal(mask, steps.unsqueeze(0) < lengths.unsqueeze(1)):
+        return (
+            input_features.permute(0, 2, 1)[mask.to(input_features.device)]
+            .permute(1, 0)
+            .contiguous()
+        )
+
+    return torch.cat(
+        [row[:, :length] for row, length in zip(input_features, lengths.tolist())],
+        dim=-1,
+    ).contiguous()
+
+
 class Qwen3OmniAudioEncoder(nn.Module):
     """Audio tower extracted from the HF thinker."""
 
@@ -65,10 +91,10 @@ class Qwen3OmniAudioEncoder(nn.Module):
     ) -> dict[str, torch.Tensor]:
         if feature_attention_mask is not None:
             audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
-            input_features = (
-                input_features.permute(0, 2, 1)[feature_attention_mask.bool()]
-                .permute(1, 0)
-                .contiguous()
+            input_features = pack_padded_audio_features(
+                input_features.to(device=self._device, dtype=self.audio_tower.dtype),
+                feature_attention_mask,
+                audio_feature_lengths,
             )
         if audio_feature_lengths is None:
             raise ValueError(
