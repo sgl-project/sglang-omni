@@ -327,8 +327,9 @@ items, fail the HTTP request.
 
 Use `/v1/audio/speech/stream` for stateful text input over a persistent
 WebSocket. The first message must be `session.config`. Then send `input.text`
-messages and finish with `input.done`. The server acknowledges the initial
-configuration with `session.configured`.
+messages. Send `input.commit` to flush the current text segment while keeping
+the WebSocket open, or finish the session with `input.done`. The server
+acknowledges the initial configuration with `session.configured`.
 
 `stream_audio` defaults to `false`. With the default, each completed text
 segment returns one binary audio frame between `audio.start` and `audio.done`.
@@ -358,13 +359,27 @@ async def main():
         }))
         print(await ws.recv())
 
+        pcm_chunks = []
         await ws.send(json.dumps({
             "type": "input.text",
             "text": "Hello from the speech WebSocket. This is the second sentence.",
         }))
+        await ws.send(json.dumps({"type": "input.commit"}))
+
+        # input.committed is emitted after all audio for the segment. More
+        # input.text/input.commit pairs can follow on the same WebSocket.
+        while True:
+            message = await ws.recv()
+            if isinstance(message, bytes):
+                pcm_chunks.append(message)
+                continue
+            event = json.loads(message)
+            print(event)
+            if event["type"] == "input.committed":
+                break
+
         await ws.send(json.dumps({"type": "input.done"}))
 
-        pcm_chunks = []
         while True:
             message = await ws.recv()
             if isinstance(message, bytes):
@@ -381,6 +396,14 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Each `input.commit` forces a flush of any remaining buffered text (including text that does not end at the configured sentence
+or clause boundary). After all audio for that segment, the server emits
+`input.committed` with `segment_index`, `segment_sentences`, and cumulative
+`total_sentences`, then accepts more input on the same connection. An empty
+commit is valid: it flushes nothing and reports `segment_sentences: 0`.
+`input.done` performs the same final buffer flush, emits `session.done`, and
+closes the WebSocket.
 
 `split_granularity` can be `sentence` or `clause`. Unknown message types and
 malformed JSON return a WebSocket `error` event. Missing or invalid initial

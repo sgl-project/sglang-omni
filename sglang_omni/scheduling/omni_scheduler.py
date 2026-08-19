@@ -2428,34 +2428,18 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
-    def _free_overrun_step_slots(self, out_cache_loc, drop_indices) -> None:
-        """Free the per-step decode KV slot for rows whose request finished or
-        retracted in a prior step (the lookahead overrun): ``prepare_for_decode``
-        allocated it but ``cache_finished_req`` truncates below it, so it leaks.
-
-        Only under RadixCache + page_size=1; ChunkCache/paged already free the slot
-        with the request, so compensating here would double-free — hence the gate.
-        """
-        if not drop_indices:
-            return
-        if self.page_size != 1 or self.server_args.disable_radix_cache:
-            return
-        if out_cache_loc is None:
-            logger.warning("overrun step-slot free skipped: out_cache_loc is None")
-            return
-        assert max(drop_indices) < out_cache_loc.numel(), (
-            f"overrun drop index {max(drop_indices)} out of range "
-            f"({out_cache_loc.numel()} step slots)"
-        )
-        idx = torch.tensor(drop_indices, dtype=torch.long, device=out_cache_loc.device)
-        self.token_to_kv_pool_allocator.free(out_cache_loc[idx])
-
     def _drop_stale_overrun(self, batch):
         """Drop reqs finished OR retracted by the just-completed drain from the
         stale fast-path batch, so run_batch does not forward/finalize them again
         (double-free of already-freed KV). Returns the filtered batch, or None if
         it empties. Mirrors the finished/is_retracted pre-drop in
         _resolve_and_process; the fast path previously dropped only finished.
+
+        The dropped rows' step slots need no compensating free: the batch's
+        prepare already advanced req.kv_committed_len over them, and the
+        drain's release_kv_cache frees or caches every committed slot, so
+        a second free here would put a slot on the free list that the radix
+        tree (or another request) still owns.
         """
         if batch is None or not batch.reqs:
             return batch
@@ -2482,12 +2466,6 @@ class OmniScheduler:
             starts = [0] * len(lens)
             for i in range(1, len(lens)):
                 starts[i] = starts[i - 1] + lens[i - 1]
-            drop_tokens = [
-                t
-                for i, d in enumerate(drop)
-                if d
-                for t in range(starts[i], starts[i] + lens[i])
-            ]
             keep_tokens = [
                 t for i in keep for t in range(starts[i], starts[i] + lens[i])
             ]
@@ -2501,7 +2479,6 @@ class OmniScheduler:
             prefix_lens = batch.prefix_lens
             extend_logprob_start_lens = batch.extend_logprob_start_lens
             lp_token_ids = batch.extend_input_logprob_token_ids
-            self._free_overrun_step_slots(out_cache_loc, drop_tokens)
             batch.filter_batch(keep_indices=keep)
             if input_ids is not None:
                 batch.input_ids = input_ids[keep_tokens]
@@ -2535,9 +2512,6 @@ class OmniScheduler:
                     ]
                     batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
         else:
-            self._free_overrun_step_slots(
-                out_cache_loc, [i for i, d in enumerate(drop) if d]
-            )
             batch.filter_batch(keep_indices=keep)
             if out_cache_loc is not None:
                 batch.out_cache_loc = out_cache_loc[keep]

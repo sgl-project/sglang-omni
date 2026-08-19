@@ -774,10 +774,11 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     """The synchronous fast path runs after _resolve_pending_async, whose drain can
     retract a req still present in the stale batch. The fast path must drop finished
     AND retracted reqs (not only finished) before run_batch, or a retracted req is
-    forwarded/finalized again and re-frees its already-freed KV.
+    forwarded/finalized again. The dropped rows' step slots are not freed here:
+    the drain's release_kv_cache already covered them (see the real-pool test in
+    test_async_decode.py).
     """
     captured: dict = {}
-    freed: list[int] = []
 
     class FakeBatch:
         def __init__(self, reqs):
@@ -792,11 +793,6 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
             self.out_cache_loc = None
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler.page_size = 1
-    scheduler.server_args = SimpleNamespace(disable_radix_cache=False)
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        free=lambda t: freed.extend(t.tolist())
-    )
     keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
 
@@ -805,21 +801,16 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     assert captured["keep_indices"] == [0]
     assert [r.rid for r in out.reqs] == ["keep"]
     assert out.out_cache_loc.tolist() == [100]
-    assert freed == [101]
 
     # all dropped -> None so run_batch is skipped
-    freed.clear()
     fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
     assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
-    assert freed == [100, 101]
 
     # nothing stale -> batch returned unchanged, filter_batch never called
     captured.clear()
-    freed.clear()
     clean = FakeBatch([keep])
     assert scheduler._drop_stale_overrun(clean) is clean
     assert "keep_indices" not in captured
-    assert freed == []
 
 
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(

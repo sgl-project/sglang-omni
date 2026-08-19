@@ -318,6 +318,53 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
     assert client_impl.generated_prompts == ["Hello.", "Second"]
 
 
+def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
+    client_impl = StreamingSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(_session_config(response_format="pcm", stream_audio=True))
+        assert websocket.receive_json()["type"] == "session.configured"
+
+        websocket.send_json({"type": "input.text", "text": "First segment."})
+        websocket.send_json({"type": "input.commit"})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+        first_commit = websocket.receive_json()
+
+        assert first_commit["type"] == "input.committed"
+        assert first_commit["segment_index"] == 0
+        assert first_commit["segment_sentences"] == 1
+        assert first_commit["total_sentences"] == 1
+
+        websocket.send_json({"type": "input.text", "text": "Second segment"})
+        websocket.send_json({"type": "input.commit"})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+        second_commit = websocket.receive_json()
+
+        assert second_commit["type"] == "input.committed"
+        assert second_commit["segment_index"] == 1
+        assert second_commit["segment_sentences"] == 1
+        assert second_commit["total_sentences"] == 2
+
+        websocket.send_json({"type": "input.commit"})
+        empty_commit = websocket.receive_json()
+        assert empty_commit["type"] == "input.committed"
+        assert empty_commit["segment_index"] == 2
+        assert empty_commit["segment_sentences"] == 0
+        assert empty_commit["total_sentences"] == 2
+
+        websocket.send_json({"type": "input.done"})
+        session_done = websocket.receive_json()
+        assert session_done["type"] == "session.done"
+        assert session_done["total_sentences"] == 2
+
+    assert client_impl.generated_prompts == ["First segment.", "Second segment"]
+
+
 def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="served-model")
