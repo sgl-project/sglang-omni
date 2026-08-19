@@ -24,8 +24,6 @@ from tests.unit_test.fakes import FakeServerArgs
 
 
 def _encoder_graph_builder(**kwargs):
-    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-
     params = {
         "max_running_requests": 16,
         "max_new_tokens": 32,
@@ -33,7 +31,7 @@ def _encoder_graph_builder(**kwargs):
         "enable_encoder_cuda_graph": True,
     }
     params.update(kwargs)
-    builder = WhisperASREngineBuilder(**params)
+    builder = whisper_engine_builder.WhisperASREngineBuilder(**params)
     builder.processor = SimpleNamespace(
         feature_extractor=SimpleNamespace(nb_max_frames=3000)
     )
@@ -148,9 +146,7 @@ def test_whisper_encoder_cuda_graph_buckets_are_filtered(
 
 
 def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
-    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-
-    builder = WhisperASREngineBuilder(
+    builder = whisper_engine_builder.WhisperASREngineBuilder(
         max_running_requests=4,
         max_new_tokens=32,
         mem_fraction_static=0.2,
@@ -169,9 +165,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
-    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-
-    builder = WhisperASREngineBuilder(
+    builder = whisper_engine_builder.WhisperASREngineBuilder(
         max_running_requests=16,
         max_new_tokens=32,
         mem_fraction_static=0.2,
@@ -191,17 +185,15 @@ def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
 
 
 def test_whisper_rejects_invalid_pre_lm_batch_knobs() -> None:
-    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-
     with pytest.raises(ValueError, match="pre_lm_max_batch_size must be >= 1"):
-        WhisperASREngineBuilder(
+        whisper_engine_builder.WhisperASREngineBuilder(
             max_running_requests=4,
             max_new_tokens=32,
             mem_fraction_static=0.2,
             pre_lm_max_batch_size=0,
         )
     with pytest.raises(ValueError, match="pre_lm_max_batch_wait_ms must be >= 0"):
-        WhisperASREngineBuilder(
+        whisper_engine_builder.WhisperASREngineBuilder(
             max_running_requests=4,
             max_new_tokens=32,
             mem_fraction_static=0.2,
