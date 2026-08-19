@@ -76,7 +76,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 
         model_worker.model_runner.model_config.vocab_size = TOTAL_VOCAB_SIZE
-        
+
         llm_pt_path = os.path.join(root, "llm.pt")
         logger.info("Loading CosyVoice3 fine-tuned weights from %s", llm_pt_path)
         state_dict = torch.load(llm_pt_path, map_location="cpu", weights_only=True)
