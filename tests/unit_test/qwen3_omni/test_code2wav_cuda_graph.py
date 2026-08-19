@@ -484,6 +484,83 @@ def test_real_cuda_shared_pool_replays_batch_sizes_with_eager_parity() -> None:
         assert torch.equal(graph_output, eager)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
+    """Real graph replay + the depth-2 pipelined D2H produce the exact bytes
+    of the synchronous path, including the pending flush at stream-done."""
+    from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
+        Code2WavScheduler,
+    )
+    from sglang_omni.pipeline.stage.stream_queue import StreamItem
+    from tests.unit_test.fixtures.qwen_fakes import make_qwen_payload
+
+    class _TinyCode2WavModel(torch.nn.Module):
+        total_upsample = 1
+
+        def forward(self, codes: torch.Tensor) -> torch.Tensor:
+            return (codes.float() * 2).sum(dim=1, keepdim=True)
+
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    def _run(*, overlap: bool) -> list[tuple]:
+        model = _TinyCode2WavModel().to(device).eval()
+        runner = Code2WavCudaGraphRunner.build(
+            model,
+            device=device,
+            num_quantizers=2,
+            total_gpu_memory_fraction=1.0,
+            graph_keys=_DEFAULT_GRAPH_KEYS,
+        )
+        scheduler = Code2WavScheduler(
+            model,
+            device=str(device),
+            stream_chunk_size=10,
+            left_context_size=25,
+            enable_output_overlap=overlap,
+            enable_cuda_graph=True,
+            _cuda_graph_runner=runner,
+        )
+        assert scheduler._pipeline_active is overlap
+        scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+        scheduler._get_or_create_stream_state("req-1")
+        for i in range(21):
+            scheduler._on_chunk(
+                "req-1",
+                StreamItem(
+                    i,
+                    torch.tensor([i % 7 + 1, 10]),
+                    "talker",
+                    metadata={"stream": True},
+                ),
+            )
+        scheduler._on_done("req-1")
+        messages = [
+            scheduler.outbox.get_nowait() for _ in range(scheduler.outbox.qsize())
+        ]
+        snapshot: list[tuple] = []
+        for message in messages:
+            if message.type == "stream":
+                snapshot.append(
+                    (message.type, message.data["audio_waveform"], message.metadata)
+                )
+            else:
+                snapshot.append((message.type, message.data.data))
+        stats = runner.stats()
+        assert stats["runtime"]["graph_replays"] >= 2
+        return snapshot
+
+    overlap_snapshot = _run(overlap=True)
+    sync_snapshot = _run(overlap=False)
+    assert overlap_snapshot == sync_snapshot
+    assert [item[0] for item in overlap_snapshot] == [
+        "stream",
+        "stream",
+        "stream",
+        "result",
+    ]
+
+
 def test_run_copies_live_input_replays_and_returns_borrowed_output_metadata() -> None:
     runner, backend, _model = _build_runner()
     graph = next(

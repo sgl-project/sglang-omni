@@ -56,10 +56,8 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| **NVIDIA CUDA** | ✅ Supported | Default target; full model coverage. |
-| **Intel GPU (XPU)** | 🧪 Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
-
-See [Installation — Intel XPU](./docs/get_started/installation_xpu.md).
+| **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
+| **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/).
 
