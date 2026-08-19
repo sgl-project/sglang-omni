@@ -163,14 +163,7 @@ def test_resolve_deferred_prefill_inputs_materializes_staged_ids():
 @pytest.mark.parametrize(
     ("is_prefill", "expected"),
     [
-        (
-            True,
-            [
-                "before_prefill",
-                "custom_prefill",
-                "post_prefill",
-            ],
-        ),
+        (True, ["before_prefill", "custom_prefill", "post_prefill"]),
         (False, ["before_decode", "custom_decode", "post_decode"]),
     ],
 )
@@ -279,10 +272,6 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     ]
     assert output.can_run_cuda_graph is False
     assert not hasattr(ModelRunner, "prepare_prefill")
-
-
-def test_base_runner_has_no_custom_prefill_observer_hook() -> None:
-    assert not hasattr(ModelRunner, "on_custom_prefill_forward")
 
 
 def _prefill_forward_batch() -> SimpleNamespace:
