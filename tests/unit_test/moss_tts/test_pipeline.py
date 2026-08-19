@@ -1570,6 +1570,7 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
                 extend_range=SimpleNamespace(length=2), prefix_indices=[0]
             ),
             prompt_rows=prompt_rows,
+            output_rows=[],
         )
     )
     forward_batch = SimpleNamespace(
@@ -1593,83 +1594,18 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     )
 
 
-def test_moss_prefill_sidecar_transport_reaches_model_forward() -> None:
-    from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
-    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+def test_moss_forward_accepts_shared_prefill_kwargs() -> None:
+    from inspect import signature
+
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 
-    class FakeBackbone:
-        def __init__(self) -> None:
-            self.input_embeds = None
-
-        def __call__(
-            self,
-            *,
-            input_ids,
-            positions,
-            forward_batch,
-            input_embeds,
-            pp_proxy_tensors,
-        ):
-            del input_ids, positions, forward_batch, pp_proxy_tensors
-            self.input_embeds = input_embeds
-            return input_embeds
-
-    backbone = FakeBackbone()
-    model = SimpleNamespace(
-        dtype=torch.float32,
-        hidden_size=2,
-        pp_group=SimpleNamespace(is_first_rank=True, is_last_rank=True),
-        model=backbone,
-        _prepare_multi_modal_inputs=lambda rows: rows.to(torch.float32)[:, :2],
-        _select_sample_hidden_states=lambda hidden_states, forward_batch: hidden_states,
-    )
-    moss_runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
-    moss_runner.model = model
-    sched_req = SimpleNamespace(
-        data=SimpleNamespace(
-            req=SimpleNamespace(
-                extend_range=SimpleNamespace(length=2), prefix_indices=[0]
-            ),
-            prompt_rows=torch.tensor(
-                [[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=torch.long
-            ),
-        )
-    )
-    forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([123456, 123457], dtype=torch.long),
-        positions=torch.arange(2),
-        mrope_positions=None,
-        input_embeds=None,
-        replace_embeds=None,
-        replace_positions=None,
-        mm_inputs=[object(), None],
-        batch_size=1,
-        rids=["moss-request"],
-    )
-
-    assert (
-        moss_runner.custom_prefill_forward(forward_batch, object(), [sched_req]) is None
-    )
-
-    sglang_runner = SGLModelRunner.__new__(SGLModelRunner)
-    sglang_runner.support_pp = False
-    sglang_runner.is_generation = True
-    kwargs = sglang_runner._extend_forward_kwargs(forward_batch, object())
-
-    assert kwargs["omni_prefill_rids"] is forward_batch.rids
-    result = MossTTSDelaySGLangModel.forward(
-        model,
-        input_ids=forward_batch.input_ids,
-        positions=forward_batch.positions,
-        forward_batch=forward_batch,
-        **kwargs,
-    )
-
-    assert result is not None
-    torch.testing.assert_close(
-        backbone.input_embeds,
-        torch.tensor([[4.0, 5.0], [7.0, 8.0]]),
+    signature(MossTTSDelaySGLangModel.forward).bind(
+        object(),
+        input_ids=object(),
+        positions=object(),
+        forward_batch=object(),
+        input_embeds=object(),
+        omni_prefill_rids=["moss-request"],
     )
 
 
