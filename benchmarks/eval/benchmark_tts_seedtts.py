@@ -111,6 +111,8 @@ outlier-excluded corpus WER is 1.54%.
 | Higgs TTS | EN, stream=False | 4.68%   | 4.16%               | 0.00%                 | 91.2%              | 1088/1088 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.14%   | 1.08%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | MOSS-TTS | EN, stream=False | 1.93%   | 1.98%               | 0.00%                 | 8.1%               | 1088/1088 | 0       | PR #609 [H100, full-set, c=16, token-count=auto] |
+| Fun-CosyVoice3-0.5B | EN, stream=False | 1.37% | 1.27%       | 0.00%                 | 5.1%               | 1088/1088 | 0       | PR #1331 [H200, full-set, c=16, voice-clone (ref_text)] |
+| Fun-CosyVoice3-0.5B | ZH, stream=False | 0.74% | 0.72%       | 0.00%                 | 2.6%               | 2020/2020 | 0       | PR #1331 [H200, full-set, c=16, cross-lingual (no ref_text)] |
 
 Generation speed (generation.speed)
 
@@ -131,6 +133,8 @@ Generation speed (generation.speed)
 | Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | MOSS-TTS | EN, stream=False | 3.890       | 4.781         | 0.913    | 4.091          | 54.1                           | PR #609 [H100, full-set, c=16, token-count=auto] |
+| Fun-CosyVoice3-0.5B | EN, stream=False | 4.734 | 6.323     | 1.0791   | 3.327          | 104.7                          | PR #1331 [H200, full-set, c=16, voice-clone (ref_text)] |
+| Fun-CosyVoice3-0.5B | ZH, stream=False | 5.087 | 6.661     | 0.8058   | 3.137          | 84.0                           | PR #1331 [H200, full-set, c=16, cross-lingual (no ref_text)] |
 
 Higgs TTS concurrency sweep
 
