@@ -25,12 +25,13 @@ Clone the CosyVoice repository with its Matcha-TTS submodule and add both
 packages to `PYTHONPATH`:
 
 ```bash
-git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice
-export PYTHONPATH="/opt/CosyVoice:/opt/CosyVoice/third_party/Matcha-TTS:$PYTHONPATH"
+COSYVOICE_PATH=/path/to/CosyVoice
+git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git ${COSYVOICE_PATH}
+export PYTHONPATH="${COSYVOICE_PATH}:${COSYVOICE_PATH}/third_party/Matcha-TTS:$PYTHONPATH"
 ```
 
 If CosyVoice was cloned without submodules, initialize Matcha-TTS with
-`git -C /opt/CosyVoice submodule update --init --recursive` before starting the server.
+`git -C ${COSYVOICE_PATH} submodule update --init --recursive` before starting the server.
 
 The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, so
 `onnxruntime` is required.

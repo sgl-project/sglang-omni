@@ -13,6 +13,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
@@ -20,6 +21,7 @@ from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +163,9 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             pad = torch.zeros(1, pad_len, dtype=token.dtype, device=token.device)
             token = torch.cat([token, pad], dim=1)
 
-        with torch.autocast(device_type="cuda", enabled=self._fp16):
+        with torch.autocast(
+            device_type=current_platform.device_type, enabled=self._fp16
+        ):
             tts_mel, _ = self._flow.inference(
                 token=token.to(device, dtype=torch.int32),
                 token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(device),
@@ -213,14 +217,13 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+    device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = model_path
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
